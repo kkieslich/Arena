@@ -99,6 +99,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
+            f'flowedit = {package_name}.generative.flowedit.cli:main',
             f'generate_scenario = {package_name}.generative.scenario.cli:main',
             f'generate_world = {package_name}.generative.world.world_generator:main',
             f'nav_at_r = {package_name}.metrics.nav_at_r:main',

@@ -1,0 +1,1284 @@
+format: arena-kg/1
+uses: [core@2, space@1, flow@1]
+entities:
+- id: room:central_hallway
+  props: {description: Main Central Hallway}
+- id: room:reception
+  props: {description: Reception and Check-in}
+- id: room:exam_room_1
+  props: {description: Examination Room 1}
+- id: room:patient_ward
+  props: {description: Patient Ward}
+- id: room:pharmacy
+  props: {description: Pharmacy}
+- id: room:nurse_resting_room
+  props: {description: Nurse Resting Room}
+- id: room:waiting_area
+  props: {description: Main Waiting Area}
+- id: room:sub_hallway
+  props: {description: Sub-Hallway}
+- id: room:operating_room
+  props: {description: Operating Room}
+- id: room:laboratory
+  props: {description: Laboratory}
+- id: room:wc_pharmacy
+  props: {description: WC Pharmacy}
+- id: room:wc_waiting
+  props: {description: WC Waiting}
+- id: room:doctors_resting_room
+  props: {description: Doctor Resting Room}
+- id: obj:ward_SM_MedicalCabinet_01a_2
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- {id: 'floor:0'}
+- {id: 'door:main_hallway_entrance'}
+- {id: 'door:reception_door'}
+- {id: 'door:exam_room_1_door'}
+- {id: 'door:patient_ward_door_1'}
+- {id: 'door:patient_ward_door_2'}
+- {id: 'door:pharmacy_door'}
+- {id: 'door:nurse_resting_door'}
+- {id: 'door:waiting_to_sub_2'}
+- {id: 'door:or_door'}
+- {id: 'door:laboratory_door'}
+- {id: 'door:wc_pharmacy_door'}
+- {id: 'door:wc_waiting_door'}
+- {id: 'door:doctors_resting_room_door'}
+- id: obj:reception_counter_1
+  props: {model: Hospital/SM_ReceptionDesk_01a}
+- id: obj:reception_waiting_sofa_1
+  props: {model: Hospital/Waiting_Room_Sofa}
+- id: obj:reception_waiting_sofa_2
+  props: {model: Hospital/Waiting_Room_Sofa}
+- id: obj:reception_waiting_sofa_3
+  props: {model: Hospital/Waiting_Room_Sofa}
+- id: obj:reception_waiting_chair_1
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:reception_display_board_1
+  props: {model: Hospital/Display_Board}
+- id: obj:reception_water_dispenser_1
+  props: {model: Hospital/SM_WaterDispenser_01a}
+- id: obj:reception_trashcan_1
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:exam_exam_table_1
+  props: {model: Hospital/Exam_Table}
+- id: obj:exam_medical_stool_1
+  props: {model: Hospital/Medical_Stool}
+- id: obj:exam_instrument_table_1
+  props: {model: Hospital/Instrument_Table}
+- id: obj:exam_vital_signal_station_1
+  props: {model: Hospital/Vital_Signal_Station}
+- id: obj:exam_exam_table_2
+  props: {model: Hospital/Exam_Table}
+- id: obj:exam_medical_stool_2
+  props: {model: Hospital/Medical_Stool}
+- id: obj:exam_instrument_table_2
+  props: {model: Hospital/Instrument_Table}
+- id: obj:exam_vital_signal_station_2
+  props: {model: Hospital/Vital_Signal_Station}
+- id: obj:exam_SM_MedicalCabinet_01a_1
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:exam_SM_MedicalCabinet_01a_2
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:exam_SM_MedicalCabinet_01a_3
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:exam_supply_cart_1
+  props: {model: Hospital/SM_SupplyCart_01e}
+- id: obj:exam_supply_cart_2
+  props: {model: Hospital/SM_SupplyCart_01e}
+- id: obj:exam_scale_1
+  props: {model: Hospital/SM_Scale_01a}
+- id: obj:exam_trashcan_1
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:ward_bed_1
+  props: {model: Hospital/SM_HospitalBed_01b}
+- id: obj:ward_bedside_table_1
+  props: {model: Hospital/SM_BedSideTable_01b}
+- id: obj:ward_iv_stand_1
+  props: {model: Hospital/IV_Stand}
+- id: obj:ward_vital_signal_1
+  props: {model: Hospital/Vital_Signal_Station}
+- id: obj:ward_privacy_curtain_1
+  props: {model: Hospital/Privacy_Curtain_Rail}
+- id: obj:ward_armchair_1
+  props: {model: Hospital/SM_Chair_04a}
+- id: obj:ward_biohazard_container_1
+  props: {model: Hospital/Biohazard_Container}
+- id: obj:ward_bed_2
+  props: {model: Hospital/SM_HospitalBed_01b}
+- id: obj:ward_bedside_table_2
+  props: {model: Hospital/SM_BedSideTable_01b}
+- id: obj:ward_iv_stand_2
+  props: {model: Hospital/IV_Stand}
+- id: obj:ward_vital_signal_2
+  props: {model: Hospital/Vital_Signal_Station}
+- id: obj:ward_privacy_curtain_2
+  props: {model: Hospital/Privacy_Curtain_Rail}
+- id: obj:ward_armchair_2
+  props: {model: Hospital/SM_Chair_04a}
+- id: obj:ward_biohazard_container_2
+  props: {model: Hospital/Biohazard_Container}
+- id: obj:ward_SM_MedicalCabinet_01a_1
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:ward_wheelchair_1
+  props: {model: Hospital/SM_WheelChair_01a}
+- id: obj:ward_wheelchair_2
+  props: {model: Hospital/SM_WheelChair_01a}
+- id: obj:ward_trashcan_1
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:pharmacy_desk_1
+  props: {model: Hospital/SM_ReceptionDesk_01a}
+- id: obj:pharmacy_chair_1
+  props: {model: Hospital/SM_Chair_01a}
+- id: obj:pharmacy_shelf_1
+  props: {model: Hospital/Pharmacy_Shelf}
+- id: obj:pharmacy_shelf_2
+  props: {model: Hospital/Pharmacy_Shelf}
+- id: obj:pharmacy_shelf_3
+  props: {model: Hospital/Pharmacy_Shelf}
+- id: obj:pharmacy_shelf_4
+  props: {model: Hospital/Pharmacy_Shelf}
+- id: obj:pharmacy_refrigerated_unit_1
+  props: {model: Hospital/Refrigerated_Medicine_Unit}
+- id: obj:pharmacy_SM_MedicalCabinet_01a_1
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:pharmacy_SM_MedicalCabinet_01a_2
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:pharmacy_med_shelf_1
+  props: {model: Hospital/SM_MedShelf_01d}
+- id: obj:pharmacy_med_shelf_2
+  props: {model: Hospital/SM_MedShelf_01d}
+- id: obj:pharmacy_supply_cart_1
+  props: {model: Hospital/SM_SupplyCart_01e}
+- id: obj:pharmacy_biohazard_container_1
+  props: {model: Hospital/Biohazard_Container}
+- id: obj:pharmacy_trashcan_1
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:nurse_resting_bed_1
+  props: {model: Hospital/SM_HospitalBed_02d}
+- id: obj:nurse_resting_bed_2
+  props: {model: Hospital/SM_HospitalBed_02d}
+- id: obj:nurse_resting_desk_1
+  props: {model: Hospital/SM_Desk_04a}
+- id: obj:nurse_resting_desk_chair_1
+  props: {model: Hospital/SM_Chair_01a}
+- id: obj:nurse_resting_desk_2
+  props: {model: Hospital/SM_Desk_04a}
+- id: obj:nurse_resting_desk_chair_2
+  props: {model: Hospital/SM_Chair_01a}
+- id: obj:nurse_resting_chair_1
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:nurse_resting_chair_2
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:nurse_resting_chair_3
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:nurse_resting_sidetable_1
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:nurse_resting_sidetable_2
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:nurse_resting_sidetable_3
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:nurse_resting_cabinet_1
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:nurse_resting_cabinet_2
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:nurse_resting_cabinet_3
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:nurse_resting_cabinet_4
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:waiting_sofa_3
+  props: {model: Hospital/Waiting_Room_Sofa}
+- id: obj:waiting_sofa_4
+  props: {model: Hospital/Waiting_Room_Sofa}
+- id: obj:waiting_chair_8
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:waiting_chair_9
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:waiting_chair_10
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:waiting_chair_11
+  props: {model: Hospital/SM_Chair_02a}
+- id: obj:waiting_bench_3
+  props: {model: Hospital/Waiting_Room_Bench}
+- id: obj:waiting_bench_4
+  props: {model: Hospital/Waiting_Room_Bench}
+- id: obj:waiting_side_table_1
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:waiting_side_table_2
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:waiting_side_table_3
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:waiting_side_table_4
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:waiting_trashcan_2
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:waiting_mop_set_2
+  props: {model: Hospital/SM_MopSet_01b}
+- id: obj:or_operating_table_1
+  props: {model: Hospital/Operating_Table}
+- id: obj:or_surgical_table_1
+  props: {model: Hospital/Surgical_Table}
+- id: obj:or_anesthesia_machine_1
+  props: {model: Hospital/Anesthesia_Machine}
+- id: obj:or_instrument_table_1
+  props: {model: Hospital/Instrument_Table}
+- id: obj:or_surgical_tray_1
+  props: {model: Hospital/SM_UtilitiesTray_01e}
+- id: obj:or_vital_monitor_1
+  props: {model: Hospital/Vital_Signal_Station}
+- id: obj:or_defibrillator_1
+  props: {model: Hospital/Defibrillator}
+- id: obj:or_ventilator_1
+  props: {model: Hospital/Ventilator}
+- id: obj:or_SM_MedicalCabinet_01a_1
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:or_supply_cabinet_1
+  props: {model: Hospital/SM_SupplyCabinet_01c}
+- id: obj:or_biohazard_container_1
+  props: {model: Hospital/Biohazard_Container}
+- id: obj:or_trashcan_1
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:lab_bench_1
+  props: {model: Hospital/Lab_Bench}
+- id: obj:lab_bench_2
+  props: {model: Hospital/Lab_Bench}
+- id: obj:lab_microscope_1
+  props: {model: Hospital/Microscope_Station}
+- id: obj:lab_microscope_2
+  props: {model: Hospital/Microscope_Station}
+- id: obj:lab_stool_1
+  props: {model: Hospital/Lab_Stool}
+- id: obj:lab_stool_2
+  props: {model: Hospital/Lab_Stool}
+- id: obj:lab_stool_3
+  props: {model: Hospital/Lab_Stool}
+- id: obj:lab_SM_MedicalCabinet_01a_1
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:lab_refrigerated_unit_1
+  props: {model: Hospital/Refrigerated_Medicine_Unit}
+- id: obj:lab_shelf_1
+  props: {model: Hospital/SM_Shelf_06f}
+- id: obj:lab_shelf_2
+  props: {model: Hospital/SM_Shelf_06f}
+- id: obj:lab_shelf_set_1
+  props: {model: Hospital/SM_ShelfSet_01a}
+- id: obj:lab_shelf_set_2
+  props: {model: Hospital/SM_ShelfSet_01a}
+- id: obj:lab_biohazard_container_1
+  props: {model: Hospital/Biohazard_Container}
+- id: obj:lab_biohazard_container_2
+  props: {model: Hospital/Biohazard_Container}
+- id: obj:lab_autoclave_1
+  props: {model: Hospital/Autoclave}
+- id: obj:lab_trashcan_1
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:lab_trashcan_2
+  props: {model: Hospital/SM_TrashCan}
+- id: obj:wc_pharmacy_washbasin_1
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_pharmacy_washbasin_2
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_pharmacy_washbasin_3
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_pharmacy_washbasin_4
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_pharmacy_washbasin_5
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_pharmacy_washbasin_6
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_pharmacy_toilet_1
+  props: {model: Hospital/SM_Toilet}
+- id: obj:wc_pharmacy_toilet_paper_1
+  props: {model: Hospital/SM_ToiletPaper}
+- id: obj:wc_pharmacy_toilet_2
+  props: {model: Hospital/SM_Toilet}
+- id: obj:wc_pharmacy_toilet_paper_2
+  props: {model: Hospital/SM_ToiletPaper}
+- id: obj:wc_pharmacy_toilet_3
+  props: {model: Hospital/SM_Toilet}
+- id: obj:wc_pharmacy_toilet_paper_3
+  props: {model: Hospital/SM_ToiletPaper}
+- id: obj:wc_waiting_washbasin_1
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_waiting_washbasin_2
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_waiting_washbasin_3
+  props: {model: Hospital/SM_Washbasin}
+- id: obj:wc_waiting_toilet_1
+  props: {model: Hospital/SM_Toilet}
+- id: obj:wc_waiting_toilet_paper_1
+  props: {model: Hospital/SM_ToiletPaper}
+- id: obj:wc_waiting_toilet_2
+  props: {model: Hospital/SM_Toilet}
+- id: obj:wc_waiting_toilet_paper_2
+  props: {model: Hospital/SM_ToiletPaper}
+- id: obj:wc_waiting_toilet_3
+  props: {model: Hospital/SM_Toilet}
+- id: obj:wc_waiting_toilet_paper_3
+  props: {model: Hospital/SM_ToiletPaper}
+- id: obj:doctors_resting_room_bed_1
+  props: {model: Hospital/SM_HospitalBed_02d}
+- id: obj:doctors_resting_room_desk_1
+  props: {model: Hospital/SM_Desk_04a}
+- id: obj:doctors_resting_room_desk_chair_1
+  props: {model: Hospital/SM_Chair_01a}
+- id: obj:doctors_resting_room_sidetable_1
+  props: {model: Hospital/SM_SideTable_02a}
+- id: obj:doctors_resting_room_cabinet_1
+  props: {model: Hospital/SM_MedicalCabinet_01a}
+- id: obj:doctors_resting_room_chair_1
+  props: {model: Hospital/SM_Chair_02a}
+- {id: 'sound:hall_siren'}
+- id: obj:reception_desk
+  props: {model: Hospital/Reception_Counter}
+- id: obj:gathering_area
+  props: {model: Hospital/Waiting_Room_Bench}
+- id: obj:fountain
+  props: {model: Hospital/SM_WaterDispenser_01a}
+- id: obj:exam_chair_1
+  props: {model: Hospital/Patient_Armchair}
+- id: obj:patient_bed_1
+  props: {model: Hospital/Isolation_Bed}
+- {id: 'purpose:transit'}
+- {id: 'purpose:work'}
+- {id: 'purpose:break'}
+- {id: 'service:desk'}
+- {id: 'formation:line'}
+- {id: 'service:gathering_area'}
+- {id: 'formation:f_formation'}
+- {id: 'service:fountain'}
+- {id: 'need:thirst'}
+- {id: 'service:chair'}
+- {id: 'service:patient_bed'}
+facts:
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_SM_MedicalCabinet_01a_2'}
+- {subject: 'floor:0', verb: contains, object: 'room:central_hallway', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:reception', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:exam_room_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:patient_ward', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:pharmacy', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:nurse_resting_room', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:waiting_area', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:sub_hallway', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:operating_room', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:laboratory', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_pharmacy', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_waiting', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:doctors_resting_room', source: derived}
+- {subject: 'room:central_hallway', verb: contains, object: 'door:main_hallway_entrance', source: derived}
+- {subject: 'room:central_hallway', verb: contains, object: 'door:reception_door', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'door:reception_door', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:reception
+  params: {door: 'door:reception_door'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:exam_room_1_door', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'door:exam_room_1_door', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:exam_room_1
+  params: {door: 'door:exam_room_1_door'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:patient_ward_door_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'door:patient_ward_door_1', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:patient_ward
+  params: {door: 'door:patient_ward_door_1'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:patient_ward_door_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'door:patient_ward_door_2', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:patient_ward
+  params: {door: 'door:patient_ward_door_2'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:pharmacy_door', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'door:pharmacy_door', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:pharmacy
+  params: {door: 'door:pharmacy_door'}
+  source: derived
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'door:nurse_resting_door', source: derived}
+- {subject: 'room:sub_hallway', verb: contains, object: 'door:nurse_resting_door', source: derived}
+- subject: room:nurse_resting_room
+  verb: connects
+  object: room:sub_hallway
+  params: {door: 'door:nurse_resting_door'}
+  source: derived
+- {subject: 'room:waiting_area', verb: contains, object: 'door:waiting_to_sub_2', source: derived}
+- {subject: 'room:sub_hallway', verb: contains, object: 'door:waiting_to_sub_2', source: derived}
+- subject: room:waiting_area
+  verb: connects
+  object: room:sub_hallway
+  params: {door: 'door:waiting_to_sub_2'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:or_door', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'door:or_door', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:operating_room
+  params: {door: 'door:or_door'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:laboratory_door', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'door:laboratory_door', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:laboratory
+  params: {door: 'door:laboratory_door'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:wc_pharmacy_door', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'door:wc_pharmacy_door', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:wc_pharmacy
+  params: {door: 'door:wc_pharmacy_door'}
+  source: derived
+- {subject: 'room:wc_waiting', verb: contains, object: 'door:wc_waiting_door', source: derived}
+- {subject: 'room:sub_hallway', verb: contains, object: 'door:wc_waiting_door', source: derived}
+- subject: room:wc_waiting
+  verb: connects
+  object: room:sub_hallway
+  params: {door: 'door:wc_waiting_door'}
+  source: derived
+- {subject: 'room:central_hallway', verb: contains, object: 'door:doctors_resting_room_door', source: derived}
+- {subject: 'room:doctors_resting_room', verb: contains, object: 'door:doctors_resting_room_door', source: derived}
+- subject: room:central_hallway
+  verb: connects
+  object: room:doctors_resting_room
+  params: {door: 'door:doctors_resting_room_door'}
+  source: derived
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_counter_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_waiting_sofa_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_waiting_sofa_2', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_waiting_sofa_3', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_waiting_chair_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_display_board_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_water_dispenser_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_trashcan_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_exam_table_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_medical_stool_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_instrument_table_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_vital_signal_station_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_exam_table_2', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_medical_stool_2', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_instrument_table_2', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_vital_signal_station_2', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_SM_MedicalCabinet_01a_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_SM_MedicalCabinet_01a_2', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_SM_MedicalCabinet_01a_3', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_supply_cart_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_supply_cart_2', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_scale_1', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_trashcan_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_bed_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_bedside_table_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_iv_stand_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_vital_signal_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_privacy_curtain_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_armchair_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_biohazard_container_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_bed_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_bedside_table_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_iv_stand_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_vital_signal_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_privacy_curtain_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_armchair_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_biohazard_container_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_SM_MedicalCabinet_01a_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_wheelchair_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_wheelchair_2', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_trashcan_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_desk_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_chair_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_shelf_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_shelf_2', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_shelf_3', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_shelf_4', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_refrigerated_unit_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_SM_MedicalCabinet_01a_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_SM_MedicalCabinet_01a_2', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_med_shelf_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_med_shelf_2', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_supply_cart_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_biohazard_container_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_trashcan_1', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_bed_1', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_bed_2', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_desk_1', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_desk_chair_1', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_desk_2', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_desk_chair_2', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_chair_1', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_chair_2', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_chair_3', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_sidetable_1', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_sidetable_2', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_sidetable_3', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_cabinet_1', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_cabinet_2', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_cabinet_3', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:nurse_resting_cabinet_4', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_sofa_3', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_sofa_4', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_chair_8', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_chair_9', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_chair_10', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_chair_11', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_bench_3', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_bench_4', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_side_table_1', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_side_table_2', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_side_table_3', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_side_table_4', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_trashcan_2', source: derived}
+- {subject: 'room:waiting_area', verb: contains, object: 'obj:waiting_mop_set_2', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_operating_table_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_surgical_table_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_anesthesia_machine_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_instrument_table_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_surgical_tray_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_vital_monitor_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_defibrillator_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_ventilator_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_SM_MedicalCabinet_01a_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_supply_cabinet_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_biohazard_container_1', source: derived}
+- {subject: 'room:operating_room', verb: contains, object: 'obj:or_trashcan_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_bench_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_bench_2', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_microscope_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_microscope_2', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_stool_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_stool_2', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_stool_3', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_SM_MedicalCabinet_01a_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_refrigerated_unit_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_shelf_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_shelf_2', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_shelf_set_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_shelf_set_2', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_biohazard_container_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_biohazard_container_2', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_autoclave_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_trashcan_1', source: derived}
+- {subject: 'room:laboratory', verb: contains, object: 'obj:lab_trashcan_2', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_washbasin_1', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_washbasin_2', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_washbasin_3', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_washbasin_4', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_washbasin_5', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_washbasin_6', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_toilet_1', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_toilet_paper_1', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_toilet_2', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_toilet_paper_2', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_toilet_3', source: derived}
+- {subject: 'room:wc_pharmacy', verb: contains, object: 'obj:wc_pharmacy_toilet_paper_3', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_washbasin_1', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_washbasin_2', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_washbasin_3', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_toilet_1', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_toilet_paper_1', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_toilet_2', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_toilet_paper_2', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_toilet_3', source: derived}
+- {subject: 'room:wc_waiting', verb: contains, object: 'obj:wc_waiting_toilet_paper_3', source: derived}
+- {subject: 'room:doctors_resting_room', verb: contains, object: 'obj:doctors_resting_room_bed_1', source: derived}
+- {subject: 'room:doctors_resting_room', verb: contains, object: 'obj:doctors_resting_room_desk_1', source: derived}
+- {subject: 'room:doctors_resting_room', verb: contains, object: 'obj:doctors_resting_room_desk_chair_1', source: derived}
+- {subject: 'room:doctors_resting_room', verb: contains, object: 'obj:doctors_resting_room_sidetable_1', source: derived}
+- {subject: 'room:doctors_resting_room', verb: contains, object: 'obj:doctors_resting_room_cabinet_1', source: derived}
+- {subject: 'room:doctors_resting_room', verb: contains, object: 'obj:doctors_resting_room_chair_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_desk', source: derived}
+- {subject: 'room:nurse_resting_room', verb: contains, object: 'obj:gathering_area', source: derived}
+- {subject: 'room:central_hallway', verb: contains, object: 'obj:fountain', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_chair_1', source: derived}
+- {subject: 'room:patient_ward', verb: contains, object: 'obj:patient_bed_1', source: derived}
+- {subject: 'room:central_hallway', verb: contains, object: 'sound:hall_siren', source: derived}
+- subject: room:central_hallway
+  verb: has_purpose
+  object: purpose:transit
+  params: {by: rule}
+- subject: room:reception
+  verb: has_purpose
+  object: purpose:work
+  params: {by: rule}
+- subject: room:exam_room_1
+  verb: has_purpose
+  object: purpose:work
+  params: {by: rule}
+- subject: room:patient_ward
+  verb: has_purpose
+  object: purpose:work
+  params: {by: rule}
+- subject: room:pharmacy
+  verb: has_purpose
+  object: purpose:work
+  params: {by: rule}
+- subject: room:nurse_resting_room
+  verb: has_purpose
+  object: purpose:break
+  params: {by: rule}
+- subject: room:waiting_area
+  verb: has_purpose
+  object: purpose:break
+  params: {by: rule}
+- subject: room:sub_hallway
+  verb: has_purpose
+  object: purpose:transit
+  params: {by: rule}
+- subject: room:operating_room
+  verb: has_purpose
+  object: purpose:work
+  params: {by: rule}
+- subject: room:laboratory
+  verb: has_purpose
+  object: purpose:work
+  params: {by: rule}
+- subject: room:wc_pharmacy
+  verb: has_purpose
+  object: purpose:break
+  params: {by: rule}
+- subject: room:wc_waiting
+  verb: has_purpose
+  object: purpose:break
+  params: {by: rule}
+- subject: room:doctors_resting_room
+  verb: has_purpose
+  object: purpose:break
+  params: {by: rule}
+- subject: obj:reception_counter_1
+  verb: at
+  object: floor:0
+  params: {x: 4.0, y: 2.8, yaw: 0.0}
+- subject: obj:reception_waiting_sofa_1
+  verb: at
+  object: floor:0
+  params: {x: 1.8, y: 4.55, yaw: 0.0}
+- subject: obj:reception_waiting_sofa_2
+  verb: at
+  object: floor:0
+  params: {x: 3.7, y: 4.55, yaw: 0.0}
+- subject: obj:reception_waiting_sofa_3
+  verb: at
+  object: floor:0
+  params: {x: 0.45, y: 3.15, yaw: 1.57079}
+- subject: obj:reception_waiting_chair_1
+  verb: at
+  object: floor:0
+  params: {x: 5.9, y: 4.7, yaw: 0.0}
+- subject: obj:reception_display_board_1
+  verb: at
+  object: floor:0
+  params: {x: 0.4, y: 0.5, yaw: 1.57079}
+- subject: obj:reception_water_dispenser_1
+  verb: at
+  object: floor:0
+  params: {x: 7.7, y: 0.2, yaw: -1.57079}
+- subject: obj:reception_trashcan_1
+  verb: at
+  object: floor:0
+  params: {x: 7.7, y: 4.8, yaw: 0.0}
+- subject: obj:exam_exam_table_1
+  verb: at
+  object: floor:0
+  params: {x: 5.0, y: 7.55, yaw: 1.57079}
+- subject: obj:exam_medical_stool_1
+  verb: at
+  object: floor:0
+  params: {x: 5.1, y: 7.1, yaw: 0.0}
+- subject: obj:exam_instrument_table_1
+  verb: at
+  object: floor:0
+  params: {x: 5.9, y: 7.0, yaw: 0.0}
+- subject: obj:exam_vital_signal_station_1
+  verb: at
+  object: floor:0
+  params: {x: 4.85, y: 8.2, yaw: 0.0}
+- subject: obj:exam_exam_table_2
+  verb: at
+  object: floor:0
+  params: {x: 3.0, y: 7.55, yaw: 1.57079}
+- subject: obj:exam_medical_stool_2
+  verb: at
+  object: floor:0
+  params: {x: 3.1, y: 7.1, yaw: 0.0}
+- subject: obj:exam_instrument_table_2
+  verb: at
+  object: floor:0
+  params: {x: 3.9, y: 7.0, yaw: 0.0}
+- subject: obj:exam_vital_signal_station_2
+  verb: at
+  object: floor:0
+  params: {x: 2.85, y: 8.2, yaw: 0.0}
+- subject: obj:exam_SM_MedicalCabinet_01a_1
+  verb: at
+  object: floor:0
+  params: {x: 0.65, y: 9.2, yaw: 1.57079}
+- subject: obj:exam_SM_MedicalCabinet_01a_2
+  verb: at
+  object: floor:0
+  params: {x: 0.65, y: 8.325, yaw: 1.57079}
+- subject: obj:exam_SM_MedicalCabinet_01a_3
+  verb: at
+  object: floor:0
+  params: {x: 0.65, y: 7.45, yaw: 1.57079}
+- subject: obj:exam_supply_cart_1
+  verb: at
+  object: floor:0
+  params: {x: 0.55, y: 5.4, yaw: 0.0}
+- subject: obj:exam_supply_cart_2
+  verb: at
+  object: floor:0
+  params: {x: 1.7, y: 5.4, yaw: 0.0}
+- subject: obj:exam_scale_1
+  verb: at
+  object: floor:0
+  params: {x: 7.6, y: 5.5, yaw: 3.14159}
+- subject: obj:exam_trashcan_1
+  verb: at
+  object: floor:0
+  params: {x: 7.7, y: 9.8, yaw: 0.0}
+- subject: obj:ward_bed_1
+  verb: at
+  object: floor:0
+  params: {x: 4.0, y: 13.6, yaw: 0.0}
+- subject: obj:ward_bedside_table_1
+  verb: at
+  object: floor:0
+  params: {x: 4.9, y: 14.4, yaw: 1.57079}
+- subject: obj:ward_iv_stand_1
+  verb: at
+  object: floor:0
+  params: {x: 2.8, y: 14.5, yaw: 0.0}
+- subject: obj:ward_vital_signal_1
+  verb: at
+  object: floor:0
+  params: {x: 4.9, y: 13.4, yaw: -1.57079}
+- subject: obj:ward_privacy_curtain_1
+  verb: at
+  object: floor:0
+  params: {x: 4.0, y: 15.1, yaw: 0.0}
+- subject: obj:ward_armchair_1
+  verb: at
+  object: floor:0
+  params: {x: 2.2, y: 13.5, yaw: 1.57079}
+- subject: obj:ward_biohazard_container_1
+  verb: at
+  object: floor:0
+  params: {x: 4.9, y: 12.4, yaw: 0.0}
+- subject: obj:ward_bed_2
+  verb: at
+  object: floor:0
+  params: {x: 4.0, y: 19.6, yaw: 0.0}
+- subject: obj:ward_bedside_table_2
+  verb: at
+  object: floor:0
+  params: {x: 4.9, y: 20.4, yaw: 1.57079}
+- subject: obj:ward_iv_stand_2
+  verb: at
+  object: floor:0
+  params: {x: 2.8, y: 20.5, yaw: 0.0}
+- subject: obj:ward_vital_signal_2
+  verb: at
+  object: floor:0
+  params: {x: 4.9, y: 19.4, yaw: -1.57079}
+- subject: obj:ward_privacy_curtain_2
+  verb: at
+  object: floor:0
+  params: {x: 4.0, y: 21.1, yaw: 0.0}
+- subject: obj:ward_armchair_2
+  verb: at
+  object: floor:0
+  params: {x: 2.2, y: 19.5, yaw: 1.57079}
+- subject: obj:ward_biohazard_container_2
+  verb: at
+  object: floor:0
+  params: {x: 4.9, y: 18.4, yaw: 0.0}
+- subject: obj:ward_SM_MedicalCabinet_01a_1
+  verb: at
+  object: floor:0
+  params: {x: 0.8, y: 24.0, yaw: 1.57079}
+- subject: obj:ward_SM_MedicalCabinet_01a_2
+  verb: at
+  object: floor:0
+  params: {x: 0.8, y: 1.2, yaw: 1.57079}
+- subject: obj:ward_wheelchair_1
+  verb: at
+  object: floor:0
+  params: {x: 0.7, y: 18.2, yaw: 0.0}
+- subject: obj:ward_wheelchair_2
+  verb: at
+  object: floor:0
+  params: {x: 0.7, y: 17.4, yaw: 0.0}
+- subject: obj:ward_trashcan_1
+  verb: at
+  object: floor:0
+  params: {x: 7.7, y: 10.3, yaw: 0.0}
+- subject: obj:pharmacy_desk_1
+  verb: at
+  object: floor:0
+  params: {x: 4.0, y: 28.0, yaw: 0.0}
+- subject: obj:pharmacy_chair_1
+  verb: at
+  object: floor:0
+  params: {x: 5.1, y: 26.6, yaw: 0.0}
+- subject: obj:pharmacy_shelf_1
+  verb: at
+  object: floor:0
+  params: {x: 0.25, y: 26.55, yaw: 1.57079}
+- subject: obj:pharmacy_shelf_2
+  verb: at
+  object: floor:0
+  params: {x: 0.25, y: 28.5, yaw: 1.57079}
+- subject: obj:pharmacy_shelf_3
+  verb: at
+  object: floor:0
+  params: {x: 3.4, y: 25.4, yaw: 3.14159}
+- subject: obj:pharmacy_shelf_4
+  verb: at
+  object: floor:0
+  params: {x: 1.4, y: 25.4, yaw: 3.14159}
+- subject: obj:pharmacy_refrigerated_unit_1
+  verb: at
+  object: floor:0
+  params: {x: 3.2, y: 29.6, yaw: 0.0}
+- subject: obj:pharmacy_SM_MedicalCabinet_01a_1
+  verb: at
+  object: floor:0
+  params: {x: 0.8, y: 29.4, yaw: 0.0}
+- subject: obj:pharmacy_SM_MedicalCabinet_01a_2
+  verb: at
+  object: floor:0
+  params: {x: 1.7, y: 29.4, yaw: 0.0}
+- subject: obj:pharmacy_med_shelf_1
+  verb: at
+  object: floor:0
+  params: {x: 4.3, y: 29.6, yaw: 0.0}
+- subject: obj:pharmacy_med_shelf_2
+  verb: at
+  object: floor:0
+  params: {x: 5.25, y: 29.6, yaw: 0.0}
+- subject: obj:pharmacy_supply_cart_1
+  verb: at
+  object: floor:0
+  params: {x: 1.3, y: 28.8, yaw: 0.0}
+- subject: obj:pharmacy_biohazard_container_1
+  verb: at
+  object: floor:0
+  params: {x: 7.3, y: 29.8, yaw: 0.0}
+- subject: obj:pharmacy_trashcan_1
+  verb: at
+  object: floor:0
+  params: {x: 7.7, y: 29.8, yaw: 0.0}
+- subject: obj:nurse_resting_bed_1
+  verb: at
+  object: floor:0
+  params: {x: 13.1, y: 1.7, yaw: 1.57079}
+- subject: obj:nurse_resting_bed_2
+  verb: at
+  object: floor:0
+  params: {x: 13.1, y: 3.4, yaw: 1.57079}
+- subject: obj:nurse_resting_desk_1
+  verb: at
+  object: floor:0
+  params: {x: 17.3, y: 3.3, yaw: 1.57079}
+- subject: obj:nurse_resting_desk_chair_1
+  verb: at
+  object: floor:0
+  params: {x: 17.9, y: 3.1, yaw: -1.57079}
+- subject: obj:nurse_resting_desk_2
+  verb: at
+  object: floor:0
+  params: {x: 17.3, y: 5.2, yaw: 1.57079}
+- subject: obj:nurse_resting_desk_chair_2
+  verb: at
+  object: floor:0
+  params: {x: 17.9, y: 5.0, yaw: -1.57079}
+- subject: obj:nurse_resting_chair_1
+  verb: at
+  object: floor:0
+  params: {x: 12.4, y: 6.0, yaw: 1.57079}
+- subject: obj:nurse_resting_chair_2
+  verb: at
+  object: floor:0
+  params: {x: 12.4, y: 8.4, yaw: 1.57079}
+- subject: obj:nurse_resting_chair_3
+  verb: at
+  object: floor:0
+  params: {x: 18.1, y: 8.4, yaw: -1.57079}
+- subject: obj:nurse_resting_sidetable_1
+  verb: at
+  object: floor:0
+  params: {x: 13.4, y: 6.0, yaw: 1.57079}
+- subject: obj:nurse_resting_sidetable_2
+  verb: at
+  object: floor:0
+  params: {x: 13.4, y: 8.4, yaw: 1.57079}
+- subject: obj:nurse_resting_sidetable_3
+  verb: at
+  object: floor:0
+  params: {x: 17.1, y: 8.4, yaw: -1.57079}
+- subject: obj:nurse_resting_cabinet_1
+  verb: at
+  object: floor:0
+  params: {x: 18.4, y: 0.6, yaw: 3.14159}
+- subject: obj:nurse_resting_cabinet_2
+  verb: at
+  object: floor:0
+  params: {x: 17.5, y: 0.6, yaw: 3.14159}
+- subject: obj:nurse_resting_cabinet_3
+  verb: at
+  object: floor:0
+  params: {x: 16.6, y: 0.6, yaw: 3.14159}
+- subject: obj:nurse_resting_cabinet_4
+  verb: at
+  object: floor:0
+  params: {x: 15.7, y: 0.6, yaw: 3.14159}
+- subject: obj:waiting_sofa_3
+  verb: at
+  object: floor:0
+  params: {x: 20.3, y: 8.5, yaw: 3.14159}
+- subject: obj:waiting_sofa_4
+  verb: at
+  object: floor:0
+  params: {x: 23.4, y: 8.5, yaw: 3.14159}
+- subject: obj:waiting_chair_8
+  verb: at
+  object: floor:0
+  params: {x: 20.3, y: 6.0, yaw: 3.14159}
+- subject: obj:waiting_chair_9
+  verb: at
+  object: floor:0
+  params: {x: 20.3, y: 5.2, yaw: 0.0}
+- subject: obj:waiting_chair_10
+  verb: at
+  object: floor:0
+  params: {x: 23.2, y: 6.0, yaw: 3.14159}
+- subject: obj:waiting_chair_11
+  verb: at
+  object: floor:0
+  params: {x: 23.2, y: 5.2, yaw: 0.0}
+- subject: obj:waiting_bench_3
+  verb: at
+  object: floor:0
+  params: {x: 20.1, y: 3.5, yaw: 3.14159}
+- subject: obj:waiting_bench_4
+  verb: at
+  object: floor:0
+  params: {x: 23.5, y: 3.5, yaw: 3.14159}
+- subject: obj:waiting_side_table_1
+  verb: at
+  object: floor:0
+  params: {x: 19.6, y: 4.2, yaw: 0.0}
+- subject: obj:waiting_side_table_2
+  verb: at
+  object: floor:0
+  params: {x: 20.6, y: 4.2, yaw: 0.0}
+- subject: obj:waiting_side_table_3
+  verb: at
+  object: floor:0
+  params: {x: 23.0, y: 4.2, yaw: 0.0}
+- subject: obj:waiting_side_table_4
+  verb: at
+  object: floor:0
+  params: {x: 24.0, y: 4.2, yaw: 0.0}
+- subject: obj:waiting_trashcan_2
+  verb: at
+  object: floor:0
+  params: {x: 24.6, y: 0.3, yaw: 0.0}
+- subject: obj:waiting_mop_set_2
+  verb: at
+  object: floor:0
+  params: {x: 24.7, y: 0.7, yaw: 0.0}
+- subject: obj:or_operating_table_1
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 19.0, yaw: 0.0}
+- subject: obj:or_surgical_table_1
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 15.5, yaw: 0.0}
+- subject: obj:or_anesthesia_machine_1
+  verb: at
+  object: floor:0
+  params: {x: 14.2, y: 19.0, yaw: 1.57079}
+- subject: obj:or_instrument_table_1
+  verb: at
+  object: floor:0
+  params: {x: 15.8, y: 17.7, yaw: -1.57079}
+- subject: obj:or_surgical_tray_1
+  verb: at
+  object: floor:0
+  params: {x: 15.8, y: 17.7, yaw: 0.0}
+- subject: obj:or_vital_monitor_1
+  verb: at
+  object: floor:0
+  params: {x: 15.8, y: 19.0, yaw: -1.57079}
+- subject: obj:or_defibrillator_1
+  verb: at
+  object: floor:0
+  params: {x: 15.8, y: 17.6, yaw: 0.0}
+- subject: obj:or_ventilator_1
+  verb: at
+  object: floor:0
+  params: {x: 14.2, y: 15.35, yaw: 1.57079}
+- subject: obj:or_SM_MedicalCabinet_01a_1
+  verb: at
+  object: floor:0
+  params: {x: 12.7, y: 20.7, yaw: 1.57079}
+- subject: obj:or_supply_cabinet_1
+  verb: at
+  object: floor:0
+  params: {x: 17.05, y: 21.0, yaw: -1.57079}
+- subject: obj:or_biohazard_container_1
+  verb: at
+  object: floor:0
+  params: {x: 17.7, y: 13.7, yaw: 0.0}
+- subject: obj:or_trashcan_1
+  verb: at
+  object: floor:0
+  params: {x: 17.7, y: 13.3, yaw: 0.0}
+- subject: obj:lab_bench_1
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 26.65, yaw: 0.0}
+- subject: obj:lab_bench_2
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 28.65, yaw: 0.0}
+- subject: obj:lab_microscope_1
+  verb: at
+  object: floor:0
+  params: {x: 14.4, y: 26.4, yaw: 0.0}
+- subject: obj:lab_microscope_2
+  verb: at
+  object: floor:0
+  params: {x: 14.4, y: 28.4, yaw: 0.0}
+- subject: obj:lab_stool_1
+  verb: at
+  object: floor:0
+  params: {x: 14.5, y: 25.9, yaw: 3.14159}
+- subject: obj:lab_stool_2
+  verb: at
+  object: floor:0
+  params: {x: 14.5, y: 27.9, yaw: 3.14159}
+- subject: obj:lab_stool_3
+  verb: at
+  object: floor:0
+  params: {x: 15.5, y: 25.9, yaw: 3.14159}
+- subject: obj:lab_SM_MedicalCabinet_01a_1
+  verb: at
+  object: floor:0
+  params: {x: 12.7, y: 29.2, yaw: 1.57079}
+- subject: obj:lab_refrigerated_unit_1
+  verb: at
+  object: floor:0
+  params: {x: 17.5, y: 29.65, yaw: -1.573185}
+- subject: obj:lab_shelf_1
+  verb: at
+  object: floor:0
+  params: {x: 12.5, y: 28.5, yaw: 1.57079}
+- subject: obj:lab_shelf_2
+  verb: at
+  object: floor:0
+  params: {x: 17.5, y: 28.5, yaw: -1.573185}
+- subject: obj:lab_shelf_set_1
+  verb: at
+  object: floor:0
+  params: {x: 12.5, y: 24.0, yaw: 1.57079}
+- subject: obj:lab_shelf_set_2
+  verb: at
+  object: floor:0
+  params: {x: 17.5, y: 24.0, yaw: -1.57079}
+- subject: obj:lab_biohazard_container_1
+  verb: at
+  object: floor:0
+  params: {x: 16.0, y: 26.5, yaw: 0.0}
+- subject: obj:lab_biohazard_container_2
+  verb: at
+  object: floor:0
+  params: {x: 16.0, y: 28.5, yaw: 0.0}
+- subject: obj:lab_autoclave_1
+  verb: at
+  object: floor:0
+  params: {x: 17.5, y: 27.5, yaw: -1.57079}
+- subject: obj:lab_trashcan_1
+  verb: at
+  object: floor:0
+  params: {x: 16.0, y: 26.1, yaw: 0.0}
+- subject: obj:lab_trashcan_2
+  verb: at
+  object: floor:0
+  params: {x: 16.0, y: 28.1, yaw: 0.0}
+- subject: obj:wc_pharmacy_washbasin_1
+  verb: at
+  object: floor:0
+  params: {x: 4.6, y: 34.2, yaw: -1.57079}
+- subject: obj:wc_pharmacy_washbasin_2
+  verb: at
+  object: floor:0
+  params: {x: 5.6, y: 34.2, yaw: -1.57079}
+- subject: obj:wc_pharmacy_washbasin_3
+  verb: at
+  object: floor:0
+  params: {x: 6.6, y: 34.2, yaw: -1.57079}
+- subject: obj:wc_pharmacy_washbasin_4
+  verb: at
+  object: floor:0
+  params: {x: 4.6, y: 30.2, yaw: 1.57079}
+- subject: obj:wc_pharmacy_washbasin_5
+  verb: at
+  object: floor:0
+  params: {x: 5.6, y: 30.2, yaw: 1.57079}
+- subject: obj:wc_pharmacy_washbasin_6
+  verb: at
+  object: floor:0
+  params: {x: 6.6, y: 30.2, yaw: 1.57079}
+- subject: obj:wc_pharmacy_toilet_1
+  verb: at
+  object: floor:0
+  params: {x: 0.5, y: 30.85, yaw: 0.0}
+- subject: obj:wc_pharmacy_toilet_paper_1
+  verb: at
+  object: floor:0
+  params: {x: 0.5, y: 31.4, yaw: 0.0}
+- subject: obj:wc_pharmacy_toilet_2
+  verb: at
+  object: floor:0
+  params: {x: 0.5, y: 32.15, yaw: 0.0}
+- subject: obj:wc_pharmacy_toilet_paper_2
+  verb: at
+  object: floor:0
+  params: {x: 0.5, y: 32.7, yaw: 0.0}
+- subject: obj:wc_pharmacy_toilet_3
+  verb: at
+  object: floor:0
+  params: {x: 0.5, y: 33.5, yaw: 0.0}
+- subject: obj:wc_pharmacy_toilet_paper_3
+  verb: at
+  object: floor:0
+  params: {x: 0.5, y: 34.1, yaw: 0.0}
+- subject: obj:wc_waiting_washbasin_1
+  verb: at
+  object: floor:0
+  params: {x: 21.5, y: 13.8, yaw: 0.0}
+- subject: obj:wc_waiting_washbasin_2
+  verb: at
+  object: floor:0
+  params: {x: 21.5, y: 15.1, yaw: 0.0}
+- subject: obj:wc_waiting_washbasin_3
+  verb: at
+  object: floor:0
+  params: {x: 21.5, y: 16.4, yaw: 0.0}
+- subject: obj:wc_waiting_toilet_1
+  verb: at
+  object: floor:0
+  params: {x: 18.08, y: 13.75, yaw: 0.0}
+- subject: obj:wc_waiting_toilet_paper_1
+  verb: at
+  object: floor:0
+  params: {x: 18.1, y: 13.75, yaw: 0.0}
+- subject: obj:wc_waiting_toilet_2
+  verb: at
+  object: floor:0
+  params: {x: 18.08, y: 15.1, yaw: 0.0}
+- subject: obj:wc_waiting_toilet_paper_2
+  verb: at
+  object: floor:0
+  params: {x: 18.1, y: 15.1, yaw: 0.0}
+- subject: obj:wc_waiting_toilet_3
+  verb: at
+  object: floor:0
+  params: {x: 18.08, y: 16.42, yaw: 0.0}
+- subject: obj:wc_waiting_toilet_paper_3
+  verb: at
+  object: floor:0
+  params: {x: 18.1, y: 16.42, yaw: 0.0}
+- subject: obj:doctors_resting_room_bed_1
+  verb: at
+  object: floor:0
+  params: {x: 17.5, y: 31.4, yaw: 3.14159}
+- subject: obj:doctors_resting_room_desk_1
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 31.0, yaw: 0.0}
+- subject: obj:doctors_resting_room_desk_chair_1
+  verb: at
+  object: floor:0
+  params: {x: 14.6, y: 30.5, yaw: 3.14159}
+- subject: obj:doctors_resting_room_sidetable_1
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 33.0, yaw: 0.0}
+- subject: obj:doctors_resting_room_cabinet_1
+  verb: at
+  object: floor:0
+  params: {x: 17.1, y: 33.6, yaw: 0.0}
+- subject: obj:doctors_resting_room_chair_1
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 33.8, yaw: 0.0}
+- subject: obj:reception_desk
+  verb: at
+  object: floor:0
+  params: {x: 2.1583, y: 1.5538, yaw: 0.0, pose_ref: reception}
+- subject: obj:reception_desk
+  verb: serves
+  object: service:desk
+  params: {capacity: 3, interaction_radius: 1.0}
+- subject: obj:reception_desk
+  verb: has_formation
+  object: formation:line
+  params: {base_step: 0.8, front_offset: 0.6}
+- subject: obj:gathering_area
+  verb: at
+  object: floor:0
+  params: {x: 15.0, y: 6.0, yaw: 0.0}
+- subject: obj:gathering_area
+  verb: serves
+  object: service:gathering_area
+  params: {capacity: 0}
+- subject: obj:gathering_area
+  verb: has_formation
+  object: formation:f_formation
+  params: {base_radius: 0.8, radius_per_member: 0.12, anchor_kind: object, anchor_ref: gathering_area}
+- subject: obj:fountain
+  verb: at
+  object: floor:0
+  params: {x: 11.0, y: 10.0, yaw: 1.57}
+- subject: obj:fountain
+  verb: serves
+  object: service:fountain
+  params: {capacity: 1}
+- subject: obj:fountain
+  verb: satisfies
+  object: need:thirst
+  params: {amount: 100.0}
+- subject: obj:fountain
+  verb: has_formation
+  object: formation:line
+  params: {base_step: 1.0, front_offset: 0.8}
+- subject: obj:fountain
+  verb: dwells
+  object: 5.0
+  params: {std: 1.5, clip_low: 4.0, clip_high: 6.0, from: colleague.yaml#drink.queue_and_drink}
+- subject: obj:exam_chair_1
+  verb: at
+  object: floor:0
+  params: {x: 2.1918, y: 5.4862, yaw: 0.0, pose_ref: exam_room_1}
+- subject: obj:exam_chair_1
+  verb: serves
+  object: service:chair
+  params: {capacity: 1, interaction_radius: 0.8}
+- subject: obj:patient_bed_1
+  verb: at
+  object: floor:0
+  params: {x: 2.164, y: 21.0032, yaw: 0.0, pose_ref: patient_ward}
+- subject: obj:patient_bed_1
+  verb: serves
+  object: service:patient_bed
+  params: {capacity: 1, interaction_radius: 1.2}
+constraints: []

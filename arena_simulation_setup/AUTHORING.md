@@ -340,6 +340,10 @@ facts:
   `params: {by: llm, ...}` marks a model's proposal that a human has not
   reviewed, see
   [generative/scenario](src/arena_simulation_setup/generative/scenario/README.md#zone-roles).
+- What each object is for (its demand: service, needs, formation, dwell)
+  is package `flow@1`, kept in a separate FLOWEDIT `flowgraph.yaml`, never in
+  `kg.yaml`. It copies each object's `model` and pose from `world.yaml`, see
+  [generative/flowedit](src/arena_simulation_setup/generative/flowedit/README.md).
 - Nothing in the KG drives the runtime. Mechanism semantics (presets,
   `light_on`, `recall_on`, zone states) stay in `world.yaml`.
 

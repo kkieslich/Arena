@@ -1,0 +1,39 @@
+# Package "flow": what each object is for (its demand), the FLOWEDIT graph, loaded on demand
+name = "flow"
+version = 1
+requires = ["core"]
+
+[nodes.service]
+props = []
+auto = true
+propless = true
+
+[nodes.need]
+props = []
+auto = true
+propless = true
+
+[nodes.formation]
+props = []
+auto = true
+propless = true
+
+[verbs.at]
+from = ["obj"]
+to = ["floor"]
+
+[verbs.serves]
+from = ["obj"]
+to = ["service"]
+
+[verbs.satisfies]
+from = ["obj"]
+to = ["need"]
+
+[verbs.has_formation]
+from = ["obj"]
+to = ["formation"]
+
+[verbs.dwells]
+from = ["obj"]
+to = "literal"

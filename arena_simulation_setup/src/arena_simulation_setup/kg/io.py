@@ -141,7 +141,11 @@ def dump(scene: Scene) -> dict[str, Any]:
     return {"format": FORMAT, "uses": scene.uses, "entities": entities, "facts": facts, "constraints": constraints}
 
 
+def dumps(scene: Scene) -> str:
+    """`scene` as KG YAML text."""
+    return yaml.safe_dump(dump(scene), sort_keys=False, default_flow_style=None, width=1 << 16)
+
+
 def write(scene: Scene, path: str | os.PathLike[str]) -> None:
     """Write `scene` as YAML to `path`."""
-    with Path(path).open("w") as f:
-        yaml.safe_dump(dump(scene), f, sort_keys=False, default_flow_style=None, width=1 << 16)
+    Path(path).write_text(dumps(scene))
