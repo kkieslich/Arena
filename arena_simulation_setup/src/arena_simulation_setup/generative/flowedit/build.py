@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from arena_simulation_setup.tree.World.model import World
 
 USES = ("core@2", PACKAGE, "flow@1")
+ACCESS_VERBS = ("gated", "authorizes", "unlocks_on", "asserts", "window")
 Duration = float | Mapping[str, float]
 
 
@@ -135,6 +136,46 @@ def _add_demand(scene: Scene, obj: str, block: Mapping[str, Any], dwell: tuple[D
             scene.add_fact(obj, "dwells", float(duration), {"from": origin})
 
 
+def presets(semantics: list[Any], preset: str) -> list[dict[str, Any]]:
+    """The `params` of every `preset` item `semantics` was authored with."""
+    from arena_simulation_setup.shared.semantics import authored_semantics
+
+    return [dict(item.get("params") or {}) for item in authored_semantics(semantics) if item.get("preset") == preset]
+
+
+def sync_access(scene: Scene, world: World, notes: list[str] | None = None) -> None:
+    """Replace the access facts of `scene` with the gates on the world's doors and its schedules."""
+    notes = notes if notes is not None else []
+    for fact in [f for f in scene.facts if f.verb in ACCESS_VERBS]:
+        scene.remove_fact(fact.subject, fact.verb, fact.object, fact.params)
+    schedules = {f"schedule:{s.name}" for s in world.schedules}
+    for id in [id for id in scene.entities if id.startswith("schedule:") and id not in schedules]:
+        scene.remove_entity(id)
+    for level in world.levels.values():
+        for door in level.doors:
+            for gate in presets(door.semantics, "gate"):
+                ref = f"door:{door.name}"
+                scene.add_entity(ref)
+                scene.add_fact(ref, "gated", bool(gate.get("locked", True)))
+                for name in gate.get("authorized") or []:
+                    scene.add_fact(ref, "authorizes", str(name))
+                if gate.get("unlock_on"):
+                    scene.add_fact(ref, "unlocks_on", f"regime:{gate['unlock_on']}")
+    for schedule in world.schedules:
+        for params in presets(schedule.semantics, "schedule"):
+            ref = f"schedule:{schedule.name}"
+            scene.add_entity(ref)
+            if not params.get("regime"):
+                notes.append(f"{ref}: a schedule without a regime asserts nothing, left out")
+                continue
+            scene.add_fact(ref, "asserts", f"regime:{params['regime']}", {"default": params["default"]} if params.get("default") is not None else {})
+            for window in params.get("windows") or []:
+                scene.add_fact(ref, "window", float(window["start"]), {"end": float(window["end"]), **({"value": window["value"]} if window.get("value") is not None else {})})
+    used = {str(f.object) for f in scene.facts}
+    for id in [id for id in scene.entities if id.startswith("regime:") and id not in used]:
+        scene.remove_entity(id)
+
+
 def build(root: Path, scenario: Path | None = None, seed: int = 0, notes: list[str] | None = None) -> Scene:
     """The FLOWEDIT graph of the world at `root` and `scenario`, what it leaves out appended to `notes`."""
     from arena_simulation_setup.tree.World.write import ANGLE_DECIMALS, POSITION_DECIMALS, short_identifier
@@ -167,6 +208,7 @@ def build(root: Path, scenario: Path | None = None, seed: int = 0, notes: list[s
             dwell = _dwell(o.name, o.humansim.get("type"), steps, notes)
             if o.humansim or dwell is not None:
                 _add_demand(scene, obj, o.humansim, dwell, notes)
+    sync_access(scene, world, notes)
     problems = scene.validate()
     if problems:
         raise ValueError("; ".join(problems))

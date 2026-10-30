@@ -349,6 +349,8 @@ entities:
 - {id: 'need:thirst'}
 - {id: 'service:chair'}
 - {id: 'service:patient_bed'}
+- {id: 'schedule:fire_alarm'}
+- {id: 'regime:alarm'}
 facts:
 - {subject: 'room:patient_ward', verb: contains, object: 'obj:ward_SM_MedicalCabinet_01a_2'}
 - {subject: 'floor:0', verb: contains, object: 'room:central_hallway', source: derived}
@@ -1281,4 +1283,5 @@ facts:
   verb: serves
   object: service:patient_bed
   params: {capacity: 1, interaction_radius: 1.2}
+- {subject: 'schedule:fire_alarm', verb: asserts, object: 'regime:alarm'}
 constraints: []
