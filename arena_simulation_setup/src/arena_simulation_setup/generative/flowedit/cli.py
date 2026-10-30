@@ -6,6 +6,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -13,9 +14,7 @@ from arena_simulation_setup.kg import dumps, write
 
 from ..scenario.cli import world_root
 from .build import build
-from .edit import GRAPH, OPERATIONS, apply, dump_edits, open_site, save
-
-FILE = GRAPH
+from .edit import GRAPH, EditType, apply, dump_edits, open_site, save
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
@@ -30,13 +29,13 @@ def _cmd_build(args: argparse.Namespace) -> int:
     if not args.write:
         print(dumps(scene), end="")
         return 0
-    out = args.out or (scenario.parent if scenario is not None else root) / FILE
+    out = args.out or (scenario.parent if scenario is not None else root) / GRAPH
     write(scene, out)
     print(f"wrote {out}")
     return 0
 
 
-def _param(text: str) -> tuple[list[str], object]:
+def _param(text: str) -> tuple[list[str], Any]:
     """`<key>[.<key>...]=<YAML value>`, the dotted key split."""
     key, sep, value = text.partition("=")
     if not sep or not key:
@@ -44,14 +43,16 @@ def _param(text: str) -> tuple[list[str], object]:
     return key.split("."), yaml.safe_load(value)
 
 
-def _params(pairs: list[tuple[list[str], object]]) -> dict[str, object]:
-    params: dict[str, object] = {}
+def _params(pairs: list[tuple[list[str], Any]]) -> dict[str, Any]:
+    """The `-p` pairs as one params mapping, dotted keys nested."""
+    params: dict[str, Any] = {}
     for keys, value in pairs:
         node = params
         for key in keys[:-1]:
-            node = node.setdefault(key, {})  # type: ignore[assignment]
-            if not isinstance(node, dict):
+            child = node.setdefault(key, {})
+            if not isinstance(child, dict):
                 raise ValueError(f"param {'.'.join(keys)}: {key!r} is already a value")
+            node = child
         node[keys[-1]] = value
     return params
 
@@ -77,16 +78,16 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
     p.add_argument("--seed", type=int, default=0, help="seed of the point drawn for an object posed at a zone name (default 0)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds)")
-    p.add_argument("--out", type=Path, default=None, help=f"file to write (default: {FILE} next to the scenario.yaml, or in the world without a scenario)")
+    p.add_argument("--out", type=Path, default=None, help=f"file to write (default: {GRAPH} next to the scenario.yaml, or in the world without a scenario)")
     p.add_argument("--write", action="store_true", help="write the graph (default: print it)")
     p.set_defaults(fn=_cmd_build)
     p = verbs.add_parser("edit", help="apply one edit and save the edited world", description="apply one edit to a world's graph and geometry, a dry run that prints the edit record without --write, which saves the world as <base>__<edit id> under $ARENA_ASSETS_DIR_LOCAL/worlds")
     p.add_argument("world", help="the world to edit, shipped or saved by an earlier edit")
-    p.add_argument("type", choices=list(OPERATIONS), help="the edit type")
+    p.add_argument("type", type=EditType, choices=list(EditType), help="the edit type")
     p.add_argument("target", help="what it changes: obj:<name>, door:<name>, schedule:<name>, wall:<level>[/<index>]")
     p.add_argument("-p", "--param", type=_param, action="append", default=[], metavar="KEY=VALUE", help="an edit param, VALUE read as YAML, KEY dotted for nesting (satisfies.thirst=80); repeatable")
     p.add_argument("--scenario", default=None, help="the scenario whose objects join the graph of an unedited world (default: world objects only)")
-    p.add_argument("--seed", type=int, default=0, help="seed of the point drawn for an object posed at a zone name (default 0)")
+    p.add_argument("--seed", type=int, default=None, help="seed of the point drawn for an object posed at a zone name (default 0, or the seed an edited world was built with)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds, then the resolvers)")
     p.add_argument("--write", action="store_true", help="save the edited world (default: print the edit)")
     p.set_defaults(fn=_cmd_edit)

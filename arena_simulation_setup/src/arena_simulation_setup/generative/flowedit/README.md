@@ -16,11 +16,11 @@ kg.yaml (room purposes, read)  --+
 flowedit build hospital_1 queue --write
 ```
 
-`flowedit edit <world> <type> <target> [-p KEY=VALUE ...] [--scenario <scenario>]` applies one [edit](#edits). A dry run prints the edit record and the world name, `--write` saves the world. `-p` reads VALUE as YAML and nests dotted keys (`-p satisfies.thirst=80`). An edited world is edited again by its name; its scenario comes from its `edits.yaml`.
+`flowedit edit <world> <type> <target> [-p KEY=VALUE ...] [--scenario <scenario>]` applies one [edit](#edits). A dry run prints the edit record and the world name, `--write` saves the world. `-p` reads VALUE as YAML and nests dotted keys (`-p satisfies.thirst=80`). An edited world is edited again by its name; its scenario and seed come from its `edits.yaml`.
 
 ```bash
 flowedit edit hospital_1 move obj:fountain --scenario queue -p x=15 -p y=11.5 --write
-flowedit edit hospital_1__a9f8ee8a layout door:or_door -p op=remove --write
+flowedit edit hospital_1__b6b7b494 layout door:or_door -p op=remove --write
 ```
 
 ## Graph
@@ -67,7 +67,7 @@ Load and save it with `arena_simulation_setup.kg.load` and `write`.
 - **Walls:** only `walls:` paths count. Walls from a zone's `walls: outline` are not addressable.
 - **Checks** stay basic: unknown target, taken name, door off a wall, then `World.validate` and the graph's vocabulary. Rules about rooms or overlap belong to the edit generator.
 
-`save` writes the world to the writable local root (`$ARENA_ASSETS_DIR_LOCAL/worlds`, see [worlds/README.md](../../../../worlds/README.md#how-worldidentifier-resolves-a-name)) as `<base>__<id>`. `<id>` is a hash of the last edit's record, which names its parent world, so it also names the whole chain. The save copies the source world's `assets/`, and writes `flowgraph.yaml` and `edits.yaml` next to `world.yaml`. The scenarios are not copied.
+`save` writes the world to the writable local root (`$ARENA_ASSETS_DIR_LOCAL/worlds`, see [worlds/README.md](../../../../worlds/README.md#how-worldidentifier-resolves-a-name)) as `<base>__<id>`. `<id>` is a hash of the last edit's record, with ints read as floats. The record names its parent world, so the hash also names the whole chain. The save copies the source world's `assets/`, and writes `flowgraph.yaml` and `edits.yaml` next to `world.yaml`. The scenarios are not copied.
 
 ```yaml
 format: flowedit-edits/1
@@ -75,8 +75,8 @@ base: hospital_1
 scenario: queue
 seed: 0
 edits:
-- {id: a9f8ee8a, parent: hospital_1, type: move, target: 'obj:fountain', params: {x: 15, y: 11.5}}
-- {id: d1fe1a64, parent: hospital_1__a9f8ee8a, type: layout, target: 'door:or_door', params: {op: remove}}
+- {id: b6b7b494, parent: hospital_1, type: move, target: 'obj:fountain', params: {x: 15, y: 11.5}}
+- {id: b9f2feba, parent: hospital_1__b6b7b494, type: layout, target: 'door:or_door', params: {op: remove}}
 ```
 
 ## Files

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import copy
+import enum
 import hashlib
 import json
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,13 +15,17 @@ import attrs
 import yaml
 
 from arena_simulation_setup.kg import Scene, load, write
-from arena_simulation_setup.kg.scene import DERIVED
+from arena_simulation_setup.kg.scene import DERIVED, kind_of
 from arena_simulation_setup.utils.geometry import Orientation, Pose, Position
 
-from .build import build, sync_access
+from .build import build, presets, sync_access, zones_at
 
 if TYPE_CHECKING:
-    from arena_simulation_setup.shared.entities import Obstacle
+    import shapely
+
+    from arena_simulation_setup.shared.entities import Named, Obstacle
+    from arena_simulation_setup.shared.walls import Wall
+    from arena_simulation_setup.shared.world import Door
     from arena_simulation_setup.tree.World.model import Level, World
 
 FORMAT = "flowedit-edits/1"
@@ -35,11 +40,37 @@ WALL_FIELDS = ("closed", "kind", "material")
 _ON_WALL_M = 0.05
 
 
+class EditType(enum.StrEnum):
+    MOVE = "move"
+    INSERT = "insert"
+    REMOVE = "remove"
+    FUNCTION = "function"
+    ACCESS = "access"
+    LAYOUT = "layout"
+
+
+class LayoutOp(enum.StrEnum):
+    ADD = "add"
+    MOVE = "move"
+    REMOVE = "remove"
+
+
+def _as_floats(value: Any) -> Any:  # noqa: ANN401 - YAML input
+    """`value` with every int a float, so `15` and `15.0` hash alike."""
+    if isinstance(value, Mapping):
+        return {k: _as_floats(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_as_floats(v) for v in value]
+    if isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    return value
+
+
 @attrs.frozen
 class Edit:
     """One edit: its `type`, the `target` id it changes, its `params`, and the world it was applied to."""
 
-    type: str
+    type: EditType = attrs.field(converter=EditType)
     target: str
     params: Mapping[str, Any]
     parent: str
@@ -47,11 +78,11 @@ class Edit:
     @property
     def id(self) -> str:
         """Short hash of the whole record, the parent included, so it also names the chain."""
-        record = json.dumps({"parent": self.parent, "type": self.type, "target": self.target, "params": self.params}, sort_keys=True)
+        record = json.dumps(_as_floats({"parent": self.parent, "type": self.type, "target": self.target, "params": self.params}), sort_keys=True)
         return hashlib.sha256(record.encode()).hexdigest()[:ID_LENGTH]
 
     def dump(self) -> dict[str, Any]:
-        return {"id": self.id, "parent": self.parent, "type": self.type, "target": self.target, "params": dict(self.params)}
+        return {"id": self.id, "parent": self.parent, "type": self.type.value, "target": self.target, "params": dict(self.params)}
 
 
 @attrs.define
@@ -82,7 +113,7 @@ def _load_world(root: Path) -> World:
     return world
 
 
-def open_site(root: Path, scenario: str | None = None, seed: int = 0, notes: list[str] | None = None) -> Site:
+def open_site(root: Path, scenario: str | None = None, seed: int | None = None, notes: list[str] | None = None) -> Site:
     """The site of the world at `root`: an edited world from its `edits.yaml` and graph, else the graph `build` makes of it and `scenario`."""
     if (root / EDITS).is_file():
         doc = yaml.safe_load((root / EDITS).read_text()) or {}
@@ -90,11 +121,15 @@ def open_site(root: Path, scenario: str | None = None, seed: int = 0, notes: lis
             raise ValueError(f"{root / EDITS}: format: expected {FORMAT!r}, got {doc.get('format')!r}")
         if scenario is not None and scenario != doc.get("scenario"):
             raise ValueError(f"{root.name} was edited from scenario {doc.get('scenario')!r}, not {scenario!r}")
+        saved_seed = int(doc.get("seed", 0))
+        if seed is not None and seed != saved_seed:
+            raise ValueError(f"{root.name} was edited with seed {saved_seed}, not {seed}")
         edits = [Edit(type=e["type"], target=e["target"], params=e.get("params") or {}, parent=e["parent"]) for e in doc.get("edits") or []]
-        return Site(_load_world(root), load(root / GRAPH), root, str(doc["base"]), doc.get("scenario"), int(doc.get("seed", 0)), edits)
+        return Site(_load_world(root), load(root / GRAPH), root, str(doc["base"]), doc.get("scenario"), saved_seed, edits)
     path = root / "scenarios" / scenario / "scenario.yaml" if scenario else None
     if path is not None and not path.is_file():
         raise FileNotFoundError(f"no scenario {scenario!r} at {path}")
+    seed = seed or 0
     return Site(_load_world(root), build(root, path, seed, notes), root, root.name, scenario, seed)
 
 
@@ -104,14 +139,18 @@ def _copy(site: Site) -> Site:
     return attrs.evolve(site, world=copy.deepcopy(site.world), graph=load(dump(site.graph)), edits=list(site.edits))
 
 
-# --- lookups ---
-
-
 def _name(target: str, kind: str) -> str:
-    prefix, sep, name = target.partition(":")
-    if prefix != kind or not sep or not name:
+    if kind_of(target) != kind:
         raise ValueError(f"target {target!r} is not of the form {kind}:<name>")
-    return name
+    return target.partition(":")[2]
+
+
+def _layout_op(params: dict[str, Any]) -> LayoutOp:
+    """Pop the `op` param, `move` by default."""
+    op = params.pop("op", LayoutOp.MOVE)
+    if op not in tuple(LayoutOp):
+        raise ValueError(f"op {op!r} is not one of {', '.join(LayoutOp)}")
+    return LayoutOp(op)
 
 
 def _at(graph: Scene, obj: str) -> tuple[str, dict[str, Any]] | None:
@@ -120,20 +159,21 @@ def _at(graph: Scene, obj: str) -> tuple[str, dict[str, Any]] | None:
     return None if fact is None else (str(fact.object).partition(":")[2], dict(fact.params))
 
 
-def _world_object(world: World, name: str) -> tuple[Level, int] | None:
+def _find(world: World, items: Callable[[Level], Sequence[Named]], name: str) -> tuple[Level, int] | None:
+    """The level and index of the item `name` among `items(level)`."""
     for level in world.levels.values():
-        for i, o in enumerate(level.objects):
-            if o.name == name:
+        for i, item in enumerate(items(level)):
+            if item.name == name:
                 return level, i
     return None
+
+
+def _world_object(world: World, name: str) -> tuple[Level, int] | None:
+    return _find(world, lambda level: level.objects, name)
 
 
 def _door(world: World, name: str) -> tuple[Level, int] | None:
-    for level in world.levels.values():
-        for i, d in enumerate(level.doors):
-            if d.name == name:
-                return level, i
-    return None
+    return _find(world, lambda level: level.doors, name)
 
 
 def _level(world: World, level_id: object) -> Level:
@@ -146,7 +186,7 @@ def _level(world: World, level_id: object) -> Level:
     return world.levels[str(level_id)]
 
 
-def _unknown(params: Mapping[str, Any], allowed: tuple[str, ...]) -> None:
+def _check_params(params: Mapping[str, Any], allowed: tuple[str, ...]) -> None:
     unknown = sorted(set(params) - set(allowed))
     if unknown:
         raise ValueError(f"unknown params {unknown}, expected some of {sorted(allowed)}")
@@ -158,41 +198,35 @@ def _point(value: Any, what: str) -> Position:  # noqa: ANN401 - YAML input
     return Position(float(value[0]), float(value[1]))
 
 
-# --- derived facts ---
-
-
 def _rederive(world: World, graph: Scene) -> None:
     """Recompute `contains` and `connects` of `graph` from the world's geometry and the graph's own object poses."""
-    from arena_simulation_setup.tree.World.membership import _inside, derive
+    from arena_simulation_setup.tree.World.membership import derive
 
     graph.drop_derived()
     derive(attrs.evolve(world, kg=graph))
     world_objects = {f"obj:{o.name}" for level in world.levels.values() for o in level.objects}
     stated = {str(f.object) for f in graph.stated() if f.verb == "contains"}
-    for obj in [id for id in graph.entities if id.startswith("obj:") and id not in world_objects and id not in stated]:
+    for obj in [ref for ref in graph.entities if kind_of(ref) == "obj" and ref not in world_objects and ref not in stated]:
         placed = _at(graph, obj)
         if placed is None or placed[0] not in world.levels:
             continue
         level_id, pose = placed
-        for room in _inside(world.levels[level_id], Position(float(pose["x"]), float(pose["y"]))):
+        for room in zones_at(world.levels[level_id], Position(float(pose["x"]), float(pose["y"]))):
             graph.add_entity(f"room:{room}")
             graph.add_fact(f"room:{room}", "contains", obj, source=DERIVED)
 
 
-# --- operations: each changes `site` in place ---
-
-
 def _move(site: Site, edit: Edit) -> None:
     """Move an object: `x`, `y`, `yaw` (default: unchanged), `level` (default: its own)."""
-    _unknown(edit.params, ("x", "y", "yaw", "level"))
+    _check_params(edit.params, ("x", "y", "yaw", "level"))
     placed = _at(site.graph, edit.target)
     if placed is None:
         raise ValueError(f"{edit.target} is no object of the graph")
-    level_id, pose = placed
-    level_id = str(edit.params.get("level", level_id))
+    old_level_id, pose = placed
+    level_id = str(edit.params.get("level", old_level_id))
     _level(site.world, level_id)
     x, y, yaw = (float(edit.params.get(k, pose[k])) for k in ("x", "y", "yaw"))
-    site.graph.remove_fact(edit.target, "at", f"floor:{placed[0]}")
+    site.graph.remove_fact(edit.target, "at", f"floor:{old_level_id}")
     site.graph.add_fact(edit.target, "at", f"floor:{level_id}", {"x": x, "y": y, "yaw": yaw})
     found = _world_object(site.world, _name(edit.target, "obj"))
     if found is not None:
@@ -233,7 +267,7 @@ def _insert(site: Site, edit: Edit) -> None:
 
 def _remove(site: Site, edit: Edit) -> None:
     """Remove an object, from the graph and the world, with every fact about it."""
-    _unknown(edit.params, ())
+    _check_params(edit.params, ())
     name = _name(edit.target, "obj")
     if edit.target not in site.graph.entities:
         raise ValueError(f"{edit.target} is no object of the graph")
@@ -247,48 +281,69 @@ def _remove(site: Site, edit: Edit) -> None:
     _rederive(site.world, site.graph)
 
 
-def _function(site: Site, edit: Edit) -> None:
-    """Change an object's demand: `type`, `capacity`, `interaction_radius`, `satisfies: {<need>: amount or null}`, `dwell: seconds, {mean, std, clip_low, clip_high} or null`."""
-    _unknown(edit.params, ("type", *SERVICE_KEYS, "satisfies", "dwell"))
-    graph, obj, params = site.graph, edit.target, edit.params
-    if obj not in graph.entities or not obj.startswith("obj:"):
-        raise ValueError(f"{obj} is no object of the graph")
-    found = _world_object(site.world, _name(obj, "obj"))
-    block = dict(found[0].objects[found[1]].humansim) if found is not None else None
+def _set_service(graph: Scene, obj: str, params: Mapping[str, Any], block: dict[str, Any] | None) -> None:
+    """Set the `serves` fact of `obj` from `type`, `capacity` and `interaction_radius`."""
     serves = next((f for f in graph.facts if f.subject == obj and f.verb == "serves"), None)
-    if "type" in params or any(k in params for k in SERVICE_KEYS):
-        if serves is None and "type" not in params:
-            raise ValueError(f"{obj} serves nothing, give it a type")
-        kind = str(params["type"]) if "type" in params else str(serves.object).partition(":")[2]  # type: ignore[union-attr]
-        service = dict(serves.params) if serves is not None else {}
-        service.update({k: params[k] for k in SERVICE_KEYS if k in params})
-        if serves is not None:
-            graph.remove_fact(obj, "serves", serves.object)
-        graph.add_fact(obj, "serves", f"service:{kind}", {k: v for k, v in service.items() if v is not None})
-        if block is not None:
-            block.update({"type": kind, **{k: params[k] for k in SERVICE_KEYS if k in params}})
-    for need, amount in (params.get("satisfies") or {}).items():
+    if serves is not None:
+        kind = str(params.get("type", str(serves.object).partition(":")[2]))
+        service = dict(serves.params)
+        graph.remove_fact(obj, "serves", serves.object)
+    elif "type" in params:
+        kind = str(params["type"])
+        service = {}
+    else:
+        raise ValueError(f"{obj} serves nothing, give it a type")
+    changed = {k: params[k] for k in SERVICE_KEYS if k in params}
+    service.update(changed)
+    graph.add_fact(obj, "serves", f"service:{kind}", {k: v for k, v in service.items() if v is not None})
+    if block is not None:
+        block.update({"type": kind, **changed})
+
+
+def _set_satisfies(graph: Scene, obj: str, satisfies: Mapping[str, Any], block: dict[str, Any] | None) -> None:
+    """Set or, for a None amount, drop the `satisfies` fact of `obj` per need."""
+    for need, amount in satisfies.items():
         graph.remove_fact(obj, "satisfies", f"need:{need}")
         if amount is not None:
             graph.add_fact(obj, "satisfies", f"need:{need}", {"amount": float(amount)})
         if block is not None:
-            satisfies = {**(block.get("satisfies") or {}), need: amount}
-            block["satisfies"] = {k: v for k, v in satisfies.items() if v is not None}
+            block["satisfies"] = {k: v for k, v in {**(block.get("satisfies") or {}), need: amount}.items() if v is not None}
+    if block is not None and not block.get("satisfies"):
+        block.pop("satisfies", None)
+
+
+def _set_dwell(graph: Scene, obj: str, dwell: Any, origin: str) -> None:  # noqa: ANN401 - YAML input
+    """Replace the `dwells` fact of `obj` with seconds or `{mean, std, clip_low, clip_high}`, or drop it for None."""
+    for fact in [f for f in graph.facts if f.subject == obj and f.verb == "dwells"]:
+        graph.remove_fact(obj, "dwells", fact.object)
+    if isinstance(dwell, Mapping):
+        _check_params(dwell, DWELL_KEYS)
+        if "mean" not in dwell:
+            raise ValueError("dwell needs a mean")
+        graph.add_fact(obj, "dwells", float(dwell["mean"]), {**{k: float(v) for k, v in dwell.items() if k != "mean"}, "from": origin})
+    elif dwell is not None:
+        graph.add_fact(obj, "dwells", float(dwell), {"from": origin})
+
+
+def _function(site: Site, edit: Edit) -> None:
+    """Change an object's demand: `type`, `capacity`, `interaction_radius`, `satisfies: {<need>: amount or null}`, `dwell: seconds, {mean, std, clip_low, clip_high} or null`."""
+    _check_params(edit.params, ("type", *SERVICE_KEYS, "satisfies", "dwell"))
+    obj, params = edit.target, edit.params
+    if obj not in site.graph.entities or kind_of(obj) != "obj":
+        raise ValueError(f"{obj} is no object of the graph")
+    found = _world_object(site.world, _name(obj, "obj"))
+    block = None
+    if found is not None:
+        level, i = found
+        block = dict(level.objects[i].humansim)
+    if "type" in params or any(k in params for k in SERVICE_KEYS):
+        _set_service(site.graph, obj, params, block)
+    if params.get("satisfies"):
+        _set_satisfies(site.graph, obj, params["satisfies"], block)
     if "dwell" in params:
-        for fact in [f for f in graph.facts if f.subject == obj and f.verb == "dwells"]:
-            graph.remove_fact(obj, "dwells", fact.object)
-        dwell = params["dwell"]
-        if isinstance(dwell, Mapping):
-            _unknown(dwell, DWELL_KEYS)
-            if "mean" not in dwell:
-                raise ValueError("dwell needs a mean")
-            graph.add_fact(obj, "dwells", float(dwell["mean"]), {**{k: float(v) for k, v in dwell.items() if k != "mean"}, "from": f"edit:{edit.id}"})
-        elif dwell is not None:
-            graph.add_fact(obj, "dwells", float(dwell), {"from": f"edit:{edit.id}"})
+        _set_dwell(site.graph, obj, params["dwell"], f"edit:{edit.id}")
     if found is not None and block is not None:
         level, i = found
-        if not block.get("satisfies"):
-            block.pop("satisfies", None)
         level.objects[i] = attrs.evolve(level.objects[i], humansim=block)
 
 
@@ -306,12 +361,10 @@ def _access(site: Site, edit: Edit) -> None:
     """Change a door's gate (`locked`, `authorized`, `unlock_on`, or `remove`) or a schedule (`regime`, `windows`, `default`, or `remove`)."""
     from arena_simulation_setup.shared.world import Schedule
 
-    from .build import presets
-
     params, world = edit.params, site.world
     remove = bool(params.get("remove", False))
-    if edit.target.startswith("door:"):
-        _unknown(params, ("locked", "authorized", "unlock_on", "remove"))
+    if kind_of(edit.target) == "door":
+        _check_params(params, ("locked", "authorized", "unlock_on", "remove"))
         found = _door(world, _name(edit.target, "door"))
         if found is None:
             raise ValueError(f"{edit.target} is no door of the world")
@@ -320,8 +373,8 @@ def _access(site: Site, edit: Edit) -> None:
         gate = {"authorized": [], "locked": False, **next(iter(presets(door.semantics, "gate")), {})}
         gate.update({k: v for k, v in params.items() if k != "remove"})
         level.doors[i] = attrs.evolve(door, semantics=_set_presets(door.semantics, "gate", None if remove else {k: v for k, v in gate.items() if v is not None}))
-    elif edit.target.startswith("schedule:"):
-        _unknown(params, ("regime", "windows", "default", "remove"))
+    elif kind_of(edit.target) == "schedule":
+        _check_params(params, ("regime", "windows", "default", "remove"))
         name = _name(edit.target, "schedule")
         i = next((i for i, s in enumerate(world.schedules) if s.name == name), None)
         if remove:
@@ -343,13 +396,19 @@ def _access(site: Site, edit: Edit) -> None:
     sync_access(site.graph, world)
 
 
-def _on_wall(level: Level, door: Any) -> bool:  # noqa: ANN401 - Door
+def _segment(start: Position, end: Position) -> shapely.LineString:
+    import shapely
+
+    return shapely.LineString([(start.x, start.y), (end.x, end.y)])
+
+
+def _on_wall(level: Level, door: Door) -> bool:
     """Whether the walls of `level` without the door cover the door's span."""
     import shapely
 
     walls = attrs.evolve(level, doors=[d for d in level.doors if d.name != door.name]).all_walls
-    lines = shapely.union_all([shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in walls]).buffer(_ON_WALL_M)
-    return bool(lines.covers(shapely.LineString([(door.start.x, door.start.y), (door.end.x, door.end.y)])))
+    lines = shapely.union_all([_segment(w.start, w.end) for w in walls]).buffer(_ON_WALL_M)
+    return bool(lines.covers(_segment(door.start, door.end)))
 
 
 def _collinear(a: Position, b: Position, p: Position) -> bool:
@@ -357,7 +416,7 @@ def _collinear(a: Position, b: Position, p: Position) -> bool:
     return length > 0 and abs((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / length <= _ON_WALL_M
 
 
-def _fill_gap(level: Level, door: Any) -> None:  # noqa: ANN401 - Door
+def _fill_gap(level: Level, door: Door) -> None:
     """Close the gap a door leaves in walls drawn around it, with a wall path styled as the wall at its start."""
     import shapely
 
@@ -366,12 +425,15 @@ def _fill_gap(level: Level, door: Any) -> None:  # noqa: ANN401 - Door
     if _on_wall(level, door):
         return
     walls = attrs.evolve(level, doors=[d for d in level.doors if d.name != door.name]).all_walls
-    touching = []
-    for end in (door.start, door.end):
+    in_line = [w for w in walls if _collinear(door.start, door.end, w.start) and _collinear(door.start, door.end, w.end)]
+
+    def wall_at(end: Position) -> Wall | None:
         spot = shapely.Point(end.x, end.y)
-        touching.append(next((w for w in walls if _collinear(door.start, door.end, w.start) and _collinear(door.start, door.end, w.end) and shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]).distance(spot) <= _ON_WALL_M), None))
-    if all(w is not None for w in touching):
-        level.walls.append(WallPath(path=[door.start, door.end], kind=touching[0].kind, material=touching[0].material))
+        return next((w for w in in_line if _segment(w.start, w.end).distance(spot) <= _ON_WALL_M), None)
+
+    first, second = wall_at(door.start), wall_at(door.end)
+    if first is not None and second is not None:
+        level.walls.append(WallPath(path=[door.start, door.end], kind=first.kind, material=first.material))
 
 
 def _shifted(points: list[Position], offset: Any) -> list[Position]:  # noqa: ANN401 - YAML input
@@ -383,11 +445,11 @@ def _layout_door(site: Site, edit: Edit) -> None:
     from arena_simulation_setup.shared.world import Door
 
     params = dict(edit.params)
-    op = params.pop("op", "move")
+    op = _layout_op(params)
     name = _name(edit.target, "door")
     found = _door(site.world, name)
-    if op == "add":
-        _unknown(params, ("level", "span", *DOOR_FIELDS))
+    if op is LayoutOp.ADD:
+        _check_params(params, ("level", "span", *DOOR_FIELDS))
         if found is not None or any(name in names for names in site.world.names().values()):
             raise ValueError(f"{name!r} is already taken")
         level = _level(site.world, params.pop("level", None))
@@ -400,8 +462,8 @@ def _layout_door(site: Site, edit: Edit) -> None:
         if found is None:
             raise ValueError(f"{edit.target} is no door of the world")
         level, i = found
-        if op == "remove":
-            _unknown(params, ())
+        if op is LayoutOp.REMOVE:
+            _check_params(params, ())
             _fill_gap(level, level.doors[i])
             del level.doors[i]
             site.graph.remove_entity(edit.target)
@@ -409,9 +471,7 @@ def _layout_door(site: Site, edit: Edit) -> None:
                 site.world.kg.remove_entity(edit.target)
             _rederive(site.world, site.graph)
             return
-        if op != "move":
-            raise ValueError(f"op {op!r} is not one of add, move, remove")
-        _unknown(params, ("span", "offset", *DOOR_FIELDS))
+        _check_params(params, ("span", "offset", *DOOR_FIELDS))
         door = level.doors[i]
         if "span" in params and "offset" in params:
             raise ValueError("give a span or an offset, not both")
@@ -436,11 +496,11 @@ def _layout_wall(site: Site, edit: Edit) -> None:
     from arena_simulation_setup.tree.World.model import WallPath
 
     params = dict(edit.params)
-    op = params.pop("op", "move")
+    op = _layout_op(params)
     level_id, _, index = _name(edit.target, "wall").partition("/")
     level = _level(site.world, level_id)
-    if op == "add":
-        _unknown(params, ("path", *WALL_FIELDS))
+    if op is LayoutOp.ADD:
+        _check_params(params, ("path", *WALL_FIELDS))
         if index:
             raise ValueError(f"adding a wall targets wall:<level>, not {edit.target!r}")
         if "path" not in params:
@@ -450,48 +510,50 @@ def _layout_wall(site: Site, edit: Edit) -> None:
         if not index.isdigit() or int(index) >= len(level.walls):
             raise ValueError(f"no wall {edit.target!r}: level {level_id!r} has wall paths 0..{len(level.walls) - 1}")
         i = int(index)
-        if op == "remove":
-            _unknown(params, ())
+        if op is LayoutOp.REMOVE:
+            _check_params(params, ())
             del level.walls[i]
-        elif op == "move":
-            _unknown(params, ("path", "offset", *WALL_FIELDS))
+        else:
+            _check_params(params, ("path", "offset", *WALL_FIELDS))
             if "path" in params and "offset" in params:
                 raise ValueError("give a path or an offset, not both")
             wall = level.walls[i]
-            path = [_point(p, "path") for p in params.pop("path")] if "path" in params else _shifted(wall.path, params.pop("offset")) if "offset" in params else wall.path
+            path = wall.path
+            if "path" in params:
+                path = [_point(p, "path") for p in params.pop("path")]
+            elif "offset" in params:
+                path = _shifted(wall.path, params.pop("offset"))
             level.walls[i] = attrs.evolve(wall, path=path, **params)
-        else:
-            raise ValueError(f"op {op!r} is not one of add, move, remove")
     _rederive(site.world, site.graph)
 
 
 def _layout(site: Site, edit: Edit) -> None:
     """Change a door (`door:<name>`) or a wall path (`wall:<level>/<index>`, `wall:<level>` to add): `op` add, move (default) or remove."""
-    if edit.target.startswith("door:"):
+    if kind_of(edit.target) == "door":
         _layout_door(site, edit)
-    elif edit.target.startswith("wall:"):
+    elif kind_of(edit.target) == "wall":
         _layout_wall(site, edit)
     else:
         raise ValueError(f"layout edits a door:<name> or wall:<level>/<index>, not {edit.target!r}")
 
 
-OPERATIONS: dict[str, Callable[[Site, Edit], None]] = {
-    "move": _move,
-    "insert": _insert,
-    "remove": _remove,
-    "function": _function,
-    "access": _access,
-    "layout": _layout,
+OPERATIONS: dict[EditType, Callable[[Site, Edit], None]] = {
+    EditType.MOVE: _move,
+    EditType.INSERT: _insert,
+    EditType.REMOVE: _remove,
+    EditType.FUNCTION: _function,
+    EditType.ACCESS: _access,
+    EditType.LAYOUT: _layout,
 }
 
 
-def apply(site: Site, type: str, target: str, params: Mapping[str, Any] | None = None) -> Site:
+def apply(site: Site, edit_type: EditType | str, target: str, params: Mapping[str, Any] | None = None) -> Site:
     """A new site: `site` with the edit applied and recorded, `site` itself unchanged."""
-    if type not in OPERATIONS:
-        raise ValueError(f"edit type {type!r} is not one of {', '.join(OPERATIONS)}")
-    edit = Edit(type=type, target=target, params=dict(params or {}), parent=site.name)
+    if edit_type not in tuple(EditType):
+        raise ValueError(f"edit type {edit_type!r} is not one of {', '.join(EditType)}")
+    edit = Edit(type=EditType(edit_type), target=target, params=dict(params or {}), parent=site.name)
     edited = _copy(site)
-    OPERATIONS[type](edited, edit)
+    OPERATIONS[edit.type](edited, edit)
     edited.world.validate()
     problems = edited.graph.validate()
     if problems:

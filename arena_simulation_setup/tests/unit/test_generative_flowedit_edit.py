@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +27,14 @@ EDITS_OF_EVERY_TYPE: list[tuple[str, str, dict[str, Any]]] = [
 
 
 @pytest.fixture(autouse=True)
-def local_worlds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("ARENA_ASSETS_DIR_LOCAL", str(tmp_path))
-    return tmp_path / "worlds"
+def local_worlds(tmp_path: Path) -> Iterator[Path]:
+    previous = os.environ.get("ARENA_ASSETS_DIR_LOCAL")
+    os.environ["ARENA_ASSETS_DIR_LOCAL"] = str(tmp_path)
+    yield tmp_path / "worlds"
+    if previous is None:
+        del os.environ["ARENA_ASSETS_DIR_LOCAL"]
+    else:
+        os.environ["ARENA_ASSETS_DIR_LOCAL"] = previous
 
 
 @pytest.fixture(scope="module")
@@ -43,15 +50,15 @@ def _rooms(scene: Scene, ref: str) -> list[str]:
     return [f.subject for f in scene.facts if f.verb == "contains" and f.object == ref and f.subject.startswith("room:")]
 
 
-@pytest.mark.parametrize(("type", "target", "params"), EDITS_OF_EVERY_TYPE, ids=[e[0] for e in EDITS_OF_EVERY_TYPE])
-def test_every_type_saves_a_world_that_loads(queue: Site, local_worlds: Path, type: str, target: str, params: dict[str, Any]) -> None:
+@pytest.mark.parametrize(("edit_type", "target", "params"), EDITS_OF_EVERY_TYPE, ids=[e[0] for e in EDITS_OF_EVERY_TYPE])
+def test_every_type_saves_a_world_that_loads(queue: Site, local_worlds: Path, edit_type: str, target: str, params: dict[str, Any]) -> None:
     from arena_simulation_setup.tree.World import WorldIdentifier
 
-    path = save(apply(queue, type, target, params))
+    path = save(apply(queue, edit_type, target, params))
     assert path.parent == local_worlds
     WorldIdentifier(path.name).resolve_sync().load()
     record = yaml.safe_load((path / EDITS).read_text())
-    assert record["edits"] == [{"id": path.name.split("__")[1], "parent": "hospital_1", "type": type, "target": target, "params": params}]
+    assert record["edits"] == [{"id": path.name.split("__")[1], "parent": "hospital_1", "type": edit_type, "target": target, "params": params}]
     assert load(path / GRAPH).validate() == []
 
 
@@ -61,6 +68,10 @@ def test_apply_leaves_its_site_alone_and_names_the_edit_by_its_record(queue: Sit
     assert dumps(queue.graph) == before
     assert not queue.edits
     assert first.name == apply(queue, *EDITS_OF_EVERY_TYPE[0]).name != apply(queue, "move", "obj:fountain", {"x": 15.0}).name
+
+
+def test_int_and_float_params_name_the_same_edit(queue: Site) -> None:
+    assert apply(queue, "move", "obj:fountain", {"x": 15}).name == apply(queue, "move", "obj:fountain", {"x": 15.0}).name
 
 
 def test_moved_scenario_object_changes_room_only_in_the_graph(queue: Site) -> None:
@@ -129,6 +140,8 @@ def test_edits_chain_from_a_saved_world(queue: Site) -> None:
     first = apply(queue, *EDITS_OF_EVERY_TYPE[0])
     reopened = open_site(save(first))
     assert reopened.name == first.name and reopened.scenario == "queue"
+    with pytest.raises(ValueError, match="seed"):
+        open_site(save(first), seed=1)
     second = apply(reopened, "layout", "door:or_door", {"op": "remove"})
     path = save(second)
     record = yaml.safe_load((path / EDITS).read_text())

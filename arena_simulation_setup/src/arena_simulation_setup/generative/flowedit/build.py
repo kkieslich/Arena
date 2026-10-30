@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 import yaml
 
-from arena_simulation_setup.kg import Scene, Value, Vocabulary
+from arena_simulation_setup.kg import Scene, Value, Vocabulary, resolve
 from arena_simulation_setup.utils.geometry import Pose, Position
 
 from ..scenario.formats import read_scenario
@@ -17,10 +17,10 @@ from ..scenario.zones import KIND, PACKAGE, VERB, classify
 
 if TYPE_CHECKING:
     from arena_simulation_setup.shared.entities import Obstacle
-    from arena_simulation_setup.tree.World.model import World
+    from arena_simulation_setup.tree.World.model import Level, World
 
 USES = ("core@2", PACKAGE, "flow@1")
-ACCESS_VERBS = ("gated", "authorizes", "unlocks_on", "asserts", "window")
+ACCESS_VERBS = tuple(verb for verb, spec in resolve("flow@1").verbs.items() if set(spec["from"]) & {"door", "schedule"})
 Duration = float | Mapping[str, float]
 
 
@@ -33,13 +33,18 @@ def _scene(world: World) -> Scene:
     return scene
 
 
-def _placed(world: World, origins: Mapping[str, tuple[float, float]], obstacle: Obstacle) -> str:
-    """The level whose zones hold the map-frame `obstacle`, the only level when none does."""
+def zones_at(level: Level, point: Position) -> list[str]:
+    """Names of the zones of `level` that cover `point`."""
     import shapely
 
-    spot = shapely.Point(obstacle.pose.position.x, obstacle.pose.position.y)
+    spot = shapely.Point(point.x, point.y)
+    return [z.name for z in level.zones if len(z.polygon) >= 3 and z.shape().covers(spot)]
+
+
+def _placed(world: World, origins: Mapping[str, tuple[float, float]], obstacle: Obstacle) -> str:
+    """The level whose zones hold the map-frame `obstacle`, the only level when none does."""
     for level_id, level in world.levels.items():
-        if any(len(z.polygon) >= 3 and z.shape().covers(spot) for z in level.shifted(*origins[level_id]).zones):
+        if zones_at(level.shifted(*origins[level_id]), obstacle.pose.position):
             return level_id
     if len(world.levels) == 1:
         return next(iter(world.levels))
@@ -149,8 +154,8 @@ def sync_access(scene: Scene, world: World, notes: list[str] | None = None) -> N
     for fact in [f for f in scene.facts if f.verb in ACCESS_VERBS]:
         scene.remove_fact(fact.subject, fact.verb, fact.object, fact.params)
     schedules = {f"schedule:{s.name}" for s in world.schedules}
-    for id in [id for id in scene.entities if id.startswith("schedule:") and id not in schedules]:
-        scene.remove_entity(id)
+    for ref in [ref for ref in scene.entities if ref.startswith("schedule:") and ref not in schedules]:
+        scene.remove_entity(ref)
     for level in world.levels.values():
         for door in level.doors:
             for gate in presets(door.semantics, "gate"):
@@ -172,8 +177,8 @@ def sync_access(scene: Scene, world: World, notes: list[str] | None = None) -> N
             for window in params.get("windows") or []:
                 scene.add_fact(ref, "window", float(window["start"]), {"end": float(window["end"]), **({"value": window["value"]} if window.get("value") is not None else {})})
     used = {str(f.object) for f in scene.facts}
-    for id in [id for id in scene.entities if id.startswith("regime:") and id not in used]:
-        scene.remove_entity(id)
+    for ref in [ref for ref in scene.entities if ref.startswith("regime:") and ref not in used]:
+        scene.remove_entity(ref)
 
 
 def build(root: Path, scenario: Path | None = None, seed: int = 0, notes: list[str] | None = None) -> Scene:
