@@ -270,6 +270,12 @@ class Orientation(Parseable, Idempotent):
         """
         return self.to_euler()[2]
 
+    def inverse(self) -> Orientation:
+        """
+        return the inverse rotation of a unit quaternion
+        """
+        return Orientation(w=self.w, x=-self.x, y=-self.y, z=-self.z)
+
     @typing.overload
     def __mul__(self, other: Orientation) -> Self: ...
 
@@ -366,6 +372,13 @@ class Pose(Parseable, Idempotent):
         return self as (x, y, yaw)
         """
         return (self.position.x, self.position.y, self.orientation.to_yaw())
+
+    def inverse(self) -> Pose:
+        """
+        return the pose that composes with this one to the identity
+        """
+        orientation = self.orientation.inverse()
+        return Pose(position=Position(0, 0, 0) - orientation * self.position, orientation=orientation)
 
     @typing.overload
     def __mul__(self, other: Pose) -> Pose: ...

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from functools import cached_property
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from arena_simulation_setup.tree import (
     PathView,
 )
 from arena_simulation_setup.utils.affordance import AffordanceSlot, placed_slots
+from arena_simulation_setup.utils.articulation import Articulation, Box, structure_articulation
 from arena_simulation_setup.utils.models import ModelWrapper
 from arena_simulation_setup.utils.models.model_loader import (
     ModelProvider_OBJ,
@@ -52,16 +55,37 @@ class ObjectView(PathView):
         return placed_slots((self.annotation or {}).get('affordances') or {})
 
     @cached_property
-    def bounds(self) -> list[tuple[float, float]] | None:
-        """2D footprint corners in obstacle-local frame (pre-rotation), or None
-        if annotation.yaml is absent or lacks a bounding_box."""
+    def articulation(self) -> Articulation | None:
+        """The links, joints and states of an articulated object, None for a rigid one."""
+        return structure_articulation((self.annotation or {}).get('articulation'))
+
+    def link(self, name: str) -> ObjectView:
+        """The static object bundle of one link, its geometry in the model frame."""
+        path = self.path / 'links' / name
+        if not path.is_dir():
+            links = sorted(child.name for child in path.parent.iterdir() if child.is_dir()) if path.parent.is_dir() else []
+            raise FileNotFoundError(f"object {self.path} has no link bundle {name!r}, links: {', '.join(links) or 'none'}")
+        return ObjectView(path)
+
+    @cached_property
+    def extent(self) -> Box | None:
+        """Annotated box in the obstacle-local frame, swept over every joint value for an articulated object, None without one."""
         ann = self.annotation
         if ann is None:
             return None
-        bbox = ann.get('bounding_box')
-        if bbox is None:
+        swept = (ann.get('articulation') or {}).get('swept')
+        box = swept if swept is not None else ann.get('bounding_box')
+        if box is None:
             return None
-        (min_x, max_x), (min_y, max_y), _ = bbox
+        (min_x, max_x), (min_y, max_y), (min_z, max_z) = box
+        return (float(min_x), float(max_x)), (float(min_y), float(max_y)), (float(min_z), float(max_z))
+
+    @cached_property
+    def bounds(self) -> list[tuple[float, float]] | None:
+        """2D footprint corners of `extent` in obstacle-local frame (pre-rotation), None without one."""
+        if self.extent is None:
+            return None
+        (min_x, max_x), (min_y, max_y), _ = self.extent
         return [(min_x, min_y), (min_x, max_y), (max_x, max_y), (max_x, min_y)]
 
     @cached_property

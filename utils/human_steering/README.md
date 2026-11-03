@@ -103,15 +103,15 @@ target the head tracks continuously.
 | [`compose.py`](human_steering/compose.py) | none | per-joint precedence (slider > gaze > clip > gait) and gaze angle solving |
 | [`integrate.py`](human_steering/integrate.py) | none | waypoint follower and teleop dead-reckoning, dt-aware (freezes at dt=0) |
 | [`clips.py`](human_steering/clips.py) | none | wire-clip loading, cosine sampling, blending |
-| [`fk.py`](human_steering/fk.py) | none* | xacro render + forward kinematics + front/side projection for the pose preview |
+| [`fk.py`](human_steering/fk.py) | none* | forward kinematics of the RViz body URDF and front/side projection for the pose preview |
 
-\* `fk.py` shells out to `xacro` and reads `human_description`'s share
-directory at call time. It has no top-level ROS/Qt import, so it stays
-importable without a sourced install, only the real pipeline call fails.
+\* `fk.py` builds the URDF with `rviz_utils.hri.urdf` at call time. It has no
+top-level ROS/Qt import, so it stays importable without a sourced install,
+only the preview call fails.
 
 `driver.py` is Qt-free and importable on its own. Every ROS message type it
 touches is guarded the same way
-[`gait.py`](../../task_generator/task_generator/simulators/human/gait.py)
+[`gait.py`](../../arena_runtime/arena_runtime/arena_runtime/humans/gait.py)
 guards `sensor_msgs`. Only constructing a `Driver` against a real node
 needs a sourced install.
 
@@ -150,8 +150,8 @@ while rclpy.ok():
 | `human/move` | service (driver calls) | env (`<env_ns>/human/move`) | `arena_people_msgs/srv/MovePedestrians` | default | teleport intent, only `name`+`pose` honored by the backend |
 | `human/<token>/cmd_vel` | topic (driver subscribes) | env (`<env_ns>/human/<token>/cmd_vel`) | `geometry_msgs/Twist` | depth 10 | per-ped teleop input, `token` = ped name with runs of non-alphanumerics collapsed to `_` (see `clips.slug`). Same input path and 0.5 s deadman as the panel's own Teleop tool, and the first command claims the ped until `Driver.release` |
 | `arena_peds` | topic (driver subscribes) | env (`<env_ns>/arena_peds`) | `arena_people_msgs/Pedestrians` | depth 10 | roster mirror: names, ids, poses, `model_uri`, `twist`/`animation_state` (roster-row speed and state pill) |
-| `state/episode` | topic (driver subscribes) | node (`<node_ns>/state/episode`) | `task_generator_msgs/EpisodeRecord` | depth 20, transient-local | `episode_id` changes clear every per-ped intent |
-| `runtime/require_map` | service (canvas calls) | node (`<node_ns>/runtime/require_map`) | `std_srvs/Trigger` | default | retried every ~3 s until it returns success (the task generator's initialized flag can lag viz_manifest), gates the occupancy underlay, static markers render regardless |
+| `state/episode` | topic (driver subscribes) | node (`<node_ns>/state/episode`) | `arena_runtime_msgs/EpisodeRecord` | depth 20, transient-local | `episode_id` changes clear every per-ped intent |
+| `runtime/require_map` | service (canvas calls) | node (`<node_ns>/runtime/require_map`) | `std_srvs/Trigger` | default | retried every ~3 s until it returns success (the env node's initialized flag can lag viz_manifest), gates the occupancy underlay, static markers render regardless |
 | `pedestrian_markers/static*` | topic (canvas subscribes) | env (`<env_ns>/pedestrian_markers/static*`) | `visualization_msgs/MarkerArray` | depth 1, transient-local | wall/object baseline, always rendered |
 | `map` | topic (canvas subscribes, after the Trigger) | node (`<node_ns>/map`) | `nav_msgs/OccupancyGrid` | depth 1, transient-local | occupancy underlay |
 | `state/viz_manifest` | topic (discovery) | node (`<node_ns>/state/viz_manifest`) | any | n/a | manifest-suffix convention: one discovery pass finds `<node_ns>`, `env_ns = dirname(node_ns)`, `map topic = <node_ns>/map` (see `_meta/tools/viz`) |

@@ -159,7 +159,7 @@ def _supervisor(*argv: str) -> None:
 _LAUNCH_FILES: dict[str, Source] = {"task.config": Files(), "task.scenario.file": Files(), "task.params": Files(), "record.dir": Files()}
 RUNTIME_ARGS = LaunchArgs("arena_bringup", "arena_runtime.launch.py", _LAUNCH_FILES)
 ENV_ARGS = Union(
-    LaunchArgs("task_generator", "task_generator.launch.py", _LAUNCH_FILES),
+    LaunchArgs("arena_runtime", "env.launch.py", _LAUNCH_FILES),
     LaunchArgs("arena_auditory", "arena_auditory.launch.py", prefix="auditory.", exclude=("namespace", "env.ns", "hearing")),
     LaunchArgs("arena_hearing", "hearing.launch.py", exclude=("env.ns", "tg_node", "frontend", "policy")),
 )
@@ -191,17 +191,19 @@ def launch(args: list[str]) -> None:
 
 
 DEMO_DEFAULTS = ("task.robots:=demo", "world:=demo", "sim:=isaac", "viz.view:=robot3p")
-_DEMO_ALIASES = {"tm_robots": "task.robots"}
 
 
 @verb("demo", passthrough=True, complete=LAUNCH_SPEC, help_text=f"Launch a demo.\n\nSame as `arena launch` with defaults {' '.join(DEMO_DEFAULTS)}, any KEY:=VALUE you pass overrides the corresponding default.")
 def demo(args: list[str]) -> None:
-    given = {_DEMO_ALIASES.get(k, k) for k in (a.split(":=", 1)[0] for a in args if ":=" in a)}
+    from arena_runtime.env.task_layer import legacy_mode_params
+
+    aliases = legacy_mode_params()
+    given = {aliases.get(k, k) for k in (a.split(":=", 1)[0] for a in args if ":=" in a)}
     merged = [d for d in DEMO_DEFAULTS if d.split(":=", 1)[0] not in given]
     _supervisor(*merged, *args)
 
 
-RUNTIME_HELP = """Start the runtime only (sim + arena_node, no envs), or stop the background one.
+RUNTIME_HELP = """Start the runtime only (sim + arena_runtime_node, no envs), or stop the background one.
 
 Usage:
   arena runtime [--bg] [KEY:=VALUE ...]   start the runtime, fails if another /arena node is up
@@ -240,7 +242,7 @@ Usage:
   arena env [ENV] semantics [...]         read and set the semantic state of a running env
 
 Attaching waits forever (10s warning cadence) for /arena/register_env if the
-runtime is not up yet, KEY:=VALUE tokens go to task_generator.launch.py.
+runtime is not up yet, KEY:=VALUE tokens go to env.launch.py.
 `--bg` waits the same way for /arena/spawn_env, then until the env is ACTIVE,
 prints its id and log path and returns. The env lives until `arena env ENV
 down` or until the runtime stops.
@@ -267,7 +269,7 @@ def env_(args: list[str]) -> int | None:
         raise CLIError(f"arena env: {stray[0]!r} is neither a launch argument (KEY:=VALUE) nor an env followed by a subcommand. Subcommands:\n{_listing(list(ENV_SUBCOMMANDS.items()))}\nRun 'arena env --help' for the forms.")
     if detached:
         return _bg.spawn_env(args)
-    _exec("ros2", "launch", "task_generator", "task_generator.launch.py", *args)
+    _exec("ros2", "launch", "arena_runtime", "env.launch.py", *args)
 
 
 def _despawn(env_id: int) -> None:
@@ -317,17 +319,19 @@ _register(_robot_mod.VERB)
 
 
 CAM_SPEC = Union(
-    Static({"list": "catalog of verbs and shots", "show": "parameters of a verb or shot", "drive": "fly the camera from the keyboard"}),
+    Static({"list": "catalog of verbs and global camera assets", "show": "parameters of a verb or camera asset", "drive": "fly the camera from the keyboard", "serve": "one env's camera server"}),
     Flags(
         {
             "--sim": "the sim GUI camera only",
             "--viz": "rviz cameras, bare for all or an env id for one",
             "--record": "render to a video instead of playing live",
-            "--fps": "record frame rate (default 30)",
-            "--lockstep": "record in physics lockstep, one 1/fps step per frame",
+            "--fps": "frame rate of a recording, a --lockstep take or serve (default 30)",
+            "--lockstep": "gate the take in physics lockstep, one 1/fps step per frame, recording or live",
             "--force": "overwrite an existing record file",
+            "--env": "the sim camera's env, what its context tokens read and what serve drives",
+            "--setup": "serve: camera asset the env's task generator plays at every episode start",
         },
-        valued=("--fps",),
+        valued=("--fps", "--env", "--setup"),
     ),
 )
 
@@ -338,21 +342,27 @@ def cam(args: list[str]) -> None:
 
     \b
     Usage:
-      cam <name> [key=value ...]   play a verb, a shot or a shot .yaml live
-      cam list                     catalog of verbs and shots
-      cam show <name>              parameters of a verb or shot
+      cam <name> [key=value ...]   play a verb, a camera asset or a camera .yaml live
+      cam list                     catalog of verbs and global camera assets
+      cam show <name>              parameters of a verb or camera asset
       cam drive                    fly the camera from the keyboard, R starts and stops a take
+      cam serve [--env N] [--sim] [--fps N] [--setup REQUEST]
+                                   one env's camera server, plays what its task generator sends
 
     \b
     Targets (default: every camera, the flags compose):
       --sim                        the sim GUI camera only
       --viz [ENV_ID]               rviz cameras, bare for all or an env id for one
+      --env N                      the sim camera's env, what its context tokens read (default 0)
+
+    \b
+    Timing, live and recording (without --lockstep a live take has no sync to the sim):
+      --lockstep                   step physics by 1/fps per frame, frame-exact at any render speed
+      --fps N                      frame rate (default 30)
 
     \b
     Recording (needs ffmpeg):
       --record [FILE]              render to a video instead of playing live
-      --fps N                      frame rate (default 30)
-      --lockstep                   step physics by 1/fps per frame, frame-exact at any render speed
       -f, --force                  overwrite an existing file
 
     \b
@@ -371,7 +381,7 @@ def cam(args: list[str]) -> None:
 
 
 _LOCKSTEP_PRESETS = {
-    "engine": {"name": "engine", "topic": "/arena/{env}/task_generator_node/agent_states", "type": "arena_humansim_msgs/msg/AgentFrame", "period_s": 0.05, "hard": True},
+    "engine": {"name": "engine", "topic": "/arena/{env}/arena_env_node/agent_states", "type": "arena_humansim_msgs/msg/AgentFrame", "period_s": 0.05, "hard": True},
     "peds": {"name": "peds", "topic": "/arena/{env}/arena_peds", "type": "arena_people_msgs/msg/Pedestrians", "period_s": 0.15, "hard": True},
 }
 
@@ -573,7 +583,12 @@ def rebuild(args: list[str]) -> None:
 TEST_DEFAULT_SELECT = ("--packages-select-regex", "^arena_", "^task_generator$")
 
 
-@verb("test", passthrough=True, complete=Packages(), help_text=f"Run colcon test and print a summary.\n\nDefaults to `{' '.join(TEST_DEFAULT_SELECT)}` unless a selection flag is given. Bare package names are shorthand for --packages-select.")
+@verb(
+    "test",
+    passthrough=True,
+    complete=Packages(),
+    help_text=f"Run colcon test and print a summary.\n\nDefaults to `{' '.join(TEST_DEFAULT_SELECT)}` unless a selection flag is given. Bare package names are shorthand for --packages-select. Asset bucket traffic goes to a dead loopback port unless ARENA_ASSETS_ENDPOINT is set.",
+)
 def test(args: list[str]) -> None:
     import re
 
@@ -587,6 +602,7 @@ def test(args: list[str]) -> None:
         pkgs = resolve_packages(argv)
     except CLIError:
         pkgs = []
+    os.environ.setdefault("ARENA_ASSETS_ENDPOINT", "http://127.0.0.1:9")
     test_rc = _run("colcon", "test", "--base-paths", *ws.base_paths, "--build-base", ws.build_base, "--install-base", ws.install_base, "--event-handlers", "console_direct+", *argv)
     from arena_cli.testsum import summarize
 

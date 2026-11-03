@@ -34,7 +34,7 @@ delegates with an `ExecuteProcess` (`bash -c 'arena feature <sim> launch ...'`,
 (`arena feature <sim> install`), so the dispatcher is the single live entry and
 the verb is never a dead path. Forwarded args: gazebo gets
 `use_sim_time`/`headless`/`world`, isaac and mujoco get `headless`/`log_level`, flatsim
-gets `sim.flatsim.dynamics` as `dynamics`. `sim:=flatsim` without the flatsim
+gets `sim.flatsim.dynamics` as `dynamics` and `sim.flatsim.physics` as `physics`. `sim:=flatsim` without the flatsim
 package fails at launch with the install hint.
 
 The real bringup files live wherever the feature owns them:
@@ -80,6 +80,5 @@ arena_mujoco:  run_mujoco.launch.py                           (MuJoCo server)
    delegating to `arena feature <name> launch`.
 3. The new key appears in `launch_simulator.keys` automatically, so the
    `simulator` argument's `choices` list updates without extra changes.
-4. Add the corresponding `Constants.SimSimulator.<NAME>` entry in
-   `task_generator/task_generator/constants/__init__.py` if the task-generator
-   needs to branch on it.
+4. Add the corresponding `SimSimulator.<NAME>` entry in
+   [`arena_bringup/constants.py`](../../../arena_bringup/constants.py).

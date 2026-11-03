@@ -6,7 +6,7 @@ from collections.abc import Collection, Mapping
 
 from .scene import Scene
 
-RESOLVED_KINDS = ("room", "door", "floor", "elevator", "light", "sound", "microphone")
+RESOLVED_KINDS = ("room", "door", "floor", "elevator", "stair", "light", "sound", "microphone")
 GEOMETRY_PROPS = ("boundary", "line", "pose", "scale", "model", "area", "sim")
 
 

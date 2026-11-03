@@ -53,6 +53,7 @@ and a zone's `name`:
 
 ```yaml
 format: arena-world/2
+layout: spread                           # or stacked: levels share one floor plan at their elevations
 defaults:                                # inherited by every level and item that does not set its own
   floor: Concrete_Smooth                 # material, or false for no floor
   ceiling: {height: 2.7, material: Concrete_Smooth}   # or false for open zones
@@ -62,6 +63,7 @@ schedules: [...]                         # world scope, see M2 kinds below
 signals: [...]
 levels:
 - id: '0'
+  elevation: 0.0                         # floor height, a storey of 3 m per level before it by default
   pedestrian_walls: true                 # false drops the occupancy-detected pedestrian walls
   zones:
   - name: central_hallway
@@ -77,6 +79,10 @@ levels:
   - {name: main_entrance, span: [[9.25, 0], [10.75, 0]]}
   elevators:
   - {name: lift_0, position: [5, 0], destinations: [lift_1]}
+  stairs:
+  - {name: stairs_0, kind: stairs, mouth: [16, 2], size: [5.2, 1.4], to: '1', exit: [16, 2]}
+  escalators:
+  - {name: up_0, kind: belt_escalator, mouth: [16, 6], size: [14.0, 1.0], to: '1', exit: [16, 6]}
   objects:
   - {name: desk_1, model: Common/Desk, pose: [2.0, 1.0, 1.5708]}
   humans: []
@@ -93,11 +99,11 @@ Key points:
 - A zone is a named region: its `polygon` (an open ring, the interior is
   navigable floor), its `floor` and `ceiling`, its runtime `semantics`, and
   optionally walls along its outline. It holds nothing else. Walls, doors,
-  elevators, objects, humans, lights, sounds and microphones are lists of the
-  level, and which zone a thing belongs to is a semantic fact (see
+  elevators, stairs, escalators, objects, humans, lights, sounds and
+  microphones are lists of the level, and which zone a thing belongs to is a semantic fact (see
   [KG](#kg)).
-- Every name (zone, door, elevator, object, human, light, sound, schedule,
-  signal) is unique across the whole world, so a reference never needs a
+- Every name (zone, door, elevator, stair or escalator half, object, human,
+  light, sound, schedule, signal) is unique across the whole world, so a reference never needs a
   level. Loading fails on a repeated name, on a key the format does not know
   (the error names the YAML path, e.g. `levels[0].doors[3]: unknown keys
   ['heigth']`) and on a reference to an unknown name.
@@ -142,7 +148,8 @@ before every name of the level and every reference to one, so the same floor
 can repeat (`- {id: '3', from: ./floors/typical, prefix: f3_}`) and two worlds
 sharing a zone name can sit side by side. Names stay
 unique across the composed world, elevator destinations that point outside
-it are dropped with a warning, and a link back into a world already being
+it and staircase halves whose partner half is outside it lose that link with
+a warning, and a link back into a world already being
 read is an error. Assets local to a linked world (`<world>/assets/`) resolve
 after this world's own. Saving the world writes the links, not the levels
 they name. `arena asset push world` refuses a world whose `./` or `../` link
@@ -246,6 +253,253 @@ side walls always, and a door's segment while it cannot open for them (a
 gate effectively locked with no authorized agent near, or
 `activation_distance <= 0` with no pressed plate driving it).
 
+### Stairs and escalators
+
+Stairs is the umbrella for both kinds of staircase: fixed stairs under
+`stairs:` and moving ones under `escalators:`. Full field reference:
+[Stairs fields](worlds/README.md#stairs-fields).
+
+#### Placing a staircase
+
+A `stairs:` or `escalators:` entry sits on the lower of the two levels it
+joins and names one whole staircase:
+
+| key | meaning |
+| --- | --- |
+| `name` | unique across the world |
+| `mouth` | `[x, y]` middle of the open lower end, in the level frame |
+| `mouth_side` | side it is entered from (`+x`, `-x`, `+y`, `-y`, default `-x`), the staircase running away from it |
+| `size` | `[length, width]` of the whole staircase in metres, length along the walking direction |
+| `to` | id of the level it reaches, above its own |
+| `exit` | spread worlds only: `[x, y]` middle of the open upper end on the `to` level, in that level's frame |
+| `kind` | optional staircase kind to start from, see below |
+
+The rise is the difference of the two levels' `elevation`, a level without
+one sitting a storey (3 m) above the level before it. An escalator with
+`direction: down` still sits on the lower level with its mouth at the bottom,
+`direction` only sets which way it carries.
+
+The world's `layout` says how its levels relate. In a `stacked` world every
+level shares one floor plan and the staircase runs straight up from its
+mouth. In a `spread` world (the default) every level keeps a floor plan of
+its own, and the entry also takes `exit`.
+
+`size` sets the incline, nothing else does, and nothing rejects a steep one:
+
+| staircase | incline | typical | `size` length for a 3 m rise |
+| --- | --- | --- | --- |
+| stairs | `atan(rise / length)` | 30 to 35 degrees | 5.2 m (30 degrees) |
+| step escalator | `atan(rise / (length - 2 * landing_length))` | 30 degrees | 6.8 m (30 degrees with 0.8 m landings) |
+| belt escalator | `atan(rise / (length - 2 * landing_length))` | up to 12 degrees | 15.7 m (12 degrees with 0.8 m landings) |
+
+`width` is the distance between the center lines of the two side walls,
+which are 5 cm thick. Real stairs run 1.0 to 2.5 m wide and escalators 0.8 to
+1.2 m. An escalator's moving treads leave 6 cm clear on each side, and its
+brushes reach 5 cm in from each side wall. Keep about half a metre of clear
+floor before each escalator mouth: the pit there is one tread deep along the
+axis (about 0.3 m).
+
+#### What loading builds
+
+Loading splits a staircase at its midpoint into two halves, `<name>_bottom`
+on its level and `<name>_top` on the `to` level. `<name>` names the whole
+staircase, `<name>_bottom` and `<name>_top` each half, as places for
+`robot in` atoms and zone references in scenarios, and the KG places each
+half in the zone holding its center with `connects_floor` to the other. A
+linked level prefixes all three names alike. Left and right always mean as
+seen walking up from the mouth, loading mirrors them for the top half.
+
+Stairs are solid steps, the bottom half rising from the floor and the top
+half a well sinking from the upper floor to meet it. Floors and ceilings open
+around a staircase by themselves:
+
+- the upper floor over the top half, and in a stacked world also over the
+  end of the bottom half where less than `headroom` (default 2.1 m) is left
+  under it, with guard walls in the style of the sides around that overhang
+  on the upper level,
+- the lower floor under an escalator, whose treads or planks run level with
+  the floor over a landing at each mouth (`landing_length`, default 0.8 m), and
+  a short pit before each escalator mouth,
+- in a stacked world, the lower level's ceilings over the overhang and the
+  top half.
+
+Zone ceiling heights are measured from the level's own floor. The floor of
+the level above is a separate slab and does not stand in for a ceiling.
+
+An escalator's treads or planks come out from under a landing plate flush
+with the floor at each mouth, 1 mm low until they clear it, then run level
+over the landing and rise into place. A belt's planks tilt along the ramp and
+bend over its ends plank by plank. The plate is a comb: treads pass through
+it, robots and pedestrians stand on it.
+
+#### Dressing
+
+`material` covers every part of a staircase (default `Marble`), and
+`surfaces` sets one part apart:
+
+| surface | parts | default |
+| --- | --- | --- |
+| `steps` | stair treads, escalator steps, belt planks | `material` |
+| `risers` | stair risers, setting it makes each step a 2 cm tread plate on a riser body | `material` |
+| `landings` | an escalator's landing plates | `material` |
+| `fixture` | an escalator's base, the side linings under the walking surface, the seam wall | `material` |
+| `brushes` | the skirt brushes along both inner sides of an escalator, just above its treads | `Carpet_Charcoal` |
+
+A surface takes any material name (`arena asset ls material` lists them, for
+example `Aluminum_Anodized`, `Carpet_Charcoal` (near black), `Concrete_Smooth`,
+`Marble`, `Oak_Planks`, `Paint_Gloss` and `Paint_Matte` (white),
+`Plaster_Wall`, `Walnut_Planks`), or `[Name, {tint: "<css colour>"}]` for a
+tinted copy: the colour, such as `rgba(90, 90, 90, 0.8)` (0 to 255 per
+channel), is blended over the material's textures with its alpha as the
+strength, so an alpha of 1 gives a solid colour.
+
+`sides` takes `left` and `right`, each with a wall `kind` or a `material`
+(default the staircase's `material`) and a `height` above the walking surface
+(default 1.0 m, 0 for no side wall). On the bottom half a side follows the
+incline, on the top half it guards the well along the upper floor. A wall
+kind on a side keeps its layers and tiled models along it: a layer starting
+above `height` is dropped, one crossing it is cut there, and the layer
+reaching highest is stretched up to `height` if it falls short. Each layer
+keeps its own `width` (thickness).
+
+`rails` lists handrails along the walking surface. Each takes `across`
+(`left` and `right` sit 8 cm inside the side walls, a number is metres left of
+the axis), then either a `material` (default the staircase's `material`) for a
+5 cm bar whose top sits at `height` (default 0.9 m), or a wall `kind` whose
+parts stand on the walking surface, cut and stretched to `height` the way a
+side's are. The package ships the wall kind `handrail` (in
+`arena_simulation_setup/assets/Common/Wall/`, resolved without copying): a
+5 cm bar at 0.85 to 0.9 m on 3 cm posts every 0.9 m. A plain bar has no posts.
+`solid: true` works on both forms: such a rail also blocks the floor plan, so
+a center rail at `across: 0` splits a staircase into two lanes of equal
+width for robots and pedestrians. Other rails are seen and collided with but
+not routed around.
+
+Every part of a staircase can carry a captured look, such as a 3D Gaussian
+splat (`arena-assets splat --object`), which Isaac renders and the other
+simulators skip:
+
+- `steps`, `risers`, `landings` and `fixture` take `{material, model}` in
+  place of a bare material. The `model` (any object) is placed on the middle
+  of the top face of every box of that surface, turned with it: on each step
+  and riser, each landing plate, each base slab, and on each moving tread,
+  which it rides. The box keeps its `material` and stays the collision,
+  lidar and backdrop, the way a splat wall keeps its segment.
+- `models` lists objects for the staircase as a whole, each with `model`,
+  `at: [along, across, z]` (default `[0, 0, 0]`) from the middle of the
+  mouth on the lower floor, `along` running up the whole staircase, `across`
+  to the left, and `yaw` from the axis (default 0). A capture of a whole real
+  staircase goes here, as does anything that dresses the brushes or the
+  linings.
+- Side walls and rails carry anything a wall kind can, a splat included.
+
+```yaml
+escalators:
+- name: esc_up
+  kind: escalator
+  mouth: [2.0, 7.2]
+  size: [6.8, 1.0]
+  to: '1'
+  surfaces:
+    steps: {material: Aluminum_Anodized, model: mall_escalator_step}
+  models:
+  - {model: mall_escalator_shell, at: [3.4, 0.0, 0.0]}
+```
+
+#### Staircase kinds
+
+A staircase kind keeps a build and a look for reuse, the way a wall kind
+keeps a wall style. `kind: <name>` on an entry reads
+`<domain>/Stairs/<name>/<name>.yaml` (a bare name under `Common`), searched in
+the world's own `assets/`, the `assets/` of the worlds it links levels from,
+the local asset root (`$ARENA_ASSETS_DIR_LOCAL`), the package's own
+`arena_simulation_setup/assets` and then the buckets. `arena asset ls stairs`
+lists them and `arena asset find stairs <name>` shows which source answers.
+
+A kind file is a flat mapping of the keys `style`, `speed`, `tread`,
+`landing_length`, `plank`, `headroom`, `material`, `surfaces`, `sides`,
+`rails` and `models`, in the same form as on an entry. Any other key, `kind` included, is
+an error named by the entry's YAML path, so kinds do not chain. Placement
+(`mouth`, `mouth_side`, `size`, `to`, `exit`, `direction`) always stays on
+the entry.
+
+```yaml
+# assets/Common/Stairs/office_stairs/office_stairs.yaml
+material: Walnut_Planks
+surfaces: {risers: Paint_Matte}
+sides: {left: {material: Paint_Gloss}, right: {material: Plaster_Wall}}
+rails:
+- {across: left, kind: handrail}
+- {across: right, kind: handrail}
+```
+
+The entry's own keys win over the kind's. `surfaces` and each side merge key
+by key, a side's own `kind` or `material` replacing the kind's, and the
+entry's `rails` and `models` replace the kind's whole lists. Writing the world back keeps
+`kind` and only the keys the entry sets itself. An entry without `kind` takes
+the defaults listed in the field reference.
+
+The package ships three kinds in `arena_simulation_setup/assets/Common/Stairs/`:
+
+| kind | style | build and look |
+| --- | --- | --- |
+| `stairs` | steps | `handrail` rails on both sides, everything else default |
+| `escalator` | steps | `Aluminum_Anodized` steps and landing plates, `Concrete_Smooth` fixture, `Paint_Gloss` sides, `Carpet_Charcoal` handrails at 1.0 m, everything else default |
+| `belt_escalator` | belt | as `escalator` with `Carpet_Charcoal` planks |
+
+The kinds set no `speed`, `tread`, `landing_length` or `brushes`, so those
+take their defaults unless the entry sets them.
+
+```yaml
+escalators:
+- {name: esc_up, kind: belt_escalator, mouth: [2.0, 5.0], size: [14.0, 1.0], to: '1', speed: 0.6}
+```
+
+#### Moving stairs
+
+Stairs run both ways. An escalator carries riders `direction: up` (default)
+or `down` at `speed` (default 0.5 m/s), and its `style` is `steps` (moving
+step blocks) or `belt` (an inclined conveyor of moving planks). Stairs take
+only `steps`. `tread` sets the step depth a half aims for (default 0.28 m): a
+half takes `round(length / 2 / tread)` treads, and the riser is the half rise
+over that count. `plank` (default 0.03 m) is a belt's plank thickness.
+`size`, `speed`, `tread`, `plank` and `headroom` are positive,
+`landing_length` lies in `[0, length / 2)`, and `to` names a level above.
+Loading names the YAML path of a broken entry.
+
+```yaml
+layout: stacked
+levels:
+- id: '0'
+  zones:
+  - {name: lobby, polygon: [[0, 0], [20, 0], [20, 10], [0, 10]]}
+  stairs:
+  - {name: stairs, kind: stairs, mouth: [6.0, 2.0], size: [5.2, 2.0], to: '1'}
+  escalators:
+  - {name: esc_up, kind: belt_escalator, mouth: [2.0, 5.0], size: [14.0, 1.0], to: '1'}
+  - {name: esc_down, kind: escalator, mouth: [6.0, 7.2], size: [6.8, 1.0], to: '1', direction: down}
+- id: '1'
+  elevation: 3.0
+  zones:
+  - {name: gallery, polygon: [[0, 0], [20, 0], [20, 10], [0, 10]]}
+```
+
+This is the `stairs_demo` world without its stair dressing: the belt rises
+3 m over 14 m (13.6 degrees past its landings), the stairs at 30 degrees and
+the step escalator at 30 degrees past its landings.
+
+#### Stacked levels
+
+`world.levels:=stack|spread|auto` (default `auto`) chooses how the simulator
+places the levels. `spread` lays them side by side, and a crossing of a seam
+teleports to the other half. `stack` puts each level of a stacked world at
+its elevation over the shared floor plan, and each stair is one body walked
+and ridden straight through, without a seam wall. `auto` stacks a stacked
+world and spreads a spread one, `stack` on a spread world fails. The map,
+the pedestrian simulation, the judge and evaluation keep the side-by-side
+layout in either case: a robot's `map -> odom` follows the level it stands
+on, and pedestrians reach the simulator on `sim_peds` in its own frame.
+
 ### Microphones
 
 A level's optional `microphones:` list places audio listeners for the
@@ -254,13 +508,15 @@ acoustics pipeline. Full field reference:
 
 ### Semantic annotations
 
-Door and elevator state is intrinsic: every spawned door/elevator publishes
-its full vocabulary with no annotation needed:
+Door, elevator and articulated object state is intrinsic: every spawned
+door, elevator and articulated object publishes its full vocabulary with no
+annotation needed:
 
 | kind | discrete | continuous | predicates | members |
 | --- | --- | --- | --- | --- |
 | door | `state` | `progress` | `open`, `in_transit`, `triggered`, `blocked_close` (a close is refused because an agent is in the slab path) | agents within the activation radius |
 | elevator | `cabin_door`, `target` (writable, see above) | `arriving_eta`, `occupants` (riders committed to a ride), `cabin_door_progress`, `live_occupants` (agents inside now), `capacity` (-1 = unlimited) | `departing`, `in_transit`, `dispatched`, `just_arrived`, `full` | agents inside the cabin now |
+| articulated | `state`, `target` (writable), `setting.<joint>` (see [Articulated objects](#articulated-objects)) | `openness.<joint>`, `pos.<joint>`, `angle.<joint>`, `q.<joint>` | one per state name, `moving`, `blocked` | none |
 
 Agents are named as the runtime tracks them: robots by sim path, pedestrians
 by their ped name. `semantics:` on a `doors:`/`elevators:` entry is only for
@@ -288,6 +544,73 @@ elevators:
 ```
 
 Full field reference: [worlds/README.md](worlds/README.md).
+
+### Articulated objects
+
+An object whose annotation carries `articulation:` (links, joints, named
+states, built by arena_assets) gets an `articulated` semantic entity under
+its env-prefixed name. MuJoCo, Isaac and Gazebo spawn it as one physics
+model: its root fixed in place, each other link a body on a damped joint
+with friction, so robots push its doors and drawers and the fields read the
+joints the simulator measures. flatsim and dummy spawn one static obstacle
+per link and move the links to the joint values. Conditions and timelines name it as authored, a level
+object of world.yaml as much as a scenario object, and a scenario object
+takes the name over from a world object of the same name. Its `joints:` key
+sets the joint values every episode starts from (see the objects keys in
+[worlds/README.md](worlds/README.md)).
+
+| field | role | meaning |
+| --- | --- | --- |
+| `state` | discrete | the first state all of whose joint values the joints hold, empty between states |
+| `target` | discrete, writable | the state the targets match, empty otherwise. Writing a state name sets the targets of the joints that state names, the others keep theirs |
+| `openness.<joint>` | continuous, writable | an opening part (a joint the `closed` and `open` states both name): 0 closed, 1 open, its distance from `closed` over the distance from `closed` to `open`, so a lid swinging either way from a closed rest reads open both ways. Writing a fraction in [0, 1] sets its target, writing bare `openness` sets every opening part |
+| `pos.<joint>` | continuous, writable | any other limited joint (knob, dial, handle, button): 0 at its lower limit, 1 at its upper. Writing a fraction sets its target |
+| `angle.<joint>` | continuous | an unlimited joint (wheel, endless knob): its value wrapped to [0, 2 pi) |
+| `setting.<joint>` | discrete, writable | a joint with named `detents` (in the object's annotation, see [Object articulation](../arena_assets/README.md#object-articulation)): the detent it sits at, empty between them. Writing a detent name moves it there |
+| `q.<joint>` | continuous, writable | every movable joint's raw value (radians or meters). Writing sets its target, clamped to its limits |
+| `<state>` | predicate | the joints hold that state's values |
+| `moving` | predicate | a joint is away from its target, or in a physics simulator moved since the last tick |
+| `blocked` | predicate | a driven joint is held: in a physics simulator something keeps it from following its drive, in flatsim and dummy a moving link would have entered a robot or pedestrian disc |
+
+Every field is named `<family>.<joint>`, so the parts of an object are
+listed by family without knowing its joints, and `assets_articulation` lists
+the families and their members. The family names, `state`, `target`,
+`moving` and `blocked` are reserved: no state, joint or detent takes one.
+Joints move toward their targets at their `velocity` (1 rad/s or 0.25 m/s
+when unset). In a physics simulator a written target switches on a drive
+of bounded effort, which follows a reference ramped at that velocity and
+lets go once the joint is within 0.05 rad or 1 cm, setting it onto the
+target. A joint no drive holds moves only when pushed, and its target
+follows it. Link masses come from the link boxes (150 kg/m3, 0.2 to 20 kg).
+A joint's friction, damping, armature and spring are the ones its asset
+authors (see [Object articulation](../arena_assets/README.md#object-articulation)),
+else its role's (a drawer rubs harder than a bare slide), else its kind's,
+and a default friction holds the joint against its own weight, so a lid or
+flap stays where it is left. A sprung joint swings back to its rest when no
+drive holds it, and a link's material sets the friction and bounce of its
+surfaces. An unknown state or detent name, a fraction outside [0, 1] or a
+non-number joint value is refused as a malformed value, and an episode reset returns every joint to its initial
+value. Loading a scenario under the `scenario` obstacles mode, and the MCP
+`worlds_scenario_validate`, check every `joints:`, every field and family a
+condition names and every timeline `set` against the articulated objects of
+the scenario and its world, and fail naming each one they refuse. A scenario
+timeline opens a fridge at `t=5s`, and a phase or episode condition judges it
+with the entity atom, or by family without naming its doors:
+
+```yaml
+timeline:
+- at: 5.0
+  set:
+  - {entity: fridge, field: target, value: open}
+robots:
+- start: [1.0, 1.0, 0.0]
+  phases:
+  - {goto: kitchen}
+  - {until: "fridge.state == open"}
+  - {until: {each: fridge.openness, ge: 0.9, for: 2}}
+conditions:
+- {op: eventually, p: {field: oven.setting.dial, eq: "off"}, text: "Turn the oven off."}
+```
 
 ### KG
 
@@ -470,9 +793,13 @@ schedules:
 
 An object's `annotation.yaml` can carry `lights:` entries with `name` (default
 `light`), `fixture` (default `bulb`), `pose`, `lumens`, `cct_K`,
-`cone_deg` and `glow`. `arena_assets` writes them when it builds an object whose
+`cone_deg`, `glow` and `link`. `arena_assets` writes them when it builds an object whose
 source model contains lights (hand-written entries win, and the built models
-carry no light themselves). `glow` names the material that glows with the
+carry no light themselves). A light of an articulated object carries `link:`,
+the link of the source node it sits under (the root link otherwise), and
+follows that link as the joints move: its position rides on the link and its
+beam turns by the yaw of the link's turn only, so the beam of a tilting link
+keeps its yaw part. `glow` names the material that glows with the
 light, a lamp shade for instance: Isaac, Gazebo and MuJoCo make it emit the
 light's color scaled by its dim, and it is dark while the light is off. Every
 placement of the object, in a level's `objects:`, a scenario's `objects:` or
@@ -550,11 +877,11 @@ actions against exactly one trigger and needs at least one action:
 | --- | --- |
 | `at: <seconds>` | fire once at episode second `t` |
 | `every: <seconds>` | fire at `offset` (default: one period in), then each period, optional `until` |
-| `when: {entity, field, is}` | fire on the false-to-true edge of a semantic value |
-| `when: "<atom>"` | fire on the false-to-true edge of a condition atom (see [Add a scenario](#4-add-a-scenario)) |
+| `when: <condition>` | fire on the false-to-true edge of a condition, a text one or a structured node as in `until` (see [Add a scenario](#4-add-a-scenario)), `{some: fridge.openness, ge: 0.9, for: 1}` included |
+| `when: {entity, field, is}` | the same as `when: {field: <entity>.<field>, eq: <is>}` |
 
-In a `when` atom the subject `robot` stands for every robot of the env: the
-atom holds while it holds for at least one of them, so
+In a `when` condition the subject `robot` stands for every robot of the env: the
+condition holds while it holds for at least one of them, so
 `not robot within 3 of 2,2` holds while some robot is farther than 3 m from
 `(2, 2)`. A robot's own name (anonymous robots are named after their model,
 e.g. `jackal`) judges only that robot. Without a placed robot such an atom
@@ -678,15 +1005,18 @@ robots:
       - {goto: [8.0, 8.0, 0.0]}
 ```
 
-An empty scenario (robot start and phases only) is valid. Phases run in order
-and are `{goto: <pose or zone/door/elevator/pedestrian name>}`, `{gesture: <name>}`,
+An empty scenario (robot start and phases only) is valid, and `robots:` is
+optional: a robot without an entry stays parked, an episode with only parked
+robots runs until `task.episode.timeout`. Phases run in order and are `{goto: <pose or zone/door/elevator/pedestrian name>}`, `{gesture: <name>}`,
 `{reach: <named target | random | pose>}`, or a hold phase with neither (the robot
 stays where it is), or `{loop: [<phases>], until: "<...>"}` (the phases repeated
 in order until the `until` holds, which drops the running phase and continues
 after the loop). Every phase takes `until: "<clause>[ or <clause>...]"`, a
 clause being `<atom>[ and <atom>...][ for <seconds>]` (completes once any clause
 has held, every atom together, for its dwell, after arrival for a goto, so
-`caller plays beckon for 0.5 or robot within 2.5 of caller`), `hold_time` (park
+`caller plays beckon for 0.5 or robot within 2.5 of caller`), or a structured
+node (`until: {some: fridge.openness, ge: 0.9, for: 2}`, see the structured
+conditions of [worlds/README.md](worlds/README.md)), `hold_time` (park
 seconds on a goto), `signal`
 (the robot ends the goto itself by sending that signal, such as `arrived`, and
 is judged against the tolerance at that moment), `conditions:` (clauses judged
@@ -750,6 +1080,31 @@ lights count as declared, like the world's, and go at the next reset, and so
 do its regions. See
 [worlds/README.md](worlds/README.md) for the full key list of every
 top-level key.
+
+### Scenario cameras
+
+A scenario can carry its own camera setups as plain files,
+`scenarios/<name>/cameras/<camera>.yaml`, beside its other files. Each is a
+[camera asset](../utils/arena_cam/arena_cam/README.md#camera-assets): one camera's
+timeline, or a rig of cameras with their mounts. `viz.cam:=<camera>` opts in and plays
+it at every episode start, and the camera follows a scenario swap:
+
+```yaml
+# worlds/hospital/scenarios/triage/cameras/wide.yaml
+reference: { entity: "${robot}", mode: yaw }
+timeline:
+  - look: { eye: [-3, 0, 2], target: [2, 0, 0] }
+  - establishing: { radius: 6, slice: [0, 4] }
+  - hold: { duration: 20 }
+```
+
+The name resolves scenario first, then world, then global. A name the scenario lacks
+falls to a non-negative index into its sorted cameras, else its first, so
+`viz.cam:=0` plays each scenario's first camera. See
+[Playing with the episode](../utils/arena_cam/arena_cam/README.md#playing-with-the-episode).
+Name robots and pedestrians with context tokens, `${robot}` or `${face.agent_1}`, never
+with an env. A camera times itself from when it starts, so only under lockstep does a
+step line up with a `timeline:` `at:` to the frame.
 
 ### Robots: floors, elevator rides, mechanism map
 
@@ -816,6 +1171,8 @@ to the cabin centre, waits inside until the elevator teleports it, then
 continues with the next waypoint. When two consecutive waypoints (or the
 ped's start and its first waypoint) lie on different levels, the boarding
 cabins of the shortest elevator route are inserted as rides automatically.
+A ped waiting at an open cabin lets those getting out leave first, for up to
+`humansim.zone_let_out_timeout` seconds (default 10, `0` boards at once).
 For a multi-destination elevator the boarding ped writes the elevator's
 `target` (the destination toward its next waypoint) when it reaches the
 cabin centre. A ped holding for a ride never sees the next level's waypoint,
@@ -913,7 +1270,7 @@ reach.
 Assets placed under `worlds/$WORLD/assets/<domain>/<Type>/<name>/` are
 resolved before shared-local (`$ARENA_ASSETS_DIR_LOCAL`), imported (`$ARENA_ASSETS_DIR_IMPORTED`) and network-fetched
 assets. `<domain>` defaults to `Common` if you have no reason to scope the
-asset further. Five asset kinds can be shipped this way:
+asset further. Seven asset kinds can be shipped this way:
 
 | Type | Directory contents | Referenced as |
 |---|---|---|
@@ -922,6 +1279,8 @@ asset further. Five asset kinds can be shipped this way:
 | `Material` | `<name>.mdl` plus its texture files | a zone `floor`, a ceiling `material`, a wall or door `material` |
 | `Wall` | `<name>.yaml`, a `WallDescription` (see [configs/walls/README.md](configs/walls/README.md)) | `kind:` on a `walls:` entry or a zone outline |
 | `Sound` | `<name>.yaml` (a sound manifest, see [configs/sounds/README.md](configs/sounds/README.md)) plus its wav files | `asset_id:` on a `sounds:` entry |
+| `Stairs` | `<name>.yaml`, a staircase kind (see [Staircase kinds](#staircase-kinds)) | `kind:` on a `stairs:` or `escalators:` entry |
+| `Camera` | `<name>.yaml`, a camera asset (see [the arena_cam README](../utils/arena_cam/arena_cam/README.md#camera-assets)) | `viz.cam:=<name>` |
 
 To ship a custom wall style:
 
@@ -930,10 +1289,11 @@ mkdir -p worlds/$WORLD/assets/Common/Wall/my_style
 # create worlds/$WORLD/assets/Common/Wall/my_style/my_style.yaml
 ```
 
-Then reference it in `world.yaml` walls as `kind: my_style`. The other four
+Then reference it in `world.yaml` walls as `kind: my_style`. The other six
 kinds follow the same `assets/<domain>/<Type>/<name>/` layout. Objects, humans
 and materials carry model or material files instead of a preset YAML, a sound
-carries its `<name>.yaml` manifest beside the wav files.
+carries its `<name>.yaml` manifest beside the wav files, and a staircase kind
+is its `<name>.yaml` alone.
 
 A wall style can also carry a captured look: a 3D Gaussian splat that Isaac
 renders in front of the wall. The
@@ -979,7 +1339,9 @@ for level_id, level in world.levels.items():
 ```
 
 This raises `FileNotFoundError` if `world.yaml` is missing and `ValueError`
-naming the YAML path if it is malformed. The JSON Schema of the KG
+naming the YAML path if it is malformed. The MCP `worlds_scenario_validate`
+checks a scenario text against its world, its zone references and the
+articulated objects its `joints:`, conditions and timeline name included. The JSON Schema of the KG
 comes from `arena_simulation_setup.kg.schema_for`.
 
 List all scenarios:
@@ -1047,3 +1409,38 @@ view, levels = resolve_world('my_world')
 for level_id, result in nav_at_r(view, radius=0.267, levels=levels).items():
     print(level_id, result.value, result.components, result.cut_off_zones)
 ```
+
+### Navigation mesh
+
+MeshNav plans on a triangle mesh of every walkable surface, built from the
+world's geometry by `arena_simulation_setup.shared.navmesh`. The mesh samples
+a regular grid (0.1 m by default) aligned to the simulator frame over each
+level's floors and elevator cabins, at the floor height, and over every stair
+and escalator half, at the height of its treads at rest (the belt for a belt
+escalator, the landing plates over the pits). A grid point within a wall's
+half thickness plus half a cell is left out where the wall stands between just
+above the surface and 0.4 m over it. The walls are those of `all_walls`, cut
+open at the doors, plus the sides of every elevator cabin but its door side,
+so a cabin is entered only through its door. Doors stay open unless named in
+`shut`, which closes them across their span, and static entities are not
+subtracted. A grid cell becomes two triangles facing up when its four corners
+lie within `climb` (0.25 m by default) of each other in height, so the floor
+runs onto the first step and, in a stacked world, a bottom half's seam meets
+its top half's seam on the level above as one surface. MeshNav builds the mesh
+with the robot's `meshnav.max_step` as the climb, so for a robot whose step
+limit lies below the riser height a staircase no longer joins its levels, and
+with the doors that never open for the robot shut.
+
+```python
+from arena_simulation_setup.shared.navmesh import build_navmesh, navmesh_levels
+from arena_simulation_setup.tree.World import WorldIdentifier
+
+world = WorldIdentifier('stairs_demo').resolve_sync().load()
+mesh = build_navmesh(navmesh_levels(world, world.stack_offsets()), climb=0.2)
+mesh.write_ply('stairs_demo.ply')
+print(len(mesh.vertices), len(mesh.faces), mesh.components().max() + 1)
+```
+
+The `worlds_navmesh` MCP tool does the same for any world name, stacking a
+stacked world and spreading the levels of a spread one, and returns the PLY
+path with its vertex, face and component counts and height range.

@@ -568,6 +568,18 @@ def test_object_light_carries_its_glow_material():
     assert object_light('lamp', {'lumens': 400.0}, None).glow == ''
 
 
+def test_object_light_keeps_the_articulation_link_it_rides_on():
+    assert object_light('cabinet', {'lumens': 400.0, 'link': 'door'}, None).link == 'door'
+    assert object_light('cabinet', {'lumens': 400.0, 'link': None}, None).link == ''
+    assert object_light('cabinet', {'lumens': 400.0}, None).link == ''
+
+
+def test_a_light_link_needs_an_attach_or_an_owner():
+    with pytest.raises(ValueError, match='takes a link only with attach or owner'):
+        Light(name='lamp', fixture='bulb', lumens=400.0, pose=_at(0.0, 0.0, 1.0), link='door')
+    assert Light(name='lamp', fixture='bulb', lumens=400.0, pose=_at(0.0, 0.0, 1.0), owner='cabinet', link='door').link == 'door'
+
+
 def test_object_light_drops_an_orientation_on_a_bulb_and_keeps_it_on_a_spot():
     level = [[0.1, 0.0, 0.4], list(_aimed(1.0, 0.0, 0.0))]
     bulb = object_light('lamp', {'fixture': 'bulb', 'lumens': 400.0, 'pose': level}, None)

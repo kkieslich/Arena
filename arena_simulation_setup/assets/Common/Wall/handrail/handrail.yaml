@@ -1,0 +1,11 @@
+main:
+  - material: Aluminum_Anodized
+    height: 0.05
+    width: 0.05
+    z: 0.85
+  - tile:
+      - material: Aluminum_Anodized
+        height: 0.85
+        width: 0.03
+    every: 0.9
+    width: 0.03

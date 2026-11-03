@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-import functools
 import importlib.util
 
 import pytest
 
 _ROS_SKIP_REASON = "ROS2 not discoverable: source install/setup.bash to enable"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if importlib.util.find_spec("arena_simulation_setup") is not None:
+        from arena_simulation_setup.testing import install_fake_assets
+
+        install_fake_assets()
 
 
 def _ros_available() -> bool:
@@ -14,25 +20,6 @@ def _ros_available() -> bool:
     except ImportError:
         return False
     return True
-
-
-@functools.cache
-def _clip_error(name: str) -> str | None:
-    try:
-        from arena_simulation_setup.tree.assets.Animation import AnimationIdentifier
-
-        _ = AnimationIdentifier.parse(name).resolve_sync().clip
-    except Exception as exc:
-        return f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
-    return None
-
-
-def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Clips are assets (bucket or local asset dirs), not repo files: skip tests whose clips cannot be resolved."""
-    for marker in item.iter_markers("clips"):
-        missing = {name: err for name in marker.args if (err := _clip_error(name)) is not None}
-        if missing:
-            pytest.skip(f"animation clips unavailable ({', '.join(missing)}), try `arena asset pull animation <name>`: {next(iter(missing.values()))}")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -60,21 +47,6 @@ def rclpy_context():
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
-
-def _skip_without(package: str, feature: str) -> None:
-    if importlib.util.find_spec(package) is None:
-        pytest.skip(f"{package} not installed: arena feature {feature} install")
-
-
-@pytest.fixture()
-def requires_auditory() -> None:
-    _skip_without("arena_auditory", "auditory")
-
-
-@pytest.fixture()
-def requires_hearing() -> None:
-    _skip_without("arena_hearing", "hearing")
 
 
 @pytest.fixture()

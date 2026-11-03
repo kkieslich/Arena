@@ -4,14 +4,15 @@ import abc
 import traceback
 import typing
 
+from arena_bringup.constants import SimSimulator
 from arena_rclpy_mixins import ArenaMixinNode
 from arena_rclpy_mixins.registry import AsyncFactoryRegistry as Registry
 from arena_rclpy_mixins.shared import Namespace
 from arena_simulation_setup.tree import IdentifierProtocol
-from task_generator.manager.realizer import Realizer
 
 from arena_runtime._node import NodeInterface
-from arena_runtime.constants import SimSimulator
+from arena_runtime.env.realizer import Realizer
+from arena_runtime.shared import Pose, Position
 
 from ._interface import MechanismITF, ObstacleITF, PedestrianITF, RobotITF, SimLifecycle, ViewportITF, WorldITF
 from ._interface import SimUnavailable as SimUnavailable
@@ -28,12 +29,14 @@ class BaseSim(NodeInterface[ArenaMixinNode], ObstacleITF, PedestrianITF, RobotIT
     _namespace: Namespace
     _realizer: Realizer
     _env_id: int
+    _robot_levels: dict[str, str]
 
     def __init__(self, **kwargs: typing.Unpack[SimKwargs]) -> None:
         super().__init__(node=kwargs['node'])
         self._namespace = kwargs['namespace']
         self._realizer = kwargs['realizer']
         self._env_id = kwargs.get('env_id', 0)
+        self._robot_levels = {}
 
     async def before_reset_episode(self) -> bool:
         """Episode-boundary hook before the task resets, for sim work that must not ride
@@ -51,6 +54,40 @@ class BaseSim(NodeInterface[ArenaMixinNode], ObstacleITF, PedestrianITF, RobotIT
 
     async def shutdown(self) -> None:
         """Per-env teardown, e.g. delete entities this env spawned. Default no-op."""
+
+    # Placement of the abstract frame into the simulator frame, the identity unless the levels are stacked
+    def _shift(self, x: float, y: float) -> tuple[float, float, float]:
+        """Simulator minus abstract coordinates at an abstract point, by the level holding it."""
+        placement = self._realizer.placement()
+        return placement.shift(placement.level_at(x, y))
+
+    def _placed(self, pose: Pose) -> Pose:
+        """An abstract pose in the simulator frame."""
+        dx, dy, dz = self._shift(pose.position.x, pose.position.y)
+        return Pose(position=Position(pose.position.x + dx, pose.position.y + dy, pose.position.z + dz), orientation=pose.orientation)
+
+    def _offset(self, x: float, y: float) -> Pose:
+        """Spawn pose that moves a model authored in abstract coordinates around (x, y) into the simulator frame."""
+        dx, dy, dz = self._shift(x, y)
+        return Pose(position=Position(dx, dy, dz))
+
+    def _robot_shift(self, sim_path: str) -> tuple[float, float, float]:
+        """Simulator minus abstract coordinates on the level the robot stands on."""
+        return self._realizer.placement().shift(self._robot_levels.get(sim_path, ''))
+
+    def _track_level(self, sim_path: str, pose: Pose) -> None:
+        """Record the level of the abstract pose a robot was spawned or teleported to and republish its map -> odom."""
+        self._robot_levels[sim_path] = self._realizer.placement().level_at(pose.position.x, pose.position.y)
+        self._publish_odom(sim_path)
+
+    async def robot_changed_level(self, sim_path: str, level: str) -> None:
+        if self._robot_levels.get(sim_path) == level:
+            return
+        self._robot_levels[sim_path] = level
+        self._publish_odom(sim_path)
+
+    def _publish_odom(self, sim_path: str) -> None:
+        """Make the robot's map -> odom the inverse of `_robot_shift`. No-op on a simulator that does not stack."""
 
     # Utils
     async def safe_resolve(self, identifier: IdentifierProtocol) -> object:

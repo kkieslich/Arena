@@ -15,6 +15,7 @@ from arena_mcp.core import Domain, ToolError, media
 
 if typing.TYPE_CHECKING:
     from arena_simulation_setup.kg import Scene
+    from arena_simulation_setup.shared.conditions import Node
     from arena_simulation_setup.tree.World import Level, World, WorldView
 
 domain = Domain(
@@ -344,6 +345,45 @@ def worlds_nav_at_r(
     return [{"world": view.name, "radius": r, "walls_only": walls_only, "levels": [result.asdict() for result in results.values()], "images": legend}, *images]
 
 
+@domain.tool(idempotent=True)
+def worlds_navmesh(
+    world: WorldName,
+    out: Annotated[str | None, Field(description="PLY file to write, a file in a fresh temporary directory when omitted")] = None,
+    resolution: Annotated[float, Field(description="grid spacing of the mesh in meters")] = 0.1,
+) -> dict[str, object]:
+    """The navigation mesh of every walkable floor, stair and escalator for MeshNav, levels stacked when the world's layout is, written as a binary PLY in the simulator frame."""
+    from arena_simulation_setup.shared.navmesh import build_navmesh, navmesh_levels
+
+    if not resolution > 0:
+        raise ToolError(f"resolution is a positive length in meters, got {resolution}")
+    view, loaded, _ = _loaded(world)
+    stacked = loaded.layout == "stacked" and len(loaded.levels) > 1
+    if stacked:
+        shifts = loaded.stack_offsets()
+    elif len(loaded.levels) > 1:
+        shifts = {level_id: (x, y, 0.0) for level_id, (x, y) in loaded.level_origins().items()}
+    else:
+        shifts = dict.fromkeys(loaded.level_ids, (0.0, 0.0, 0.0))
+    mesh = build_navmesh(navmesh_levels(loaded, shifts), resolution)
+    if not len(mesh.faces):
+        raise ToolError(f"world {view.name!r} has no walkable floor at resolution {resolution}", hint="worlds_inspect shows the zones and their floors")
+    target = Path(out).expanduser() if out is not None else Path(tempfile.mkdtemp(prefix="navmesh_")) / f"{view.name}.ply"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mesh.write_ply(target)
+    heights = mesh.vertices[:, 2]
+    return {
+        "world": view.name,
+        "path": str(target),
+        "stacked": stacked,
+        "shifts": {level_id: list(shift) for level_id, shift in shifts.items()},
+        "resolution": resolution,
+        "vertices": len(mesh.vertices),
+        "faces": len(mesh.faces),
+        "components": int(mesh.components().max()) + 1,
+        "z_range": [round(float(heights.min()), 3), round(float(heights.max()), 3)],
+    }
+
+
 @domain.tool(read_only=True)
 def worlds_kg(
     name: WorldName,
@@ -416,7 +456,7 @@ def _scenario_verdict(raw: object, world: World | None) -> dict[str, object]:
     import numpy as np
 
     from arena_simulation_setup.shared.render import render_phases
-    from arena_simulation_setup.tree.World.Scenario import parse_scenario
+    from arena_simulation_setup.tree.World.Scenario import articulation_problems, parse_scenario
     from arena_simulation_setup.utils.cattrs import converter
 
     convert = converter if world is None else world.compact_world(dict.fromkeys(world.level_ids, (0.0, 0.0))).zone_converter(np.random.default_rng(0))
@@ -431,6 +471,7 @@ def _scenario_verdict(raw: object, world: World | None) -> dict[str, object]:
     if world is not None:
         for index, robot in enumerate(scenario.robots):
             problems.extend(f"robots[{index}].{key}: no level {value!r}, only {', '.join(world.level_ids)}" for key, value in (("level", robot.level), ("goal_level", robot.goal_level)) if value and value not in world.levels)
+        problems.extend(articulation_problems(scenario, (obj for level in world.levels.values() for obj in level.objects if obj.name)))
     if problems:
         return {"valid": False, "reason": "; ".join(problems)}
     nouns = _nouns(world) if world is not None else {}
@@ -511,7 +552,7 @@ def worlds_scenario_write(
 @domain.tool(read_only=True)
 def worlds_task_parse(task_yaml: Annotated[str, Field(description="a TaskRequest as YAML: {phases: [...], conditions: [...]} or a bare list of phases")]) -> dict[str, object]:
     """Parse a robot task (phases with until, conditions and text), report the first error, or return the canonical form and its instruction text."""
-    from arena_simulation_setup.shared.conditions import parse_until, render_until
+    from arena_simulation_setup.shared.conditions import render_until
     from arena_simulation_setup.shared.render import render_condition, render_phase, render_phases
     from arena_simulation_setup.shared.task import TaskRequest
 
@@ -523,26 +564,34 @@ def worlds_task_parse(task_yaml: Annotated[str, Field(description="a TaskRequest
         "valid": True,
         "kind": request.kind,
         "request": request.serialize(),
-        "phases": [{"type": type(phase).__name__, "until": render_until(parse_until(phase.until)) if phase.until is not None else None, "text": render_phase(phase)} for phase in request.phases],
+        "phases": [{"type": type(phase).__name__, "until": render_until(until) if (until := phase.until_node) is not None else None, "text": render_phase(phase)} for phase in request.phases],
         "conditions": [render_condition(condition) for condition in request.conditions],
         "text": render_phases(request.phases, None, request.conditions),
     }
 
 
-def _atom(atom: object) -> dict[str, object]:
+def _node(node: Node) -> dict[str, object]:
     import attrs
 
-    from arena_simulation_setup.shared.conditions import NotAtom
+    from arena_simulation_setup.shared.conditions import AllNode, AnyNode, FamilyTest, FieldTest, HoldNode, NotAtom, NotNode
 
-    if isinstance(atom, NotAtom):
-        return {"form": "not", "atom": _atom(atom.atom)}
-    return {"form": type(atom).__name__.removesuffix("Atom").lower(), **attrs.asdict(atom)}
+    if isinstance(node, (AllNode, AnyNode)):
+        return {"form": "all" if isinstance(node, AllNode) else "any", "nodes": [_node(child) for child in node.nodes]}
+    if isinstance(node, (NotNode, NotAtom)):
+        return {"form": "not", "node": _node(node.node if isinstance(node, NotNode) else node.atom)}
+    if isinstance(node, HoldNode):
+        return {"form": "hold", "seconds": node.seconds, "node": _node(node.node)}
+    if isinstance(node, FieldTest):
+        return {"form": "field", **attrs.asdict(node), "value": list(node.value) if isinstance(node.value, tuple) else node.value}
+    if isinstance(node, FamilyTest):
+        return {"form": "family", **attrs.asdict(node), "value": list(node.value) if isinstance(node.value, tuple) else node.value}
+    return {"form": type(node).__name__.removesuffix("Atom").lower(), **attrs.asdict(node)}
 
 
 @domain.tool(read_only=True)
-def worlds_condition_parse(text: Annotated[str, Field(description="an until expression or atom, e.g. 'robot in kitchen and robot sees alice within 3 for 2', or an episode condition as YAML {op, p, q}")]) -> dict[str, object]:
-    """Parse an until expression or an episode condition, report the first error, or return its structure, canonical form and sentence."""
-    from arena_simulation_setup.shared.conditions import EpisodeCondition, parse_until, render_until
+def worlds_condition_parse(text: Annotated[str, Field(description="an until expression or atom, e.g. 'robot in kitchen and robot sees alice within 3 for 2', a structured condition as YAML, e.g. {field: wardrobe.openness.door_left, ge: 0.8, for: 2}, or an episode condition as YAML {op, p, q}")]) -> dict[str, object]:
+    """Parse a condition (text or structured) or an episode condition, report the first error, or return its structure, canonical form and sentence."""
+    from arena_simulation_setup.shared.conditions import EpisodeCondition, parse_node, render_until
     from arena_simulation_setup.shared.render import render_condition, render_until_text
 
     try:
@@ -550,18 +599,18 @@ def worlds_condition_parse(text: Annotated[str, Field(description="an until expr
     except yaml.YAMLError:
         data = None
     try:
-        if isinstance(data, dict):
+        if isinstance(data, dict) and "op" in data:
             condition = EpisodeCondition.parse(data)
             return {"valid": True, "kind": "condition", "condition": condition.serialize(), "text": render_condition(condition)}
-        until = parse_until(text)
+        node = parse_node(data if isinstance(data, dict) else text)
     except Exception as exc:
         return {"valid": False, "reason": str(exc)}
     return {
         "valid": True,
         "kind": "until",
-        "clauses": [{"atoms": [_atom(atom) for atom in clause.atoms], "dwell": clause.dwell} for clause in until.clauses],
-        "canonical": render_until(until),
-        "text": render_until_text(until),
+        "node": _node(node),
+        "canonical": render_until(node),
+        "text": render_until_text(node),
     }
 
 

@@ -1,0 +1,10 @@
+# A meta-shot: include the establishing shot, then add verbs, all in a tracked frame.
+params:
+  subject: "${robot}"
+reference:
+  entity: "${subject}"
+  mode: yaw
+timeline:
+  - establishing: { radius: 8.0, elevation_deg: 35.0, target: [0.0, 0.0, 0.5] }
+  - dolly: { distance: -3.0, duration: 3.0 }
+  - pan:   { sweep_deg: 90.0, duration: 4.0 }

@@ -1,0 +1,17 @@
+repositories:
+  meshnav/lvr2:
+    type: git
+    url: https://github.com/uos/lvr2.git
+    version: 05a197e2914006555e32481679d80b77f8f8637a
+  meshnav/mesh_tools:
+    type: git
+    url: https://github.com/naturerobots/mesh_tools.git
+    version: 42d0734eb0eea14d2bf344759714c2a757cffaee
+  meshnav/mesh_navigation:
+    type: git
+    url: https://github.com/arena-planners/mesh_navigation.git
+    version: e37576474000130e8207cc3322b9c08e251add3c
+  meshnav/move_base_flex:
+    type: git
+    url: https://github.com/arena-planners/move_base_flex.git
+    version: fc08bb3ad643c0023384129cea0d51fc370e658b

@@ -11,9 +11,12 @@ from collections.abc import Sequence
 import attrs
 import rclpy.impl.rcutils_logger
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET as DOOR_INSET
-from arena_simulation_setup.shared.world import CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, ActivationDistance
-from task_generator.shared import Door, Elevator, Orientation, Pose, Position
+from arena_simulation_setup.shared.world import CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, ActivationDistance, Stairs, StairsBox
+from arena_simulation_setup.tree.assets.Material import MaterialIdentifier
 
+from arena_runtime.shared import Door, Elevator, Obstacle, Orientation, Pose, Position
+
+from ._articulation import link_light_pose, step_articulated
 from ._interface import _BOX_FLOOR_CLEARANCE
 
 if typing.TYPE_CHECKING:
@@ -247,6 +250,34 @@ class _ElevatorStepResult:
     arrival_timeout: tuple[str, ...] = ()
 
 
+@attrs.define
+class _StairsRuntime:
+    stair: Stairs
+    body: Stairs | None = None
+    treads: dict[int, str] = attrs.field(factory=dict)
+    # '' when unpaired
+    partner: str = ''
+    travel: float = 0.0
+    running: bool = True
+    reported_running: bool = True
+    velocities: dict[str, tuple[float, float, float]] = attrs.field(factory=dict)
+    tread_models: dict[int, Obstacle] = attrs.field(factory=dict)
+    latched: set[str] = attrs.field(factory=set)
+    members: tuple[str, ...] = ()
+    peds: frozenset[str] = frozenset()
+    just_crossed: bool = False
+
+
+def _reset_stair(runtime: _StairsRuntime) -> None:
+    """Reset a stair runtime to spawn defaults (belt at rest position, running, no latches)."""
+    runtime.travel = 0.0
+    runtime.running = True
+    runtime.latched = set()
+    runtime.members = ()
+    runtime.peds = frozenset()
+    runtime.just_crossed = False
+
+
 def _reset_door(runtime: _DoorRuntime) -> None:
     """Reset a door runtime to spawn defaults (last_applied_progress = -1 forces a re-close next tick)."""
     runtime.state = _DoorState.CLOSED
@@ -276,9 +307,11 @@ def _reset_elevator(runtime: _ElevatorRuntime) -> None:
 
 
 def reset_mechanisms(mech: MechanismITF) -> None:
-    """Reset every door and elevator runtime to spawn defaults for a deterministic episode start."""
+    """Reset every door, elevator and stair runtime to spawn defaults for a deterministic episode start."""
     for runtime in mech._door_runtime.values():
         _reset_door(runtime)
+    for stair_runtime in mech._stair_runtime.values():
+        _reset_stair(stair_runtime)
     for name, runtime in mech._elevator_runtime.items():
         _reset_elevator(runtime)
         cabin = mech._door_runtime.get(f"{name}/door")
@@ -654,8 +687,8 @@ def _step_elevator(
         if runtime.elevator.call_mode != 'edge':
             call = True
         else:
-            idle_shut = door_runtime.state == _DoorState.CLOSED and runtime.car != _CarState.DEPARTING and not new_occupants
-            call = bool(new_callers) or idle_shut
+            idle = runtime.car != _CarState.DEPARTING and not new_occupants
+            call = bool(new_callers) or (idle and (door_runtime.state == _DoorState.CLOSED or not current))
         if new_occupants and now - runtime.boarded_at > hold_time:
             call = False
         if not new_occupants and yielding:
@@ -765,7 +798,7 @@ def _report_incident(mech: MechanismITF, reason: str) -> None:
 
 
 async def _tick(mech: MechanismITF, dt: float) -> None:
-    """Single tick: update triggers, advance state machines, dispatch move_box and teleports."""
+    """Single tick: update triggers, advance state machines, dispatch move_box, articulated link moves and teleports."""
     robot_discs = list(mech.robot_discs())
     ped_discs: list[Disc] = list(mech._human_simulator.pedestrian_discs()) if mech._human_simulator is not None else []
     discs = robot_discs + ped_discs
@@ -835,6 +868,7 @@ async def _tick(mech: MechanismITF, dt: float) -> None:
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
     _check_door_conflicts(mech)
+    await step_articulated(mech, dt, discs)
 
     if mech._human_simulator is not None:
         door_changes: dict[str, bool] = {}
@@ -846,6 +880,8 @@ async def _tick(mech: MechanismITF, dt: float) -> None:
                 door_changes[elev_name] = is_open
         if door_changes:
             await mech._human_simulator.elevator_doors_changed(door_changes)
+
+    await _tick_stairs(mech, dt, robot_discs, ped_discs)
 
     # Run teleport jobs after door updates are dispatched.
     for source_name, dest_name, named_occupants in teleport_jobs:
@@ -901,8 +937,17 @@ def _light_moved(last: tuple[Position, float] | None, position: Position, yaw: f
 
 
 async def _apply_lights(mech: MechanismITF) -> None:
-    """Move frame-anchored lights that moved, then push every light whose output changed since its last push."""
+    """Move frame-anchored and link-riding lights that moved, then push every light whose output changed since its last push."""
     for entity, light in mech._lights.items():
+        if light.link and light.owner in mech._articulated:
+            target = link_light_pose(mech._articulated[light.owner], light)
+            if target is None:
+                continue
+            position, yaw = target
+            if _light_moved(mech._light_poses.get(entity), position, yaw):
+                await mech._move_light(light, position, yaw)
+                mech._light_poses[entity] = (position, yaw)
+            continue
         if not light.frame:
             continue
         pose = mech.frame_pose(light.frame)
@@ -1094,4 +1139,204 @@ async def shim_remove_elevators(mech: MechanismITF, names: Sequence[str]) -> boo
     _assign_groups(mech)
     if door_names and not await shim_remove_doors(mech, door_names):
         ok = False
+    return ok
+
+
+def _tread_name(stair: Stairs, index: int) -> str:
+    return f'{stair.name}/tread_{index}'
+
+
+def stair_body(stair: Stairs) -> Stairs | None:
+    """The geometry a half spawns: itself, the whole stair for the bottom half of a joined pair, none for its top half."""
+    if not stair.joined or stair.whole:
+        return stair
+    return None if stair.top else stair.whole_stair()
+
+
+class StairsPrim(typing.NamedTuple):
+    name: str
+    material: MaterialIdentifier
+    box: StairsBox
+    velocity: tuple[float, float, float] | None = None
+    comb: bool = False
+
+
+def stair_boxes(stair: Stairs) -> list[StairsPrim]:
+    """Box primitives of a stair half, the velocity None on static boxes, the landing plates combs."""
+    body = stair_body(stair)
+    if body is None:
+        return []
+    if body is not stair:
+        return [prim._replace(name=prim.name.replace(body.name, stair.name, 1)) for prim in stair_boxes(body)]
+    static = [StairsPrim(f'{stair.name}/{name}', material, box, comb=name.startswith('plate_')) for name, material, box in stair.static_boxes()]
+    treads = [StairsPrim(_tread_name(stair, k), stair.material_of('steps'), box, velocity) for k, (box, velocity) in enumerate(zip(stair.treads(0.0), stair.tread_velocities(0.0), strict=True))] if stair.kind == 'escalator' else []
+    return [*static, *treads]
+
+
+def stair_models(stair: Stairs) -> tuple[list[Obstacle], dict[int, Obstacle]]:
+    """Objects dressing a stair half: those that stay put, and per tread index the one riding that tread."""
+    body = stair_body(stair)
+    if body is None:
+        return [], {}
+    still = [Obstacle(name=f'{stair.name}/{name}', model=model, pose=pose) for name, model, pose in body.static_models()]
+    riding = {index: Obstacle(name=f'{stair.name}/model_tread_{index}', model=body.surface_models['steps'], pose=pose) for index, pose in enumerate(body.tread_models(0.0))}
+    return still, riding
+
+
+def stair_level(stair: Stairs) -> str:
+    """The level of a realized stair half, the last part of its `<prefix>/<name>/<level_id>` name."""
+    return stair.name.rsplit('/', 1)[-1]
+
+
+def stair_partner(mech: MechanismITF, runtime: _StairsRuntime) -> _StairsRuntime | None:
+    return mech._stair_runtime.get(runtime.partner) if runtime.partner else None
+
+
+def _pair_stairs(mech: MechanismITF) -> None:
+    """Link every half to the other half of its pair: its `to`, else the half whose `to` names it."""
+    runtimes = mech._stair_runtime
+    boarders = {runtime.stair.to: name for name, runtime in runtimes.items() if runtime.stair.boards}
+    for name, runtime in runtimes.items():
+        partner = runtime.stair.to if runtime.stair.boards else boarders.get(name, '')
+        runtime.partner = partner if partner in runtimes else ''
+
+
+async def _teleport_robot(mech: MechanismITF, runtime: _StairsRuntime, partner: _StairsRuntime, sim_path: str) -> None:
+    pose = mech.robot_pose(sim_path)
+    if pose is None:
+        _report_incident(mech, f"{sim_path}: stair teleport {runtime.stair.name!r} -> {partner.stair.name!r} failed: robot pose unknown")
+        return
+    roll, pitch, yaw = pose.orientation.to_euler()
+    x, y, landing_yaw, dz = runtime.stair.landing(partner.stair, pose.position.x, pose.position.y, yaw, runtime.travel, partner.travel)
+    target = Pose(position=Position(x, y, pose.position.z + dz), orientation=Orientation.from_euler((roll, pitch, landing_yaw)))
+    try:
+        failure = "" if await mech.set_robot_pose(sim_path, target) else "the simulator refused the move"
+    except Exception as e:
+        failure = repr(e)
+    if failure:
+        _report_incident(mech, f"{sim_path}: stair teleport {runtime.stair.name!r} -> {partner.stair.name!r} failed: {failure}")
+    else:
+        runtime.just_crossed = True
+
+
+async def _tick_stairs(mech: MechanismITF, dt: float, robot_discs: Sequence[Disc], ped_discs: Sequence[Disc]) -> None:
+    """Track who stands on each half, teleport robots across boarding seams, run escalator belts."""
+    runtimes = mech._stair_runtime
+    if not runtimes:
+        return
+    robots = {name: xy for name, xy, _radius in robot_discs}
+    peds = {name: xy for name, xy, _radius in ped_discs}
+    previous = {name: runtime.peds for name, runtime in runtimes.items()}
+    for runtime in runtimes.values():
+        stair = runtime.stair
+        runtime.just_crossed = False
+        runtime.peds = frozenset(name for name, (x, y) in peds.items() if stair.contains(x, y))
+        runtime.members = tuple(sorted(name for name, (x, y) in robots.items() if stair.contains(x, y))) + tuple(sorted(runtime.peds))
+        runtime.latched = {name for name in runtime.latched if name not in robots or stair.crossed(*robots[name])}
+
+    jobs: list[tuple[_StairsRuntime, _StairsRuntime, str]] = []
+    level_changes: list[tuple[str, str]] = []
+    for name, runtime in runtimes.items():
+        partner = stair_partner(mech, runtime)
+        if partner is not None and runtime.stair.joined:
+            if previous[name] & partner.peds:
+                runtime.just_crossed = True
+            for sim_path, xy in robots.items():
+                if runtime.stair.past_seam(*xy):
+                    level_changes.append((sim_path, stair_level(partner.stair)))
+                    runtime.just_crossed = True
+            continue
+        if partner is None or not runtime.stair.boards:
+            continue
+        if previous[name] & partner.peds:
+            runtime.just_crossed = True
+        for sim_path, xy in robots.items():
+            if sim_path in runtime.latched or not runtime.stair.crossed(*xy):
+                continue
+            runtime.latched.add(sim_path)
+            partner.latched.add(sim_path)
+            jobs.append((runtime, partner, sim_path))
+    for runtime, partner, sim_path in jobs:
+        await _teleport_robot(mech, runtime, partner, sim_path)
+    for sim_path, level in level_changes:
+        await mech.robot_changed_level(sim_path, level)
+
+    moves: dict[str, Pose] = {}
+    velocities: dict[str, tuple[float, float, float]] = {}
+    for runtime in runtimes.values():
+        stair = runtime.body
+        if not runtime.treads or stair is None:
+            continue
+        if runtime.running:
+            runtime.travel += stair.belt * dt
+        wanted = stair.tread_velocities(runtime.travel)
+        for index, ((_size, pose), velocity) in enumerate(zip(stair.treads(runtime.travel), wanted, strict=True)):
+            name = runtime.treads.get(index)
+            if name is None:
+                continue
+            moves[name] = pose
+            velocity = velocity if runtime.running else (0.0, 0.0, 0.0)
+            if runtime.velocities.get(name) != velocity:
+                runtime.velocities[name] = velocity
+                velocities[name] = velocity
+    if velocities:
+        await mech.set_box_velocities(velocities)
+    if moves:
+        await mech.move_boxes(moves)
+    riders = [attrs.evolve(model, pose=pose) for runtime in runtimes.values() if runtime.tread_models and runtime.body is not None for index, pose in enumerate(runtime.body.tread_models(runtime.travel)) if (model := runtime.tread_models.get(index)) is not None]
+    if riders:
+        await mech.obstacle_move(riders)
+
+    if mech._human_simulator is not None:
+        changes = {name: runtime.running for name, runtime in runtimes.items() if runtime.running != runtime.reported_running}
+        if changes:
+            for name, running in changes.items():
+                runtimes[name].reported_running = running
+            await mech._human_simulator.stairs_changed(changes)
+
+
+async def shim_spawn_stairs(mech: MechanismITF, stairs: Sequence[Stairs]) -> bool:
+    """Spawn the box primitives of each stair half and register stair runtimes."""
+    plan = {stair.name: (stair, stair_boxes(stair)) for stair in stairs}
+    jobs = [prim for _stair, prims in plan.values() for prim in prims]
+
+    async def spawn(prim: StairsPrim) -> bool:
+        size, pose = prim.box
+        return await mech.spawn_box(prim.name, size, pose, prim.material, velocity=prim.velocity, comb=prim.comb)
+
+    results = await asyncio.gather(*(spawn(prim) for prim in jobs))
+    spawned = {prim.name for prim, ok in zip(jobs, results, strict=True) if ok}
+    dressing = {stair.name: stair_models(stair) for stair in stairs}
+    objects = [model for still, riding in dressing.values() for model in (*still, *riding.values())]
+    shown = {model.name for model, ok in zip(objects, await mech.obstacle_spawn(objects) if objects else (), strict=True) if ok}
+    for stair, prims in plan.values():
+        mech._stair_primitives[stair.name] = [prim.name for prim in prims if prim.name in spawned]
+        still, riding = dressing[stair.name]
+        mech._stair_models[stair.name] = [model for model in (*still, *riding.values()) if model.name in shown]
+        body = stair_body(stair)
+        treads = {index: _tread_name(stair, index) for index in range(body.tread_count)} if body is not None and stair.kind == 'escalator' else {}
+        live = {index: name for index, name in treads.items() if name in spawned}
+        initial = body.tread_velocities(0.0) if body is not None and live else []
+        mech._stair_runtime[stair.name] = _StairsRuntime(stair=stair, body=body, treads=live, velocities={name: initial[index] for index, name in live.items()}, tread_models={index: model for index, model in riding.items() if model.name in shown})
+    _pair_stairs(mech)
+    for stair in stairs:
+        if stair.boards and not mech._stair_runtime[stair.name].partner:
+            mech.node.get_logger().info(f"Stairs {stair.name!r}: partner half {stair.to!r} not spawned, its seam lands nowhere")
+    if mech._stair_runtime:
+        _ensure_loop(mech)
+    return all(results)
+
+
+async def shim_remove_stairs(mech: MechanismITF, names: Sequence[str]) -> bool:
+    """Delete the box primitives and dressing objects and drop the stair runtimes of the given names."""
+    ok = True
+    for name in names:
+        for prim_name in mech._stair_primitives.pop(name, []):
+            if not await mech.delete_box(prim_name):
+                ok = False
+        models = mech._stair_models.pop(name, [])
+        if models and not all(await mech.obstacle_delete(models)):
+            ok = False
+        mech._stair_runtime.pop(name, None)
+    _pair_stairs(mech)
     return ok

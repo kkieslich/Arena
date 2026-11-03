@@ -10,12 +10,14 @@ from pathlib import Path
 import attrs
 import yaml
 
+from arena_simulation_setup import ASS_DIR
 from arena_simulation_setup.shared.entities import Obstacle
 from arena_simulation_setup.tree import (
     DomainAssetIdentifier,
     DynamicPaths,
     Identifier,
     NetResolver,
+    SimplePathResolver,
 )
 from arena_simulation_setup.tree.assets.Material import Material, MaterialIdentifier
 from arena_simulation_setup.tree.assets.Object import ObjectIdentifier
@@ -59,6 +61,11 @@ class PositionalNumber(Parseable):
         return cls(absolute=float(value))
 
 
+def _heading(start: Position, end: Position) -> Orientation:
+    """Orientation along the wall line seen from above, upright on a sloped wall."""
+    return Position(end.x - start.x, end.y - start.y, 0.0).to_orientation()
+
+
 @attrs.define(kw_only=True)
 class SubWall(abc.ABC):
     x: float = attrs.field(converter=float, default=0.0)  # x axis shift [m]
@@ -66,9 +73,10 @@ class SubWall(abc.ABC):
     z: float = attrs.field(converter=float, default=0.0)  # z axis shift [m]
 
     def _shift(self, start: Position, end: Position) -> tuple[Position, Position]:
-        external_orientation = (end - start).to_orientation()
-        offset = external_orientation * Position(self.x, self.y, self.z)
-        return offset + start, offset + end
+        offset = _heading(start, end) * Position(self.x, self.y, self.z)
+        run = math.hypot(end.x - start.x, end.y - start.y)
+        climb = Position(0.0, 0.0, self.x * (end.z - start.z) / run if run > 1e-9 else 0.0)
+        return offset + climb + start, offset + climb + end
 
     @abc.abstractmethod
     def realize(self, start: Position, end: Position) -> WallRealization:
@@ -153,7 +161,7 @@ class PlaceObstacleAsset(SubWall):
 
     def realize(self, start: Position, end: Position) -> WallRealization:
 
-        exterior_orientation = (end - start).to_orientation()
+        exterior_orientation = _heading(start, end)
         start, end = self._shift(start, end)
 
         return (), (
@@ -273,4 +281,5 @@ class WallIdentifier(DomainAssetIdentifier[WallDescription]):
 
 
 WallIdentifier.use(*DynamicPaths.as_resolvers(WallIdentifier))
+WallIdentifier.use(SimplePathResolver(WallIdentifier, ASS_DIR / 'assets'))
 WallIdentifier.use(*NetResolver.all(WallIdentifier))

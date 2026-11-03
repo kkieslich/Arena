@@ -21,6 +21,8 @@ class WorldGeneratorType(enum.Enum):
     SKETCH = "sketch"
     LETTER = "letter"
     BARN_CYLINDER = "barn_cylinder"
+    CORRIDOR = "corridor"
+    OPEN = "open"
 
 
 class BaseConfiguration(pydantic.BaseModel):
@@ -70,8 +72,8 @@ class WorldGeneratorImpl(abc.ABC):
         return None
 
     def params(self) -> dict[str, typing.Any]:
-        """Episode binding applied when this world is queued: tm_robots/tm_obstacles plus
-        robots_params/obstacles_params leaf dicts. Empty (default) leaves the prior episode untouched."""
+        """Episode binding applied when this world is queued: modes (axis -> mode names) plus
+        params (axis -> leaf name -> value, the leaves of that axis's mode). Empty (default) leaves the prior episode untouched."""
         return {}
 
 
@@ -142,7 +144,7 @@ class WithPedestrians(WorldGeneratorImpl):
         count = self.config.pedestrians
         if count < 0:
             return {}
-        return {'tm_obstacles': 'random', 'obstacles_params': {'dynamic.n': [count, count]}}
+        return {'modes': {'obstacles': 'random'}, 'params': {'obstacles': {'dynamic.n': [count, count]}}}
 
 
 @WorldGenerator.register(WorldGeneratorType.EMPTY)
@@ -185,3 +187,17 @@ def lazy_BarnCylinder() -> type[WorldGeneratorImpl]:
     from .barn_cylinder import WorldGeneratorBarnCylinder
 
     return WorldGeneratorBarnCylinder
+
+
+@WorldGenerator.register(WorldGeneratorType.CORRIDOR)
+def lazy_Corridor() -> type[WorldGeneratorImpl]:
+    from .corridor import WorldGeneratorCorridor
+
+    return WorldGeneratorCorridor
+
+
+@WorldGenerator.register(WorldGeneratorType.OPEN)
+def lazy_Open() -> type[WorldGeneratorImpl]:
+    from .open import WorldGeneratorOpen
+
+    return WorldGeneratorOpen

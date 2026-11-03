@@ -16,9 +16,9 @@ Sub-wall types (see
 
 | Type | Discriminator | Fields | Effect |
 |---|---|---|---|
-| `PlaceWallSegmentAsset` | has `material` key | `material`, `height`, `width`, `name`, `visible`, `solid`, `shadows`, `x/y/z` offset | Places a single wall segment |
+| `PlaceWallSegmentAsset` | has `material` key | `material`, `height` (default 2 m), `width` (thickness, default 0.05 m), `name`, `visible`, `solid`, `shadows`, `x/y/z` offset | Places a single wall segment |
 | `PlaceObstacleAsset` | has `model` key | `model`, `at` (position along wall, default `50%`), `orientation`, `name`, `x/y/z` offset | Places a single obstacle |
-| `TilingAsset` | has `tile` key | `tile` (list of sub-walls), `every` (spacing [m]), `width` (half-width [m]) | Repeats `tile` contents every N meters |
+| `TilingAsset` | has `tile` key | `tile` (list of sub-walls), `every` (spacing [m]), `width` (length of each tile along the wall [m]) | Repeats `tile` contents every N meters |
 | `FillAsset` | has `fill` key | `fill` (list of sub-walls), `start`, `end` (positions along wall) | Applies `fill` over a slice of the wall |
 
 `at`, `start`, `end` accept:
@@ -78,6 +78,15 @@ In Isaac a segment with both `visible: false` and `shadows: false` returns no
 lidar: RTX drops a prim that is hidden from cameras and casts no shadows from
 its sensor rays. Each flag alone keeps the return.
 
+### Sloped walls
+
+A wall line whose end lies higher than its start, as along a stair or
+escalator, carries its whole stack along the slope: each segment and tiled
+model keeps its `z` above the line. A sloped segment spawns as boxes pitched
+along the line, `height` measured vertically, stacked in strips thin enough
+that the ends stand within 1 cm of vertical. A segment shorter than it is
+tall, such as a post, stands upright.
+
 ### Example: splat wall
 
 A captured wall (a 3D Gaussian splat built with `arena-assets splat`, see the
@@ -110,7 +119,7 @@ main:
 
 In `world.yaml`, a `walls:` list entry can carry a `kind:` field naming a
 `WallIdentifier`. At simulation time,
-[shared/walls.py:30](../../src/arena_simulation_setup/shared/walls.py#L30)
+[shared/walls.py](../../src/arena_simulation_setup/shared/walls.py)
 calls `WallIdentifier(kind).resolve()`, which searches
 `DynamicPaths.WORLD / 'assets'`, then the `assets/` of every world the active
 world links levels from (`DynamicPaths.LINKED`), then `DynamicPaths.ARENA`, then network

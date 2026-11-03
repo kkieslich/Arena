@@ -1,0 +1,9 @@
+format: arena-scenario/2
+robots:
+- start: [2.0, 2.0, 0.0]
+  phases:
+  - goto: [15.0, 3.0, 0.0]
+  level: '0'
+  goal_level: '1'
+conditions:
+- {op: eventually, p: robot in gallery, text: Climb the stairs to the gallery.}

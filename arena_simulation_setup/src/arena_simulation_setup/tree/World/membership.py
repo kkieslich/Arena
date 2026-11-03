@@ -40,6 +40,7 @@ def _geometric_refs(world: World) -> set[str]:
         refs.update(f'light:{light.name}' for light in level.lights)
         refs.update(f'sound:{sound.name}' for sound in level.sounds)
         refs.update(f'elevator:{elevator.name}' for elevator in level.elevators)
+        refs.update(f'stair:{stair.name}' for stair in level.stairs)
     return refs
 
 
@@ -105,6 +106,12 @@ def derive(world: World, mode: str = 'auto') -> Scene:
             contain(_inside(level, elevator.position), f'elevator:{elevator.name}')
             for destination in elevator.destinations:
                 add(f'elevator:{elevator.name}', 'connects_floor', f'elevator:{destination}')
+        for stair in level.stairs:
+            if f'stair:{stair.name}' not in stated_members:
+                add(floor, 'contains', f'stair:{stair.name}')
+            contain(_inside(level, stair.position), f'stair:{stair.name}')
+            if stair.to:
+                add(f'stair:{stair.name}', 'connects_floor', f'stair:{stair.to}')
     return scene
 
 
@@ -153,7 +160,7 @@ def describe(scene: Scene, zone: str) -> str:
     return str(entity.props.get('description', '')) if entity is not None else ''
 
 
-_WORLD_KINDS = {'room': 'zone', 'door': 'door', 'elevator': 'elevator', 'obj': 'obj', 'light': 'light', 'sound': 'sound'}
+_WORLD_KINDS = {'room': 'zone', 'door': 'door', 'elevator': 'elevator', 'stair': 'stair', 'obj': 'obj', 'light': 'light', 'sound': 'sound'}
 
 
 def _union_uses(*scenes: Scene) -> list[str]:

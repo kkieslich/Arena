@@ -1,0 +1,7 @@
+main:
+  - material: Plaster_Wall
+    height: 0.95
+  - material: Oak_Planks
+    height: 0.05
+    width: 0.1
+    z: 0.95

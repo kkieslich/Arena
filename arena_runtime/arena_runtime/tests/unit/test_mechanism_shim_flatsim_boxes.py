@@ -1,65 +1,20 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import math
-import typing
 
 import pytest
 
-DT = 1.0 / 30.0
 PREFIX = "env_0/"
 
 
-@pytest.fixture
-def on_flatsim():
-    pytest.importorskip("flatsim_msgs")
-
-    def run(body: typing.Callable[..., typing.Awaitable[None]]) -> None:
-        import rclpy.parameter
-        from arena_rclpy_mixins import ArenaMixinNode
-        from arena_rclpy_mixins.shared import Namespace
-        from arena_rclpy_mixins.spin import create_executor
-        from task_generator.manager.realizer import Realizer
-
-        from arena_runtime.sim.flatsim_simulator import FlatsimSimulator
-        from flatsim.server import FlatsimServer
-
-        async def main() -> None:
-            executor = create_executor()
-            server = FlatsimServer(parameter_overrides=[rclpy.parameter.Parameter("physics_dt", value=DT), rclpy.parameter.Parameter("paused", value=True)])
-            node = ArenaMixinNode("shim_flatsim", namespace="/shim_flatsim/env_0")
-            executor.add_node(server)
-            executor.add_node(node)
-            spin = asyncio.get_running_loop().run_in_executor(None, executor.spin)
-            sim = None
-            try:
-                sim = await asyncio.wait_for(FlatsimSimulator.create(node=node, namespace=Namespace("/shim_flatsim/env_0"), realizer=Realizer(), env_id=0), timeout=30.0)
-                await body(sim, server._scene.world)
-            finally:
-                if sim is not None:
-                    with contextlib.suppress(Exception):
-                        await asyncio.wait_for(sim.shutdown(), timeout=10.0)
-                executor.shutdown()
-                await spin
-                executor.remove_node(node)
-                executor.remove_node(server)
-                node.destroy_node()
-                server.destroy_node()
-
-        asyncio.run(main())
-
-    return run
-
-
 def _door(name: str, kind: str = "sliding"):
-    from task_generator.shared import Door, Position
+    from arena_runtime.shared import Door, Position
 
     return Door(name=name, start=Position(0.0, 0.0, 0.0), end=Position(2.0, 0.0, 0.0), kind=kind, width=0.1, height=2.0)
 
 
 def _elevator(name: str = "lift"):
-    from task_generator.shared import Elevator, Position
+    from arena_runtime.shared import Elevator, Position
 
     return Elevator(name=name, position=Position(5.0, 5.0, 0.0), size=[2.0, 2.0, 2.5], door_side="+x", destinations=["other"])
 
@@ -175,5 +130,37 @@ def test_remove_mechanisms_clears_doors_and_elevators(on_flatsim):
         assert await sim.remove_mechanisms()
         assert _ours(world) == set()
         assert sim._door_runtime == {} and sim._elevator_runtime == {}
+
+    on_flatsim(body)
+
+
+def _stairs():
+    from arena_runtime.shared import Position
+
+    from arena_simulation_setup.shared import Stairs
+
+    return [
+        Stairs(name="esc_low", kind="escalator", position=Position(10.3, 5.0, 0.0), size=[2.6, 1.0], mouth_side="-x", to="esc_high"),
+        Stairs(name="esc_high", kind="escalator", position=Position(23.7, 5.0, 0.0), size=[2.6, 1.0], mouth_side="+x", top=True),
+    ]
+
+
+def test_stairs_become_boxes_in_the_plane_with_runtimes_and_semantics(on_flatsim):
+    from arena_runtime.sim._mechanism_shim import stair_boxes
+
+    async def body(sim, world):
+        stairs = _stairs()
+        assert await sim.spawn_stairs(stairs)
+        names = {prim.name for stair in stairs for prim in stair_boxes(stair)}
+        assert _ours(world) == names
+        assert set(sim._box_sizes) == names
+        assert set(sim._stair_runtime) == {"esc_low", "esc_high"}
+        assert sim._stair_runtime["esc_low"].partner == "esc_high"
+        assert {snap.entity: snap.kind for snap in sim.semantics_snapshot()} == {"esc_low": "escalator", "esc_high": "escalator"}
+        assert sim._mechanism_loop_task is not None and not sim._mechanism_loop_task.done()
+        assert await sim.remove_mechanisms()
+        assert _ours(world) == set()
+        assert sim._stair_runtime == {} and sim._stair_primitives == {}
+        assert sim.semantics_snapshot() == []
 
     on_flatsim(body)

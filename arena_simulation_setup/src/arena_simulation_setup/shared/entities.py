@@ -12,6 +12,7 @@ from typing_extensions import Self
 
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
 from arena_simulation_setup.tree.assets.Object import ObjectIdentifier
+from arena_simulation_setup.utils.articulation import FAMILIES, WRITABLE_FAMILIES
 from arena_simulation_setup.utils.cattrs import (
     ArenaConverter,
     Parseable,
@@ -176,27 +177,75 @@ def _humansim_object(value: Mapping[str, object] | None) -> dict:
     return value
 
 
+JointValue = float | str
+Joints = str | float | dict[str, JointValue] | dict[str, dict[str, JointValue]] | None
+JOINTS_FORMS = f'a state name, an openness in [0, 1], a mapping of joint names to values or state names, or a mapping of families ({", ".join(WRITABLE_FAMILIES)}) to mappings of their joints to fractions, detent names or values'
+
+
+def _joint_value(joint: object, position: object) -> JointValue:
+    if isinstance(position, str):
+        return position
+    if isinstance(position, (int, float)) and not isinstance(position, bool):
+        return float(position)
+    raise ValueError(f'joint {joint!r} takes a number or a state name, got {position!r}')
+
+
+def _joints(value: object) -> Joints:
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f'joints as a number is an openness in [0, 1], got {value!r}')
+        return float(value)
+    if not isinstance(value, Mapping):
+        raise ValueError(f'joints must be {JOINTS_FORMS}, got {value!r}')
+    families = {str(key) for key in value} & set(FAMILIES)
+    if families and len(families) != len(value):
+        raise ValueError(f'joints mixes family keys {sorted(families)} with joint names, use one or the other: {JOINTS_FORMS}')
+    if not families:
+        return {str(joint): _joint_value(joint, position) for joint, position in value.items()}
+    joints: dict[str, dict[str, JointValue]] = {}
+    for family, members in value.items():
+        if not isinstance(members, Mapping):
+            raise ValueError(f'joints family {family} maps its joints to fractions, detent names or values, got {members!r}')
+        joints[str(family)] = {str(joint): _joint_value(joint, position) for joint, position in members.items()}
+    return joints
+
+
 @attrs.define
 class Obstacle(Entity):
     scale: Scale | None = None
     light: ObjectLightSettings | None = None
     humansim: dict = attrs.field(factory=dict, converter=_humansim_object)
+    joints: Joints = attrs.field(default=None, converter=_joints)
 
-    async def footprint(self) -> shapely.Polygon | None:
-        """Map-frame 2D footprint from the asset's annotated bounds, None when unannotated."""
-        import shapely
-        import shapely.affinity
-
+    async def _corners(self) -> list[Position] | None:
         try:
             view = await self.model.resolve()
         except FileNotFoundError:
             return None
-        bounds = view.bounds
-        if bounds is None:
+        if view.extent is None:
             return None
-        poly = shapely.Polygon(bounds)
-        poly = shapely.affinity.rotate(poly, self.pose.orientation.to_yaw(), origin=(0, 0), use_radians=True)
-        return shapely.affinity.translate(poly, xoff=self.pose.position.x, yoff=self.pose.position.y)
+        return [self.pose * Position(x, y, z) for x in view.extent[0] for y in view.extent[1] for z in view.extent[2]]
+
+    async def footprint(self) -> shapely.Polygon | None:
+        """Map-frame 2D footprint of the asset's annotated box through the full pose, None when unannotated."""
+        import shapely
+
+        corners = await self._corners()
+        if corners is None:
+            return None
+        hull = shapely.MultiPoint([(corner.x, corner.y) for corner in corners]).convex_hull
+        if isinstance(hull, shapely.Polygon):
+            return hull
+        return shapely.Polygon([(corners[i].x, corners[i].y) for i in (0, 2, 6, 4)])
+
+    async def span(self) -> tuple[float, float] | None:
+        """Map-frame z range of the asset's annotated box through the full pose, None when unannotated."""
+        corners = await self._corners()
+        if corners is None:
+            return None
+        return min(corner.z for corner in corners), max(corner.z for corner in corners)
 
     async def affordance_slots(self) -> list[AffordanceSlot]:
         """Placed affordance slots of the asset in the obstacle-local frame, empty when unannotated."""
@@ -208,6 +257,7 @@ class Obstacle(Entity):
 
 
 converter.register_structure_hook_func(lambda t: t == dict | str | None, lambda v, _t: v)
+converter.register_structure_hook_func(lambda t: t == Joints, lambda v, _t: _joints(v))
 
 
 def _waypoints_converter(value: object) -> list[Waypoint]:

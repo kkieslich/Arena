@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import uuid
 
 import pytest
 import yaml
@@ -292,14 +293,111 @@ def test_task_parse_returns_canonical_form_and_text_or_the_error():
 def test_condition_parse_handles_until_and_episode_conditions():
     until = worlds.worlds_condition_parse("robot in kitchen and robot sees alice within 3 for 2 or not alice in hall")
     assert until["valid"] and until["kind"] == "until"
-    first, second = until["clauses"]
-    assert [atom["form"] for atom in first["atoms"]] == ["membership", "sees"] and first["dwell"] == 2.0
-    assert second["atoms"][0]["form"] == "not" and second["atoms"][0]["atom"]["zone"] == "hall"
+    assert until["node"]["form"] == "any"
+    first, second = until["node"]["nodes"]
+    assert first["form"] == "hold" and first["seconds"] == 2.0
+    assert [atom["form"] for atom in first["node"]["nodes"]] == ["membership", "sees"]
+    assert second["form"] == "not" and second["node"]["zone"] == "hall"
     assert until["canonical"] == "robot in kitchen and robot sees alice within 3 for 2 or not alice in hall"
     condition = worlds.worlds_condition_parse("{op: before, p: robot in hall, q: robot in lab}")
     assert condition["valid"] and condition["kind"] == "condition" and condition["condition"]["q"] == "robot in lab"
     assert not worlds.worlds_condition_parse("robot dances")["valid"]
     assert not worlds.worlds_condition_parse("{op: before, p: robot in hall}")["valid"]
+
+
+def test_condition_parse_reads_structured_conditions():
+    parsed = worlds.worlds_condition_parse("{all: [{field: wardrobe.openness.door_left, ge: 0.8}, {some: wardrobe.openness, within: [0.2, 0.4]}], for: 2}")
+    assert parsed["valid"] and parsed["kind"] == "until"
+    assert parsed["node"]["form"] == "hold" and parsed["node"]["seconds"] == 2.0
+    field, family = parsed["node"]["node"]["nodes"]
+    assert field == {"form": "field", "entity": "wardrobe", "field": "openness.door_left", "op": "ge", "value": 0.8}
+    assert family == {"form": "family", "entity": "wardrobe", "family": "openness", "quantifier": "some", "op": "within", "value": [0.2, 0.4]}
+    assert parsed["canonical"] == "wardrobe openness.door_left >= 0.8 and some wardrobe openness within [0.2, 0.4] for 2 s"
+    json.dumps(parsed)
+    broken = worlds.worlds_condition_parse("{field: wardrobe.state, lt: open}")
+    assert not broken["valid"] and "'lt' takes a number" in broken["reason"]
+
+
+@pytest.fixture
+def object_root(local_root):
+    from arena_simulation_setup.tree import DynamicPaths
+
+    previous = DynamicPaths.ARENA.path
+    DynamicPaths.ARENA.path = local_root
+    yield local_root
+    DynamicPaths.ARENA.path = previous
+
+
+def _cabinet(root) -> str:
+    name = f"Kitchen/McpCabinet{uuid.uuid4().hex[:8]}"
+    bundle = root / "Kitchen" / "Object" / name.split("/")[1]
+    bundle.mkdir(parents=True)
+    articulation = {
+        "links": {"body": ["body"], "door": ["door"]},
+        "joints": [{"name": "door", "type": "revolute", "parent": "body", "child": "door", "origin": [0.5, -0.3, 0.0], "axis": [0, 0, 1], "limit": [0.0, 1.57]}],
+        "states": {"closed": {"door": 0.0}, "open": {"door": 1.5}},
+    }
+    (bundle / "annotation.yaml").write_text(yaml.safe_dump({"bounding_box": [[-0.5, 0.5], [-0.3, 0.3], [0.0, 1.0]], "articulation": articulation}))
+    return name
+
+
+def _cabinet_scenario(model: str, until: str | dict, condition: dict, timeline_set: dict) -> str:
+    return yaml.safe_dump(
+        {
+            "format": "arena-scenario/2",
+            "objects": [{"name": "cabinet", "model": model, "pose": [1.0, 1.0, 0.0]}],
+            "robots": [{"start": "box", "phases": [{"goto": "nook", "until": until}]}],
+            "conditions": [condition],
+            "timeline": [{"at": 1.0, "set": [timeline_set]}],
+        }
+    )
+
+
+def test_scenario_validate_checks_conditions_and_timeline_against_articulated_objects(object_root):
+    worlds.worlds_write("mcp_scene", yaml.safe_dump(BOX))
+    model = _cabinet(object_root)
+    good = worlds.worlds_scenario_validate(
+        _cabinet_scenario(model, {"field": "cabinet.openness.door", "ge": 0.8}, {"op": "eventually", "p": {"some": "cabinet.openness", "ge": 0.5}}, {"entity": "cabinet", "field": "openness.door", "value": 0.5}),
+        world="mcp_scene",
+    )
+    assert good["valid"], good
+    bad = worlds.worlds_scenario_validate(
+        _cabinet_scenario(model, {"field": "cabinet.openness.drawer", "ge": 0.8}, {"op": "eventually", "p": {"some": "cabinet.setting", "eq": "off"}}, {"entity": "cabinet", "field": "pos.door", "value": 0.5}),
+        world="mcp_scene",
+    )
+    assert not bad["valid"]
+    assert "robots[0].phases[0].until: cabinet has no field 'openness.drawer'" in bad["reason"]
+    assert "conditions[0].p: cabinet has no 'setting' fields" in bad["reason"]
+    assert "timeline[0].set[0]: " in bad["reason"]
+    other = worlds.worlds_scenario_validate(
+        _cabinet_scenario(model, "robot in nook", {"op": "eventually", "p": {"field": "door.openness.left", "ge": 0.5}}, {"entity": "door", "field": "locked", "value": True}),
+        world="mcp_scene",
+    )
+    assert other["valid"], other
+
+
+def test_scenario_validate_checks_joints_when_triggers_and_world_objects(object_root):
+    model = _cabinet(object_root)
+    level = {**BOX["levels"][0], "objects": [{"name": "wardrobe", "model": model, "pose": [2.0, 2.0, 0.0], "joints": {"openness": {"lid": 1.0}}}]}
+    worlds.worlds_write("mcp_wardrobe", yaml.safe_dump({**BOX, "levels": [level]}))
+    scenario = {
+        "format": "arena-scenario/2",
+        "objects": [{"name": "cabinet", "model": model, "pose": [1.0, 1.0, 0.0], "joints": {"setting": {"door": "high"}}}],
+        "robots": [{"start": "box", "phases": [{"goto": "nook", "until": {"field": "wardrobe.openness.door", "ge": 0.8}}]}],
+        "timeline": [{"when": {"each": "wardrobe.pos", "ge": 0.5}, "set": [{"entity": "wardrobe", "field": "openness", "value": 1}]}],
+    }
+    bad = worlds.worlds_scenario_validate(yaml.safe_dump(scenario), world="mcp_wardrobe")
+    assert not bad["valid"]
+    assert "objects[0] 'cabinet' joints: " in bad["reason"]
+    assert "world objects[0] 'wardrobe' joints: " in bad["reason"]
+    assert "timeline[0].when: wardrobe has no 'pos' fields" in bad["reason"]
+    assert "robots[0].phases[0].until" not in bad["reason"]
+    scenario["objects"][0]["joints"] = 0.5
+    scenario["timeline"][0]["when"] = {"each": "wardrobe.openness", "ge": 0.5}
+    level["objects"][0]["joints"] = "open"
+    worlds.worlds_write("mcp_wardrobe_open", yaml.safe_dump({**BOX, "levels": [level]}))
+    good = worlds.worlds_scenario_validate(yaml.safe_dump(scenario), world="mcp_wardrobe_open")
+    assert good["valid"], good
 
 
 def test_world_resource_is_the_inspect_summary_without_images():

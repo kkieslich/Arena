@@ -16,6 +16,7 @@ HOST_FEATURES = (
     "gazebo",
     "hearing",
     "isaac",
+    "meshnav",
     "mujoco",
     "planners",
     "robots",

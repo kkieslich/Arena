@@ -355,6 +355,36 @@ def test_timeline_entry_parse_when():
     assert entry.when == {"entity": "door_1", "field": "open", "is": True}
 
 
+def test_timeline_entry_when_reads_the_entity_form_as_an_eq_field_test():
+    from arena_simulation_setup.shared.conditions import FieldTest
+
+    entry = TimelineEntry.parse({"when": {"entity": "door_1", "field": "open", "is": True}, "set": [{"entity": "fire_alarm", "field": "active", "value": "true"}]})
+    assert entry.when_node() == FieldTest(entity="door_1", field="open", op="eq", value="true")
+
+
+def test_timeline_entry_when_takes_a_structured_node_and_keeps_its_form():
+    from arena_simulation_setup.shared.conditions import FamilyTest, HoldNode
+
+    raw = {"some": "fridge.openness", "ge": 0.9, "for": 2}
+    entry = TimelineEntry.parse({"when": raw, "set": [{"entity": "a", "field": "x", "value": "1"}]})
+    assert entry.when == raw
+    assert entry.when_node() == HoldNode(node=FamilyTest(entity="fridge", family="openness", quantifier="some", op="ge", value=0.9), seconds=2.0)
+
+
+@pytest.mark.parametrize(
+    ("when", "message"),
+    [
+        ({"entity": "door_1", "field": "open", "is": True, "ge": 1}, "takes no keys \\['ge'\\]"),
+        ({"entity": "door_1", "field": "open"}, "'eq' takes a string or a number"),
+        ({"some": "fridge.openness", "ge": "high"}, "'ge' takes a number"),
+        ("robot near kitchen", "robot near kitchen"),
+    ],
+)
+def test_timeline_entry_when_rejects_a_bad_condition(when, message):
+    with pytest.raises(ValueError, match=message):
+        TimelineEntry.parse({"when": when, "set": [{"entity": "a", "field": "x", "value": "1"}]})
+
+
 def test_timeline_entry_requires_exactly_one_trigger_none_set():
     with pytest.raises(ValueError):
         TimelineEntry.parse({"set": []})
@@ -567,6 +597,35 @@ def test_scenario_conditions_structures_from_yaml(tmp_path):
     assert len(scenario.conditions) == 3
     assert [c.op for c in scenario.conditions] == ["eventually", "never", "never_during"]
     assert scenario.conditions[2].q == "ward_a_door.open == false"
+
+
+def test_scenario_loads_structured_conditions_and_untils(tmp_path):
+    scenario_dir = tmp_path / "sc_structured"
+    scenario_dir.mkdir()
+    until = {"all": [{"subject": "robot", "in": "ward_a"}, {"field": "wardrobe.openness.door_left", "ge": 0.8}], "for": 2}
+    condition = {"op": "never_during", "p": {"subject": "robot", "in": "ward_a_doorway"}, "q": {"some": "wardrobe.openness", "lt": 0.5}}
+    data = {
+        "format": SCENARIO_FORMAT,
+        "robots": [{"start": [1.0, 1.0, 0.0], "phases": [{"goto": [2.0, 2.0, 0.0], "until": until}], "conditions": [{"op": "eventually", "p": {"field": "wardrobe.state", "eq": "open"}}]}],
+        "conditions": [condition],
+    }
+    (scenario_dir / "scenario.yaml").write_text(yaml.dump(data))
+
+    scenario = ScenarioView(scenario_dir).load()
+    assert scenario.conditions[0].serialize() == condition
+    assert scenario.robots[0].phases[0].until == until
+    assert scenario.robots[0].phases[0].serialize()["until"] == until
+    assert scenario.robots[0].conditions[0].p == {"field": "wardrobe.state", "eq": "open"}
+
+
+def test_scenario_names_a_malformed_structured_condition(tmp_path):
+    scenario_dir = tmp_path / "sc_structured_bad"
+    scenario_dir.mkdir()
+    data = {"format": SCENARIO_FORMAT, "conditions": [{"op": "eventually", "p": {"field": "wardrobe.openness.door_left", "ge": "wide"}}]}
+    (scenario_dir / "scenario.yaml").write_text(yaml.dump(data))
+
+    with pytest.raises(RuntimeError, match=r"(?s)conditions\[0\].*'ge' takes a number"):
+        ScenarioView(scenario_dir).load()
 
 
 def test_scenario_conditions_round_trip_through_cattrs():

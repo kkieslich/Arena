@@ -15,6 +15,7 @@ _RUNTIME_OWNED = frozenset(
         'log_level',
         'sim',
         'sim.flatsim.dynamics',
+        'sim.flatsim.physics',
         'sim.isaac.physics',
         *(f'sim.isaac.viewport.{k}' for k in ('preset', 'resolution', 'scale', 'dlss', 'lighting', 'overlays', 'ceilings')),
         'use_sim_time',
@@ -66,6 +67,13 @@ def generate_launch_description():
         default_value='authored',
         choices=['authored', 'auto'],
         description='authored: the lights the world declares. auto: also a calibrated ceiling rig in every zone with a ceiling and no lights of its own.',
+    )
+
+    LaunchArgument(
+        name='world.levels',
+        default_value='auto',
+        choices=['auto', 'stack', 'spread'],
+        description='stack: levels above one another in the simulator, stair and escalator pairs joined at their seams. spread: levels side by side. auto: stack when the world has stairs or escalators and the simulator stacks (gazebo), else spread.',
     )
 
     LaunchArgument(
@@ -154,7 +162,7 @@ def generate_launch_description():
         deprecated_launch_args(context)
         given_args.update(context.launch_configurations)
 
-    def _arena_node(context: launch.LaunchContext) -> list[launch.Action]:
+    def _arena_runtime_node(context: launch.LaunchContext) -> list[launch.Action]:
         env_args = [f'{k}:={v}' for k, v in given_args.items() if k not in _RUNTIME_OWNED]
         params: dict = {'sim': sim.substitution}
         if env_args:
@@ -171,20 +179,20 @@ def generate_launch_description():
             params['bootstrap_timeout_sec'] = float(bootstrap_timeout)
         if heartbeat_timeout := context.launch_configurations.get('env.heartbeat_timeout', ''):
             params['heartbeat_timeout_sec'] = float(heartbeat_timeout)
-        arena_node = launch_ros.actions.LifecycleNode(
+        arena_runtime_node = launch_ros.actions.LifecycleNode(
             package='arena_runtime',
-            executable='arena_node',
+            executable='arena_runtime_node',
             name='arena',
             namespace='',
             output='screen',
             parameters=[params],
         )
         return [
-            arena_node,
+            arena_runtime_node,
             launch.actions.RegisterEventHandler(
                 launch.event_handlers.OnProcessExit(
-                    target_action=arena_node,
-                    on_exit=[launch.actions.Shutdown(reason='arena_node exited')],
+                    target_action=arena_runtime_node,
+                    on_exit=[launch.actions.Shutdown(reason='arena_runtime_node exited')],
                 )
             ),
         ]
@@ -197,7 +205,7 @@ def generate_launch_description():
             SetGlobalLogLevelAction(log_level.substitution),
             IsolatedGroupAction([launch_sim]),
             world_generator_node,
-            launch.actions.OpaqueFunction(function=_arena_node),
+            launch.actions.OpaqueFunction(function=_arena_runtime_node),
         ]
     )
 

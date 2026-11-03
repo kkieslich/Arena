@@ -24,6 +24,11 @@ props = []
 authorable = false
 propless = true
 
+[nodes.stair]
+props = []
+authorable = false
+propless = true
+
 [nodes.obj]
 props = ["label", "model", "pose", "scale", "sim", "placed"]
 
@@ -38,15 +43,15 @@ props = ["label"]
 
 [verbs.contains]
 from = ["floor", "room"]
-to = ["room", "obj", "door", "wall", "elevator", "light", "sound", "microphone"]
+to = ["room", "obj", "door", "wall", "elevator", "stair", "light", "sound", "microphone"]
 
 [verbs.connects]
 from = ["room"]
 to = ["room"]
 
 [verbs.connects_floor]
-from = ["elevator"]
-to = ["elevator"]
+from = ["elevator", "stair"]
+to = ["elevator", "stair"]
 
 [verbs.left_of]
 from = ["room"]

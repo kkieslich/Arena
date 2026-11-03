@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import typing
 from abc import ABC
 from collections.abc import Iterable, Mapping, Sequence
 
 import attrs
 
-from arena_simulation_setup.shared.conditions import EpisodeCondition, OnFailure, parse_until
+from arena_simulation_setup.shared.conditions import ConditionSource, EpisodeCondition, Node, OnFailure, parse_node
 from arena_simulation_setup.utils.cattrs import converter
 from arena_simulation_setup.utils.geometry import Pose
 
@@ -19,6 +20,14 @@ def _optional_float(value: object) -> float | None:
     if not isinstance(value, (typing.SupportsFloat, str)):
         raise TypeError(f"expected a number, got {value!r}")
     return float(value)
+
+
+def _until(value: object) -> ConditionSource | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return copy.deepcopy(dict(value))
+    return str(value)
 
 
 def via_list(value: object) -> list[str]:
@@ -52,13 +61,18 @@ class TaskPhase(ABC):
     kind: typing.ClassVar[str]
 
     on_failure: OnFailure = attrs.field(default="continue", kw_only=True)
-    until: str | None = attrs.field(default=None, kw_only=True)
+    until: ConditionSource | None = attrs.field(default=None, kw_only=True)
     conditions: list[EpisodeCondition] = attrs.field(factory=list, kw_only=True)
     text: str = attrs.field(default="", kw_only=True)
 
     def __attrs_post_init__(self) -> None:
         if self.until is not None:
-            parse_until(self.until)
+            parse_node(self.until)
+
+    @property
+    def until_node(self) -> Node | None:
+        """The parsed `until`, None without one."""
+        return None if self.until is None else parse_node(self.until)
 
     @classmethod
     def parse(cls, value: Mapping[str, object]) -> TaskPhase:
@@ -68,18 +82,18 @@ class TaskPhase(ABC):
             loop_phases = data.pop("loop")
             if not isinstance(loop_phases, Iterable):
                 raise TypeError(f"loop must be a list of phases, got {loop_phases!r}")
-            loop = LoopPhase(phases=[TaskPhase.parse(p) for p in loop_phases], until=None if data.get("until") is None else str(data.pop("until")), text=str(data.pop("text", "")))
+            loop = LoopPhase(phases=[TaskPhase.parse(p) for p in loop_phases], until=_until(data.pop("until", None)), text=str(data.pop("text", "")))
             if data:
                 raise ValueError(f"unknown phase keys {sorted(data)} for LoopPhase")
             return loop
-        until = data.pop("until", None)
+        until = _until(data.pop("until", None))
         instruction = str(data.pop("instruction", ""))
         conditions = data.pop("conditions", [])
         if not isinstance(conditions, Iterable):
             raise TypeError(f"conditions must be a list, got {conditions!r}")
         common = {
             "on_failure": str(data.pop("on_failure", "continue")),
-            "until": None if until is None else str(until),
+            "until": until,
             "conditions": [EpisodeCondition.parse(c) for c in conditions],
             "text": str(data.pop("text", "")) or instruction,
         }
@@ -98,7 +112,7 @@ class TaskPhase(ABC):
         if self.on_failure != "continue":
             result["on_failure"] = self.on_failure
         if self.until is not None:
-            result["until"] = self.until
+            result["until"] = copy.deepcopy(self.until)
         if self.conditions:
             result["conditions"] = [c.serialize() for c in self.conditions]
         if self.text:

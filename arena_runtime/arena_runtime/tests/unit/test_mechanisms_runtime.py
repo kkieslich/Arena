@@ -8,7 +8,7 @@ import random
 
 import pytest
 
-pytest.importorskip("task_generator.shared")
+pytest.importorskip("arena_runtime.shared")
 pytest.importorskip("arena_runtime.sim._mechanism_shim")
 
 from arena_runtime.sim._mechanism_shim import (  # noqa: E402
@@ -37,7 +37,7 @@ from arena_runtime.sim._mechanism_shim import (  # noqa: E402
 from arena_runtime.sim._semantics import GateSemantics, SemanticsManager  # noqa: E402
 from arena_simulation_setup.shared.semantics import SemanticCfg  # noqa: E402
 from arena_simulation_setup.utils.geometry import Orientation, Pose, Position  # noqa: E402
-from task_generator.shared import Door, Elevator  # noqa: E402
+from arena_runtime.shared import Door, Elevator  # noqa: E402
 
 DT = 1.0 / 30.0
 
@@ -122,11 +122,14 @@ class _Mech:
         self._elevator_doors: dict[str, str] = {}
         self._door_primitives: dict[str, list[str]] = {}
         self._elevator_primitives: dict[str, list[str]] = {}
+        self._stair_runtime: dict = {}
+        self._stair_primitives: dict[str, list[str]] = {}
         self._mechanism_loop_task = _BusyTask()
         self._robots: dict[str, tuple[float, float]] = {}
         self._lights: dict = {}
         self._light_outputs: dict = {}
         self._light_poses: dict = {}
+        self._articulated: dict = {}
         self.robot_teleport_ok = True
         self._semantics = SemanticsManager(self)
         self._semantics.set_sim("gazebo")
@@ -669,15 +672,38 @@ def _open_cabin(call_mode: str) -> tuple[_ElevatorRuntime, _DoorRuntime]:
     return rt, door
 
 
-def test_edge_waiting_caller_does_not_refresh_hold():
+def test_edge_waiting_caller_does_not_refresh_hold_of_a_boarded_cabin():
     rt, door = _open_cabin("edge")
     waiting = frozenset({"p1"})
-    _step_elevator(rt, door, None, occupants=[], outside_trigger=True, now=0.0, callers=waiting)
+    rider = [("r1", (0.0, 0.0))]
+    _step_elevator(rt, door, None, occupants=rider, outside_trigger=True, now=0.0, callers=waiting)
     assert door.last_trigger_sim_time == 0.0
-    _step_elevator(rt, door, None, occupants=[], outside_trigger=True, now=1.0, callers=waiting)
+    _step_elevator(rt, door, None, occupants=rider, outside_trigger=True, now=1.0, callers=waiting)
     assert door.last_trigger_sim_time == 0.0
-    _step_elevator(rt, door, None, occupants=[], outside_trigger=True, now=1.5, callers=frozenset({"p1", "p2"}))
+    _step_elevator(rt, door, None, occupants=rider, outside_trigger=True, now=1.5, callers=frozenset({"p1", "p2"}))
     assert door.last_trigger_sim_time == 1.5
+
+
+def test_edge_waiting_caller_holds_an_empty_open_cabin():
+    rt, door = _open_cabin("edge")
+    for now in (0.5, 1.0, 1.5):
+        _step_elevator(rt, door, None, occupants=[], outside_trigger=True, now=now, callers=frozenset({"p1"}))
+        assert door.last_trigger_sim_time == now
+
+
+def test_edge_waiting_caller_keeps_the_empty_car_open_without_a_reopen():
+    async def scenario():
+        mech = _Mech(_HumanSim({"p1": (1.4, 0.6)}))
+        await _spawn_elevators(mech, _elevator("a", (0.0, 0.0), "b", call_mode="edge"), _elevator("b", (10.0, 0.0), "a"))
+        states = []
+        for _ in range(int(round(12.0 / DT))):
+            await _run(mech, DT)
+            states.append(mech._door_runtime["a/door"].state)
+        return states
+
+    states = asyncio.run(scenario())
+    first_open = states.index(_DoorState.OPEN)
+    assert all(state == _DoorState.OPEN for state in states[first_open:])
 
 
 def test_level_waiting_caller_refreshes_every_tick():

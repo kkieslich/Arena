@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
 import shapely
+import yaml
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from arena_simulation_setup.shared.conditions import (
+    AllNode,
+    AnyNode,
     EntityAtom,
     EpisodeCondition,
+    HoldNode,
     MembershipAtom,
     NotAtom,
-    WithinAtom,
+    PlaysAtom,
     atom_subjects,
+    node_children,
     parse_atom,
-    render_atom,
 )
 from arena_simulation_setup.shared.judge import (
     PARK_DRIFT_M,
@@ -26,15 +31,18 @@ from arena_simulation_setup.shared.judge import (
     ParkTimer,
     PhaseMonitor,
     Sample,
+    FLOAT_TOLERANCE,
+    NodeMonitor,
     UntilMonitor,
     WallGrid,
     arrived,
     atom_holds,
+    compare,
+    node_holds,
     operator_verdict,
-    until_holds,
     zone_polygons,
 )
-from arena_simulation_setup.shared.conditions import parse_until
+from arena_simulation_setup.shared.conditions import parse_node, parse_until
 from arena_simulation_setup.shared.task import GoToPhase, PlayGesturePhase, TaskPhase
 from arena_simulation_setup.shared import Door
 from arena_simulation_setup.tree.World import Level, WallPath, Zone
@@ -50,37 +58,6 @@ def sample(t=0.0, robot=(1.0, 1.0, 0.0), peds=None, fields=None, robots=None):
         robots["robot_0"] = robot
     values = dict(fields or {})
     return Sample(t=t, robots=robots, peds=dict(peds or {}), field=lambda entity, name: values.get((entity, name)))
-
-
-def test_parse_not_and_within_atoms():
-    assert parse_atom("not robot in kitchen") == NotAtom(MembershipAtom("robot", "kitchen"))
-    assert parse_atom("robot within 2.5 of alice") == WithinAtom("robot", 2.5, "alice")
-    assert parse_atom("not alice within 1 of robot") == NotAtom(WithinAtom("alice", 1.0, "robot"))
-
-
-@pytest.mark.parametrize("value", ["not not robot in kitchen", "robot within x of alice", "robot within -1 of alice", "robot within 2 of env_0/alice"])
-def test_parse_rejects_malformed_new_forms(value):
-    with pytest.raises(ValueError):
-        parse_atom(value)
-
-
-@pytest.mark.parametrize("text", ["door.open == true", "robot in kitchen", "robot within 2 of alice", "not alice in kitchen"])
-def test_render_atom_round_trips(text):
-    assert render_atom(parse_atom(text)) == text
-
-
-def test_atom_subjects():
-    assert atom_subjects(parse_atom("door.open == true")) == frozenset()
-    assert atom_subjects(parse_atom("not robot within 2 of alice")) == {"robot", "alice"}
-
-
-def test_condition_on_failure_round_trip():
-    cond = EpisodeCondition.parse({"op": "never", "p": "robot in hallway", "on_failure": "abort_episode"})
-    assert cond.on_failure == "abort_episode"
-    assert EpisodeCondition.parse(cond.serialize()) == cond
-    assert "on_failure" not in EpisodeCondition(op="never", p="robot in hallway").serialize()
-    with pytest.raises(ValueError):
-        EpisodeCondition.parse({"op": "never", "p": "robot in hallway", "on_failure": "explode"})
 
 
 def test_membership_robot_and_ped():
@@ -513,16 +490,16 @@ def test_plays_reads_the_pedestrian_clips():
     assert atom_holds(parse_atom("caller plays beckon"), absent, ZONES, "robot_0") is False
 
 
-def test_until_holds_is_a_conjunction():
+def test_node_holds_on_a_text_conjunction():
     until = parse_until("robot within 2 of caller and caller plays beckon")
     near = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)}, clips={"caller": frozenset({"beckon"})})
-    assert until_holds(until, near, ZONES, "robot_0") is True
+    assert node_holds(until, near, ZONES, "robot_0") is True
     silent = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)}, clips={"caller": frozenset()})
-    assert until_holds(until, silent, ZONES, "robot_0") is False
+    assert node_holds(until, silent, ZONES, "robot_0") is False
     far_and_unknown = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (5.0, 0.0)})
-    assert until_holds(until, far_and_unknown, ZONES, "robot_0") is False
+    assert node_holds(until, far_and_unknown, ZONES, "robot_0") is False
     unknown = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)})
-    assert until_holds(until, unknown, ZONES, "robot_0") is None
+    assert node_holds(until, unknown, ZONES, "robot_0") is None
 
 
 def test_until_monitor_requires_the_dwell_without_a_gap():
@@ -548,18 +525,18 @@ def test_goto_phase_until_dwell_counts_after_arrival():
     assert monitor.met_at == 4.0
 
 
-def test_until_holds_is_a_disjunction_of_clauses():
+def test_node_holds_on_a_text_disjunction_of_clauses():
     until = parse_until("robot sees caller within 12 and caller plays beckon or robot within 2.5 of caller")
     near_and_silent = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)}, clips={"caller": frozenset()}, walls=wall_grid())
-    assert until_holds(until, near_and_silent, ZONES, "robot_0") is True
+    assert node_holds(until, near_and_silent, ZONES, "robot_0") is True
     far_and_seen = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (5.0, 0.0)}, clips={"caller": frozenset({"beckon"})}, walls=wall_grid())
-    assert until_holds(until, far_and_seen, ZONES, "robot_0") is True
+    assert node_holds(until, far_and_seen, ZONES, "robot_0") is True
     far_and_silent = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (5.0, 0.0)}, clips={"caller": frozenset()}, walls=wall_grid())
-    assert until_holds(until, far_and_silent, ZONES, "robot_0") is False
+    assert node_holds(until, far_and_silent, ZONES, "robot_0") is False
     far_without_clips = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (5.0, 0.0)}, walls=wall_grid())
-    assert until_holds(until, far_without_clips, ZONES, "robot_0") is None
+    assert node_holds(until, far_without_clips, ZONES, "robot_0") is None
     near_without_clips = Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)}, walls=wall_grid())
-    assert until_holds(until, near_without_clips, ZONES, "robot_0") is True
+    assert node_holds(until, near_without_clips, ZONES, "robot_0") is True
 
 
 def test_until_monitor_times_each_clause_on_its_own():
@@ -574,3 +551,300 @@ def test_until_monitor_times_each_clause_on_its_own():
     assert restarted.step(Sample(t=0.0, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)}, clips=silent), ZONES) is False
     assert restarted.step(Sample(t=0.3, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)}, clips=calling), ZONES) is False
     assert restarted.step(Sample(t=0.5, robots={"robot_0": (0.0, 0.0, 0.0)}, peds={"caller": (1.0, 0.0)}, clips=silent), ZONES) is True
+
+
+def field_sample(t=0.0, fields=None, families=None, robot=(1.0, 1.0, 0.0), peds=None):
+    values = dict(fields or {})
+    members = dict(families or {})
+    return Sample(t=t, robots={"robot_0": robot}, peds=dict(peds or {}), field=lambda entity, name: values.get((entity, name)), family=lambda entity, name: members.get(entity, {}).get(name, {}) if entity in members else None)
+
+
+def holds(value, s):
+    return node_holds(parse_node(value), s, ZONES, "robot_0")
+
+
+@pytest.mark.parametrize(
+    ("op", "bound", "below", "at_edge_below", "at", "at_edge_above", "above"),
+    [
+        ("eq", 0.5, False, True, True, True, False),
+        ("ne", 0.5, True, False, False, False, True),
+        ("lt", 0.5, True, False, False, False, False),
+        ("le", 0.5, True, True, True, True, False),
+        ("gt", 0.5, False, False, False, False, True),
+        ("ge", 0.5, False, True, True, True, True),
+    ],
+)
+def test_compare_operators_at_the_tolerance_edges(op, bound, below, at_edge_below, at, at_edge_above, above):
+    half = FLOAT_TOLERANCE / 2
+    twice = FLOAT_TOLERANCE * 2
+    assert compare(str(bound - twice), op, bound) is below
+    assert compare(str(bound - half), op, bound) is at_edge_below
+    assert compare(str(bound), op, bound) is at
+    assert compare(str(bound + half), op, bound) is at_edge_above
+    assert compare(str(bound + twice), op, bound) is above
+
+
+def test_compare_within_is_inclusive_with_tolerance():
+    assert compare("0.2", "within", (0.2, 0.4)) is True
+    assert compare(str(0.4 + FLOAT_TOLERANCE / 2), "within", (0.2, 0.4)) is True
+    assert compare(str(0.2 - FLOAT_TOLERANCE / 2), "within", (0.2, 0.4)) is True
+    assert compare(str(0.4 + FLOAT_TOLERANCE * 2), "within", (0.2, 0.4)) is False
+    assert compare("0.1", "within", (0.2, 0.4)) is False
+
+
+def test_compare_strings_and_non_numeric_values():
+    assert compare("open", "eq", "open") is True
+    assert compare("open", "ne", "open") is False
+    assert compare("open", "eq", 1.0) is False
+    assert compare("1", "eq", 1.0) is True
+    assert compare("open", "ge", 0.5) is None
+    assert compare("open", "within", (0.0, 1.0)) is None
+
+
+def test_field_test_reads_the_sample_field():
+    s = field_sample(fields={("wardrobe", "openness.door_left"): "0.9", ("wardrobe", "state"): "open"})
+    assert holds({"field": "wardrobe.openness.door_left", "ge": 0.8}, s) is True
+    assert holds({"field": "wardrobe.openness.door_left", "lt": 0.8}, s) is False
+    assert holds({"field": "wardrobe.state", "eq": "open"}, s) is True
+    assert holds({"field": "wardrobe.state", "ge": 0.5}, s) is None
+    assert holds({"field": "wardrobe.openness.door_right", "ge": 0.8}, s) is None
+    assert holds("wardrobe.openness.door_left == 0.9", s) is True
+
+
+def test_family_test_quantifies_over_the_members():
+    s = field_sample(families={"wardrobe": {"openness": {"door_left": "0.9", "door_right": "0.1"}, "setting": {"knob": "off"}}, "box": {}})
+    assert holds({"some": "wardrobe.openness", "ge": 0.5}, s) is True
+    assert holds({"each": "wardrobe.openness", "ge": 0.5}, s) is False
+    assert holds({"each": "wardrobe.openness", "within": [0.0, 1.0]}, s) is True
+    assert holds({"some": "wardrobe.openness", "gt": 0.95}, s) is False
+    assert holds({"each": "wardrobe.setting", "eq": "off"}, s) is True
+    assert holds({"some": "wardrobe.setting", "ge": 0.5}, s) is None
+    assert holds({"each": "wardrobe.setting", "ge": 0.5}, s) is None
+
+
+def test_family_test_on_an_empty_family_is_false_and_on_an_unknown_entity_is_unknown():
+    s = field_sample(families={"wardrobe": {"openness": {"door_left": "0.9"}}, "box": {}})
+    assert holds({"some": "wardrobe.pos", "ge": 0.5}, s) is False
+    assert holds({"each": "wardrobe.pos", "ge": 0.5}, s) is False
+    assert holds({"some": "box.openness", "ge": 0.5}, s) is False
+    assert holds({"some": "ghost.openness", "ge": 0.5}, s) is None
+    assert holds({"each": "ghost.openness", "ge": 0.5}, s) is None
+
+
+def test_family_test_mixes_known_and_unknown_members():
+    s = field_sample(families={"stove": {"angle": {"a": "0.9", "b": "hot"}}})
+    assert holds({"some": "stove.angle", "ge": 0.5}, s) is True
+    assert holds({"some": "stove.angle", "ge": 0.95}, s) is None
+    assert holds({"each": "stove.angle", "ge": 0.95}, s) is False
+    assert holds({"each": "stove.angle", "ge": 0.5}, s) is None
+
+
+def test_three_valued_not_all_and_any():
+    s = field_sample(fields={("a", "x"): "1", ("b", "x"): "0"})
+    true, false, unknown = "a.x == 1", "b.x == 1", "c.x == 1"
+    assert holds({"not": true}, s) is False
+    assert holds({"not": false}, s) is True
+    assert holds({"not": unknown}, s) is None
+    assert holds({"all": [true, true]}, s) is True
+    assert holds({"all": [true, false, unknown]}, s) is False
+    assert holds({"all": [true, unknown]}, s) is None
+    assert holds({"any": [false, true, unknown]}, s) is True
+    assert holds({"any": [false, unknown]}, s) is None
+    assert holds({"any": [false, false]}, s) is False
+
+
+def test_node_holds_refuses_a_node_with_a_hold():
+    with pytest.raises(ValueError):
+        holds({"all": ["robot in kitchen", {"field": "a.x", "eq": 1, "for": 1}]}, field_sample())
+
+
+def _door(t, value):
+    return field_sample(t=t, fields={("door", "open"): value})
+
+
+def test_hold_starts_on_the_first_true_sample_and_resets_on_false():
+    monitor = NodeMonitor(parse_node({"field": "door.open", "eq": True, "for": 2}), "robot_0")
+    assert monitor.step(_door(0.0, "false"), ZONES) is False
+    assert monitor.step(_door(1.0, "true"), ZONES) is False
+    assert monitor.step(_door(2.5, "true"), ZONES) is False
+    assert monitor.step(_door(3.0, "true"), ZONES) is True
+    assert monitor.step(_door(3.5, "false"), ZONES) is False
+    assert monitor.step(_door(4.0, "true"), ZONES) is False
+    assert monitor.step(_door(6.0, "true"), ZONES) is True
+
+
+def test_hold_returns_unknown_and_resets_on_an_unknown_child():
+    monitor = NodeMonitor(parse_node({"field": "door.open", "eq": True, "for": 2}), "robot_0")
+    assert monitor.step(_door(0.0, "true"), ZONES) is False
+    assert monitor.step(field_sample(t=1.0), ZONES) is None
+    assert monitor.step(_door(2.0, "true"), ZONES) is False
+    assert monitor.step(_door(3.9, "true"), ZONES) is False
+    assert monitor.step(_door(4.0, "true"), ZONES) is True
+
+
+def test_hold_reset_clears_the_timers():
+    monitor = NodeMonitor(parse_node({"field": "door.open", "eq": True, "for": 2}), "robot_0")
+    monitor.step(_door(0.0, "true"), ZONES)
+    monitor.reset()
+    assert monitor.step(_door(2.0, "true"), ZONES) is False
+    assert monitor.step(_door(4.0, "true"), ZONES) is True
+
+
+def test_holds_time_independently_per_node_path():
+    node = parse_node({"any": [{"field": "a.x", "eq": 1, "for": 1}, {"field": "a.x", "eq": 1, "for": 3}]})
+    monitor = NodeMonitor(node, "robot_0")
+    first = field_sample(t=0.0, fields={("a", "x"): "1"})
+    assert monitor.step(first, ZONES) is False
+    assert monitor.step(field_sample(t=1.0, fields={("a", "x"): "1"}), ZONES) is True
+    both = NodeMonitor(parse_node({"all": [{"field": "a.x", "eq": 1, "for": 1}, {"field": "b.x", "eq": 1, "for": 2}]}), "robot_0")
+    assert both.step(field_sample(t=0.0, fields={("a", "x"): "1", ("b", "x"): "0"}), ZONES) is False
+    assert both.step(field_sample(t=1.0, fields={("a", "x"): "1", ("b", "x"): "1"}), ZONES) is False
+    assert both.step(field_sample(t=2.0, fields={("a", "x"): "1", ("b", "x"): "1"}), ZONES) is False
+    assert both.step(field_sample(t=3.0, fields={("a", "x"): "1", ("b", "x"): "1"}), ZONES) is True
+
+
+def test_nested_holds_keep_timing_while_a_sibling_is_false():
+    node = parse_node({"all": [{"field": "a.x", "eq": 1}, {"field": "b.x", "eq": 1, "for": 2}], "for": 1})
+    monitor = NodeMonitor(node, "robot_0")
+    assert monitor.step(field_sample(t=0.0, fields={("a", "x"): "0", ("b", "x"): "1"}), ZONES) is False
+    assert monitor.step(field_sample(t=2.0, fields={("a", "x"): "1", ("b", "x"): "1"}), ZONES) is False
+    assert monitor.step(field_sample(t=2.5, fields={("a", "x"): "1", ("b", "x"): "1"}), ZONES) is False
+    assert monitor.step(field_sample(t=3.0, fields={("a", "x"): "1", ("b", "x"): "1"}), ZONES) is True
+
+
+def test_hold_inside_not_negates_the_timed_child():
+    monitor = NodeMonitor(parse_node({"not": {"field": "door.open", "eq": True, "for": 1}}), "robot_0")
+    assert monitor.step(_door(0.0, "true"), ZONES) is True
+    assert monitor.step(_door(1.0, "true"), ZONES) is False
+
+
+def test_condition_monitor_judges_structured_p_and_q():
+    condition = EpisodeCondition.parse({"op": "never_during", "p": {"subject": "robot", "in": "hallway"}, "q": {"some": "door.openness", "lt": 0.5}})
+    monitor = ConditionMonitor(condition, "robot_0")
+    shut = {"door": {"openness": {"left": "0.1", "right": "1.0"}}}
+    opened = {"door": {"openness": {"left": "1.0", "right": "1.0"}}}
+    assert monitor.update(field_sample(t=0.0, robot=(11.0, 1.0, 0.0), families=opened), ZONES) is None
+    assert monitor.update(field_sample(t=1.0, robot=(1.0, 1.0, 0.0), families=shut), ZONES) is None
+    assert monitor.update(field_sample(t=2.0, robot=(11.0, 1.0, 0.0), families=shut), ZONES) is False
+
+
+def test_condition_monitor_times_a_held_p_within_its_scope():
+    condition = EpisodeCondition.parse({"op": "eventually", "p": {"field": "door.open", "eq": True, "for": 2}})
+    monitor = ConditionMonitor(condition, "robot_0")
+    assert monitor.update(_door(0.0, "true"), ZONES) is None
+    assert monitor.update(_door(1.0, "false"), ZONES) is None
+    assert monitor.update(_door(2.0, "true"), ZONES) is None
+    assert monitor.update(_door(4.0, "true"), ZONES) is True
+
+
+def test_until_monitor_is_met_only_after_the_hold():
+    monitor = UntilMonitor(parse_node({"all": [{"subject": "robot", "in": "kitchen"}, {"field": "door.open", "eq": True}], "for": 1.5}), "robot_0")
+    assert monitor.step(_door(0.0, "true"), ZONES) is False
+    assert monitor.step(_door(1.0, "true"), ZONES) is False
+    assert monitor.step(_door(1.5, "true"), ZONES) is True
+
+
+def test_phase_until_takes_a_structured_condition():
+    phase = TaskPhase.parse({"gesture": "wave", "until": {"field": "door.open", "eq": True, "for": 1}})
+    monitor = PhaseMonitor(phase, "robot_0")
+    assert monitor.step(_door(0.0, "true"), ZONES, action_done=True) is False
+    assert monitor.step(_door(0.5, "true"), ZONES, action_done=True) is False
+    assert monitor.step(_door(1.0, "true"), ZONES, action_done=True) is True
+
+
+WORLDS_DIR = Path(__file__).resolve().parents[2] / "worlds"
+
+
+def _authored_conditions() -> list[tuple[str, str, str]]:
+    """(scenario path, kind, text) of every text condition p/q and phase until in the shipped scenarios."""
+    found: list[tuple[str, str, str]] = []
+
+    def walk(value: object, path: str) -> None:
+        if isinstance(value, dict):
+            if "op" in value and "p" in value:
+                found.extend((path, "condition", value[key]) for key in ("p", "q") if isinstance(value.get(key), str))
+            if isinstance(value.get("until"), str):
+                found.append((path, "until", value["until"]))
+            for key, item in value.items():
+                walk(item, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+
+    for scenario in sorted(WORLDS_DIR.rglob("scenario.yaml")):
+        walk(yaml.safe_load(scenario.read_text(encoding="utf-8")), str(scenario.relative_to(WORLDS_DIR)))
+    return found
+
+
+AUTHORED = _authored_conditions()
+
+
+def _clause_reference(text: str, s: Sample, zones: dict, robot: str) -> bool | None:
+    """The pre-node until truth on one sample: any ` or ` clause whose ` and ` atoms all hold, dwell ignored."""
+    verdicts = []
+    for clause in text.strip().split(" or "):
+        body = clause.strip().rsplit(" for ", 1)[0] if " for " in clause else clause
+        atoms = [atom_holds(parse_atom(part), s, zones, robot) for part in body.split(" and ")]
+        verdicts.append(False if any(v is False for v in atoms) else None if any(v is None for v in atoms) else True)
+    return True if any(v is True for v in verdicts) else None if any(v is None for v in verdicts) else False
+
+
+def _without_holds(node):
+    if isinstance(node, HoldNode):
+        return _without_holds(node.node)
+    if isinstance(node, AllNode):
+        return AllNode(tuple(_without_holds(child) for child in node.nodes))
+    if isinstance(node, AnyNode):
+        return AnyNode(tuple(_without_holds(child) for child in node.nodes))
+    assert not node_children(node)
+    return node
+
+
+def _leaves(node):
+    children = node_children(node)
+    return [leaf for child in children for leaf in _leaves(child)] if children else [node]
+
+
+def _synthetic_samples(node, seed: int) -> tuple[list[Sample], dict]:
+    """Samples that resolve every subject, zone, field and clip of a node, with drawn positions, values and clips."""
+    rng = np.random.default_rng(seed)
+    leaves = [leaf.atom if isinstance(leaf, NotAtom) else leaf for leaf in _leaves(node)]
+    zones = {leaf.zone: SQUARE for leaf in leaves if isinstance(leaf, MembershipAtom)}
+    subjects = sorted({subject for leaf in leaves for subject in atom_subjects(leaf)} - {"robot"})
+    expected = {(leaf.entity, leaf.field): leaf.value for leaf in leaves if isinstance(leaf, EntityAtom)}
+    clips = {leaf.subject: leaf.clip for leaf in leaves if isinstance(leaf, PlaysAtom)}
+    samples = []
+    for i in range(6):
+        values = {key: value if rng.random() < 0.5 else "other" for key, value in expected.items()}
+        playing = {name: frozenset({clip}) if rng.random() < 0.5 else frozenset() for name, clip in clips.items()}
+        peds = {name: (float(rng.uniform(-2, 8)), float(rng.uniform(-2, 8))) for name in subjects}
+        samples.append(
+            Sample(
+                t=float(i),
+                robots={"robot_0": (float(rng.uniform(-2, 8)), float(rng.uniform(-2, 8)), 0.0)},
+                peds=peds,
+                field=lambda entity, name, values=values: values.get((entity, name)),
+                clips=playing,
+                walls=wall_grid(),
+            )
+        )
+    return samples, zones
+
+
+def test_shipped_scenarios_carry_text_conditions():
+    assert {kind for _, kind, _ in AUTHORED} == {"condition", "until"}
+
+
+@pytest.mark.parametrize(("path", "kind", "text"), AUTHORED, ids=[f"{path}:{text}" for path, _, text in AUTHORED])
+def test_shipped_text_conditions_parse_into_nodes_and_judge_like_the_atom_path(path, kind, text):
+    node = parse_node(text)
+    samples, zones = _synthetic_samples(node, seed=len(text))
+    if kind == "condition":
+        atom = parse_atom(text)
+        assert node == atom, path
+        for s in samples:
+            assert NodeMonitor(node, "robot_0").step(s, zones) == atom_holds(atom, s, zones, "robot_0"), path
+        return
+    plain = _without_holds(node)
+    for s in samples:
+        assert node_holds(plain, s, zones, "robot_0") == _clause_reference(text, s, zones, "robot_0"), path

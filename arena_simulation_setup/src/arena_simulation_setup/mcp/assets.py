@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import sys
 import typing
 from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field
 
-from arena_mcp.core import Domain, Job, ToolError, cli
+from arena_mcp.core import JOBS, Domain, Job, ToolError, cli
 
 
 def _ready() -> str | None:
@@ -23,7 +24,10 @@ domain = Domain(
     "assets",
     """Resolvable Arena data of every kind `arena asset` moves (assets_kinds lists them) through the same code the `arena asset` verbs run.
     find and ls show what each resolver answers, pull fetches into the local cache, push publishes to the kind's bucket after the preflight that refuses unresolvable references.
-    import_sources lists the upstream datasets `arena asset import` converts from, import_items one dataset's importable items, and import converts chosen items into the imported root as a job.""",
+    import_sources lists the upstream datasets `arena asset import` converts from, import_items one dataset's importable items, and import converts chosen items into the imported root as a job.
+    retarget_animation turns SMPL-X motion files into Animation clips as a job.
+    rig_human writes rig/<name>.rig and rig/<name>.sdf into a human bundle from its skin.
+    articulation shows the links, joints, named states, detents and field families of an articulated object, the values scenario objects take as `joints:`.""",
     check=_ready,
 )
 
@@ -81,16 +85,48 @@ def assets_pull(kind: Kind, name: Annotated[str, Field(description="asset name")
 @domain.tool(destructive=True, open_world=True)
 def assets_push(
     kind: Kind,
-    name: Annotated[str, Field(description="asset name")],
+    name: Annotated[str | None, Field(description="asset name, none publishes every local asset of the kind in one upload")],
     bucket: Bucket = None,
     force: Annotated[bool, Field(description="publish despite a failed preflight or a world that ships in the repo")] = False,
+    only: Annotated[str | None, Field(description="publish only the files matching GLOB[,GLOB], the bucket's other files stay as they are")] = None,
 ) -> dict[str, object]:
     """Publish one asset to its kind's bucket after the preflight `arena asset push` runs, which refuses references nobody else could resolve, with GCS_ACCESS_TOKEN set."""
-    done = cli.run("asset", "push", kind, name, "--yes", *(("--bucket", bucket) if bucket else ()), *(("--force",) if force else ()), timeout=3600, check=False)
+    done = cli.run("asset", "push", kind, *((name,) if name else ("--all",)), "--yes", *(("--bucket", bucket) if bucket else ()), *(("--force",) if force else ()), *(("--only", only) if only else ()), timeout=3600, check=False)
     if done["exit_code"] != 0:
         reason = (done["stderr"] + done["stdout"]).strip().splitlines()[-30:]
         raise ToolError(f"{kind} {name} was not published:\n" + "\n".join(reason), hint="bundle the missing references under the asset directory, or pass force=true")
     return {"kind": kind, "name": name, "published": done["stdout"].strip().splitlines()[-1:]}
+
+
+@domain.tool(read_only=True, open_world=True)
+def assets_articulation(name: Annotated[str, Field(description="object name as a scenario's objects reference it, [domain/]name")]) -> dict[str, object]:
+    """Links, joints (type, parent, child, limits, speed, role, authored dynamics), link materials, named states, detents, field families (family to member joints) and swept box of an articulated object, or that the object is rigid."""
+    from arena_simulation_setup.tree.assets.Object import ObjectIdentifier
+
+    try:
+        view = ObjectIdentifier.parse(name).resolve_sync()
+    except FileNotFoundError as exc:
+        raise ToolError(f"object {name!r} does not resolve: {exc}", hint="assets_find with kind object shows every resolver's verdict") from exc
+    try:
+        articulation = view.articulation
+    except ValueError as exc:
+        raise ToolError(f"object {name!r} has an invalid articulation: {exc}", hint="its annotation.yaml carries the articulation the build wrote") from exc
+    if articulation is None:
+        return {"object": name, "path": str(view.path), "articulated": False}
+    return {
+        "object": name,
+        "path": str(view.path),
+        "articulated": True,
+        "root": articulation.root,
+        "links": [{"name": link, "nodes": nodes, "bundle": (view.path / "links" / link).is_dir()} for link, nodes in articulation.links.items()],
+        "joints": [{**joint.unstructure(), "speed": joint.speed} for joint in articulation.joints],
+        "materials": {link: material.unstructure() for link, material in articulation.materials.items()},
+        "states": articulation.states,
+        "detents": articulation.detents,
+        "families": {family: list(members) for family, members in articulation.families().items()},
+        "initial": articulation.initial(),
+        "swept": None if articulation.swept is None else [list(side) for side in articulation.swept],
+    }
 
 
 ImportKind = Annotated[str, Field(description="kind an import writes, assets_import_sources lists them with their sources")]
@@ -124,6 +160,11 @@ def _imported(job: Job) -> dict[str, object]:
     return {"paths": [line for line in lines if line.startswith("/") and Path(line).is_dir()]}
 
 
+def _retargeted(job: Job) -> dict[str, object]:
+    lines = job.log_path.read_text().splitlines() if job.log_path.is_file() else []
+    return {"paths": [first for line in lines if (first := line.split(" ", 1)[0]).startswith("/") and Path(first).is_dir()]}
+
+
 @domain.tool(open_world=True, idempotent=True)
 async def assets_import(
     kind: ImportKind,
@@ -135,3 +176,39 @@ async def assets_import(
         raise ToolError(f"no {kind} import source {source!r}", hint="assets_import_sources lists the sources by kind")
     job = await cli.job("import", f"import {kind} {source} {' '.join(items)}", "asset", "import", kind, source, *items, result=_imported)
     return job.as_dict()
+
+
+@domain.tool(idempotent=True)
+async def assets_retarget_animation(
+    sources: Annotated[list[str], Field(description="SMPL-X .npz files or directories, absolute paths", min_length=1)],
+    out: Annotated[str, Field(description="Animation directory to write the clip folders into, absolute path")],
+    pair: Annotated[bool, Field(description="each source is a two-person interaction, written as <name>_a and <name>_b")] = False,
+    loop: Annotated[bool, Field(description="mark the clips as looping")] = False,
+) -> dict[str, object]:
+    """Retarget SMPL-X motion onto Arena's 40-DOF human wire as a job whose result lists the clip directories."""
+    if missing := [source for source in sources if not Path(source).exists()]:
+        raise ToolError(f"no such source: {', '.join(missing)}", hint="sources are absolute .npz files or directories")
+    flags = [*(["--pair"] if pair else []), *(["--loop"] if loop else [])]
+    argv = [sys.executable, "-m", "arena_simulation_setup.adapters.arena_animation_retarget", *sources, "-o", out, *flags]
+    job = await JOBS.start_process("retarget", f"retarget {' '.join(sources)}", argv, cwd=cli.ws_dir(), result=_retargeted)
+    return job.as_dict()
+
+
+@domain.tool(idempotent=True)
+def assets_rig_human(
+    bundle: Annotated[str, Field(description="human bundle directory holding <name>.sdf and meshes/<name>.dae, absolute path")],
+    dry_run: Annotated[bool, Field(description="return the rig without writing rig/<name>.rig")] = False,
+) -> dict[str, object]:
+    """Rig a human bundle like `rig_human`: rig/<name>.rig and rig/<name>.sdf from its skin, rig.yaml only read."""
+    from arena_simulation_setup.shared.body import load_template
+    from arena_simulation_setup.tree.assets.human_rig import build_rig, describe, write_bundle
+
+    path = Path(bundle)
+    if not path.is_dir():
+        raise ToolError(f"no such bundle: {bundle}", hint="pass the absolute bundle directory holding <name>.sdf and meshes/<name>.dae")
+    try:
+        rig = build_rig(path, load_template())
+        written = [] if dry_run else write_bundle(path, rig)
+    except (OSError, ValueError) as exc:
+        raise ToolError(str(exc), hint="a human bundle carries a cmu_mb or game_engine skin as meshes/<bundle name>.dae") from exc
+    return {"path": str(path / "rig" / f"{path.name}.rig"), "written": [str(file) for file in written], "rig": describe(rig)}

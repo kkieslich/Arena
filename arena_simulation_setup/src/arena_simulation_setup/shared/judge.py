@@ -10,19 +10,24 @@ import attrs
 import numpy as np
 
 from arena_simulation_setup.shared.conditions import (
+    AllNode,
+    AnyNode,
     Atom,
+    CompareValue,
     EntityAtom,
     EpisodeCondition,
+    FamilyTest,
+    FieldTest,
+    HoldNode,
     MembershipAtom,
+    Node,
     NotAtom,
+    NotNode,
     PlaysAtom,
     SeesAtom,
-    Until,
-    UntilClause,
     WithinAtom,
-    parse_atom,
+    node_children,
     parse_point,
-    parse_until,
 )
 
 if typing.TYPE_CHECKING:
@@ -36,8 +41,9 @@ PARK_DRIFT_M = 0.05
 PARK_TURN_RAD = math.radians(5.0)
 WALL_GRID_RESOLUTION_M = 0.05
 
-Zones = Mapping[str, 'shapely.Polygon']
+Zones = Mapping[str, 'shapely.Polygon | shapely.MultiPolygon']
 FieldLookup = Callable[[str, str], str | None]
+FamilyLookup = Callable[[str, str], Mapping[str, str] | None]
 
 
 @attrs.frozen
@@ -79,7 +85,7 @@ class WallGrid:
 
 @attrs.frozen
 class Sample:
-    """World state at one instant: robot poses (x, y, yaw), ped positions (x, y) and ped gesture clips by name, a missing subject is nowhere if in `known`, else unresolvable."""
+    """World state at one instant: robot poses (x, y, yaw), ped positions (x, y), ped gesture clips and semantic fields by name, a missing subject is nowhere if in `known`, else unresolvable."""
 
     t: float
     robots: Mapping[str, tuple[float, float, float]] = attrs.field(factory=dict)
@@ -88,6 +94,7 @@ class Sample:
     known: frozenset[str] = attrs.field(factory=frozenset)
     clips: Mapping[str, frozenset[str]] = attrs.field(factory=dict)
     walls: WallGrid | None = None
+    family: FamilyLookup = attrs.field(default=lambda entity, name: None)
 
     def point(self, subject: str, robot: str) -> tuple[float, float] | None | typing.Literal[False]:
         """Planar position of a subject or an `x,y` literal, False when it is known but absent, None when it is unknown."""
@@ -104,16 +111,22 @@ class Sample:
         return False if name in self.known or name in self.peds or name in self.robots else None
 
 
-def zone_polygons(level: Level) -> dict[str, shapely.Polygon]:
-    """Zone, door and elevator polygons of a compacted level, keyed by name."""
+def zone_polygons(level: Level) -> dict[str, shapely.Polygon | shapely.MultiPolygon]:
+    """Zone, door, elevator and stair polygons of a compacted level, keyed by name."""
     import shapely
 
-    polygons: dict[str, shapely.Polygon] = {}
+    polygons: dict[str, shapely.Polygon | shapely.MultiPolygon] = {}
     for name in level.zone_ref_names():
         corners = level.lookup_zone_polygon(name)
         if corners is None or len(corners) < 3:
             continue
         polygons[name] = shapely.Polygon([(c.x, c.y) for c in corners])
+    groups: dict[str, list[shapely.Polygon]] = {}
+    for stair in level.stairs:
+        half = polygons[stair.name]
+        if stair.group and isinstance(half, shapely.Polygon):
+            groups.setdefault(stair.group, []).append(half)
+    polygons.update((name, shapely.MultiPolygon(halves)) for name, halves in groups.items())
     return polygons
 
 
@@ -161,44 +174,109 @@ def atom_holds(atom: Atom, sample: Sample, zones: Zones, robot: str = 'robot') -
     return math.hypot(a[0] - b[0], a[1] - b[1]) <= atom.radius
 
 
-def clause_holds(clause: UntilClause, sample: Sample, zones: Zones, robot: str = 'robot') -> bool | None:
-    """Truth of every atom of a clause on one sample, None when none is false and one is unresolvable."""
-    verdicts = [atom_holds(atom, sample, zones, robot) for atom in clause.atoms]
+def compare(recorded: str, op: str, value: CompareValue) -> bool | None:
+    """One recorded value against a comparison, None when an ordering op meets a non-numeric value."""
+    if op in ('eq', 'ne'):
+        equal = values_equal(recorded, value if isinstance(value, str) else str(value))
+        return equal if op == 'eq' else not equal
+    try:
+        number = float(recorded)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, tuple):
+        return value[0] - FLOAT_TOLERANCE <= number <= value[1] + FLOAT_TOLERANCE
+    bound = float(value)
+    if op == 'le':
+        return number <= bound + FLOAT_TOLERANCE
+    if op == 'ge':
+        return number >= bound - FLOAT_TOLERANCE
+    if op == 'lt':
+        return number < bound - FLOAT_TOLERANCE
+    return number > bound + FLOAT_TOLERANCE
+
+
+def _all(verdicts: list[bool | None]) -> bool | None:
     if any(v is False for v in verdicts):
         return False
     return None if any(v is None for v in verdicts) else True
 
 
-def until_holds(until: Until, sample: Sample, zones: Zones, robot: str = 'robot') -> bool | None:
-    """Truth of any clause of an until on one sample, None when none is true and one is unresolvable."""
-    verdicts = [clause_holds(clause, sample, zones, robot) for clause in until.clauses]
+def _any(verdicts: list[bool | None]) -> bool | None:
     if any(v is True for v in verdicts):
         return True
     return None if any(v is None for v in verdicts) else False
 
 
+def _family_holds(test: FamilyTest, sample: Sample) -> bool | None:
+    members = sample.family(test.entity, test.family)
+    if members is None:
+        return None
+    if not members:
+        return False
+    verdicts = [compare(recorded, test.op, test.value) for recorded in members.values()]
+    return _any(verdicts) if test.quantifier == 'some' else _all(verdicts)
+
+
+@attrs.define
+class NodeMonitor:
+    """Truth of a condition node over successive samples, every child evaluated each step, holds timed per node path."""
+
+    node: Node
+    robot: str = 'robot'
+    _since: dict[tuple[int, ...], float] = attrs.field(factory=dict, init=False)
+
+    def reset(self) -> None:
+        self._since.clear()
+
+    def step(self, sample: Sample, zones: Zones) -> bool | None:
+        return self._eval(self.node, (), sample, zones)
+
+    def _eval(self, node: Node, path: tuple[int, ...], sample: Sample, zones: Zones) -> bool | None:
+        if isinstance(node, (AllNode, AnyNode)):
+            verdicts = [self._eval(child, (*path, i), sample, zones) for i, child in enumerate(node.nodes)]
+            return _all(verdicts) if isinstance(node, AllNode) else _any(verdicts)
+        if isinstance(node, NotNode):
+            inner = self._eval(node.node, (*path, 0), sample, zones)
+            return None if inner is None else not inner
+        if isinstance(node, HoldNode):
+            inner = self._eval(node.node, (*path, 0), sample, zones)
+            if inner is not True:
+                self._since.pop(path, None)
+                return inner
+            since = self._since.setdefault(path, sample.t)
+            return sample.t - since >= node.seconds
+        if isinstance(node, FieldTest):
+            recorded = sample.field(node.entity, node.field)
+            return None if recorded is None else compare(recorded, node.op, node.value)
+        if isinstance(node, FamilyTest):
+            return _family_holds(node, sample)
+        return atom_holds(node, sample, zones, self.robot)
+
+
+def _has_hold(node: Node) -> bool:
+    return isinstance(node, HoldNode) or any(_has_hold(child) for child in node_children(node))
+
+
+def node_holds(node: Node, sample: Sample, zones: Zones, robot: str = 'robot') -> bool | None:
+    """Truth of a node without holds on one sample, None when an input it needs is missing."""
+    if _has_hold(node):
+        raise ValueError('node_holds takes a node without holds, step a NodeMonitor for one with holds')
+    return NodeMonitor(node, robot).step(sample, zones)
+
+
 @attrs.define
 class UntilMonitor:
-    """Sim seconds each clause of an until has held without a gap, met once any reaches its dwell."""
+    """Exit test of a phase or loop over samples, met on a sample its node holds on."""
 
-    until: Until
+    until: Node
     robot: str = 'robot'
-    _since: list[float | None] = attrs.field(init=False)
+    _monitor: NodeMonitor = attrs.field(init=False)
 
     def __attrs_post_init__(self) -> None:
-        self._since = [None] * len(self.until.clauses)
+        self._monitor = NodeMonitor(self.until, self.robot)
 
     def step(self, sample: Sample, zones: Zones) -> bool:
-        met = False
-        for i, clause in enumerate(self.until.clauses):
-            if clause_holds(clause, sample, zones, self.robot) is not True:
-                self._since[i] = None
-                continue
-            since = self._since[i]
-            if since is None:
-                since = self._since[i] = sample.t
-            met = met or sample.t - since >= clause.dwell
-        return met
+        return self._monitor.step(sample, zones) is True
 
 
 def operator_verdict(
@@ -239,8 +317,8 @@ class ConditionMonitor:
 
     condition: EpisodeCondition
     robot: str = 'robot'
-    _p: Atom = attrs.field(init=False)
-    _q: Atom | None = attrs.field(init=False)
+    _p: NodeMonitor = attrs.field(init=False)
+    _q: NodeMonitor | None = attrs.field(init=False)
     _unknown: bool = attrs.field(default=False, init=False)
     _any_p: bool = attrs.field(default=False, init=False)
     _all_p: bool = attrs.field(default=True, init=False)
@@ -252,15 +330,16 @@ class ConditionMonitor:
     decided: bool = attrs.field(default=False, init=False)
 
     def __attrs_post_init__(self) -> None:
-        self._p = parse_atom(self.condition.p)
-        self._q = parse_atom(self.condition.q) if self.condition.q is not None else None
+        self._p = NodeMonitor(self.condition.p_node, self.robot)
+        q = self.condition.q_node
+        self._q = NodeMonitor(q, self.robot) if q is not None else None
 
     def update(self, sample: Sample, zones: Zones) -> bool | None:
         """Feed one sample, returning the verdict once it is decided, else None."""
         if self.decided:
             return self.verdict
-        p = atom_holds(self._p, sample, zones, self.robot)
-        q = atom_holds(self._q, sample, zones, self.robot) if self._q is not None else False
+        p = self._p.step(sample, zones)
+        q = self._q.step(sample, zones) if self._q is not None else False
         if p is None or q is None:
             self._unknown = True
             self._n += 1
@@ -371,7 +450,8 @@ class PhaseMonitor:
     misfire: str | None = attrs.field(default=None, init=False)
 
     def __attrs_post_init__(self) -> None:
-        self._until = UntilMonitor(parse_until(self.phase.until), self.robot) if self.phase.until is not None else None
+        until = self.phase.until_node
+        self._until = UntilMonitor(until, self.robot) if until is not None else None
         self.conditions = [ConditionMonitor(c, self.robot) for c in self.phase.conditions]
 
     @property
@@ -453,7 +533,9 @@ __all__ = [
     'PARK_TURN_RAD',
     'WALL_GRID_RESOLUTION_M',
     'ConditionMonitor',
+    'FamilyLookup',
     'FieldLookup',
+    'NodeMonitor',
     'ParkTimer',
     'PhaseMonitor',
     'Sample',
@@ -462,9 +544,9 @@ __all__ = [
     'Zones',
     'arrived',
     'atom_holds',
-    'clause_holds',
+    'compare',
+    'node_holds',
     'operator_verdict',
-    'until_holds',
     'values_equal',
     'zone_polygons',
 ]

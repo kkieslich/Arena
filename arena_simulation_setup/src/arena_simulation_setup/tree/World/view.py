@@ -29,6 +29,7 @@ from arena_simulation_setup.tree import (
     SimplePathResolver,
 )
 
+from ..Stairs import StairsIdentifier
 from .legacy import is_legacy, upgrade
 from .Map import Map
 from .model import FORMAT, LEGACY_FORMAT, Level, World
@@ -152,6 +153,15 @@ class WorldView(PathView):
         warnings.warn(f'world {self.path} is in format 1, migrate it with touch_world --migrate', DeprecationWarning, stacklevel=2)
         return world, kg, notes
 
+    def _stair_kind(self, name: str) -> dict:
+        """A stair kind as this world resolves it, its own assets first."""
+        previous = DynamicPaths.WORLD.path, list(DynamicPaths.LINKED.paths)
+        point_world_assets(self.path, [])
+        try:
+            return StairsIdentifier(name).resolve_sync()
+        finally:
+            point_world_assets(*previous)
+
     def _linked_level(self, source: str, chain: tuple[Path, ...], sources: list[Path], links: dict[str, tuple[Path, World, str]]) -> Level:
         name, _, level_id = source.partition(':')
         view = WorldView(self.path / name) if name.startswith(('./', '../')) else WorldIdentifier(name).resolve_sync()
@@ -178,7 +188,7 @@ class WorldView(PathView):
         if data is None:
             data, kg, _ = self.read()
         links: dict[str, tuple[Path, World, str]] = {}
-        world = parse_world(data, link=lambda source: self._linked_level(source, chain, sources, links))
+        world = parse_world(data, link=lambda source: self._linked_level(source, chain, sources, links), stair_kind=self._stair_kind)
         world.kg = load_kg(kg) if kg is not None else None
         groups: dict[tuple[Path, str], tuple[World, dict[str, str]]] = {}
         for level in world.all_levels:
@@ -363,6 +373,11 @@ def point_world_assets(path: Path | None, linked: Iterable[Path]) -> None:
         resolver.invalidate()
 
 
+def point_scenario_assets(path: Path | None) -> None:
+    """Point scenario-local resolution at scenario directory `path`, None for no scenario."""
+    DynamicPaths.SCENARIO.path = path if path is not None else Path('/dev/null')
+
+
 def _dynamic_path_resolvers() -> Iterator[ResolverBase]:
     """Every resolver registered on an Identifier kind that reads its root from DynamicPaths, each once."""
     seen: set[int] = set()
@@ -437,6 +452,7 @@ def check_kg(world: World, scene: 'Scene') -> None:
             'door': names['door'],
             'floor': world.level_ids,
             'elevator': names['elevator'],
+            'stair': names['stair'],
             'obj': names['obj'],
             'light': names['light'],
             'sound': names['sound'],
@@ -574,4 +590,4 @@ WorldIdentifier.use(*(SimplePathResolver(WorldIdentifier, root) for root in _wor
 WorldIdentifier.use(LocalResolver(WorldIdentifier, 'worlds'))
 WorldIdentifier.use(DynamicPathResolver(WorldIdentifier, DynamicPaths.IMPORTED, fn=lambda p: p / 'worlds'))
 WorldIdentifier.use(SimplePathResolver(WorldIdentifier, ASS_DIR / 'worlds'))
-WorldIdentifier.use(*NetResolver.all(WorldIdentifier, providers=WORLD_PROVIDERS, formats=(), annotated=False))
+WorldIdentifier.use(*NetResolver.all(WorldIdentifier, providers=WORLD_PROVIDERS, formats=(), annotated=False, list_containing='world.yaml'))

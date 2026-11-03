@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
+import typing
 from collections.abc import Mapping, Sequence
 
 from arena_simulation_setup.shared.conditions import (
+    ATOM_TYPES,
+    AllNode,
+    AnyNode,
     Atom,
+    CompareValue,
+    EntityAtom,
     EpisodeCondition,
+    FamilyTest,
+    FieldTest,
+    HoldNode,
     MembershipAtom,
+    Node,
     NotAtom,
+    NotNode,
     PlaysAtom,
     SeesAtom,
-    Until,
-    UntilClause,
     WithinAtom,
-    parse_atom,
+    needs_parentheses,
     parse_point,
-    parse_until,
 )
 from arena_simulation_setup.shared.task import GoToPhase, LoopPhase, PlayGesturePhase, ReachPhase, TaskPhase
 
@@ -53,14 +61,43 @@ def render_atom_text(atom: Atom, nouns: Nouns | None = None, robot: str = "you")
     return f"{noun(atom.entity, nouns)} {atom.field.replace('_', ' ')} is {atom.value}"
 
 
-def render_until_text(until: Until, nouns: Nouns | None = None, robot: str = "you") -> str:
-    """Clauses joined by `or`, each its atoms joined by `and` with the dwell as a trailing `for <n> seconds`."""
-    return " or ".join(_clause_text(clause, nouns, robot) for clause in until.clauses)
+def render_until_text(node: Node, nouns: Nouns | None = None, robot: str = "you") -> str:
+    """A condition node as a sentence part: `and`, `or` and `not` as words, a hold as a trailing `for <n> seconds`."""
+    if isinstance(node, ATOM_TYPES):
+        return render_atom_text(typing.cast("Atom", node), nouns, robot)
+    if isinstance(node, FieldTest):
+        return f"{noun(node.entity, nouns)} {_field_words(node.field)} {_compare_text(node.op, node.value)}"
+    if isinstance(node, FamilyTest):
+        quantifier = "some" if node.quantifier == "some" else "every"
+        return f"the {_field_words(node.family)} of {quantifier} joint of {noun(node.entity, nouns)} {_compare_text(node.op, node.value)}"
+    if isinstance(node, AllNode):
+        return " and ".join(_child_text(node, child, nouns, robot) for child in node.nodes)
+    if isinstance(node, AnyNode):
+        return " or ".join(_child_text(node, child, nouns, robot) for child in node.nodes)
+    if isinstance(node, NotNode):
+        if isinstance(node.node, ATOM_TYPES) and not isinstance(node.node, NotAtom):
+            return render_atom_text(NotAtom(atom=typing.cast("EntityAtom | MembershipAtom | WithinAtom | SeesAtom | PlaysAtom", node.node)), nouns, robot)
+        return f"it is not the case that {_child_text(node, node.node, nouns, robot)}"
+    assert isinstance(node, HoldNode)
+    text = _child_text(node, node.node, nouns, robot)
+    return f"{text} for {node.seconds:g} seconds" if node.seconds > 0 else text
 
 
-def _clause_text(clause: UntilClause, nouns: Nouns | None, robot: str) -> str:
-    text = " and ".join(render_atom_text(atom, nouns, robot) for atom in clause.atoms)
-    return f"{text} for {clause.dwell:g} seconds" if clause.dwell > 0 else text
+def _child_text(parent: Node, child: Node, nouns: Nouns | None, robot: str) -> str:
+    text = render_until_text(child, nouns, robot)
+    return f"({text})" if needs_parentheses(parent, child) else text
+
+
+def _field_words(field: str) -> str:
+    return field.replace(".", " ").replace("_", " ")
+
+
+def _compare_text(op: str, value: CompareValue) -> str:
+    if isinstance(value, tuple):
+        return f"is between {value[0]:g} and {value[1]:g}"
+    shown = f"{value:g}" if isinstance(value, float) else value
+    phrase = {"eq": "is", "ne": "is not", "lt": "is below", "le": "is at most", "gt": "is above", "ge": "is at least"}[op]
+    return f"{phrase} {shown}"
 
 
 def _playing(clip: str, nouns: Nouns | None) -> str:
@@ -84,18 +121,19 @@ def render_condition(condition: EpisodeCondition, nouns: Nouns | None = None) ->
     """One sentence per operator, the authored `text` winning when set."""
     if condition.text:
         return condition.text
-    p = parse_atom(condition.p)
+    p = condition.p_node
     op = condition.op
     if op == "always":
-        return f"Make sure that {render_atom_text(p, nouns)} the whole time."
+        return f"Make sure that {render_until_text(p, nouns)} the whole time."
     if op == "never":
-        return f"Never let it happen that {render_atom_text(p, nouns)}."
+        return f"Never let it happen that {render_until_text(p, nouns)}."
     if op == "eventually":
-        return f"At some point, {render_atom_text(p, nouns)}."
-    q = parse_atom(condition.q or "")
+        return f"At some point, {render_until_text(p, nouns)}."
+    q = condition.q_node
+    assert q is not None
     if op == "before":
-        return f"Make sure that {render_atom_text(p, nouns)} before {render_atom_text(q, nouns)}."
-    return f"Never let it happen that {render_atom_text(p, nouns)} while {render_atom_text(q, nouns)}."
+        return f"Make sure that {render_until_text(p, nouns)} before {render_until_text(q, nouns)}."
+    return f"Never let it happen that {render_until_text(p, nouns)} while {render_until_text(q, nouns)}."
 
 
 def render_phase(phase: TaskPhase, nouns: Nouns | None = None) -> str:
@@ -117,8 +155,9 @@ def render_phase(phase: TaskPhase, nouns: Nouns | None = None) -> str:
             sentence = "Reach to the given pose"
     else:
         sentence = "Carry out the step"
-    if phase.until is not None:
-        sentence += f" and wait until {render_until_text(parse_until(phase.until), nouns)}"
+    until = phase.until_node
+    if until is not None:
+        sentence += f" and wait until {render_until_text(until, nouns)}"
     for condition in phase.conditions:
         sentence += ", " + _condition_clause(condition, nouns)
     return sentence + "."
@@ -126,9 +165,10 @@ def render_phase(phase: TaskPhase, nouns: Nouns | None = None) -> str:
 
 def _render_loop(phase: LoopPhase, nouns: Nouns | None) -> str:
     steps = render_phases(phase.phases, nouns)
-    if phase.until is None:
+    until = phase.until_node
+    if until is None:
         return f"Keep repeating these steps: {steps}"
-    return f"Repeat these steps until {render_until_text(parse_until(phase.until), nouns)}: {steps}"
+    return f"Repeat these steps until {render_until_text(until, nouns)}: {steps}"
 
 
 def _render_goto(phase: GoToPhase, nouns: Nouns | None) -> str:
@@ -146,18 +186,19 @@ def _render_goto(phase: GoToPhase, nouns: Nouns | None) -> str:
 def _condition_clause(condition: EpisodeCondition, nouns: Nouns | None) -> str:
     if condition.text:
         return condition.text
-    p = parse_atom(condition.p)
+    p = condition.p_node
     op = condition.op
     if op == "never":
-        return f"never letting it happen that {render_atom_text(p, nouns)}"
+        return f"never letting it happen that {render_until_text(p, nouns)}"
     if op == "always":
-        return f"making sure that {render_atom_text(p, nouns)} the whole time"
+        return f"making sure that {render_until_text(p, nouns)} the whole time"
     if op == "eventually":
-        return f"making sure that at some point {render_atom_text(p, nouns)}"
-    q = parse_atom(condition.q or "")
+        return f"making sure that at some point {render_until_text(p, nouns)}"
+    q = condition.q_node
+    assert q is not None
     if op == "before":
-        return f"making sure that {render_atom_text(p, nouns)} before {render_atom_text(q, nouns)}"
-    return f"never letting it happen that {render_atom_text(p, nouns)} while {render_atom_text(q, nouns)}"
+        return f"making sure that {render_until_text(p, nouns)} before {render_until_text(q, nouns)}"
+    return f"never letting it happen that {render_until_text(p, nouns)} while {render_until_text(q, nouns)}"
 
 
 def render_phases(phases: Sequence[TaskPhase], nouns: Nouns | None = None, conditions: Sequence[EpisodeCondition] = ()) -> str:

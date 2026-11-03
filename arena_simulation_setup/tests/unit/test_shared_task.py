@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from arena_simulation_setup.shared.conditions import EpisodeCondition
+from arena_simulation_setup.shared.conditions import AllNode, EpisodeCondition, FieldTest, HoldNode, MembershipAtom
 from arena_simulation_setup.shared.task import GoToPhase, LoopPhase, PlayGesturePhase, ReachPhase, TaskPhase, TaskRequest
 from arena_simulation_setup.utils.cattrs import converter
 from arena_simulation_setup.utils.geometry import Orientation, Pose, Position
@@ -226,3 +226,32 @@ def test_parse_goto_zone_dispatch_pose_remembers_its_zone():
     assert zoned.pose_zone == "lobby"
     assert 0.0 <= zoned.pose.position.x <= 2.0 and 0.0 <= zoned.pose.position.y <= 2.0
     assert literal.pose_zone == ""
+
+
+def test_parse_structured_until_keeps_the_mapping():
+    until = {"all": [{"subject": "robot", "in": "kitchen"}, {"field": "wardrobe.openness.door_left", "ge": 0.8}], "for": 2}
+    phase = TaskPhase.parse({"goto": "kitchen", "until": until})
+    assert phase.until == until
+    assert phase.until is not until
+    assert phase.until_node == HoldNode(AllNode((MembershipAtom("robot", "kitchen"), FieldTest("wardrobe", "openness.door_left", "ge", 0.8))), 2.0)
+    assert phase.serialize()["until"] == until
+    assert TaskPhase.parse(phase.serialize()) == phase
+    loop = TaskPhase.parse({"loop": [{"goto": "kitchen"}], "until": {"some": "wardrobe.openness", "ge": 0.5}})
+    assert isinstance(loop, LoopPhase)
+    assert loop.serialize()["until"] == {"some": "wardrobe.openness", "ge": 0.5}
+    assert TaskPhase.parse(loop.serialize()) == loop
+
+
+def test_text_until_stays_text_and_parses_into_a_node():
+    phase = TaskPhase.parse({"goto": "kitchen", "until": "robot in kitchen for 2"})
+    assert phase.until == "robot in kitchen for 2"
+    assert phase.until_node == HoldNode(MembershipAtom("robot", "kitchen"), 2.0)
+    assert TaskPhase.parse({"goto": "kitchen"}).until_node is None
+
+
+@pytest.mark.parametrize("until", [{"field": "wardrobe.state"}, {"some": "wardrobe.openness", "ge": "half"}, {"all": []}, {"subject": "robot", "in": "kitchen", "for": -1}])
+def test_parse_rejects_a_malformed_structured_until(until):
+    with pytest.raises(ValueError):
+        TaskPhase.parse({"goto": "kitchen", "until": until})
+    with pytest.raises(ValueError):
+        TaskPhase.parse({"loop": [{"goto": "kitchen"}], "until": until})

@@ -1,6 +1,6 @@
 """
-GazeboHost is constructed once by arena_node and owns process-singleton resources for Gazebo: the gz_services_bridge launch, the lifecycle (pause/unpause), and the control-world client.
-GazeboSimulator is per-env on task_generator_node and adapts env-namespace state (spawned-name tracking, per-env service clients) over those shared resources. Sim_path prefixing is owned by the Realizer.
+GazeboHost is constructed once by arena_runtime_node and owns process-singleton resources for Gazebo: the gz_services_bridge launch, the lifecycle (pause/unpause), and the control-world client.
+GazeboSimulator is per-env on arena_env_node and adapts env-namespace state (spawned-name tracking, per-env service clients) over those shared resources. Sim_path prefixing is owned by the Realizer.
 """
 
 import asyncio
@@ -10,7 +10,7 @@ import time
 import traceback
 import typing
 import xml.etree.ElementTree
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
 import arena_robots.catalog
@@ -22,6 +22,7 @@ import launch
 import launch_ros
 import rclpy.impl.rcutils_logger
 import rclpy.time
+from arena_bringup.constants import SimSimulator
 from arena_people_msgs.msg import Pedestrians
 from arena_rclpy_mixins import ArenaMixinNode
 from arena_rclpy_mixins.Async import ClientWrapper
@@ -29,17 +30,23 @@ from arena_rclpy_mixins.Time import Time
 from arena_simulation_setup.shared import Ceiling, Light, cct_to_rgb
 from arena_simulation_setup.tree.assets.Material import MaterialIdentifier
 from arena_simulation_setup.tree.Wall import WallSegment
+from arena_simulation_setup.utils.articulation import Joint, JointType, Values
+from arena_simulation_setup.utils.geometry import Scale, Vector3
 from arena_simulation_setup.utils.material import MdlUtil
-from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped, Quaternion
+from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped, Quaternion, TransformStamped
 from geometry_msgs.msg import Pose as RosPose
-from gz.msgs10 import light_pb2, material_color_pb2, world_stats_pb2
+from gz.msgs10 import boolean_pb2, double_v_pb2, light_pb2, material_color_pb2, pose_v_pb2, twist_pb2, world_stats_pb2
 from launch import LaunchDescription
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from ros_gz_interfaces.msg import Entity as EntityMsg
 from ros_gz_interfaces.msg import EntityFactory, WorldControl
 from ros_gz_interfaces.srv import ControlWorld, DeleteEntity, SetEntityPose, SpawnEntity
 from std_msgs.msg import Bool
-from task_generator.shared import (
+from viewport_control_msgs.msg import ViewportView
+from viewport_control_msgs.srv import ViewportSetProjection, ViewportSetReferenceFrame, ViewportSetView
+
+from arena_runtime.flags import ObstaclesOptim, obstacles_optim_level
+from arena_runtime.shared import (
     DynamicObstacle,
     Entity,
     Floor,
@@ -52,19 +59,17 @@ from task_generator.shared import (
     Robot,
     Wall,
 )
-from task_generator.utils.flags import ObstaclesOptim, obstacles_optim_level
-from viewport_control_msgs.msg import ViewportView
-from viewport_control_msgs.srv import ViewportSetProjection, ViewportSetReferenceFrame, ViewportSetView
-
-from arena_runtime.constants import SimSimulator
 from arena_runtime.sim import BaseSim, SimKwargs, SimLifecycle, SimUnavailable
+from arena_runtime.sim._articulation import ArticulatedObject, command_fields, surface
+from arena_runtime.sim._articulation import JointCommand as ArticulatedCommand
 from arena_runtime.sim._control import (
     effective_control_yaml,
     robot_controllers,
     twist_stamper_node,
 )
 from arena_runtime.sim._interface import resolve_obstacle_box
-from arena_runtime.sim._walls import realize_renderable
+from arena_runtime.sim._walls import realize_renderable, sloped_box
+from arena_runtime.static_tf import StaticTransformBroadcaster
 
 from .robot_bridge import BridgeConfiguration, MappingDirection, _TopicMapping
 from .scene import parse_scene_models
@@ -335,6 +340,8 @@ class GazeboHost(SimLifecycle):
 
 class GazeboSimulator(BaseSim):
     SIM_NAME = 'gazebo'
+    STACKS_LEVELS = True
+    ARTICULATED_PHYSICS = True
 
     def __init__(self, **kwargs: typing.Unpack[SimKwargs]) -> None:
         super().__init__(**kwargs)
@@ -357,6 +364,8 @@ class GazeboSimulator(BaseSim):
         self._spawned_names: set[str] = set()
         self._entity_ids: dict[str, int] = {}
         self._id_wanted: set[str] = set()
+        self._joint_commands: dict[str, gz.transport13.Publisher] = {}
+        self._joint_states: dict[str, list[float]] = {}
 
         # gz leaves a model unactuated after a SetEntityPose issued while the
         # world is paused; re-issuing the same pose once it runs wakes it.
@@ -364,6 +373,11 @@ class GazeboSimulator(BaseSim):
         self._paused: bool | None = None
 
         self._viewport_camera_pose: Pose | None = None
+        self._pose_batch: asyncio.Future | None = None
+        self._moving_boxes: dict[str, Orientation] = {}
+        self._odom_frames: dict[str, str] = {}
+        self._odom_broadcaster = StaticTransformBroadcaster(self.node)
+        self._velocity_publishers: dict[str, gz.transport13.Publisher] = {}
 
     def _robot_loader_args(self, robot: Robot) -> dict[str, object]:
         args: dict[str, object] = {
@@ -399,6 +413,24 @@ class GazeboSimulator(BaseSim):
     def _render_ros2_control_yaml(self, robot: Robot, config_uri: str, *, frame_prefix: str, control_prefix: str) -> str:
         return effective_control_yaml(robot.resolved_assembly, config_uri, robot.sim_path, frame_prefix, sim=SimSimulator.GAZEBO, prefix=control_prefix)
 
+    def _placed_light(self, params: dict[str, typing.Any]) -> dict[str, typing.Any]:
+        x, y, z = params['pose']
+        dx, dy, dz = self._shift(x, y)
+        return {**params, 'pose': (x + dx, y + dy, z + dz)}
+
+    def _publish_odom(self, sim_path: str) -> None:
+        """Publish the robot's map -> odom, the inverse shift of its level."""
+        frame = self._odom_frames.get(sim_path)
+        if frame is None:
+            return
+        dx, dy, dz = self._robot_shift(sim_path)
+        transform = TransformStamped()
+        transform.header.frame_id = 'map'
+        transform.child_frame_id = frame
+        transform.transform.translation.x, transform.transform.translation.y, transform.transform.translation.z = -dx, -dy, -dz
+        transform.transform.rotation.w = 1.0
+        self._odom_broadcaster.sendTransform(transform)
+
     async def obstacle_spawn(self, obstacles: Sequence[Obstacle]) -> Sequence[bool]:
         level = obstacles_optim_level(self.node)
         return await asyncio.gather(*(self._spawn_obstacle(o, level) for o in obstacles))
@@ -411,7 +443,7 @@ class GazeboSimulator(BaseSim):
     async def _spawn_box_obstacle(self, obstacle: Obstacle, size: tuple[float, float, float], center: tuple[float, float, float]) -> bool:
         sdf = _generate_box_sdf(obstacle.sim_path, size, center)
         async with self._semaphore:
-            ok = await self._spawn_sdf(obstacle.sim_path, sdf, obstacle.pose)
+            ok = await self._spawn_sdf(obstacle.sim_path, sdf, self._placed(obstacle.pose))
         if ok:
             self.entities[obstacle.name] = obstacle
         return ok
@@ -429,6 +461,9 @@ class GazeboSimulator(BaseSim):
             await self._sweep_entity_name(robot.sim_path)
             if not await self._spawn_entity(robot):
                 return False
+            robot_params = arena_robots.Robot.RobotIdentifier(robot.model.name).resolve_sync().model_params
+            self._odom_frames[robot.sim_path] = robot.frame.tf(robot_params.odom_frame)
+            self._track_level(robot.sim_path, robot.pose)
             _loader_args = self._robot_loader_args(robot)
             model = await (await robot.model.resolve()).model.get(ModelType.URDF, loader_args=_loader_args)
             if model.type is ModelType.UNKNOWN:
@@ -449,7 +484,14 @@ class GazeboSimulator(BaseSim):
         return success
 
     async def obstacle_move(self, obstacles: Sequence[Obstacle]) -> Sequence[bool]:
-        return await asyncio.gather(*map(self._move_entity, obstacles))
+        async def move(obstacle: Obstacle) -> bool:
+            runtime = self._articulated.get(obstacle.name)
+            if runtime is None or not runtime.physical:
+                return await self._move_entity(obstacle)
+            await self._delete_entity(obstacle.sim_path)
+            return (await self._articulated_spawn([runtime]))[0]
+
+        return await asyncio.gather(*map(move, obstacles))
 
     async def pedestrian_move(self, pedestrians: Sequence[DynamicObstacle]) -> Sequence[bool]:
         # Ped pose is owned by PedSkeletonPlugin (driven from the arena_peds topic).
@@ -459,6 +501,7 @@ class GazeboSimulator(BaseSim):
         async def impl(robot: Robot) -> bool:
             if not await self._move_entity(robot):
                 return False
+            self._track_level(robot.sim_path, robot.pose)
             if self._paused:
                 self._repin[robot.sim_path] = robot
             return await self._robot_move(robot)
@@ -474,7 +517,41 @@ class GazeboSimulator(BaseSim):
         await asyncio.gather(*map(self._move_entity, robots))
 
     async def obstacle_delete(self, obstacles: Sequence[Obstacle]) -> Sequence[bool]:
+        for obstacle in obstacles:
+            if self._joint_commands.pop(obstacle.sim_path, None) is not None:
+                self._gz_node.unsubscribe(_joint_topic(obstacle.sim_path, "state"))
+                self._joint_states.pop(obstacle.sim_path, None)
         return await asyncio.gather(*(self._delete_entity(o.sim_path) for o in obstacles))
+
+    async def _articulated_spawn(self, objects: Sequence[ArticulatedObject]) -> Sequence[bool]:
+        async def spawn(runtime: ArticulatedObject) -> bool:
+            obstacle = runtime.obstacle
+            links: list[tuple[str, Joint | None, Path | None]] = []
+            for link, joint in runtime.tree():
+                view = runtime.links.get(link)
+                model = await view.model.get(ModelType.SDF) if view is not None else None
+                links.append((link, joint, _sdf_file(model.path) if model is not None and model.type is ModelType.SDF and model.path is not None else None))
+            name = obstacle.sim_path
+            self._joint_states.pop(name, None)
+            if name not in self._joint_commands:
+                self._joint_commands[name] = self._gz_node.advertise(_joint_topic(name, "command"), double_v_pb2.Double_V)
+                self._gz_node.subscribe(double_v_pb2.Double_V, _joint_topic(name, "state"), lambda msg, name=name: self._joint_states.__setitem__(name, list(msg.data)))
+            async with self._semaphore:
+                return await self._spawn_sdf(name, _articulated_sdf(name, runtime, links), obstacle.pose)
+
+        return await asyncio.gather(*map(spawn, objects))
+
+    async def _articulated_drive(self, commands: Sequence[ArticulatedCommand]) -> Sequence[Values | None]:
+        readings: list[Values | None] = []
+        for command in commands:
+            name = command.runtime.obstacle.sim_path
+            fields = command_fields(command)
+            message = double_v_pb2.Double_V(data=[value for triple in zip(fields["reference"], fields["drive"], fields["place"], strict=True) for value in map(float, triple)])
+            if (publisher := self._joint_commands.get(name)) is not None:
+                publisher.publish(message)
+            state = self._joint_states.get(name)
+            readings.append(None if state is None or len(state) != len(fields["joints"]) else dict(zip(fields["joints"], state, strict=True)))
+        return readings
 
     async def pedestrian_delete(self, pedestrians: Sequence[DynamicObstacle]) -> Sequence[bool]:
         # PedSkeletonPlugin removes a ped's actor when its name leaves arena_peds.
@@ -495,7 +572,7 @@ class GazeboSimulator(BaseSim):
             textures = await self._resolve_wall_textures(floor.material)
             floor_sdf = _generate_floor_sdf(name, floor, textures)
             async with self._semaphore:
-                if not await self._spawn_sdf(name, floor_sdf, Pose()):
+                if not await self._spawn_sdf(name, floor_sdf, self._offset(floor.pos.x, floor.pos.y)):
                     raise RuntimeError(f"spawn_floors: {name} did not spawn")
             self._walls_entities.append(name)
         return True
@@ -506,7 +583,7 @@ class GazeboSimulator(BaseSim):
             textures = await self._resolve_wall_textures(ceiling.material)
             ceiling_sdf = _generate_ceiling_sdf(name, ceiling, textures)
             async with self._semaphore:
-                if not await self._spawn_sdf(name, ceiling_sdf, Pose()):
+                if not await self._spawn_sdf(name, ceiling_sdf, self._offset(ceiling.pos.x, ceiling.pos.y)):
                     raise RuntimeError(f"spawn_ceilings: {name} did not spawn")
             self._walls_entities.append(name)
         return True
@@ -533,6 +610,7 @@ class GazeboSimulator(BaseSim):
         return all([self._light_config(_default_light_request(name, direction, scale)) for name, direction in _GZ_DEFAULT_LIGHTS])
 
     async def _spawn_light_entity(self, name: str, params: dict[str, typing.Any]) -> bool:
+        params = self._placed_light(params)
         async with self._semaphore:
             x, y, z = params['pose']
             return await self._spawn_sdf(name, _generate_light_sdf(name, params), Pose(position=Position(x=x, y=y, z=z)))
@@ -582,7 +660,7 @@ class GazeboSimulator(BaseSim):
             return
         level, dead_fraction = output
         params = _light_params(light, level, light.alive(dead_fraction), position, yaw)
-        if not all([self._light_config(_light_request(name, p)) for name, p in zip(names, params, strict=True)]):
+        if not all([self._light_config(_light_request(name, self._placed_light(p))) for name, p in zip(names, params, strict=True)]):
             raise RuntimeError(f"light {light.name!r} did not take its pose")
 
     async def _apply_light(self, light: Light, level: float, alive: Sequence[bool]) -> None:
@@ -596,7 +674,7 @@ class GazeboSimulator(BaseSim):
             return
         pose = self._light_poses.get(light.name)
         params = _light_params(light, level, alive) if pose is None else _light_params(light, level, alive, *pose)
-        if not all([self._light_config(_light_request(name, p)) for name, p in zip(names, params, strict=True)]):
+        if not all([self._light_config(_light_request(name, self._placed_light(p))) for name, p in zip(names, params, strict=True)]):
             raise RuntimeError(f"light {light.name!r} did not take its state")
 
     async def set_robot_pose(self, sim_path: str, pose: Pose) -> bool:
@@ -604,18 +682,38 @@ class GazeboSimulator(BaseSim):
             return False
         req = SetEntityPose.Request()
         req.entity = EntityMsg(name=sim_path, type=EntityMsg.MODEL)
-        req.pose = pose.to_msg()
+        req.pose = self._placed(pose).to_msg()
         try:
             res = await self._service_set_entity_pose.call_timeout(req)
+            if res and res.success:
+                self._track_level(sim_path, pose)
             return bool(res and res.success)
         except Exception as e:
             self._logger.warning(f"set_robot_pose({sim_path!r}) failed: {e}")
             return False
 
-    async def spawn_box(self, name: str, size: tuple[float, float, float], pose: Pose, material: MaterialIdentifier | None = None) -> bool:
-        sdf = _generate_box_sdf(name, size, textures=await self._resolve_wall_textures(material))
+    async def spawn_box(self, name: str, size: tuple[float, float, float], pose: Pose, material: MaterialIdentifier | None = None, *, velocity: tuple[float, float, float] | None = None, comb: bool = False) -> bool:
+        textures = await self._resolve_wall_textures(material)
+        if velocity is not None:
+            self._moving_boxes[name] = pose.orientation
+        sdf = _generate_box_sdf(name, size, textures=textures, velocity=None if velocity is None else _body_frame(pose.orientation, velocity), comb=comb)
         async with self._semaphore:
-            return await self._spawn_sdf(name, sdf, pose)
+            return await self._spawn_sdf(name, sdf, self._placed(pose))
+
+    async def set_box_velocities(self, velocities: Mapping[str, tuple[float, float, float]]) -> bool:
+        ok = True
+        for name, velocity in velocities.items():
+            orientation = self._moving_boxes.get(name)
+            if orientation is None:
+                ok = False
+                continue
+            publisher = self._velocity_publishers.get(name)
+            if publisher is None:
+                publisher = self._velocity_publishers[name] = self._gz_node.advertise(f'/model/{name}/cmd_vel', twist_pb2.Twist)
+            twist = twist_pb2.Twist()
+            twist.linear.x, twist.linear.y, twist.linear.z = _body_frame(orientation, velocity)
+            ok = publisher.publish(twist) and ok
+        return ok
 
     async def move_box(self, name: str, pose: Pose) -> bool:
         # Fire-and-forget: animation is cosmetic, last-write-wins. Awaiting the service round-trip
@@ -623,7 +721,7 @@ class GazeboSimulator(BaseSim):
         # door updates issue concurrently.
         request = SetEntityPose.Request()
         request.entity = EntityMsg(name=name, type=EntityMsg.MODEL)
-        request.pose = pose.to_msg()
+        request.pose = self._placed(pose).to_msg()
         try:
             self._service_set_entity_pose.client.call_async(request)
         except Exception as e:
@@ -631,7 +729,23 @@ class GazeboSimulator(BaseSim):
             return False
         return True
 
+    async def move_boxes(self, poses: Mapping[str, Pose]) -> bool:
+        if self._pose_batch is not None and not self._pose_batch.done():
+            return False
+        self._pose_batch = asyncio.get_running_loop().run_in_executor(
+            None,
+            self._gz_node.request,
+            _SET_POSE_VECTOR_SERVICE,
+            _pose_vector({name: self._placed(pose) for name, pose in poses.items()}),
+            pose_v_pb2.Pose_V,
+            boolean_pb2.Boolean,
+            _POSE_BATCH_TIMEOUT_MS,
+        )
+        return True
+
     async def delete_box(self, name: str) -> bool:
+        self._moving_boxes.pop(name, None)
+        self._velocity_publishers.pop(name, None)
         return await self._delete_entity(name)
 
     # ViewportITF: drives the gz GUI user-camera over the ViewportCamera plugin's
@@ -737,7 +851,7 @@ class GazeboSimulator(BaseSim):
                 name=entity.sim_path,
                 type=entity_type,
             )
-            request.pose = entity.pose.to_msg()
+            request.pose = self._placed(entity.pose).to_msg()
 
             try:
                 await self._service_set_entity_pose.ensure()
@@ -774,7 +888,7 @@ class GazeboSimulator(BaseSim):
                     self._logger.warning(f"Failed to resolve model for entity {entity.name}: unknown model type {model}")
                     return False
 
-                ok = await self._spawn_model(entity.sim_path, model, entity.pose)
+                ok = await self._spawn_model(entity.sim_path, model, self._placed(entity.pose))
                 if ok and (model.path is None or model.type is ModelType.URDF):
                     self.entities[entity.name] = entity
                 if ok and model.path and model.type is not ModelType.URDF:
@@ -969,13 +1083,13 @@ class GazeboSimulator(BaseSim):
                 wall_sdf = _generate_wall_sdf(wall_name, boxes)
                 if wall_sdf:
                     async with self._semaphore:
-                        if not await self._spawn_sdf(wall_name, wall_sdf, Pose()):
+                        if not await self._spawn_sdf(wall_name, wall_sdf, self._offset((wall.start.x + wall.end.x) / 2.0, (wall.start.y + wall.end.y) / 2.0)):
                             raise RuntimeError(f"spawn_walls: {wall_name} (wall from {wall.start} to {wall.end}) did not spawn")
                     self._walls_entities.append(wall_name)
             for obstacle, model in obstacles:
                 obstacle.sim_path = self._realizer.realize(f"wall_obj_{next(self._wall_counter)}")
                 async with self._semaphore:
-                    ok = await self._spawn_model(obstacle.sim_path, model, obstacle.pose)
+                    ok = await self._spawn_model(obstacle.sim_path, model, self._placed(obstacle.pose))
                 if ok:
                     self._walls_entities.append(obstacle.sim_path)
         return True
@@ -1067,26 +1181,6 @@ class GazeboSimulator(BaseSim):
                     robot.frame.tf(robot_config.model_params.base_frame),
                 )
             )
-
-        launch_description.add_action(
-            launch_ros.actions.Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="map_to_odom_publisher",
-                arguments=[
-                    "0",
-                    "0",
-                    "0",
-                    "0",
-                    "0",
-                    "0",
-                    "1",
-                    "map",
-                    robot.frame.tf(robot_config.model_params.odom_frame),
-                ],
-                parameters=[{"use_sim_time": True}],
-            )
-        )
 
         # launch_description.add_action(
         #     launch_ros.actions.Node(
@@ -1261,7 +1355,7 @@ def _generate_wall_sdf(name: str, boxes: list[tuple[WallSegment, dict[str, str]]
                 {material}
             </visual>
             {collision}
-            <pose>{x} {y} {z} 0 0 {orientation}</pose>
+            <pose>{x} {y} {z} {roll} {pitch} {yaw}</pose>
         </link>
         """
     collision_template = """<collision name="collision">
@@ -1273,6 +1367,28 @@ def _generate_wall_sdf(name: str, boxes: list[tuple[WallSegment, dict[str, str]]
             </collision>"""
     links = []
     for i, (segment, textures) in enumerate(boxes):
+        sloped = sloped_box(segment)
+        if sloped is not None:
+            (length, thickness, height), pose = sloped
+            roll, pitch, yaw = pose.orientation.to_euler()
+            links.append(
+                link_template.format(
+                    index=i,
+                    length=length,
+                    thickness=thickness,
+                    height=height,
+                    x=pose.position.x,
+                    y=pose.position.y,
+                    z=pose.position.z,
+                    roll=roll,
+                    pitch=pitch,
+                    yaw=yaw,
+                    material=_wall_material_sdf(textures),
+                    cast_shadows=str(segment.shadows).lower(),
+                    collision=collision_template.format(length=length, thickness=thickness, height=height) if segment.solid else "",
+                )
+            )
+            continue
         x1, y1, x2, y2 = segment.start.x, segment.start.y, segment.end.x, segment.end.y
         length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
         if length < 1e-9:
@@ -1287,7 +1403,9 @@ def _generate_wall_sdf(name: str, boxes: list[tuple[WallSegment, dict[str, str]]
                 x=(x1 + x2) / 2,
                 y=(y1 + y2) / 2,
                 z=segment.start.z + segment.height / 2.0,
-                orientation=orientation,
+                roll=0,
+                pitch=0,
+                yaw=orientation,
                 material=_wall_material_sdf(textures),
                 cast_shadows=str(segment.shadows).lower(),
                 collision=collision_template.format(length=length, thickness=segment.width, height=segment.height) if segment.solid else "",
@@ -1324,6 +1442,7 @@ def _generate_floor_sdf(name: str, floor: Floor, textures: dict[str, str]) -> st
                                 <size>{floor.x_length} {floor.y_length} {collision_depth}</size>
                             </box>
                         </geometry>
+                        <surface><contact><collide_bitmask>{_FLOOR_BITMASK:#x}</collide_bitmask></contact></surface>
                     </collision>
                     <pose>{floor.pos.x} {floor.pos.y} {floor.pos.z} 0 0 0</pose>
                 </link>
@@ -1361,10 +1480,15 @@ def _generate_ceiling_sdf(name: str, ceiling: Ceiling, textures: dict[str, str])
 
 _LIGHT_CONFIG_TOPIC = '/world/default/light_config'
 _MATERIAL_COLOR_TOPIC = '/world/default/material_color'
+_SET_POSE_VECTOR_SERVICE = '/world/default/set_pose_vector'
+_POSE_BATCH_TIMEOUT_MS = 1000
 _GLOW_VISUAL_PREFIX = 'glow_'
 _GZ_GLOW_RESPONSE = 0.65
 _LIGHT_LINK_TIMEOUT = 5.0
 _GZ_AMBIENT_ENV = 'env_0'
+_WORLD_PIN = 'arena_world_pin'
+_FLOOR_BITMASK = 0x01
+_MOVING_LINK_BITMASK = 0xFFFE
 _GZ_DEFAULT_LIGHTS = (
     ('sun', (-1.0, 0.0, -0.35)),
     ('fill_west', (1.0, 0.0, -0.35)),
@@ -1494,6 +1618,74 @@ def _light_request(name: str, p: dict[str, typing.Any]) -> light_pb2.Light:
     return msg
 
 
+def _joint_topic(model: str, kind: str) -> str:
+    return f"/model/{model}/articulated/{kind}"
+
+
+def _link_geometry(link: str, sdf: Path | None, scale: Scale | None) -> str:
+    """The visuals and collisions of a link bundle's SDF, mesh uris made absolute and scaled, renamed under the link."""
+    if sdf is None:
+        return ""
+    factors = "1 1 1" if scale is None else f"{scale.x} {scale.y} {scale.z}"
+    parts: list[str] = []
+    source = xml.etree.ElementTree.parse(sdf).getroot().find(".//link")
+    for index, element in enumerate(source if source is not None else ()):
+        if element.tag not in ("visual", "collision"):
+            continue
+        element.set("name", f"{link}_{element.tag}_{index}")
+        for mesh in element.iter("mesh"):
+            uri = mesh.find("uri")
+            if uri is not None and uri.text and "://" not in uri.text and not uri.text.startswith("/"):
+                uri.text = str(sdf.parent / uri.text)
+            for old in mesh.findall("scale"):
+                mesh.remove(old)
+            xml.etree.ElementTree.SubElement(mesh, "scale").text = factors
+        parts.append(xml.etree.ElementTree.tostring(element, encoding="unicode"))
+    return "".join(parts)
+
+
+def _articulated_sdf(name: str, runtime: ArticulatedObject, links: Sequence[tuple[str, Joint | None, Path | None]]) -> str:
+    """A model of one link per articulation link at the model frame, the root fixed to the world, link surfaces from their materials, damped rubbing sprung joints and an ArticulatedDrive over the movable ones."""
+    root = runtime.articulation.root
+    scale = runtime.obstacle.scale
+    factors = (1.0, 1.0, 1.0) if scale is None else (scale.x, scale.y, scale.z)
+    body: list[str] = [f'<joint name="{_WORLD_PIN}" type="fixed"><parent>world</parent><child>{root}</child></joint>']
+    drives: list[str] = []
+    for link, joint, sdf in links:
+        inertia = runtime.inertias[link]
+        cx, cy, cz = inertia.center
+        ixx, iyy, izz = inertia.moments
+        geometry = _link_geometry(link, sdf, scale)
+        contact = ""
+        if (material := runtime.articulation.materials.get(link)) is not None:
+            _, dynamic, restitution = surface(material)
+            contact += f"<friction><ode><mu>{dynamic}</mu><mu2>{dynamic}</mu2></ode></friction><bounce><restitution_coefficient>{restitution}</restitution_coefficient></bounce>"
+        if joint is not None:
+            contact += f"<contact><collide_bitmask>{_MOVING_LINK_BITMASK:#x}</collide_bitmask></contact>"
+        if contact:
+            geometry = geometry.replace("</collision>", f"<surface>{contact}</surface></collision>")
+        body.append(f'<link name="{link}"><inertial><pose>{cx} {cy} {cz} 0 0 0</pose><mass>{inertia.mass}</mass><inertia><ixx>{ixx}</ixx><iyy>{iyy}</iyy><izz>{izz}</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>{geometry}</link>')
+        if joint is None:
+            continue
+        ox, oy, oz = (component * factor for component, factor in zip(joint.origin, factors, strict=True))
+        if joint.type is JointType.FIXED:
+            body.append(f'<joint name="{joint.name}" type="fixed"><parent>{joint.parent}</parent><child>{link}</child></joint>')
+            continue
+        dynamics = runtime.dynamics[joint.name]
+        lower, upper = joint.limit if joint.limit is not None else (-1e16, 1e16)
+        kind = "prismatic" if joint.type is JointType.PRISMATIC else "revolute"
+        body.append(
+            f'<joint name="{joint.name}" type="{kind}"><parent>{joint.parent}</parent><child>{link}</child><pose>{ox} {oy} {oz} 0 0 0</pose>'
+            f'<axis><xyz expressed_in="__model__">{joint.axis.x} {joint.axis.y} {joint.axis.z}</xyz><limit><lower>{lower}</lower><upper>{upper}</upper></limit>'
+            f"<dynamics><damping>{dynamics.damping}</damping><friction>{dynamics.friction}</friction>"
+            f"<spring_reference>{dynamics.spring_rest}</spring_reference><spring_stiffness>{dynamics.spring_stiffness}</spring_stiffness></dynamics></axis></joint>"
+        )
+        wraps = "true" if joint.type is JointType.CONTINUOUS else "false"
+        drives.append(f'<joint name="{joint.name}" stiffness="{dynamics.stiffness}" damping="{dynamics.drive_damping}" effort="{dynamics.effort}" wraps="{wraps}" initial="{runtime.current[joint.name]}"/>')
+    plugin = f'<plugin filename="ArticulatedDrive" name="arena_gz_plugins::ArticulatedDrive">{"".join(drives)}</plugin>'
+    return f'<?xml version="1.0"?><sdf version="1.9"><model name="{name}">{"".join(body)}{plugin}</model></sdf>'
+
+
 def _sdf_file(path: Path) -> Path:
     """The SDF file of a model path, Gazebo takes a file and not a directory."""
     if not path.is_dir():
@@ -1539,23 +1731,77 @@ def _default_light_request(name: str, direction: tuple[float, float, float], sca
 _BOX_SDF_TEMPLATE = """
 <sdf version="1.6">
     <model name="{name}">
-        <static>true</static>
+        <static>{static}</static>
         <link name="link">
-            <pose>{cx} {cy} {cz} 0 0 0</pose>
+            <pose>{cx} {cy} {cz} 0 0 0</pose>{body}
             <visual name="visual">
                 <geometry><box><size>{sx} {sy} {sz}</size></box></geometry>
                 {material}
             </visual>
             <collision name="collision">
-                <geometry><box><size>{sx} {sy} {sz}</size></box></geometry>
+                <geometry><box><size>{sx} {sy} {sz}</size></box></geometry>{surface}
             </collision>
-        </link>
+        </link>{plugin}
     </model>
 </sdf>
 """
 
+_MOVING_BOX_BODY_SDF = """
+            <gravity>false</gravity>
+            <inertial>
+                <mass>{mass}</mass>
+                <inertia><ixx>{ixx}</ixx><iyy>{iyy}</iyy><izz>{izz}</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+            </inertial>"""
 
-def _generate_box_sdf(name: str, size: tuple[float, float, float], center: tuple[float, float, float] = (0.0, 0.0, 0.0), textures: dict[str, str] | None = None) -> str:
+_MOVING_BOX_PLUGIN_SDF = """
+        <plugin filename="gz-sim-velocity-control-system" name="gz::sim::systems::VelocityControl">
+            <initial_linear>{vx} {vy} {vz}</initial_linear>
+        </plugin>"""
+
+_BOX_SURFACE_SDF = """
+                <surface><contact><collide_bitmask>{mask}</collide_bitmask></contact></surface>"""
+
+_COMB_BOX_BITMASK = '0x01'
+_MOVING_BOX_BITMASK = '0xfffe'
+
+_MOVING_BOX_MASS = 1000.0
+
+
+def _generate_box_sdf(
+    name: str,
+    size: tuple[float, float, float],
+    center: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    textures: dict[str, str] | None = None,
+    velocity: tuple[float, float, float] | None = None,
+    comb: bool = False,
+) -> str:
+    """A static box, or with `velocity` (model frame) a heavy gravity-free one that VelocityControl drives, which passes through `comb` boxes."""
     sx, sy, sz = size
     cx, cy, cz = center
-    return _BOX_SDF_TEMPLATE.format(name=name, sx=sx, sy=sy, sz=sz, cx=cx, cy=cy, cz=cz, material=_wall_material_sdf(textures))
+    body = plugin = surface = ''
+    if comb:
+        surface = _BOX_SURFACE_SDF.format(mask=_COMB_BOX_BITMASK)
+    if velocity is not None:
+        surface = _BOX_SURFACE_SDF.format(mask=_MOVING_BOX_BITMASK)
+        m = _MOVING_BOX_MASS
+        body = _MOVING_BOX_BODY_SDF.format(mass=m, ixx=m * (sy * sy + sz * sz) / 12.0, iyy=m * (sx * sx + sz * sz) / 12.0, izz=m * (sx * sx + sy * sy) / 12.0)
+        plugin = _MOVING_BOX_PLUGIN_SDF.format(vx=velocity[0], vy=velocity[1], vz=velocity[2])
+    static = 'true' if velocity is None else 'false'
+    return _BOX_SDF_TEMPLATE.format(name=name, static=static, sx=sx, sy=sy, sz=sz, cx=cx, cy=cy, cz=cz, material=_wall_material_sdf(textures), body=body, plugin=plugin, surface=surface)
+
+
+def _body_frame(orientation: Orientation, velocity: tuple[float, float, float]) -> tuple[float, float, float]:
+    """A world-frame vector in the frame of a body with `orientation`."""
+    local = Orientation(orientation.w, -orientation.x, -orientation.y, -orientation.z) * Vector3(*velocity)
+    return local.x, local.y, local.z
+
+
+def _pose_vector(poses: Mapping[str, Pose]) -> pose_v_pb2.Pose_V:
+    """Named model poses as one gz set_pose_vector request."""
+    request = pose_v_pb2.Pose_V()
+    for name, pose in poses.items():
+        entry = request.pose.add()
+        entry.name = name
+        entry.position.x, entry.position.y, entry.position.z = pose.position.x, pose.position.y, pose.position.z
+        entry.orientation.w, entry.orientation.x, entry.orientation.y, entry.orientation.z = pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z
+    return request

@@ -9,9 +9,10 @@ import attrs
 import yaml
 
 from arena_simulation_setup import DOMAIN_DEFAULT
-from arena_simulation_setup.shared import Door
+from arena_simulation_setup.shared import Door, Stairs
 from arena_simulation_setup.shared.entities import Waypoint
 from arena_simulation_setup.shared.semantics import authored_semantics
+from arena_simulation_setup.shared.world import STAIRS_HANDRAIL_INSET, StairsRail, StairsSide
 from arena_simulation_setup.tree import DomainAssetIdentifier, ModifiersDomainAssetIdentifier
 from arena_simulation_setup.utils.cattrs import Serializable
 from arena_simulation_setup.utils.geometry import Pose, Position, Scale
@@ -190,8 +191,73 @@ def dump_wall(wall: WallPath, defaults: Mapping) -> dict:
     return result
 
 
-def dump_level(level: Level, defaults: Mapping) -> dict:
+_STAIRS_DEFAULTS = Stairs(name='', position=Position(0.0, 0.0))
+
+
+def dump_stair(bottom: Stairs, top: Stairs, to: str, layout: str) -> dict:
+    """The authored entry of the stair a bottom and a top half make, over a stair kind only the keys it sets itself."""
+    result: dict = {'name': bottom.group, **({'kind': bottom.preset} if bottom.preset else {}), 'mouth': short_position(bottom.mouth)}
+    if bottom.mouth_side != _STAIRS_DEFAULTS.mouth_side:
+        result['mouth_side'] = bottom.mouth_side
+    result['size'] = [_number(2.0 * bottom.length), _number(bottom.width)]
+    result['to'] = to
+    if layout == 'spread':
+        result['exit'] = short_position(top.mouth)
+    if bottom.kind == 'escalator' and not bottom.boards:
+        result['direction'] = 'down'
+    own = (lambda key: key in bottom.authored) if bottom.preset else None
+    for key in ('style', 'speed', 'tread', 'landing_length', 'plank', 'headroom', 'material'):
+        value = getattr(bottom, key)
+        if own(key) if own else value != getattr(_STAIRS_DEFAULTS, key):
+            result[key] = short(value)
+    surfaces = {key: _surface(bottom, key) for key in dict.fromkeys([*bottom.surfaces, *bottom.surface_models]) if not own or own(f'surfaces.{key}')}
+    if surfaces:
+        result['surfaces'] = surfaces
+    sides = {name: _dressing(side, StairsSide(), keep=frozenset(key.rsplit('.', 1)[1] for key in bottom.authored if key.startswith(f'sides.{name}.')) if own else None) for name, side in bottom.sides.items()}
+    if any(sides.values()):
+        result['sides'] = {name: side for name, side in sides.items() if side}
+    if bottom.models and (not own or own('models')):
+        result['models'] = [{'model': short(item.model), **({'at': [_number(v) for v in item.at]} if any(item.at) else {}), **({'yaw': _number(item.yaw)} if item.yaw else {})} for item in bottom.models]
+    inner = bottom.width / 2.0 - STAIRS_HANDRAIL_INSET
+    if bottom.rails and (not own or own('rails')):
+        result['rails'] = [{'across': 'left' if math.isclose(rail.across, inner) else 'right' if math.isclose(rail.across, -inner) else _number(rail.across), **_dressing(rail, StairsRail(), skip=frozenset({'across'}))} for rail in bottom.rails]
+    return result
+
+
+def _surface(stair: Stairs, key: str) -> object:
+    """A surface as authored: its material, or a mapping of material and model when it takes a model."""
+    if key not in stair.surface_models:
+        return short(stair.surfaces[key])
+    return {**({'material': short(stair.surfaces[key])} if key in stair.surfaces else {}), 'model': short(stair.surface_models[key])}
+
+
+def _dressing(value: StairsSide | StairsRail, default: StairsSide | StairsRail, skip: frozenset[str] = frozenset(), keep: frozenset[str] | None = None) -> dict:
+    """The fields of a stair side or rail that differ from its default, or exactly the `keep` fields."""
+    result: dict = {}
+    for field in attrs.fields(type(value)):
+        mine = getattr(value, field.name)
+        if field.name in skip or mine is None or (field.name not in keep if keep is not None else mine == getattr(default, field.name)):
+            continue
+        result[field.name] = short(mine)
+    return result
+
+
+def _stair_entries(world: World, level: Level) -> dict[str, list[dict]]:
+    """The stair and escalator entries a level authors, one per stair whose bottom half it holds."""
+    tops = {stair.group: (level_id, stair) for level_id, other in world.levels.items() for stair in other.stairs if stair.top}
+    entries: dict[str, list[dict]] = {'stairs': [], 'escalators': []}
+    for stair in level.stairs:
+        if stair.top or stair.group not in tops:
+            continue
+        to, top = tops[stair.group]
+        entries['stairs' if stair.kind == 'stairs' else 'escalators'].append(dump_stair(stair, top, to, world.layout))
+    return entries
+
+
+def dump_level(level: Level, defaults: Mapping, stairs: Mapping[str, list[dict]] | None = None) -> dict:
     result: dict = {'id': level.id}
+    if level.elevation is not None:
+        result['elevation'] = _number(level.elevation)
     if level.source:
         result['from'] = level.source
         if level.prefix:
@@ -202,6 +268,8 @@ def dump_level(level: Level, defaults: Mapping) -> dict:
         ('walls', [dump_wall(wall, defaults) for wall in level.walls]),
         ('doors', [dump_door(door, defaults) for door in level.doors]),
         ('elevators', [_fields(elevator) for elevator in level.elevators]),
+        ('stairs', list((stairs or {}).get('stairs', []))),
+        ('escalators', list((stairs or {}).get('escalators', []))),
         ('objects', [_fields(entity, keep=frozenset({'name', 'model', 'pose'})) for entity in level.objects]),
         ('humans', [_fields(human, keep=frozenset({'name', 'model', 'pose'})) for human in level.humans]),
         ('lights', [_fields(light, skip=frozenset({'extra', 'owner', 'rig', 'fixtures', 'fixture_ranks'})) for light in level.lights]),
@@ -219,13 +287,15 @@ def dump_level(level: Level, defaults: Mapping) -> dict:
 def dump_world(world: World) -> dict:
     """The mapping of a canonical format 2 world.yaml."""
     result: dict = {'format': FORMAT}
+    if world.layout != 'spread':
+        result['layout'] = world.layout
     if world.defaults:
         result['defaults'] = short(world.defaults)
     if world.schedules:
         result['schedules'] = [_fields(item) for item in world.schedules]
     if world.signals:
         result['signals'] = [_fields(item) for item in world.signals]
-    result['levels'] = [dump_level(level, world.defaults) for level in world.levels.values()]
+    result['levels'] = [dump_level(level, world.defaults, _stair_entries(world, level)) for level in world.levels.values()]
     return result
 
 

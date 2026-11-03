@@ -17,7 +17,7 @@ def fleet_size(ns: str) -> int:
     """Probe RobotFleet on `ns/state/robots`; fall back to 1 if unknown."""
     import rclpy
     import rclpy.qos
-    from task_generator_msgs.msg import RobotFleet
+    from arena_runtime_msgs.msg import RobotFleet
 
     own_init = not rclpy.ok()
     seen: list[int] = []
@@ -51,7 +51,7 @@ def fleet_size(ns: str) -> int:
 
 
 def env_idx_from_ns(ns: str) -> int:
-    """Parse the env index from a namespace (`/arena/env_3/task_generator_node` → 3). 0 on failure."""
+    """Parse the env index from a namespace (`/arena/env_3/arena_env_node` → 3). 0 on failure."""
     for part in reversed(ns.strip('/').split('/')):
         head, _, tail = part.rpartition('_')
         if head and tail.isdigit():
@@ -90,6 +90,12 @@ def _rerun_commands(ns: str, env_idx: int, args: dict[str, str]) -> list[tuple[s
     ]
 
 
+def _cam_command(ns: str, env_idx: int, request: str) -> tuple[str, list[str]]:
+    """The env's camera server, which selects `request` on its task generator. Env 0 also drives the sim GUI camera."""
+    cmd = ['ros2', 'run', 'arena_cam', 'cam', 'serve', '--env', str(env_idx), f'--setup={request}']
+    return (f'cam_{ns}', [*cmd, '--sim'] if env_idx == 0 else cmd)
+
+
 BACKENDS: dict[str, BackendFn] = {
     "rviz": _rviz_commands,
     "rerun": _rerun_commands,
@@ -111,8 +117,11 @@ def viz_commands(ns: str, env_idx: int, viz_args: dict[str, str]) -> list[tuple[
     """Expand viz_args into one or more (label, cmd) tuples per backend.
     `viz_args` is not mutated."""
     args = dict(viz_args)
+    cam = args.pop('cam', None)
     backends = resolve_backends(args)
     out: list[tuple[str, list[str]]] = []
     for bk in backends:
         out.extend(BACKENDS[bk](ns, env_idx, args))
+    if cam:
+        out.append(_cam_command(ns, env_idx, cam))
     return out

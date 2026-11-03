@@ -20,7 +20,7 @@ members = [
 
 [tool.pytest.ini_options]
 norecursedirs = ["deps", ".git", ".venv", "build", "install", "log", "_meta"]
-addopts = "-ra --strict-markers --import-mode=importlib"
+addopts = "-ra --strict-markers --import-mode=importlib -m 'not network'"
 markers = ["network: hits the live upstream host"]
 
 [project]
@@ -103,6 +103,7 @@ extend-exclude = [
     "**/*.launch.py",
     "**/scripts",
     "**/setup.py",
+    "**/*.md",
 ]
 
 [tool.ruff.lint]
@@ -164,6 +165,7 @@ extraPaths = [
     "arena_runtime/arena_runtime",
     "arena_simulation_setup/src",
     "arena_training",
+    "arena_training/deps/rosnav_rl/rosnav_rl",
     "flatsim/flatsim",
     "humansim/arena_humansim",
     "task_generator",
@@ -181,7 +183,8 @@ exclude = [
     "**/build",
     "**/install",
     "**/log",
-    "**/deps",
+    "deps",
+    "arena_robots/deps",
     "**/tests",
     "**/test",
     "arena_tools",
@@ -205,6 +208,7 @@ executionEnvironments = [
     { root = "arena_robots/arena_robots" },
     { root = "arena_runtime/arena_runtime" },
     { root = "arena_simulation_setup/src" },
+    { root = "arena_training/deps/rosnav_rl/rosnav_rl" },
     { root = "arena_training" },
     { root = "flatsim/flatsim" },
     { root = "humansim/arena_humansim" },

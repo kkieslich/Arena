@@ -26,8 +26,9 @@ from arena_simulation_setup.utils.cattrs import Idempotent, Parseable, Serializa
 
 def providers(env: str, default: str) -> Sequence[str]:
     """Bucket list for one asset family, from *env* or *default*. Empty falls back too,
-    so the shell can export the override slot without restating the bucket name."""
-    return [p for p in (os.environ.get(env) or default).split(',') if p]
+    so the shell can export the override slot without restating the bucket name, and an
+    entry `default` stands for *default*."""
+    return [default if p == 'default' else p for p in (os.environ.get(env) or default).split(',') if p]
 
 
 NETWORK_PROVIDERS: Sequence[str] = providers('ASSET_BUCKETS', 'default')
@@ -113,6 +114,7 @@ class LocalRootPath(RootPath):
 
 
 class DynamicPaths:
+    SCENARIO = DynamicPath()
     WORLD = DynamicPath()
     LINKED = DynamicPathList()
     ARENA = LocalRootPath()
@@ -412,6 +414,7 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         ttl: int | None = None,
         annotated: bool = True,
         list_prefix: str = '',
+        list_containing: str = '',
         **kwargs: object,
     ) -> None:
         path = ARENA_ASSETS_DIR / provider
@@ -420,6 +423,7 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         # payloads without an annotation.yaml sentinel are enumerated by directory instead
         self._annotated = annotated
         self._list_prefix = list_prefix
+        self._list_containing = list_containing
 
         # formats=() opts out of the model-format filter, which would otherwise drop
         # every non-model file in a payload (meshes, scenario.json, map images).
@@ -467,6 +471,10 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         logging.warning('%s: %s unreachable, serving expired cache %s', type(self).__name__, self._provider, candidate)
         self._stale.add(identifier)
         return candidate
+
+    @staticmethod
+    def _off() -> bool:
+        return os.environ.get('ARENA_ASSETS_NET') == 'off'
 
     @classmethod
     async def check_output_async(cls, args: Iterable[str], **kwargs: typing.Any) -> bytes:
@@ -539,6 +547,8 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
                         fut.set_result(None)
 
     async def resolve(self, identifier: IdentifierT) -> Path | None:
+        if self._off():
+            return None
         if identifier in self._cache:
             return self._cache[identifier]
 
@@ -572,6 +582,8 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         return bool(stamp) and time.time() - stamp < self._ttl
 
     async def locate(self, identifier: IdentifierT) -> Path | None:
+        if self._off():
+            return None
         candidate = self.path / identifier.relpath()
         if self._fresh(candidate):
             return candidate
@@ -611,7 +623,8 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         argv = ['ros2', 'run', 'arena_assets', 'arena_assets', '-s', 'net', self._provider, 'list']
         if self._annotated:
             return argv
-        return [*argv, '--children', *((self._list_prefix,) if self._list_prefix else ())]
+        containing = ('--containing', self._list_containing) if self._list_containing else ()
+        return [*argv, '--children', *((self._list_prefix,) if self._list_prefix else ()), *containing]
 
     def _cached_listing(self) -> list[str] | None:
         """Bucket listing from disk if younger than the listing TTL, else None."""
@@ -680,11 +693,15 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         List all assets available. When *network* is True, also queries the
         remote provider (bucket listing cached on disk for ARENA_MODELS_TTL seconds).
         """
+        if self._off():
+            return
         yield from super(SimplePathResolver, self).listall(**kwargs)
         if network:
             yield from self._parse_listing(self._listing())
 
     async def listall_async(self, *, network: bool = False, **kwargs: bool) -> list[IdentifierT]:
+        if self._off():
+            return []
         result = await super(SimplePathResolver, self).listall_async(**kwargs)
         if network:
             result.extend(self._parse_listing(await self._listing_async()))
@@ -704,9 +721,10 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         ttl: int | None = None,
         annotated: bool = True,
         list_prefix: str = '',
+        list_containing: str = '',
     ) -> Iterable[Self]:
         for provider in providers:
-            yield cls(_T, provider=provider, formats=formats, ttl=ttl, annotated=annotated, list_prefix=list_prefix)
+            yield cls(_T, provider=provider, formats=formats, ttl=ttl, annotated=annotated, list_prefix=list_prefix, list_containing=list_containing)
 
 
 class FallbackResolver(ResolverBase[IdentifierT], typing.Generic[IdentifierT]):

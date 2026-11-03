@@ -9,9 +9,11 @@ import attrs
 import yaml
 
 from arena_simulation_setup.shared import DynamicObstacle, EpisodeCondition, Light, Obstacle, Pose, Position, Sound, TaskPhase
-from arena_simulation_setup.shared.conditions import parse_atom
+from arena_simulation_setup.shared.conditions import Node, check_fields, parse_node
+from arena_simulation_setup.shared.task import LoopPhase
 from arena_simulation_setup.tree import Identifier, PathView
 from arena_simulation_setup.tree.assets.Animation import AnimationIdentifier, referenced_clips
+from arena_simulation_setup.utils.articulation import Articulation
 from arena_simulation_setup.utils.cattrs import ArenaConverter, Parseable, Serializable, converter
 
 ROBOT_KEYS = frozenset({"start", "level", "goal_level", "phases", "conditions"})
@@ -115,8 +117,18 @@ class TimelineEntry(Parseable):
             raise ValueError(f"timeline entry must set exactly one of 'at', 'every', 'when'; got {triggers}")
         if not self.set and not self.stimulus:
             raise ValueError("timeline entry needs at least one action in 'set' or 'stimulus'")
-        if isinstance(self.when, str):
-            parse_atom(self.when)
+        self.when_node()
+
+    def when_node(self) -> Node | None:
+        """The `when` trigger as a condition node, an `{entity, field, is}` mapping read as an `eq` field test."""
+        if self.when is None:
+            return None
+        if isinstance(self.when, dict) and "entity" in self.when:
+            stray = sorted(set(self.when) - {"entity", "field", "is"})
+            if stray:
+                raise ValueError(f"timeline 'when' of the {{entity, field, is}} form takes no keys {stray}")
+            return parse_node({"field": f"{self.when.get('entity')}.{self.when.get('field')}", "eq": self.when.get("is")})
+        return parse_node(self.when)
 
     @classmethod
     def parse(cls, value: object) -> "TimelineEntry":
@@ -158,6 +170,92 @@ class Scenario:
                 for agent in stimulus.agents:
                     if agent not in humans:
                         raise ValueError(f'timeline[{index}]: stimulus {stimulus.need!r} names agent {agent!r}, which is not a scenario human, expected one of {humans}')
+
+
+def _articulations(objects: Iterable[Obstacle]) -> dict[str, Articulation]:
+    """Articulation of every object whose model resolves to an articulated object, by object name, a later object of a name replacing an earlier one."""
+    found: dict[str, Articulation] = {}
+    for obj in objects:
+        try:
+            articulation = obj.model.resolve_sync().articulation
+        except (FileNotFoundError, ValueError):
+            articulation = None
+        if articulation is not None:
+            found[obj.name] = articulation
+        else:
+            found.pop(obj.name, None)
+    return found
+
+
+def condition_sites(scenario: Scenario) -> Iterator[tuple[str, Node]]:
+    """Every condition node of a scenario with the path it was authored at."""
+
+    def phases(prefix: str, items: Iterable[TaskPhase]) -> Iterator[tuple[str, Node]]:
+        for index, phase in enumerate(items):
+            until = phase.until_node
+            if until is not None:
+                yield f"{prefix}[{index}].until", until
+            for c_index, condition in enumerate(phase.conditions):
+                yield from clause(f"{prefix}[{index}].conditions[{c_index}]", condition)
+            if isinstance(phase, LoopPhase):
+                yield from phases(f"{prefix}[{index}].loop", phase.phases)
+
+    def clause(path: str, condition: EpisodeCondition) -> Iterator[tuple[str, Node]]:
+        yield f"{path}.p", condition.p_node
+        if condition.q_node is not None:
+            yield f"{path}.q", condition.q_node
+
+    for index, condition in enumerate(scenario.conditions):
+        yield from clause(f"conditions[{index}]", condition)
+    for index, entry in enumerate(scenario.timeline):
+        when = entry.when_node()
+        if when is not None:
+            yield f"timeline[{index}].when", when
+    for index, robot in enumerate(scenario.robots):
+        yield from phases(f"robots[{index}].phases", robot.phases)
+        for c_index, condition in enumerate(robot.conditions):
+            yield from clause(f"robots[{index}].conditions[{c_index}]", condition)
+
+
+def _timeline_value(raw: object) -> str | None:
+    """A timeline set value as the runtime applies it, None for a value it draws at fire time."""
+    if isinstance(raw, bool):
+        return "true" if raw else "false"
+    value = str(raw)
+    return None if value == "random" or ".." in value else value
+
+
+def articulation_problems(scenario: Scenario, world_objects: Iterable[Obstacle] = ()) -> list[str]:
+    """The `joints`, condition fields and timeline sets that the articulated objects of a scenario and its world, by authored name, do not have or refuse."""
+    world_objects = list(world_objects)
+    articulations = _articulations([*world_objects, *scenario.objects])
+    if not articulations:
+        return []
+    problems: list[str] = []
+    for label, objects in (("objects", scenario.objects), ("world objects", world_objects)):
+        for index, obj in enumerate(objects):
+            articulation = articulations.get(obj.name)
+            if articulation is None or obj.joints is None:
+                continue
+            try:
+                articulation.resolve(obj.joints)
+            except ValueError as exc:
+                problems.append(f"{label}[{index}] {obj.name!r} joints: {exc}")
+    names = {name: frozenset(articulation.field_names()) for name, articulation in articulations.items()}
+    problems.extend(f"{path}: {problem}" for path, node in condition_sites(scenario) for problem in check_fields(node, names.get))
+    for index, entry in enumerate(scenario.timeline):
+        for s_index, action in enumerate(entry.set):
+            articulation = articulations.get(str(action.get("entity", "")))
+            if articulation is None:
+                continue
+            value = _timeline_value(action.get("value"))
+            if value is None:
+                continue
+            try:
+                articulation.target_for(str(action.get("field", "")), value, articulation.initial())
+            except ValueError as exc:
+                problems.append(f"timeline[{index}].set[{s_index}]: {exc}")
+    return problems
 
 
 def parse_scenario(raw: object, c: ArenaConverter = converter) -> Scenario:

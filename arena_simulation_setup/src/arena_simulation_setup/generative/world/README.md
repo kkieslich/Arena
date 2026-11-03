@@ -13,6 +13,8 @@ The ROS node is [`world_generator_ros.py`](world_generator_ros.py), its interfac
 | `barn` | box size, passage width, straightness, or `index` | a BARN-style winding passage, or with `index` (0..299) the canonical BARN challenge world of that number, read from `source` (a directory of `world_<index>.world` files) or fetched from GitHub into `ARENA_ASSETS_DIR/.import/barn/worlds`. Each cylinder is an octagon of walls whose outer faces lie on the 0.075 m radius, in the challenge frame shifted by +4.5 m in x. Either way the episode is pinned to `tm_robots: scenario` |
 | `sketch` | a grid of box-drawing glyphs | corridors and rooms exactly as drawn |
 | `letter` | text | one 18-segment character cell per glyph |
+| `corridor` | extent, corridor width and its spread, branches, bends, wiggle and diagonal | a tree of corridors grown from the center with right-angle elbows, or with `bends` winding through kinks at 45 and 90 degrees (`diagonal` off: right angles only), branches under three corridor widths staying elbows |
+| `open` | extent, obstacle count, size and its spread, `max_tries` | a walled box with square obstacles at random positions, merged where they overlap, redrawn until the free space is one piece. Zones are vertical bands around the obstacles |
 
 Registration in [`__init__.py`](__init__.py) is lazy, so importing the package does not import every generator. An implementation subclasses `WorldGeneratorImpl` with:
 
@@ -82,7 +84,7 @@ A character with no entry is painted from a font instead, stretched to the same 
 - `<node>/generate_world` (`Trigger`), the older save-only entry that reads everything from parameters.
 - `<node>/alphabet` (`Alphabet`, latched) so editors never hardcode the glyph table.
 
-`params()` is the episode binding applied when the panel queues a generated world: `tm_robots` / `tm_obstacles` plus per-mode leaf dicts. `barn` pins robots to its scenario. `sketch` and `letter` bind `tm_obstacles: random` with `dynamic.n` set to the pedestrian count, and `-1` returns an empty binding and leaves the episode alone.
+`params()` is the episode binding applied when the panel queues a generated world: `modes` (axis to mode names) plus `params` (axis to leaf name to value, the leaves of that axis's mode, so a binding never spells a param namespace). `barn` pins robots to its scenario. `sketch` and `letter` bind the obstacles axis to `random` with `dynamic.n` set to the pedestrian count, and `-1` returns an empty binding and leaves the episode alone.
 
 ## MCP domain
 
@@ -92,4 +94,4 @@ The `worldgen` domain of the Arena MCP server ([`mcp/worldgen.py`](../../mcp/wor
 - `worldgen_preview` takes a generator, a configuration, an optional sketch and a seed (default 0, negative for a nondeterministic run), and answers what `<node>/generate` answers: diagnostics, warnings by sketch row and column, the normalized sketch, the episode binding and the rendered map at the node's default preview resolution (`preview_resolution` in `tree/World/Map.py`).
 - `worldgen_save` writes through `WorldIdentifier(name).resolve_write_sync()` and `save_generated`, as the node does, so a generated world lands in the writable world root. It refuses an existing world unless `overwrite` is set, then saves over it in place, keeping its other files.
 - `worldgen_alphabet` and `worldgen_normalize` serve the table the `alphabet` topic publishes and the canonical form of a sketch.
-- `worldgen_queue` stages a saved world on an env through `config/queue_episode` with the binding `worldgen_save` returned, as the panel does, and the next episode reset loads it.
+- `worldgen_queue` stages a saved world on an env through `config/queue_episode` with the binding `worldgen_save` returned, as the panel does. It prefixes each axis's leaves with the namespace of that axis's mode from the env's `query/task_modes` (`namespaces`, keyed `<axis>/<mode>`). The next episode reset loads the world.

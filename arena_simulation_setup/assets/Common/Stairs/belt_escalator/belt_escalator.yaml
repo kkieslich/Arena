@@ -1,0 +1,7 @@
+style: belt
+material: Carpet_Charcoal
+surfaces: {landings: Aluminum_Anodized, fixture: Concrete_Smooth}
+sides: {left: {material: Paint_Gloss}, right: {material: Paint_Gloss}}
+rails:
+- {across: left, material: Carpet_Charcoal, height: 1.0}
+- {across: right, material: Carpet_Charcoal, height: 1.0}

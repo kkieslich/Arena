@@ -102,7 +102,9 @@ setup(
             f'flowedit = {package_name}.generative.flowedit.cli:main',
             f'generate_scenario = {package_name}.generative.scenario.cli:main',
             f'generate_world = {package_name}.generative.world.world_generator:main',
+            f'animation_retarget = {package_name}.adapters.arena_animation_retarget.cli:main',
             f'nav_at_r = {package_name}.metrics.nav_at_r:main',
+            f'rig_human = {package_name}.tree.assets.human_rig:main',
             f'world_generator = {package_name}.generative.world.world_generator_ros:main',
         ],
         'arena_mcp.domains': [

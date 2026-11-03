@@ -1,0 +1,63 @@
+format: arena-scenario/2
+humans:
+- name: climber_1
+  model: casual_female_caucasian_young
+  pose: [2.0, 2.0, 0.0]
+  agent: {agent_type: adult}
+  waypoints:
+  - {x: 2.0, y: 2.0, level: '0'}
+  - {x: 14.0, y: 2.0, level: '1'}
+  waypoint_mode: once
+  level: '0'
+- name: rider_1
+  model: worker_male_caucasian_young
+  pose: [1.5, 5.0, 0.0]
+  agent: {agent_type: adult}
+  waypoints:
+  - {x: 1.5, y: 5.0, level: '0'}
+  - {x: 18.0, y: 5.0, level: '1'}
+  waypoint_mode: once
+  level: '0'
+- name: climber_2
+  model: female_adult_business_
+  pose: [1.0, 2.4, 0.0]
+  agent: {agent_type: adult}
+  waypoints:
+  - {x: 1.0, y: 2.4, level: '0', dwell: 3.0}
+  - {x: 14.0, y: 3.0, level: '1'}
+  waypoint_mode: once
+  level: '0'
+- name: rider_2
+  model: male_adult_medical_
+  pose: [1.0, 4.6, 0.0]
+  agent: {agent_type: adult}
+  waypoints:
+  - {x: 1.0, y: 4.6, level: '0', dwell: 4.0}
+  - {x: 18.0, y: 6.0, level: '1'}
+  waypoint_mode: once
+  level: '0'
+- name: descender_1
+  model: worker_male_asian_middleage
+  pose: [16.0, 7.2, 3.1416]
+  agent: {agent_type: adult}
+  waypoints:
+  - {x: 16.0, y: 7.2, level: '1', dwell: 2.0}
+  - {x: 2.0, y: 8.5, level: '0'}
+  waypoint_mode: once
+  level: '1'
+- name: descender_2
+  model: casual_male_caucasian_middleage
+  pose: [15.0, 1.2, 3.1416]
+  agent: {agent_type: adult}
+  waypoints:
+  - {x: 15.0, y: 1.2, level: '1', dwell: 12.0}
+  - {x: 2.0, y: 1.0, level: '0'}
+  waypoint_mode: once
+  level: '1'
+robots:
+- start: [1.0, 8.5, 0.0]
+  phases:
+  - goto: [18.0, 9.0, 0.0]
+  - {hold_time: 900.0}
+  level: '0'
+  goal_level: '1'

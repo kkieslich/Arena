@@ -13,9 +13,9 @@ pytest.importorskip("arena_mcp")
 rclpy = pytest.importorskip("rclpy")
 pytest.importorskip("viewport_control_msgs.srv")
 pytest.importorskip("arena_runtime_msgs.srv")
-pytest.importorskip("task_generator_msgs.msg")
+pytest.importorskip("arena_runtime_msgs.msg")
 
-from arena_mcp.core import JOBS, ROS, ToolError
+from arena_mcp.core import JOBS, ROS, ToolError, cli
 
 from arena_cam import mcp as view
 
@@ -32,7 +32,7 @@ class Arena:
         from arena_runtime_msgs.srv import LifecycleHold, LifecycleStep
         from geometry_msgs.msg import PoseStamped
         from rosgraph_msgs.msg import Clock
-        from task_generator_msgs.msg import RobotDescriptor, RobotFleet, RobotState
+        from arena_runtime_msgs.msg import RobotDescriptor, RobotFleet, RobotState
         from viewport_control_msgs.srv import ViewportCapture, ViewportSetProjection, ViewportSetReferenceFrame, ViewportSetView
 
         self.node = rclpy.create_node("arena")
@@ -147,7 +147,7 @@ def rig():
     owned = rclpy.ok()
     if not owned:
         rclpy.init()
-    tg = f"/mcp_{uuid.uuid4().hex[:8]}/env_0/task_generator_node"
+    tg = f"/mcp_{uuid.uuid4().hex[:8]}/env_0/arena_env_node"
     arena = Arena(tg)
     executor = MultiThreadedExecutor(num_threads=2)
     executor.add_node(arena.node)
@@ -156,7 +156,7 @@ def rig():
     loop = asyncio.new_event_loop()
     try:
         from arena_runtime_msgs.msg import EnvRegistry
-        from task_generator_msgs.msg import RobotFleet
+        from arena_runtime_msgs.msg import RobotFleet
 
         loop.run_until_complete(ROS.latest(EnvRegistry, "/arena/state/envs", timeout=30.0))
         loop.run_until_complete(ROS.latest(RobotFleet, f"{tg}/state/robots", timeout=30.0))
@@ -177,16 +177,17 @@ def test_view_domain_is_served_from_its_entry_point():
 
     (loaded,) = discover(["view"])
     assert loaded.served, loaded.reason
-    assert {spec.name for spec in loaded.domain.tools} == {"view_available", "view_set", "view_capture", "view_record"}
+    assert {spec.name for spec in loaded.domain.tools} == {"view_available", "view_set", "view_capture", "view_play", "view_record"}
     assert [resource.uri for resource in loaded.domain.resources] == ["arena://view/shots"]
 
 
-def test_shots_resource_lists_the_cam_registry():
+def test_shots_resource_lists_the_verbs_and_global_camera_assets():
     from arena_cam.registry import PRIMITIVES
 
     catalog = view.view_shots()
     assert set(catalog["verbs"]) == set(PRIMITIVES)
     assert {"look", "orbit", "hold", "track"} <= set(catalog["verbs"])
+    assert {"establishing", "tour"} <= set(catalog["shots"])
 
 
 def test_available_names_the_simulator_and_the_serving_node(rig: Rig):
@@ -234,7 +235,7 @@ def test_set_and_capture_place_env_poses_in_the_world_and_follow_robots(rig: Rig
     assert down[0]["camera"]["y"] == pytest.approx(3.0)
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None or not os.environ.get("ARENA_DIR"), reason="needs ffmpeg and a sourced Arena checkout")
+@pytest.mark.skipif(shutil.which("ffmpeg") is None or not cli.sourced(), reason="needs ffmpeg and a shell that sourced arena")
 def test_record_films_a_lockstep_take_through_the_cam_cli(rig: Rig, tmp_path):
     out = tmp_path / "take.mp4"
     out.write_bytes(b"")

@@ -55,11 +55,19 @@ The package contributes four domains to the `arena_mcp` server, listed with
   at the world generator node's pixel budget.
 - `assets` runs the `arena asset` verbs: kinds, find, ls, pull, and push with
   the preflight that refuses references nobody else could resolve (marked
-  destructive and open-world, it needs `GCS_ACCESS_TOKEN`). `assets_ls` and
+  destructive and open-world, it needs `GCS_ACCESS_TOKEN`), `only` restricting it to
+  the files matching a glob and no name publishing every local asset. `assets_ls` and
   `assets_find` with kind `world` list the worlds and every resolver's verdict.
   `assets_import_sources` lists the datasets `arena asset import` converts
   from, `assets_import_items` one dataset's item ids, and `assets_import` runs
   the import of chosen items as a job whose result lists the item paths.
+  `assets_retarget_animation` runs the `animation_retarget` tool on SMPL-X
+  files as a job whose result lists the clip directories.
+  `assets_rig_human` writes `rig/<name>.rig` and `rig/<name>.sdf` into a human
+  bundle from its skin like `rig_human`, `dry_run` returning the rig without writing it.
+  `assets_articulation` resolves one object and lists its links, joints (type,
+  parent, child, limits, speed), named states, detents, field families (each
+  family with its member joints) and swept box, or says it is rigid.
 - `worldgen` runs the world generators in process: preview with diagnostics,
   save under the writable world root (in place over an existing world with
   `overwrite`, as the generator node saves), and queue a world on an env with
@@ -118,11 +126,11 @@ cosmetic.
 
 `PedSkeletonPlugin` (package `arena_gz_plugins`) is the gz-sim 8 C++ plugin that
 subscribes `arena_peds`, positions each actor via `TrajectoryPose`, and poses its
-skeleton per bone via `BoneTransforms` from the wire `joint_state`, through the
-same bone map as the Isaac provider (`utils/msgs/arena_people_msgs/bone_map.json`), so
-both simulators render the same articulated gait.  `BoneTransforms` is an Arena
+skeleton per bone via `BoneTransforms` from the wire `body` pose, through the
+bundle's `rig/<name>.rig` like the Isaac and MuJoCo renderers, so all simulators render the
+same articulated gait.  `BoneTransforms` is an Arena
 addition to gz-sim carried by the `gz-sim` overlay in `_meta/repos/gazebo.repos`
-and built by `arena feature gazebo update`.  Without the overlay or a bone map the
+and built by `arena feature gazebo update`.  Without the overlay or a rigged bundle the
 plugin falls back to scrubbing the `walk` clip via `AnimationTime`.  Enabled by
 default via the `ped_skeleton_enabled` launch arg in `arena_bringup`.  The plugin
 lives in its own repo, [arena_gz_plugins](https://github.com/voshch/arena_gz_plugins),
@@ -163,3 +171,8 @@ library on first access, redirected to a local endpoint when `LLM_API_ENDPOINT`
 is set and passed through unchanged otherwise. `DEFAULT_MODEL` is
 `$ARENA_PROMPT_LLM`, default `gemini-3.5-flash`, the model of
 `tm_obstacles:=prompt`.
+
+## Test assets
+
+[testing.py](src/arena_simulation_setup/testing.py) sets `ARENA_ASSETS_NET=off`, so every
+`NetResolver` answers a miss at once with no egress, and generates stand-ins for the assets test suites resolve, so no suite reads a bucket: clips through `write_clip`, seeded WAVs under the default sound manifests, and material descriptors without textures. `install_fake_assets()` writes them to a temporary `ARENA_ASSETS_DIR_LOCAL`, which resolves ahead of every bucket for the process and its children. Each package's `tests/conftest.py` calls it from `pytest_configure`.

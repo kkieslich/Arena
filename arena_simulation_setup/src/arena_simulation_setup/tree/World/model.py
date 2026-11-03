@@ -28,10 +28,12 @@ from arena_simulation_setup.shared import (
     SemanticCfg,
     Signal,
     Sound,
+    Stairs,
     Wall,
 )
 from arena_simulation_setup.shared.entities import Waypoint
 from arena_simulation_setup.shared.semantics import parse_semantics
+from arena_simulation_setup.shared.world import STOREY, clear_door_pockets
 from arena_simulation_setup.tree import Identifier
 from arena_simulation_setup.tree.assets.Material import Material, MaterialIdentifier
 from arena_simulation_setup.utils.cattrs import ArenaConverter, converter
@@ -150,6 +152,22 @@ class Zone:
         return shapely.Polygon([(corner.x, corner.y) for corner in self.polygon])
 
 
+def _cut_rect(rect: tuple[float, float, float, float], holes: typing.Sequence[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
+    """Axis-aligned rectangle `rect` minus the `holes`, as rectangles."""
+    pieces = [rect]
+    for hx0, hy0, hx1, hy1 in holes:
+        cut: list[tuple[float, float, float, float]] = []
+        for x0, y0, x1, y1 in pieces:
+            if hx0 >= x1 or hx1 <= x0 or hy0 >= y1 or hy1 <= y0:
+                cut.append((x0, y0, x1, y1))
+                continue
+            ix0, iy0, ix1, iy1 = max(x0, hx0), max(y0, hy0), min(x1, hx1), min(y1, hy1)
+            candidates = [(x0, y0, ix0, y1), (ix1, y0, x1, y1), (ix0, y0, ix1, iy0), (ix0, iy1, ix1, y1)]
+            cut.extend(piece for piece in candidates if piece[2] - piece[0] > 1e-6 and piece[3] - piece[1] > 1e-6)
+        pieces = cut
+    return pieces
+
+
 def _open_ring(points: list[Position]) -> list[Position]:
     if len(points) > 3 and math.isclose(points[0].x, points[-1].x, abs_tol=1e-9) and math.isclose(points[0].y, points[-1].y, abs_tol=1e-9):
         return points[:-1]
@@ -262,7 +280,7 @@ def _merge(walls: list[Wall]) -> list[Wall]:
     unique: list[Wall] = []
     for wall in walls:
         ends = sorted(((round(wall.start.x, 6), round(wall.start.y, 6), round(wall.start.z, 6)), (round(wall.end.x, 6), round(wall.end.y, 6), round(wall.end.z, 6))))
-        key = (*ends, _style(wall))
+        key = (*ends, _style(wall), wall.top, wall.bottom, wall.height)
         if key in seen:
             continue
         seen.add(key)
@@ -271,7 +289,7 @@ def _merge(walls: list[Wall]) -> list[Wall]:
     buckets: dict[tuple[int, int], list[int]] = {}
     order: list[tuple[int, Wall | None]] = []
     for wall in unique:
-        if wall.kind or (wall.start.x, wall.start.y) == (wall.end.x, wall.end.y):
+        if wall.kind or wall.top is not None or wall.height is not None or (wall.start.x, wall.start.y) == (wall.end.x, wall.end.y):
             order.append((-1, wall))
             continue
         theta_key, offset_key = _line_key(wall)
@@ -336,8 +354,10 @@ class Level:
     id: str = ''
     zones: list[Zone] = attrs.field(factory=list)
     walls: list[WallPath] = attrs.field(factory=list)
-    doors: list[Door] = attrs.field(factory=list)
+    doors: list[Door] = attrs.field(factory=list, converter=clear_door_pockets)
     elevators: list[Elevator] = attrs.field(factory=list)
+    stairs: list[Stairs] = attrs.field(factory=list)
+    elevation: float | None = None
     objects: list[Obstacle] = attrs.field(factory=list)
     humans: list[DynamicObstacle] = attrs.field(factory=list)
     lights: list[Light] = attrs.field(factory=list)
@@ -352,6 +372,7 @@ class Level:
         """Every wall segment of the level: paths and zone outlines, repeats merged, cut open at the doors."""
         by_name = {zone.name: zone for zone in self.zones}
         raw: list[Wall] = [segment for path in self.walls for segment in path.segments()]
+        raw.extend(wall for stair in self.stairs for wall in stair.walls())
         for zone in self.zones:
             if zone.walls is None or len(zone.polygon) < 2:
                 continue
@@ -424,15 +445,15 @@ class Level:
         return (await self.ceiling_tops()).get(zone.name, 2.0)
 
     async def closed_walls(self) -> list[Wall]:
-        """Walls of the level, each raised to the highest ceiling of a zone it borders or stands in."""
+        """Walls the simulator builds: those of the level, each without a set top or height raised to the highest ceiling of a zone it borders or stands in, and the stairs' open walls."""
         walls = self.all_walls
         tops = await self.ceiling_tops(walls)
         widened = [(zone, shape) for zone, shape in self._widened() if zone.name in tops]
         result: list[Wall] = []
         for wall in walls:
-            covering = [tops[zone.name] for zone, shape in widened if _covers_middle(shape, wall.start, wall.end)]
+            covering = [tops[zone.name] for zone, shape in widened if _covers_middle(shape, wall.start, wall.end)] if wall.top is None and wall.height is None else []
             result.append(attrs.evolve(wall, top=max(covering)) if covering else wall)
-        return result
+        return result + [wall for stair in self.stairs for wall in stair.open_walls()]
 
     async def door_lintels(self) -> list[Wall]:
         """Visual-only wall pieces above the doors that are lower than a ceiling they open under."""
@@ -449,7 +470,7 @@ class Level:
             if bottom >= top - 1e-6:
                 continue
             around = next((wall for wall in walls if _on_line(wall.start, wall.end, door.start, door.end)), None)
-            result.append(Wall(start=door.start, end=door.end, kind='', material=around.material if around is not None and not around.kind else None, top=top, bottom=bottom))
+            result.append(Wall(start=door.start, end=door.end, kind='', material=around.material if around is not None and not around.kind else None, top=top - door.start.z, bottom=door.height))
         return result
 
     @property
@@ -466,19 +487,29 @@ class Level:
 
     @property
     def all_floors(self) -> list[Floor]:
-        return [zone.floor_patch for zone in self.zones if zone.floor is not None and zone.floor.name and zone.polygon]
+        """Zone floor rectangles, cut around the wells and escalator pits of the level's stairs."""
+        holes = [hole for stair in self.stairs for hole in stair.floor_openings()]
+        floors: list[Floor] = []
+        for zone in self.zones:
+            if zone.floor is None or not zone.floor.name or not zone.polygon:
+                continue
+            patch = zone.floor_patch
+            pieces = _cut_rect(zone.bounds, holes)
+            floors.extend(attrs.evolve(patch, name=patch.name if len(pieces) == 1 else f'{patch.name}_{i}', pos=Position(x=(x0 + x1) / 2, y=(y0 + y1) / 2), x_length=x1 - x0, y_length=y1 - y0) for i, (x0, y0, x1, y1) in enumerate(pieces))
+        return floors
 
     async def all_ceilings(self) -> list[Ceiling]:
         tops = await self.ceiling_tops()
+        holes = [hole for stair in self.stairs for hole in stair.ceiling_openings()]
         result: list[Ceiling] = []
         for zone in self.zones:
             if not self._has_ceiling(zone) or not zone.polygon:
                 continue
             ceiling = typing.cast(ZoneCeiling, zone.ceiling)
-            x_min, y_min, x_max, y_max = zone.bounds
-            result.append(
+            pieces = _cut_rect(zone.bounds, holes)
+            result.extend(
                 Ceiling(
-                    name=zone.name,
+                    name=zone.name if len(pieces) == 1 else f'{zone.name}_{i}',
                     pos=Position(x=(x_min + x_max) / 2, y=(y_min + y_max) / 2),
                     x_length=x_max - x_min,
                     y_length=y_max - y_min,
@@ -486,6 +517,7 @@ class Level:
                     cast_shadows=ceiling.cast_shadows,
                     material=ceiling.material,
                 )
+                for i, (x_min, y_min, x_max, y_max) in enumerate(pieces)
             )
         return result
 
@@ -563,6 +595,7 @@ class Level:
             'room': [zone.name for zone in self.zones],
             'door': [door.name for door in self.doors],
             'elevator': [elevator.name for elevator in self.elevators],
+            'stair': [stair.name for stair in self.stairs],
             'obj': [entity.name for entity in self.objects],
             'light': [light.name for light in self.lights],
             'sound': [sound.name for sound in self.sounds],
@@ -582,6 +615,7 @@ class Level:
             zones=[attrs.evolve(zone, name=prefix + zone.name, walls=None if zone.walls is None else attrs.evolve(zone.walls, open_to=[among(zones, name) for name in zone.walls.open_to])) for zone in self.zones],
             doors=[attrs.evolve(door, name=prefix + door.name) for door in self.doors],
             elevators=[attrs.evolve(elevator, name=prefix + elevator.name, destinations=[among(elevators, name) for name in elevator.destinations]) for elevator in self.elevators],
+            stairs=[attrs.evolve(stair, name=prefix + stair.name, to=prefix + stair.to if stair.to else '', group=prefix + stair.group if stair.group else '') for stair in self.stairs],
             objects=[attrs.evolve(entity, name=prefix + entity.name) for entity in self.objects],
             humans=[attrs.evolve(human, name=prefix + human.name) for human in self.humans],
             lights=[attrs.evolve(light, name=prefix + light.name, attach=among(objects, light.attach)) for light in self.lights],
@@ -651,7 +685,7 @@ class Level:
             names.add(zone.name)
 
     def lookup_zone_polygon(self, name: str) -> list[Position] | None:
-        """Look up a zone, door, or elevator by name and return its polygon vertices."""
+        """Look up a zone, door, elevator or stair by name and return its polygon vertices."""
         for zone in self.zones:
             if zone.name == name:
                 return zone.polygon
@@ -661,11 +695,14 @@ class Level:
         for elevator in self.elevators:
             if elevator.name == name:
                 return elevator.cabin_corners()
+        for stair in self.stairs:
+            if name in (stair.name, stair.group):
+                return stair.corners()
         return None
 
     def zone_ref_names(self) -> list[str]:
-        """Every name resolvable by lookup_zone_polygon (zones, doors, elevators)."""
-        return [*(zone.name for zone in self.zones), *(door.name for door in self.doors), *(elevator.name for elevator in self.elevators)]
+        """Every name resolvable by lookup_zone_polygon (zones, doors, elevators, stairs)."""
+        return [*(zone.name for zone in self.zones), *(door.name for door in self.doors), *(elevator.name for elevator in self.elevators), *(stair.name for stair in self.stairs), *dict.fromkeys(stair.group for stair in self.stairs if stair.group)]
 
     def point_resolver(self, rng: np.random.Generator, *, is_valid: typing.Callable[[Position], bool] | None = None) -> PointResolver:
         """Resolver that samples a point inside a named zone/door/elevator polygon."""
@@ -783,7 +820,7 @@ def _shift(value: object, d: Position) -> object:
         return Pose(position=value.position + d, orientation=value.orientation)
     if isinstance(value, list):
         return [_shift(item, d) for item in value]
-    if isinstance(value, (Wall, Light, Sound, WorldMicrophone, Door, Elevator, Obstacle, DynamicObstacle, Zone, WallPath, Level)):
+    if isinstance(value, (Wall, Light, Sound, WorldMicrophone, Door, Elevator, Stairs, Obstacle, DynamicObstacle, Zone, WallPath, Level)):
         skip = {'offset'}
         if isinstance(value, Light) and value.spec.ambient:
             skip.add('pose')
@@ -799,7 +836,7 @@ def _moves(value: object) -> bool:
         return True
     if isinstance(value, list):
         return any(_moves(item) for item in value)
-    return isinstance(value, (Wall, Light, Sound, WorldMicrophone, Door, Elevator, Obstacle, DynamicObstacle, Zone, WallPath))
+    return isinstance(value, (Wall, Light, Sound, WorldMicrophone, Door, Elevator, Stairs, Obstacle, DynamicObstacle, Zone, WallPath))
 
 
 @attrs.define
@@ -807,6 +844,7 @@ class World:
     """A world: its levels by id, world-scope schedules and signals, and the optional KG."""
 
     levels: dict[str, Level] = attrs.field(factory=dict)
+    layout: typing.Literal['stacked', 'spread'] = 'spread'
     defaults: dict = attrs.field(factory=dict)
     schedules: list[Schedule] = attrs.field(factory=list)
     signals: list[Signal] = attrs.field(factory=list)
@@ -838,12 +876,37 @@ class World:
         """The level of every elevator cabin, by cabin name."""
         return {elevator.name: level_id for level_id, level in self.levels.items() for elevator in level.elevators}
 
+    def stair_levels(self) -> dict[str, str]:
+        """The level of every stair half, by name."""
+        return {stair.name: level_id for level_id, level in self.levels.items() for stair in level.stairs}
+
+    def level_bounds(self) -> dict[str, tuple[float, float, float, float]]:
+        """The level-local bounds (x_min, y_min, x_max, y_max) of every level's zones."""
+        bounds: dict[str, tuple[float, float, float, float]] = {}
+        for level_id, level in self.levels.items():
+            corners = [corner for zone in level.zones for corner in zone.polygon]
+            if corners:
+                bounds[level_id] = (min(c.x for c in corners), min(c.y for c in corners), max(c.x for c in corners), max(c.y for c in corners))
+        return bounds
+
+    def elevation(self, level_id: str) -> float:
+        """Floor height of a level: its own `elevation`, else a storey per level before it."""
+        level = self.levels[level_id]
+        return level.elevation if level.elevation is not None else list(self.levels).index(level_id) * STOREY
+
+    def stack_offsets(self) -> dict[str, tuple[float, float, float]]:
+        """Per level, the offset that stacks it at its elevation over the shared floor plan of a stacked world."""
+        if self.layout != 'stacked':
+            raise ValueError('a spread world gives every level a floor plan of its own, it stacks only with layout: stacked')
+        return {level_id: (0.0, 0.0, self.elevation(level_id)) for level_id in self.levels}
+
     def names(self) -> dict[str, list[str]]:
         """Every authored name of the world by kind."""
         return {
             'zone': [zone.name for level in self.all_levels for zone in level.zones],
             'door': [door.name for level in self.all_levels for door in level.doors],
             'elevator': [elevator.name for level in self.all_levels for elevator in level.elevators],
+            'stair': [*(stair.name for level in self.all_levels for stair in level.stairs), *dict.fromkeys(stair.group for level in self.all_levels for stair in level.stairs if stair.group)],
             'obj': [entity.name for level in self.all_levels for entity in level.objects],
             'human': [human.name for level in self.all_levels for human in level.humans],
             'light': [light.name for level in self.all_levels for light in level.lights],
@@ -879,6 +942,8 @@ class World:
                 yield door.material
             for elevator in level.elevators:
                 yield elevator.material
+            for stair in level.stairs:
+                yield stair.material
             for entity in level.objects:
                 yield entity.model
             for human in level.humans:
@@ -894,7 +959,7 @@ class World:
                 raise KeyError(f'when creating compacted single world from World, the origin for level {level_id} was not given')
             moved = level.shifted(*origins[level_id])
             for field in attrs.fields(Level):
-                if field.name in ('id', 'pedestrian_walls', 'source', 'prefix'):
+                if field.name in ('id', 'elevation', 'pedestrian_walls', 'source', 'prefix'):
                     continue
                 getattr(out, field.name).extend(getattr(moved, field.name))
         out.pedestrian_walls = not self.levels or any(level.pedestrian_walls for level in self.levels.values())
@@ -937,6 +1002,15 @@ class World:
                             logging.getLogger(__name__).warning(msg)
                             continue
                         raise ValueError(f'elevator {elevator.name!r} has unknown destination {destination!r}')
+        stairs = self.stair_levels()
+        for level in self.all_levels:
+            for stair in level.stairs:
+                if stair.to and stair.to not in stairs:
+                    if loaded_level_ids is None:
+                        raise ValueError(f'stair {stair.name!r} leads to unknown stair {stair.to!r}')
+                    msg = f'stair {stair.name!r} leads to {stair.to!r} on a level that was not loaded, it will not board'
+                    warnings.append(msg)
+                    logging.getLogger(__name__).warning(msg)
         return warnings
 
     def apply_elevator_door_sides(self, *, max_distance: float = 1.0) -> None:

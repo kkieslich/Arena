@@ -319,6 +319,17 @@ def test_pose_times_point_carries_it_out_of_the_frame():
     assert (point.x, point.y, point.z) == pytest.approx((4.0, 3.0, 1.5))
 
 
+def test_pose_inverse_composes_to_the_identity_on_either_side():
+    pose = Pose(Position(4.0, -2.0, 1.5), Orientation.from_euler((0.3, -0.4, 1.2)))
+    inverse = pose.inverse()
+    assert isinstance(inverse, Pose)
+    assert isinstance(inverse.position, Position)
+    assert isinstance(inverse.orientation, Orientation)
+    for out in (pose * inverse, inverse * pose):
+        assert tuple(out.position) == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
+        assert tuple(out.orientation) == pytest.approx((1.0, 0.0, 0.0, 0.0), abs=1e-9)
+
+
 def test_pose_parse_idempotent():
     from arena_simulation_setup.utils.cattrs import converter
 

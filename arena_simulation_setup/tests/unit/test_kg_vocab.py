@@ -22,18 +22,21 @@ def test_core2_adds_placeable_kinds_and_placed_prop():
         assert vocab.props(kind) == ["label"]
     assert "placed" in vocab.props("obj")
     assert vocab.verbs["contains"]["from"] == ["floor", "room"]
-    assert vocab.verbs["contains"]["to"] == ["room", "obj", "door", "wall", "elevator", "light", "sound", "microphone"]
+    assert vocab.verbs["contains"]["to"] == ["room", "obj", "door", "wall", "elevator", "stair", "light", "sound", "microphone"]
 
 
-def test_core2_keeps_connects_floor_between_elevators():
-    assert Vocabulary(["core@2"]).verbs["connects_floor"] == {"from": ["elevator"], "to": ["elevator"]}
+def test_core2_connects_floor_joins_elevators_and_stairs():
+    vocab = Vocabulary(["core@2"])
+    assert vocab.verbs["connects_floor"] == {"from": ["elevator", "stair"], "to": ["elevator", "stair"]}
+    assert vocab.is_propless("stair")
+    assert "stair" not in vocab.authorable()
 
 
-def test_core2_matches_core1_outside_obj_contains_and_new_kinds():
+def test_core2_matches_core1_outside_obj_contains_connects_floor_and_new_kinds():
     core1, core2 = load_package(PACKAGES_DIR / "core@1.toml"), load_package(PACKAGES_DIR / "core@2.toml")
     assert core2.constraints == core1.constraints
-    assert {k: v for k, v in core2.verbs.items() if k != "contains"} == {k: v for k, v in core1.verbs.items() if k != "contains"}
-    assert {k: v for k, v in core2.nodes.items() if k not in ("obj", "light", "sound", "microphone")} == {k: v for k, v in core1.nodes.items() if k != "obj"}
+    assert {k: v for k, v in core2.verbs.items() if k not in ("contains", "connects_floor")} == {k: v for k, v in core1.verbs.items() if k not in ("contains", "connects_floor")}
+    assert {k: v for k, v in core2.nodes.items() if k not in ("obj", "stair", "light", "sound", "microphone")} == {k: v for k, v in core1.nodes.items() if k != "obj"}
 
 
 def test_bare_package_name_resolves_to_newest_version():
@@ -86,24 +89,18 @@ def test_is_entity_ref(value: object, expected: bool):
     assert Vocabulary(["core@2"]).is_entity_ref(value) is expected
 
 
-def test_package_file_name_must_match_declared_key(tmp_path):
+@pytest.mark.parametrize(
+    ("toml", "message"),
+    [
+        ('name = "extra"\nversion = 2\n', r"declares package 'extra@2'"),
+        ('name = "extra"\nversion = 1\n[verbs.hugs]\nfrom = ["room"]\n', r"verbs.hugs misses required key\(s\) 'to'"),
+        ('name = "extra"\nversion = 1\n[nodes.tag]\nprops = ["label"]\npropless = true\n', r"nodes.tag is propless"),
+    ],
+)
+def test_malformed_package_is_rejected(tmp_path, toml: str, message: str):
     path = tmp_path / "extra@1.toml"
-    path.write_text('name = "extra"\nversion = 2\n')
-    with pytest.raises(ValueError, match=r"declares package 'extra@2'"):
-        load_package(path)
-
-
-def test_package_verb_without_to_is_rejected(tmp_path):
-    path = tmp_path / "extra@1.toml"
-    path.write_text('name = "extra"\nversion = 1\n[verbs.hugs]\nfrom = ["room"]\n')
-    with pytest.raises(ValueError, match=r"verbs.hugs misses required key\(s\) 'to'"):
-        load_package(path)
-
-
-def test_propless_node_with_props_is_rejected(tmp_path):
-    path = tmp_path / "extra@1.toml"
-    path.write_text('name = "extra"\nversion = 1\n[nodes.tag]\nprops = ["label"]\npropless = true\n')
-    with pytest.raises(ValueError, match=r"nodes.tag is propless"):
+    path.write_text(toml)
+    with pytest.raises(ValueError, match=message):
         load_package(path)
 
 

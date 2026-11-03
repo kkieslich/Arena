@@ -159,6 +159,13 @@ def test_door_below_the_ceiling_gets_a_lintel() -> None:
     assert (segment.start.z, segment.height) == pytest.approx((2.0, 0.6))
 
 
+def test_a_raised_door_gets_its_lintel_above_its_own_top() -> None:
+    door = Door(name='entry', start=Position(3, 0, 0.5), end=Position(4, 0, 0.5), height=1.5)
+    (lintel,) = asyncio.run(_room(ZoneCeiling(height=2.6), [door]).door_lintels())
+    (segment,), _ = asyncio.run(lintel.assets())
+    assert (segment.start.z, segment.height) == pytest.approx((2.0, 0.6))
+
+
 @pytest.mark.parametrize('ceiling', [ZoneCeiling(height=2.0), None])
 def test_no_lintel_when_the_door_reaches_the_ceiling_or_there_is_none(ceiling: ZoneCeiling | None) -> None:
     door = Door(name='entry', start=Position(3, 0), end=Position(4, 0), height=2.0)
