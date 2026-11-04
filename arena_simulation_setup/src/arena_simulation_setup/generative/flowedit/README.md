@@ -23,6 +23,12 @@ flowedit edit hospital_1 move obj:fountain --scenario queue -p x=15 -p y=11.5 --
 flowedit edit hospital_1__b6b7b494 layout door:or_door -p op=remove --write
 ```
 
+`flowedit generate <world> [--scenario <scenario>] [--seed N] [--per-type K] [--steps N] [--types move,...] [--controls]` samples edits with the [generator](#generator). A dry run prints the manifest, `--write` saves every edited world and writes the manifest to `$ARENA_ASSETS_DIR_LOCAL/flowedit/<world>__seed<seed>.yaml` (or `--manifest`).
+
+```bash
+flowedit generate hospital_1 --scenario queue --seed 0 --controls --write
+```
+
 ## Graph
 
 | Node | Holds | From |
@@ -91,6 +97,47 @@ A site opened with a scenario keeps the scenario as read (`Site.scenario_doc`) a
 
 `build` on a saved world and its saved scenario gives back the saved graph, up to derived facts, `pose_ref`, and the `from` of a dwell set by an edit.
 
+## Generator
+
+[`generate.py`](generate.py) samples edits of every type on a site from a seed. `generate(site, seed, per_type, steps, types)` makes, per type, `per_type` chains of up to `steps` edits (default one), each starting with an edit of that type; later steps draw their type from `types`. Each step draws a proposal, `apply` checks it, and a refused one is drawn again, up to `MAX_TRIES`. A site with nothing to edit, or no valid proposal, gives a note instead.
+
+- **Determinism:** one `random.Random` per step, keyed by the current world's name (which names the chain so far), the scenario, seed, step, type and index. Candidates are sorted before every draw and spots rounded to cm, so the same site, seed and code give the same edits and a shorter chain is a prefix of a longer one. Footprints come from asset bounds where they resolve, else a 0.8 m box, so a machine with other assets at hand can draw other spots; the manifest carries `generator_version`.
+- **Spots** (`move`, `insert`): inside an allowed zone (not a stair, elevator, lift or shaft), the footprint clear of the zone's edge, walls, door spans (0.8 m) and, by 0.3 m, every other object's footprint.
+
+| Type | Target | Params drawn |
+|---|---|---|
+| `move` | an object, one with demand first | a spot in its own room 0.5-3 m away (`scope: local`, 30 %), else in another room of its level (`scope: room`) |
+| `insert` | `obj:gen_<model>_<n>`, a copy of an object, one with demand first | a spot in any room of its level (`scope: room`), the source's demand copied (service, needs, dwell) |
+| `remove` | an object, one with demand first | none |
+| `function` | a serving object, one whose type others share first, not one with capacity 0 | `capacity` only, a new value in the type's range (`CAPACITY`) |
+| `access` | a door whose rooms keep another door, a gated door, or a schedule with a regime | lock a door; unlock or ungate a gated one; a schedule window |
+| `layout` | a door | move it 0.5-2 m along its wall; add a 1.5 m door on a wall between two rooms; remove one whose rooms keep another door |
+
+`satisfies` and dwell are not drawn: PEDS applies only the agent type step's `satisfies` and `duration`, and where a function edit should write them is open. `FIELDS` lists what is drawn and goes into the manifest. Wall paths are not drawn.
+
+**Controls** (`controls(site, chain)`, `--controls`): a function-carrying move or insert gets its geometry-only controls, applied to the chain's base: the same model without demand at the edit's spot (`inert_object`, the original left in place) and, for a move, the object moved and cleared of its demand (`moved_without_demand`). Only a chain's first edit has controls. An object without `humansim.type` takes its type from its asset's `annotation.yaml` at runtime, so an inert copy may still be a target by that name.
+
+The manifest (`flowedit-generated/1`) names each chain's world, its edits (`type`, `target`, `id`, `function_carrying`, `scope`), its saved path and its controls:
+
+```yaml
+format: flowedit-generated/1
+generator_version: 1
+base: hospital_1
+scenario: queue
+seed: 0
+per_type: 1
+steps: 1
+fields: [capacity]
+chains:
+- world: hospital_1__1a2b3c4d
+  edits:
+  - {type: move, target: 'obj:fountain', id: 1a2b3c4d, function_carrying: true, scope: room}
+  path: /…/worlds/hospital_1__1a2b3c4d
+  controls:
+  - {kind: inert_object, world: hospital_1__5e6f7a8b, ids: [5e6f7a8b], path: /…/worlds/hospital_1__5e6f7a8b}
+  - {kind: moved_without_demand, world: hospital_1__9c0d1e2f, ids: [1a2b3c4d, 9c0d1e2f], path: /…/worlds/hospital_1__9c0d1e2f}
+```
+
 ## Files
 
 | File | Purpose |
@@ -98,4 +145,5 @@ A site opened with a scenario keeps the scenario as read (`Site.scenario_doc`) a
 | `build.py` | world + scenario to the graph |
 | `edit.py` | edit operations, sites, saving edited worlds |
 | `scenario_sync.py` | the site's scenario: projected from the graph, saved with the edited world |
-| `cli.py` | `flowedit build`, `flowedit edit` |
+| `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
+| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate` |
