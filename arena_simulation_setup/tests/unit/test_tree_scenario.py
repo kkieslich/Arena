@@ -505,6 +505,12 @@ def test_scenario_timeline_stimulus_loads_from_yaml(tmp_path):
     assert entry.stimulus == [StimulusAction(agents=("edge_0",), need="go")]
 
 
+def test_parse_scenario_refuses_a_dock_on_a_scenario_object():
+    charger = {"name": "charger_1", "model": "charger", "pose": [0.0, 0.0, 0.0], "dock": [[0.5, -0.5], [1.5, -0.5], [1.5, 0.5]]}
+    with pytest.raises(ValueError, match=r"objects\[0\]: dock is a world.yaml key"):
+        parse_scenario({"format": SCENARIO_FORMAT, "objects": [charger]})
+
+
 def test_parse_scenario_names_the_bad_timeline_entry():
     with pytest.raises(ValueError, match=r"timeline\[1\]"):
         parse_scenario(

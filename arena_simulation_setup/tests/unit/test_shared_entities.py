@@ -281,6 +281,21 @@ def test_obstacle_joints_refuse_other_values(joints, message):
         Obstacle.parse({"name": "cabinet", "model": "cabinet", "pose": [0.0, 0.0, 0.0], "joints": joints})
 
 
+def test_obstacle_dock_reads_a_polygon_in_the_object_frame_and_round_trips():
+    base = {"name": "charger_1", "model": "charger", "pose": [2.0, 1.0, 1.5707963267948966]}
+    charger = Obstacle.parse({**base, "dock": [[0.5, -0.5], [1.5, -0.5], [1.5, 0.5], [0.5, 0.5]]})
+    assert [(corner.x, corner.y) for corner in charger.dock] == [(0.5, -0.5), (1.5, -0.5), (1.5, 0.5), (0.5, 0.5)]
+    assert [(round(corner.x, 6), round(corner.y, 6)) for corner in charger.dock_polygon()] == [(2.5, 1.5), (2.5, 2.5), (1.5, 2.5), (1.5, 1.5)]
+    assert Obstacle.parse(charger.serialize()).dock == charger.dock
+    assert Obstacle.parse(base).dock is None and Obstacle.parse(base).dock_polygon() is None
+    assert "dock" not in Obstacle.parse(base).serialize()
+
+
+def test_obstacle_dock_needs_three_points():
+    with pytest.raises(ValueError, match="dock is a polygon in the object frame with at least 3 points, got 2"):
+        Obstacle.parse({"name": "charger_1", "model": "charger", "pose": [0.0, 0.0, 0.0], "dock": [[0.5, -0.5], [1.5, -0.5]]})
+
+
 def test_obstacle_still_refuses_unknown_keys_next_to_joints():
     with pytest.raises(ValueError, match=r"unknown keys \['joint'\]"):
         Obstacle.parse({"name": "cabinet", "model": "cabinet", "pose": [0.0, 0.0, 0.0], "joints": "open", "joint": "open"})

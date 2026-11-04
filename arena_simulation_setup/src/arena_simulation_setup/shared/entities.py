@@ -212,12 +212,26 @@ def _joints(value: object) -> Joints:
     return joints
 
 
+def _dock(value: object) -> list[Position] | None:
+    if value is None:
+        return None
+    points = [point if isinstance(point, Position) else Position.parse(point) for point in typing.cast(list, value)]
+    if len(points) < 3:
+        raise ValueError(f'dock is a polygon in the object frame with at least 3 points, got {len(points)}')
+    return points
+
+
 @attrs.define
 class Obstacle(Entity):
     scale: Scale | None = None
     light: ObjectLightSettings | None = None
     humansim: dict = attrs.field(factory=dict, converter=_humansim_object)
     joints: Joints = attrs.field(default=None, converter=_joints)
+    dock: list[Position] | None = attrs.field(default=None, converter=_dock)
+
+    def dock_polygon(self) -> list[Position] | None:
+        """The dock in the frame of the object's pose, None without one."""
+        return None if self.dock is None else [self.pose * corner for corner in self.dock]
 
     async def _corners(self) -> list[Position] | None:
         try:

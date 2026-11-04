@@ -289,6 +289,15 @@ def test_compact_world_carries_every_list_shifted_by_the_origin() -> None:
     assert world.levels['1'].zones[0].polygon[0] == Position(0, 0)
 
 
+def test_a_docked_object_resolves_like_a_zone_and_moves_with_its_level() -> None:
+    dock = [[0.5, -0.5], [1.5, -0.5], [1.5, 0.5], [0.5, 0.5]]
+    level = Level(id='1', objects=[Obstacle(name='charger_1', model='charger', pose=Pose(Position(1, 1)), dock=dock), Obstacle(name='desk_1', model='Desk', pose=Pose(Position(3, 3)))])
+    assert level.zone_ref_names() == ['charger_1']
+    assert level.lookup_zone_polygon('desk_1') is None
+    compacted = World.from_levels(level).compact_world({'1': (10.0, 20.0)})
+    assert [(corner.x, corner.y) for corner in compacted.lookup_zone_polygon('charger_1')] == [(11.5, 20.5), (12.5, 20.5), (12.5, 21.5), (11.5, 21.5)]
+
+
 def test_compact_world_requires_every_origin() -> None:
     world = World.from_levels(_furnished('0'), _furnished('1'))
     with pytest.raises(KeyError, match='origin for level 1 was not given'):

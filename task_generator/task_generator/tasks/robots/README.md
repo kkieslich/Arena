@@ -159,15 +159,19 @@ share one definition. [`request.py`](../../../../arena_runtime/arena_runtime/are
   judged on every tick and, once it holds, drops the running phase and
   continues with the phase after the loop.
 - `GoToPhase(pose | target, tolerance_radius?, tolerance_angle?, hold_time?, signal?)`:
-  navigate to a pose, or to a zone, door, elevator or pedestrian by name. A
-  zone target dispatches to a free map cell inside the zone with the robot's
-  spawn clearance, a door or elevator to a point inside its polygon, and a
+  navigate to a pose, or to a zone, door, elevator, docked object or pedestrian
+  by name. A zone target dispatches to a free map cell inside the zone with the
+  robot's spawn clearance, a docked object (a world object with a `dock:`
+  polygon) to such a cell within half the dock's inner radius of its deepest
+  point, facing the object (a planner's goal tolerance then cannot stop the
+  robot outside the dock), a door or
+  elevator to a point inside its polygon, and a
   `pose` authored next to the name (`{goto: pharmacy, pose: [4.0, 27.5, 0.0]}`)
   is kept as the dispatch pose.
   A pedestrian target dispatches to a standoff pose 0.8 m short of the
   pedestrian on the robot's side, facing them, taken from the judge's sample
   when the phase starts (`standoff_pose` in the task runner).
-  Arrival on a named zone is `robot in <zone>`, on a pedestrian
+  Arrival on a named zone or docked object is `robot in <name>`, on a pedestrian
   `robot within tolerance_radius of <ped>`. `hold_time` is the park time
   (stationary within 5 cm and 5 degrees) before the phase counts as met. With
   a `signal` such as `arrived` the robot itself ends the phase by sending that

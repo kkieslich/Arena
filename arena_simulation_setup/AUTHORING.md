@@ -1003,7 +1003,7 @@ robots:
 
 An empty scenario (robot start and phases only) is valid, and `robots:` is
 optional: a robot without an entry stays parked, an episode with only parked
-robots runs until `task.episode.timeout`. Phases run in order and are `{goto: <pose or zone/door/elevator/pedestrian name>}`, `{gesture: <name>}`,
+robots runs until `task.episode.timeout`. Phases run in order and are `{goto: <pose or zone/door/elevator/docked object/pedestrian name>}`, `{gesture: <name>}`,
 `{reach: <named target | random | pose>}`, or a hold phase with neither (the robot
 stays where it is), or `{loop: [<phases>], until: "<...>"}` (the phases repeated
 in order until the `until` holds, which drops the running phase and continues
@@ -1050,6 +1050,28 @@ stands on, multi-level worlds). An object's `humansim:` block (`type`,
 `capacity`, `satisfies`, `interaction_radius`, `formation`, `seats`) is
 forwarded to humansim as its WorldObject, so a `go_to` step or an interaction
 `target:` can name the entry by `type`.
+
+A world object (a level's `objects:` in `world.yaml`) can carry `dock:`, the
+polygon in the object's frame where a robot stands to use it, such as the bay
+in front of a charger or the door side of a parcel locker. Its name then works
+as a goto target like a zone: the robot is sent to a free cell with its spawn
+clearance near the dock's deepest point (within half the dock's inner radius,
+so the planner's goal tolerance cannot stop it outside), facing the object,
+and the phase is met once `robot in <object>` holds, an atom `until:` and
+`conditions:` can use too. The dock moves and turns with the object's `pose`.
+Size it so its middle lies at least the robot's radius plus
+`task.episode.spawn.robot_clearance` off the object's footprint, and its
+inner radius is at least twice the planner's goal tolerance (1.2 x 1.0 m
+for a jackal under nav2). A scenario object with `dock:` is refused: goto
+targets resolve on the world's levels.
+
+```yaml
+objects:
+- name: charger_1
+  model: equipment_robot_charger_a01
+  pose: [12.0, 3.0, 3.1416]
+  dock: [[0.4, -0.5], [1.4, -0.5], [1.4, 0.5], [0.4, 0.5]]   # 1 m square off the +x face
+```
 
 For HumanSim (arena_humansim) pedestrians include an `agent:` block. The
 `agent_type` is either a built-in type (`adult`, `elder`) or a path-relative
