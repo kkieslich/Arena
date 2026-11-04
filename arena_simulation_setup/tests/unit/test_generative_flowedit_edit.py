@@ -60,6 +60,9 @@ def test_every_type_saves_a_world_that_loads(queue: Site, local_worlds: Path, ed
     record = yaml.safe_load((path / EDITS).read_text())
     assert record["edits"] == [{"id": path.name.split("__")[1], "parent": "hospital_1", "type": edit_type, "target": target, "params": params}]
     assert load(path / GRAPH).validate() == []
+    from arena_simulation_setup.generative.scenario.formats import check_scenario
+
+    check_scenario(yaml.safe_load((path / "scenarios" / "queue" / "scenario.yaml").read_text()), path)
 
 
 def test_apply_leaves_its_site_alone_and_names_the_edit_by_its_record(queue: Site) -> None:
@@ -158,3 +161,74 @@ def test_cli_prints_the_edit_and_writes_with_write(local_worlds: Path, capsys: p
     assert not local_worlds.exists()
     assert main([*argv, "--write"]) == 0
     assert (local_worlds / printed["world"] / EDITS).is_file()
+
+
+def _saved_scenario(path: Path) -> dict[str, Any]:
+    return yaml.safe_load((path / "scenarios" / "queue" / "scenario.yaml").read_text())
+
+
+def _scenario_object(doc: dict[str, Any], name: str) -> dict[str, Any] | None:
+    return next((o for o in doc["objects"] if o["name"] == name), None)
+
+
+def test_saved_world_carries_its_scenario_with_the_moved_object(queue: Site) -> None:
+    from arena_simulation_setup.generative.scenario.formats import check_scenario
+
+    path = save(apply(queue, "move", "obj:fountain", {"x": 15.0, "y": 11.5}))
+    doc = _saved_scenario(path)
+    assert _scenario_object(doc, "fountain")["pose"] == [15.0, 11.5, 1.57]
+    desk = next(f.params for f in queue.graph.facts if f.subject == "obj:reception_desk" and f.verb == "at")
+    assert _scenario_object(doc, "reception_desk")["pose"] == [desk["x"], desk["y"], desk["yaw"]]  # pinned where it was drawn
+    assert (path / "scenarios" / "queue" / "colleague.yaml").read_text() == (HOSPITAL / "scenarios" / "queue" / "colleague.yaml").read_text()
+    assert not (path / "scenarios" / "queue" / GRAPH).exists()
+    assert sorted(p.name for p in (path / "scenarios").iterdir()) == ["queue"]
+    check_scenario(doc, path)
+
+
+def test_removed_scenario_object_leaves_the_scenario_with_a_note(queue: Site) -> None:
+    from arena_simulation_setup.generative.scenario.formats import check_scenario
+
+    notes: list[str] = []
+    path = save(apply(queue, "remove", "obj:fountain", {}), notes)
+    doc = _saved_scenario(path)
+    assert _scenario_object(doc, "fountain") is None
+    assert notes == ["obj:fountain: removed from the scenario, steps or formations naming it are left as they are"]
+    check_scenario(doc, path)
+
+
+def test_function_edit_reaches_the_scenario_humansim_block(queue: Site) -> None:
+    path = save(apply(queue, "function", "obj:fountain", {"capacity": 3}))
+    block = _scenario_object(_saved_scenario(path), "fountain")["humansim"]
+    assert block == {"type": "fountain", "capacity": 3, "satisfies": {"thirst": 100.0}, "formation": {"type": "line", "params": {"base_step": 1.0, "front_offset": 0.8}}}
+
+
+def test_a_chain_keeps_every_edit_in_the_scenario(queue: Site) -> None:
+    first = save(apply(queue, "move", "obj:fountain", {"x": 15.0, "y": 11.5}))
+    second = save(apply(open_site(first), "function", "obj:fountain", {"capacity": 2}))
+    fountain = _scenario_object(_saved_scenario(second), "fountain")
+    assert fountain["pose"] == [15.0, 11.5, 1.57] and fountain["humansim"]["capacity"] == 2
+
+
+def test_the_saved_graph_is_what_build_makes_of_the_saved_world(queue: Site) -> None:
+    from arena_simulation_setup.generative.flowedit.build import build
+    from arena_simulation_setup.kg.scene import DERIVED
+
+    def stated(scene: Scene) -> list[tuple[Any, ...]]:
+        return sorted((f.subject, f.verb, str(f.object), sorted((k, str(v)) for k, v in f.params.items() if k != "pose_ref")) for f in scene.facts if f.source != DERIVED)
+
+    for edit_type, target, params in [("move", "obj:fountain", {"x": 15.0, "y": 11.5}), ("remove", "obj:reception_desk", {}), ("function", "obj:fountain", {"capacity": 3}), ("layout", "door:or_door", {"op": "remove"})]:
+        path = save(apply(queue, edit_type, target, params))
+        rebuilt = build(path, path / "scenarios" / "queue" / "scenario.yaml", queue.seed)
+        assert stated(rebuilt) == stated(load(path / GRAPH)), edit_type
+
+
+def test_function_clear_leaves_an_inert_object(queue: Site) -> None:
+    demand = ("serves", "satisfies", "dwells", "has_formation")
+    inserted = apply(queue, *EDITS_OF_EVERY_TYPE[1])
+    cleared = apply(inserted, "function", "obj:fountain_2", {"clear": True})
+    assert not [f for f in cleared.graph.facts if f.subject == "obj:fountain_2" and f.verb in demand]
+    objects = yaml.safe_load((save(cleared) / "world.yaml").read_text())["levels"][0]["objects"]
+    assert not next(o for o in objects if o["name"] == "fountain_2").get("humansim")
+    scenario = apply(queue, "function", "obj:fountain", {"clear": True, "type": "fountain", "capacity": 2})
+    assert _facts(scenario.graph, "obj:fountain", "serves") == [("service:fountain", {"capacity": 2})]
+    assert not _facts(scenario.graph, "obj:fountain", "has_formation")
