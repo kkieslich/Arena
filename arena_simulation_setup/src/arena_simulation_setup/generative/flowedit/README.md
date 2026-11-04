@@ -56,18 +56,18 @@ Load and save it with `arena_simulation_setup.kg.load` and `write`.
 | `move` | `obj:<name>` | `x`, `y`, `yaw`, `level` (default: unchanged) | `at` | the pose, for a world object |
 | `insert` | `obj:<new name>` | `model`, `x`, `y`, `yaw` (0), `level`, and any `function` params | entity, `at`, demand | a new world object with its `humansim:` block |
 | `remove` | `obj:<name>` | none | the entity and every fact about it | the object, and its `kg.yaml` entity |
-| `function` | `obj:<name>` | `type`, `capacity`, `interaction_radius`, `satisfies: {<need>: amount or null}`, `dwell: seconds, {mean, std, clip_low, clip_high} or null` | `serves`, `satisfies`, `dwells` (`from: edit:<id>`) | the `humansim:` block, for a world object |
+| `function` | `obj:<name>` | `type`, `capacity`, `interaction_radius`, `satisfies: {<need>: amount or null}`, `dwell: seconds, {mean, std, clip_low, clip_high} or null`, `clear: true` (first drop all demand, the formation included) | `serves`, `satisfies`, `dwells` (`from: edit:<id>`), `has_formation` (by `clear`) | the `humansim:` block, for a world object |
 | `access` | `door:<name>` | `locked`, `authorized`, `unlock_on`, or `remove: true` | access facts | the door's `gate` preset (new gates start unlocked) |
 | `access` | `schedule:<name>` | `regime`, `windows`, `default`, or `remove: true` | access facts | the `schedules:` entry |
 | `layout` | `door:<name>` | `op: add` (`level`, `span`, door fields), `move` (default: `span` or `offset: [dx, dy]`, door fields), `remove` | the door entity | the door |
 | `layout` | `wall:<level>/<index>`, `wall:<level>` to add | `op: add` (`path`, `closed`, `kind`, `material`), `move` (`path` or `offset`), `remove` | none | the `walls:` path at that index |
 
-- **Scenario objects** (the fountain of `queue`) change only in the graph. A reader from graph to scenario (not built yet) is to write them into the scenario.
+- **Scenario objects** (the fountain of `queue`) change in the graph, and `save` writes them into the saved scenario, see [Scenario](#scenario).
 - **Doors:** a moved or added door must lie on a wall. A door moved or removed from a gap left in its wall gets the gap closed with a wall styled like the wall at its start. Walls drawn through a door are cut at runtime anyway.
 - **Walls:** only `walls:` paths count. Walls from a zone's `walls: outline` are not addressable.
 - **Checks** stay basic: unknown target, taken name, door off a wall, then `World.validate` and the graph's vocabulary. Rules about rooms or overlap belong to the edit generator.
 
-`save` writes the world to the writable local root (`$ARENA_ASSETS_DIR_LOCAL/worlds`, see [worlds/README.md](../../../../worlds/README.md#how-worldidentifier-resolves-a-name)) as `<base>__<id>`. `<id>` is a hash of the last edit's record, with ints read as floats. The record names its parent world, so the hash also names the whole chain. The save copies the source world's `assets/`, and writes `flowgraph.yaml` and `edits.yaml` next to `world.yaml`. The scenarios are not copied.
+`save` writes the world to the writable local root (`$ARENA_ASSETS_DIR_LOCAL/worlds`, see [worlds/README.md](../../../../worlds/README.md#how-worldidentifier-resolves-a-name)) as `<base>__<id>`. `<id>` is a hash of the last edit's record, with ints read as floats. The record names its parent world, so the hash also names the whole chain. The save copies the source world's `assets/`, writes `flowgraph.yaml` and `edits.yaml` next to `world.yaml`, and the site's scenario to `scenarios/<scenario>/`. Other scenarios of the source world are not copied.
 
 ```yaml
 format: flowedit-edits/1
@@ -79,10 +79,23 @@ edits:
 - {id: b9f2feba, parent: hospital_1__b6b7b494, type: layout, target: 'door:or_door', params: {op: remove}}
 ```
 
+## Scenario
+
+A site opened with a scenario keeps the scenario as read (`Site.scenario_doc`) and its folder (`Site.scenario_dir`). [`scenario_sync.py`](scenario_sync.py) projects the graph onto it when `save` runs, so PEDS runs the edited state with `world:=<base>__<id>` and the scenario's own name:
+
+- The folder is copied whole, its local agent types (`./<type>.yaml`) included, without its `flowgraph.yaml`.
+- An object gone from the graph leaves `objects:`, with a note: steps and formations that name it are left as they are.
+- Every object is **pinned** at its graph pose (map frame). The runtime draws the points of objects posed at a zone name in object order from one RNG, so removing or adding one would move every later one; pinned, an object an edit leaves alone stands where it stood.
+- The `humansim:` block takes `type`, `capacity`, `interaction_radius` and `satisfies` from the graph. Its formation stays as authored while the graph keeps one, its seats always.
+- An edited world is opened from its own `scenarios/<scenario>/`, so chains need nothing else.
+
+`build` on a saved world and its saved scenario gives back the saved graph, up to derived facts, `pose_ref`, and the `from` of a dwell set by an edit.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `build.py` | world + scenario to the graph |
 | `edit.py` | edit operations, sites, saving edited worlds |
+| `scenario_sync.py` | the site's scenario: projected from the graph, saved with the edited world |
 | `cli.py` | `flowedit build`, `flowedit edit` |

@@ -66,7 +66,11 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     if not args.write:
         print(yaml.safe_dump({"world": site.name, **dump_edits(site)}, sort_keys=False, default_flow_style=None, width=1 << 16), end="")
         return 0
-    print(f"wrote {save(site)}")
+    saved_notes: list[str] = []
+    path = save(site, saved_notes)
+    for note in saved_notes:
+        print(f"note: {note}", file=sys.stderr)
+    print(f"wrote {path}")
     return 0
 
 
