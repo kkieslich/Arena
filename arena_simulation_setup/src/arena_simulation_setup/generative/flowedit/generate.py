@@ -25,11 +25,14 @@ if TYPE_CHECKING:
 GENERATOR_VERSION = 1
 MANIFEST_FORMAT = "flowedit-generated/1"
 MAX_TRIES = 50
-#: Function fields the generator samples; `satisfies` and `dwell` stay open until it is settled where PEDS reads them.
-FIELDS = ("capacity",)
+#: Function fields the generator samples. The reader writes `dwell` into the `duration` of the step at the object; `satisfies` is not drawn yet.
+FIELDS = ("capacity", "dwell")
 #: Plausible `capacity` per service type: the queue length at which a needs-driven ped passes the object over for another of its type.
 CAPACITY: Mapping[str, tuple[int, int]] = {"fountain": (1, 4), "desk": (1, 6), "chair": (1, 2), "patient_bed": (1, 2)}
 DEFAULT_CAPACITY = (1, 4)
+#: Plausible mean dwell (s) per service type: 3-20 s for dispensers (study design). Other types are still to decide and take that range.
+DWELL_S: Mapping[str, tuple[float, float]] = {"fountain": (3.0, 20.0)}
+DEFAULT_DWELL_S = (3.0, 20.0)
 SCHEDULE_START_S = (30, 300)
 SCHEDULE_LENGTH_S = (30, 180)
 #: Share of moves that stay in the object's own room; the rest go to another room of its level.
@@ -99,8 +102,18 @@ def objects(site: Site) -> list[str]:
 
 
 def demand_objects(site: Site) -> list[str]:
-    """The objects that serve something, by id."""
-    return sorted({f.subject for f in site.graph.facts if f.verb == "serves"})
+    """The objects that satisfy a need, by id: in PEDS only needs send people to an object."""
+    return sorted({f.subject for f in site.graph.facts if f.verb == "satisfies"})
+
+
+def _needs(site: Site, obj: str) -> set[str]:
+    return {str(f.object) for f in _facts(site, obj, "satisfies")}
+
+
+def sole_server(site: Site, obj: str) -> bool:
+    """Whether no other object satisfies a need of `obj`. The reader takes one dwell per need, so only then may a dwell edit differ."""
+    needs = _needs(site, obj)
+    return all(other == obj or not needs & _needs(site, other) for other in demand_objects(site))
 
 
 def _service(site: Site, obj: str) -> tuple[str, dict[str, Any]] | None:
@@ -108,9 +121,9 @@ def _service(site: Site, obj: str) -> tuple[str, dict[str, Any]] | None:
     return None if fact is None else (str(fact.object).partition(":")[2], dict(fact.params))
 
 
-def _prefer(rng: random.Random, preferred: Sequence[str], others: Sequence[str]) -> str:
-    """One of `preferred` if there is any, else one of `others`."""
-    pool = list(preferred) or list(others)
+def _prefer(rng: random.Random, preferred: Sequence[str], others: Sequence[str], wide: bool = False) -> str:
+    """One of `preferred` if there is any, else one of `others`; any of `others` when `wide` (a retry after a duplicate)."""
+    pool = list(others) if wide else list(preferred) or list(others)
     if not pool:
         raise NoCandidate("no target")
     return rng.choice(pool)
@@ -164,7 +177,10 @@ def _model(site: Site, obj: str) -> str | None:
 
 
 class Spots:
-    """Valid spots on one level: inside an allowed zone, clear of walls, door spans and the other objects' footprints."""
+    """Valid spots on one level: inside an allowed zone, clear of walls, door spans and every object's footprint.
+
+    A moved object's own footprint counts too, so the inert copy that stands at the new spot next to the original (control 1) never overlaps it.
+    """
 
     def __init__(self, site: Site, level_id: str) -> None:
         import shapely
@@ -181,15 +197,15 @@ class Spots:
         resolve_footprints(site, [model for _, model in here.values()])
         self.placed: dict[str, shapely.Polygon] = {obj: footprint(site.root, model, float(pose["x"]), float(pose["y"]), float(pose["yaw"])) for obj, (pose, model) in here.items()}
 
-    def valid(self, obj: str, model: str, zone: Zone, x: float, y: float, yaw: float) -> bool:
+    def valid(self, model: str, zone: Zone, x: float, y: float, yaw: float) -> bool:
         resolve_footprints(self.site, [model])
         shape = footprint(self.site.root, model, x, y, yaw)
         if not self.inner[zone.name].covers(shape) or shape.intersects(self.walls) or shape.intersects(self.doors):
             return False
         grown = shape.buffer(MARGIN_M)
-        return not any(other.intersects(grown) for ref, other in self.placed.items() if ref != obj)
+        return not any(other.intersects(grown) for other in self.placed.values())
 
-    def in_zone(self, rng: random.Random, obj: str, model: str, zone: Zone) -> tuple[float, float, float] | None:
+    def in_zone(self, rng: random.Random, model: str, zone: Zone) -> tuple[float, float, float] | None:
         """A valid pose drawn uniformly in `zone`."""
         import shapely
 
@@ -197,11 +213,11 @@ class Spots:
         x0, y0, x1, y1 = shape.bounds
         for _ in range(POINT_TRIES):
             x, y, yaw = _round(rng.uniform(x0, x1)), _round(rng.uniform(y0, y1)), rng.choice(YAWS)
-            if shape.covers(shapely.Point(x, y)) and self.valid(obj, model, zone, x, y, yaw):
+            if shape.covers(shapely.Point(x, y)) and self.valid(model, zone, x, y, yaw):
                 return x, y, yaw
         return None
 
-    def near(self, rng: random.Random, obj: str, model: str, zone: Zone, x: float, y: float) -> tuple[float, float, float] | None:
+    def near(self, rng: random.Random, model: str, zone: Zone, x: float, y: float) -> tuple[float, float, float] | None:
         """A valid pose in `zone` `LOCAL_DISTANCE_M` away from `x`, `y`."""
         import shapely
 
@@ -209,7 +225,7 @@ class Spots:
         for _ in range(POINT_TRIES):
             r, theta = rng.uniform(*LOCAL_DISTANCE_M), rng.uniform(0.0, 2 * math.pi)
             nx, ny, yaw = _round(x + r * math.cos(theta)), _round(y + r * math.sin(theta)), rng.choice(YAWS)
-            if shape.covers(shapely.Point(nx, ny)) and self.valid(obj, model, zone, nx, ny, yaw):
+            if shape.covers(shapely.Point(nx, ny)) and self.valid(model, zone, nx, ny, yaw):
                 return nx, ny, yaw
         return None
 
@@ -228,10 +244,10 @@ def spots_for(site: Site, level_id: str) -> Spots:
     return hit
 
 
-def _move(site: Site, rng: random.Random) -> Sampled:
+def _move(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
     """Move an object, one with demand first: within its own room (`local`) or to another room of its level (`room`)."""
     movable = [obj for obj in objects(site) if _model(site, obj) is not None]
-    target = _prefer(rng, [obj for obj in demand_objects(site) if obj in movable], movable)
+    target = _prefer(rng, [obj for obj in demand_objects(site) if obj in movable], movable, wide)
     level_id, pose = _at(site, target)  # type: ignore[misc] - every object of `objects` is placed
     spots = spots_for(site, level_id)
     zones = allowed_zones(spots.level)
@@ -239,12 +255,12 @@ def _move(site: Site, rng: random.Random) -> Sampled:
     model = _model(site, target) or ""
     if here and rng.random() < LOCAL_SHARE:
         zone = next(z for z in zones if z.name == here[0])
-        spot, scope = spots.near(rng, target, model, zone, float(pose["x"]), float(pose["y"])), Scope.LOCAL
+        spot, scope = spots.near(rng, model, zone, float(pose["x"]), float(pose["y"])), Scope.LOCAL
     else:
         others = [z for z in zones if z.name not in here]
         if not others:
             raise NoCandidate("no other room to move to")
-        spot, scope = spots.in_zone(rng, target, model, rng.choice(others)), Scope.ROOM
+        spot, scope = spots.in_zone(rng, model, rng.choice(others)), Scope.ROOM
     if spot is None:
         raise ValueError("no valid spot")
     return Sampled(EditType.MOVE, target, {"x": spot[0], "y": spot[1], "yaw": spot[2]}, scope.value)
@@ -276,10 +292,10 @@ def _clone_demand(site: Site, obj: str) -> dict[str, Any]:
     return out
 
 
-def _insert(site: Site, rng: random.Random) -> Sampled:
+def _insert(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
     """Insert a copy of an object, one with demand first, its demand copied, in a room of its level (`room`)."""
     modelled = [obj for obj in objects(site) if _model(site, obj) is not None]
-    source = _prefer(rng, [obj for obj in demand_objects(site) if obj in modelled], modelled)
+    source = _prefer(rng, [obj for obj in demand_objects(site) if obj in modelled], modelled, wide)
     level_id, _ = _at(site, source)  # type: ignore[misc] - every object of `objects` is placed
     model = _model(site, source) or ""
     taken = set(site.graph.entities) | {f"obj:{n}" for names in site.world.names().values() for n in names}
@@ -288,7 +304,7 @@ def _insert(site: Site, rng: random.Random) -> Sampled:
     zones = allowed_zones(spots.level)
     if not zones:
         raise NoCandidate("no zone to insert into")
-    spot = spots.in_zone(rng, name, model, rng.choice(zones))
+    spot = spots.in_zone(rng, model, rng.choice(zones))
     if spot is None:
         raise ValueError("no valid spot")
     return Sampled(EditType.INSERT, name, {"model": model, "x": spot[0], "y": spot[1], "yaw": spot[2], "level": level_id, **_clone_demand(site, source)}, Scope.ROOM.value)
@@ -303,7 +319,7 @@ def _door_rooms(site: Site) -> dict[str, set[str]]:
     return rooms
 
 
-def _layout(site: Site, rng: random.Random) -> Sampled:
+def _layout(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
     """Move a door along its wall, add one between two rooms, or remove one whose rooms keep another door."""
     ops = [op for op, _ in DOOR_OPS]
     weights = [w for _, w in DOOR_OPS]
@@ -377,24 +393,45 @@ def _add_door(site: Site, rng: random.Random) -> Sampled | None:
     return None
 
 
-def _remove(site: Site, rng: random.Random) -> Sampled:
+def _remove(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
     """Remove an object, one with demand when the site has any."""
-    return Sampled(EditType.REMOVE, _prefer(rng, demand_objects(site), objects(site)), {})
+    return Sampled(EditType.REMOVE, _prefer(rng, demand_objects(site), objects(site), wide), {})
 
 
-def _function(site: Site, rng: random.Random) -> Sampled:
-    """Change the `capacity` of a serving object, objects whose service type others share first, as only they let peds pass one over.
+def _function(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
+    """Change the `capacity` or the `dwell` of an object with a need.
 
-    An object with capacity 0 queues without bound and is left alone.
+    Capacity: objects whose service type others share first, as only they let peds pass one over. An object with capacity 0 queues
+    without bound and keeps it. Dwell: only on an object that is the sole one for each of its needs (`sole_server`).
     """
-    served = {obj: service for obj in demand_objects(site) if (service := _service(site, obj)) is not None and service[1].get("capacity", 1) != 0}
+    needy = demand_objects(site)
+    served = {obj: service for obj in needy if (service := _service(site, obj)) is not None and service[1].get("capacity", 1) != 0 and _capacities(*service)}
     by_type: dict[str, list[str]] = {}
     for obj, (kind, _) in served.items():
         by_type.setdefault(kind, []).append(obj)
-    changeable = [obj for obj, (kind, params) in served.items() if _capacities(kind, params)]
-    target = _prefer(rng, [obj for obj in changeable if len(by_type[served[obj][0]]) > 1], changeable)
-    kind, params = served[target]
-    return Sampled(EditType.FUNCTION, target, {"capacity": rng.choice(_capacities(kind, params))})
+    sized = [obj for obj in served if len(by_type[served[obj][0]]) > 1] or list(served)
+    options = [(obj, "capacity") for obj in sized] + [(obj, "dwell") for obj in needy if sole_server(site, obj)]
+    if not options:
+        raise NoCandidate("no object with a need")
+    target, field = rng.choice(options)
+    if field == "capacity":
+        kind, params = served[target]
+        return Sampled(EditType.FUNCTION, target, {"capacity": rng.choice(_capacities(kind, params))})
+    return Sampled(EditType.FUNCTION, target, {"dwell": _new_dwell(site, target, rng)})
+
+
+def _new_dwell(site: Site, obj: str, rng: random.Random) -> dict[str, float]:
+    """A new mean dwell in the range of `obj`'s service type, with the authored spread (`std`, `clip_low`, `clip_high`) scaled to it."""
+    kind = (_service(site, obj) or ("", {}))[0]
+    low, high = DWELL_S.get(kind, DEFAULT_DWELL_S)
+    fact = next(iter(_facts(site, obj, "dwells")), None)
+    current = None if fact is None else float(fact.object)
+    mean = round(rng.uniform(low, high), 1)
+    if mean == current:
+        raise ValueError("drew the current dwell")
+    spread = {k: float(v) for k, v in (fact.params if fact is not None else {}).items() if k in ("std", "clip_low", "clip_high")}
+    scale = mean / current if current else 1.0
+    return {"mean": mean, **{k: round(v * scale, 2) for k, v in spread.items()}}
 
 
 def _capacities(kind: str, params: Mapping[str, Any]) -> list[int]:
@@ -403,7 +440,7 @@ def _capacities(kind: str, params: Mapping[str, Any]) -> list[int]:
     return [n for n in range(low, high + 1) if n != int(params.get("capacity", 1))]
 
 
-def _access(site: Site, rng: random.Random) -> Sampled:
+def _access(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
     """Lock a spare door, unlock or ungate a gated one, or give a schedule a window."""
     gated_doors = sorted({f.subject for f in site.graph.facts if f.verb == "gated"})
     doors = sorted(set(spare_doors(site)) | set(gated_doors))
@@ -430,7 +467,8 @@ def _schedule_regime(schedule: Any) -> str | None:  # noqa: ANN401 - a world sch
     return next((p.get("regime") for p in presets(schedule.semantics, "schedule") if p.get("regime")), None)
 
 
-SAMPLERS: dict[EditType, Callable[[Site, random.Random], Sampled]] = {
+#: Samplers by type: `(site, rng, wide)`, `wide` set on a retry after a duplicate so a move, insert or remove may take any object.
+SAMPLERS: dict[EditType, Callable[[Site, random.Random, bool], Sampled]] = {
     EditType.MOVE: _move,
     EditType.INSERT: _insert,
     EditType.REMOVE: _remove,
@@ -445,28 +483,37 @@ def function_carrying(site: Site, sampled: Sampled) -> bool:
     if sampled.type is EditType.FUNCTION:
         return True
     if sampled.type is EditType.INSERT:
-        return "type" in sampled.params
+        return "satisfies" in sampled.params
     if sampled.type in (EditType.MOVE, EditType.REMOVE):
         return sampled.target in demand_objects(site)
     return False
 
 
-def sample_step(site: Site, edit_type: EditType, seed: int, step: int, index: int, notes: list[str]) -> tuple[Site, dict[str, Any]] | None:
-    """`site` with one valid edit of `edit_type` applied and its manifest record, None when the site gives none in `MAX_TRIES` tries."""
+def sample_step(site: Site, edit_type: EditType, seed: int, step: int, index: int, notes: list[str], taken: set[str] | None = None) -> tuple[Site, dict[str, Any]] | None:
+    """`site` with one valid edit of `edit_type` applied and its manifest record, None when the site gives none in `MAX_TRIES` tries.
+
+    An edit whose world is in `taken` is drawn again, and a new one's world is added to it, so no two chains share a world at a step.
+    """
     sampler = SAMPLERS.get(edit_type)
     if sampler is None:
         notes.append(f"{site.name}: no sampler for {edit_type.value} edits")
         return None
+    taken = taken if taken is not None else set()
     rng = rng_for(site, seed, step, edit_type, index)
+    wide = False
     for _ in range(MAX_TRIES):
         try:
-            sampled = sampler(site, rng)
+            sampled = sampler(site, rng, wide)
             edited = apply(site, sampled.type, sampled.target, sampled.params)
         except NoCandidate as exc:
             notes.append(f"{site.name}: no {edit_type.value} edit, {exc}")
             return None
         except ValueError:
             continue
+        if edited.name in taken:
+            wide = True
+            continue
+        taken.add(edited.name)
         record = {"type": sampled.type.value, "target": sampled.target, "id": edited.edits[-1].id, "function_carrying": function_carrying(site, sampled)}
         if sampled.scope is not None:
             record["scope"] = sampled.scope
@@ -475,24 +522,41 @@ def sample_step(site: Site, edit_type: EditType, seed: int, step: int, index: in
     return None
 
 
+def _step_types(rng: random.Random, kinds: Sequence[EditType]) -> list[EditType]:
+    """The type drawn for a later step first, then the other types in a drawn order."""
+    first = rng.choice(kinds)
+    rest = [k for k in kinds if k is not first]
+    rng.shuffle(rest)
+    return [first, *rest]
+
+
 def generate(site: Site, seed: int = 0, per_type: int = 1, steps: int = 1, types: Sequence[EditType | str] = tuple(EditType), notes: list[str] | None = None) -> list[Generated]:
     """Per type, `per_type` chains of up to `steps` edits on `site`, each chain starting with an edit of that type.
 
-    A chain's later steps draw their type from `types`. A chain whose first edit fails is left out, one whose later edit fails ends there,
-    both with a note. The same site, seed and code give the same chains, and a shorter chain is a prefix of a longer one.
+    A chain's later steps draw their type from `types`; a drawn type with no edit (e.g. a function edit once the only object with a
+    need is removed) gives way to the other types in a drawn order. A chain whose first edit fails is left out, one whose later step
+    finds no edit of any type ends there, both with a note. No two chains reach the same world at the same step. The same site, seed
+    and code give the same chains, and a shorter chain is a prefix of a longer one.
     """
     notes = notes if notes is not None else []
     if steps < 1 or per_type < 1:
         raise ValueError("steps and per_type must be at least 1")
     kinds = [EditType(t) for t in types]
     chains: list[Generated] = []
+    taken: list[set[str]] = [set() for _ in range(steps)]
     for edit_type in kinds:
         for index in range(per_type):
             current, records = site, []
             for step in range(steps):
-                step_type = edit_type if step == 0 else rng_for(current, seed, step, edit_type, index, "type").choice(kinds)
-                result = sample_step(current, step_type, seed, step, index, notes)
+                order = [edit_type] if step == 0 else _step_types(rng_for(current, seed, step, edit_type, index, "type"), kinds)
+                tried: list[str] = []
+                result = None
+                for step_type in order:
+                    result = sample_step(current, step_type, seed, step, index, tried, taken[step])
+                    if result is not None:
+                        break
                 if result is None:
+                    notes.extend(tried)
                     break
                 current, record = result
                 records.append(record)
@@ -502,15 +566,15 @@ def generate(site: Site, seed: int = 0, per_type: int = 1, steps: int = 1, types
 
 
 class Control(enum.StrEnum):
+    """Geometry-only controls. The second one (the model moves, its demand stays at the old spot) waits until the graph can hold demand without a model."""
+
     INERT_OBJECT = "inert_object"
-    MOVED_WITHOUT_DEMAND = "moved_without_demand"
 
 
 def controls(site: Site, chain: Generated) -> list[tuple[Control, Site]]:
-    """The geometry-only controls of a chain's first edit, when it carries function, applied to `site`, the chain's base.
+    """The geometry-only control of a chain's first edit, when it carries function, applied to `site`, the chain's base.
 
-    For a move or insert: the same model, without demand, at the edit's spot (`inert_object`), the original left in place.
-    For a move also: the object moved and stripped of its demand (`moved_without_demand`). Other edits get none.
+    For a move or insert: the same model, without demand, at the edit's spot (`inert_object`), the original left in place. Other edits get none.
     """
     first = chain.site.edits[0]
     if not chain.records[0]["function_carrying"] or first.type not in (EditType.MOVE, EditType.INSERT):
@@ -522,12 +586,8 @@ def controls(site: Site, chain: Generated) -> list[tuple[Control, Site]]:
             return []
         level_id, pose = placed
         spot = {k: first.params.get(k, pose[k]) for k in ("x", "y", "yaw")}
-        inert_name = f"{first.target}_inert"
-        moved = apply(site, EditType.MOVE, first.target, first.params)
-        return [
-            (Control.INERT_OBJECT, apply(site, EditType.INSERT, inert_name, {"model": model, **spot, "level": str(first.params.get("level", level_id))})),
-            (Control.MOVED_WITHOUT_DEMAND, apply(moved, EditType.FUNCTION, first.target, {"clear": True})),
-        ]
+        inert = {"model": model, **spot, "level": str(first.params.get("level", level_id))}
+        return [(Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}_inert", inert))]
     keep = ("model", "x", "y", "yaw", "level")
     return [(Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}_inert", {k: v for k, v in first.params.items() if k in keep}))]
 

@@ -19,7 +19,6 @@ from arena_simulation_setup.kg.scene import DERIVED, kind_of
 from arena_simulation_setup.utils.geometry import Orientation, Pose, Position
 
 from .build import build, presets, sync_access, zones_at
-from .scenario_sync import origins_of, project, read_doc, write_scenario
 
 if TYPE_CHECKING:
     import shapely
@@ -89,10 +88,7 @@ class Edit:
 
 @attrs.define
 class Site:
-    """A world without its scenario objects, its FLOWEDIT graph, and the edits that led to them from the world `base`.
-
-    `scenario_doc` is the scenario as read from `scenario_dir`; `save` writes it with its objects as the graph has them.
-    """
+    """A world without its scenario objects, its FLOWEDIT graph, and the edits that led to them from the world `base`."""
 
     world: World
     graph: Scene
@@ -101,8 +97,6 @@ class Site:
     scenario: str | None = None
     seed: int = 0
     edits: list[Edit] = attrs.field(factory=list)
-    scenario_doc: dict[str, Any] | None = None
-    scenario_dir: Path | None = None
 
     @property
     def name(self) -> str:
@@ -132,17 +126,12 @@ def open_site(root: Path, scenario: str | None = None, seed: int | None = None, 
         if seed is not None and seed != saved_seed:
             raise ValueError(f"{root.name} was edited with seed {saved_seed}, not {seed}")
         edits = [Edit(type=e["type"], target=e["target"], params=e.get("params") or {}, parent=e["parent"]) for e in doc.get("edits") or []]
-        saved = root / "scenarios" / str(doc.get("scenario")) / "scenario.yaml" if doc.get("scenario") else None
-        if saved is not None and not saved.is_file():
-            if notes is not None:
-                notes.append(f"{root.name} was saved without its scenario {doc.get('scenario')!r}, its next save has none")
-            saved = None
-        return Site(_load_world(root), load(root / GRAPH), root, str(doc["base"]), doc.get("scenario"), saved_seed, edits, read_doc(saved) if saved else None, saved.parent if saved else None)
+        return Site(_load_world(root), load(root / GRAPH), root, str(doc["base"]), doc.get("scenario"), saved_seed, edits)
     path = root / "scenarios" / scenario / "scenario.yaml" if scenario else None
     if path is not None and not path.is_file():
         raise FileNotFoundError(f"no scenario {scenario!r} at {path}")
     seed = seed or 0
-    return Site(_load_world(root), build(root, path, seed, notes), root, root.name, scenario, seed, scenario_doc=read_doc(path) if path else None, scenario_dir=path.parent if path else None)
+    return Site(_load_world(root), build(root, path, seed, notes), root, root.name, scenario, seed)
 
 
 def _copy(site: Site) -> Site:
@@ -586,11 +575,8 @@ def dump_edits(site: Site) -> dict[str, Any]:
     return {"format": FORMAT, "base": site.base, "scenario": site.scenario, "seed": site.seed, "edits": [e.dump() for e in site.edits]}
 
 
-def save(site: Site, notes: list[str] | None = None) -> Path:
-    """Write the edited world to the writable local worlds root under `site.name`, its graph and `edits.yaml` beside `world.yaml`.
-
-    The site's scenario goes to `scenarios/<scenario>/` with its local agent types, its objects as the graph has them.
-    """
+def save(site: Site) -> Path:
+    """Write the edited world to the writable local worlds root under `site.name`, its graph and `edits.yaml` beside `world.yaml`."""
     from arena_simulation_setup.tree.World import WorldIdentifier
     from arena_simulation_setup.tree.World.view import LEVEL_ORIGINS_FILE, world_assets
 
@@ -609,8 +595,5 @@ def save(site: Site, notes: list[str] | None = None) -> Path:
     with world_assets(view, site.world):
         view.save(site.world)
     write(site.graph, view.path / GRAPH)
-    if site.scenario_doc is not None and site.scenario_dir is not None:
-        doc = project(site.scenario_doc, site.graph, origins_of(site.root, site.world.levels), notes)
-        write_scenario(site.scenario_dir, view.path / "scenarios" / str(site.scenario), doc)
     (view.path / EDITS).write_text(yaml.safe_dump(dump_edits(site), sort_keys=False, default_flow_style=None, width=1 << 16))
     return view.path

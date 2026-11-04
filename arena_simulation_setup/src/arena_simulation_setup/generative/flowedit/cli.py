@@ -69,11 +69,7 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     if not args.write:
         print(yaml.safe_dump({"world": site.name, **dump_edits(site)}, sort_keys=False, default_flow_style=None, width=1 << 16), end="")
         return 0
-    saved_notes: list[str] = []
-    path = save(site, saved_notes)
-    for note in saved_notes:
-        print(f"note: {note}", file=sys.stderr)
-    print(f"wrote {path}")
+    print(f"wrote {save(site)}")
     return 0
 
 
@@ -100,11 +96,8 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     if not args.write:
         print(_dump(dump_manifest(site, chains, args.seed, args.per_type, args.steps, chain_controls=made)), end="")
         return 0
-    saved_notes: list[str] = []
-    worlds = {chain.site.name: save(chain.site, saved_notes) for chain in chains}
-    worlds.update({control.name: save(control, saved_notes) for pairs in made.values() for _, control in pairs})
-    for note in saved_notes:
-        print(f"note: {note}", file=sys.stderr)
+    worlds = {chain.site.name: save(chain.site) for chain in chains}
+    worlds.update({control.name: save(control) for pairs in made.values() for _, control in pairs})
     for path in worlds.values():
         print(f"wrote {path}")
     if not worlds:
