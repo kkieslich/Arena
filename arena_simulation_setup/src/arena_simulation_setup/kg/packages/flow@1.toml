@@ -1,4 +1,4 @@
-# Package "flow": what each object is for (its demand), the FLOWEDIT graph, loaded on demand
+# Package "flow": what each object is for (its demand) and who may pass each door (its access), the FLOWEDIT graph, loaded on demand
 name = "flow"
 version = 1
 requires = ["core"]
@@ -36,4 +36,32 @@ to = ["formation"]
 
 [verbs.dwells]
 from = ["obj"]
+to = "literal"
+
+[nodes.schedule]
+props = []
+
+[nodes.regime]
+props = []
+auto = true
+propless = true
+
+[verbs.gated]
+from = ["door"]
+to = "literal"
+
+[verbs.authorizes]
+from = ["door"]
+to = "literal"
+
+[verbs.unlocks_on]
+from = ["door"]
+to = ["regime"]
+
+[verbs.asserts]
+from = ["schedule"]
+to = ["regime"]
+
+[verbs.window]
+from = ["schedule"]
 to = "literal"
