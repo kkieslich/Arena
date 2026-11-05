@@ -8,7 +8,7 @@ import attrs
 import rclpy.qos
 import shapely
 from arena_people_msgs.msg import Pedestrians
-from arena_simulation_setup.shared import Ceiling, Light, Placement, Stairs
+from arena_simulation_setup.shared import Ceiling, Light, Placement, Stairs, stair_height
 from arena_simulation_setup.shared.navmesh import NavLevel, nav_floors, nav_walls
 from arena_simulation_setup.tree.World import Level, World, entity_lights
 from arena_simulation_setup.tree.World.model import render_door_polygons, render_elevator_polygons
@@ -157,6 +157,7 @@ class EnvironmentManager(NodeInterface):
         self._simulator = simulator
         self._human_simulator = human_simulator
         self._realizer = realizer
+        self._ramps: tuple[Stairs, ...] = ()
 
         self._collision_grid = None
         self._nav_levels = ()
@@ -244,6 +245,11 @@ class EnvironmentManager(NodeInterface):
 
     def ezilear(self, target: Pose) -> Pose:
         return self._realizer.ezilear(target)
+
+    def ramp_height(self, position: Position) -> float:
+        """Height of the ramp under an env-local position, 0 off every ramp."""
+        point = self.realize(position)
+        return stair_height(self._ramps, point.x, point.y)
 
     def placement(self) -> Placement:
         """The map from the abstract frame into the simulator frame for this env."""
@@ -441,6 +447,7 @@ class EnvironmentManager(NodeInterface):
                 stairs_list.append(realized_f)
                 level_stairs[fid].append(realized_f)
         stairs = tuple(stairs_list)
+        self._ramps = tuple(stair for stair in stairs if stair.kind == 'ramp')
         self._nav_levels = tuple(
             NavLevel(
                 level=str(fid),
