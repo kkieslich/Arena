@@ -296,6 +296,12 @@ def test_obstacle_dock_needs_three_points():
         Obstacle.parse({"name": "charger_1", "model": "charger", "pose": [0.0, 0.0, 0.0], "dock": [[0.5, -0.5], [1.5, -0.5]]})
 
 
+@pytest.mark.parametrize("dock", [5, "charger_bay"])
+def test_obstacle_dock_must_be_a_list_of_points(dock):
+    with pytest.raises(ValueError, match="dock is a polygon in the object frame, a list of at least 3 points"):
+        Obstacle.parse({"name": "charger_1", "model": "charger", "pose": [0.0, 0.0, 0.0], "dock": dock})
+
+
 def test_obstacle_still_refuses_unknown_keys_next_to_joints():
     with pytest.raises(ValueError, match=r"unknown keys \['joint'\]"):
         Obstacle.parse({"name": "cabinet", "model": "cabinet", "pose": [0.0, 0.0, 0.0], "joints": "open", "joint": "open"})
