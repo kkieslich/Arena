@@ -1,0 +1,71 @@
+# PEDS pilot runs over FLOWEDIT edits: train, held-out edits and held-out worlds. `flowedit sweep` records every run (see split.py).
+#
+# A pilot, smaller than the study design's split (FLOWEDIT study design §5: 20 chains per edit type, office_1 in train,
+# reception held out). Each base world's edits come from `flowedit generate <base> --scenario <scenario> --seed <seed>
+# --per-type <per_type> --controls`, one chain per edit type and index, in the generator's order (move, insert, remove,
+# function, access, layout); a function-carrying move or insert lists its geometry-only controls right after it.
+#   train           hospital_1 itself, chains 1-2 of every edit type and their controls, crowd seeds 1-5
+#   held_out_edits  chain 3 of every edit type on hospital_1 and its controls, seeds 6-8; hospital_1 runs at 6-8 as their reference
+#   held_out_worlds office_1, chain 1 of every edit type on it and its controls, seeds 6-8: no run of office_1 is in train
+# Only hospital_1 (queue) and office_1 (default) ship a scenario with a need-satisfying object; generated layouts have none.
+format: flowedit-split/1
+sources:
+  hospital_1: {scenario: queue, seed: 0, per_type: 3, steps: 1, controls: true}
+  office_1: {scenario: default, seed: 0, per_type: 1, steps: 1, controls: true}
+duration: 300
+seeds:
+  train: [1, 2, 3, 4, 5]
+  held_out_edits: [6, 7, 8]
+  held_out_worlds: [6, 7, 8]
+partitions:
+  train:
+    - hospital_1
+    - hospital_1__move_fountain__6e1d6873
+    - hospital_1__insert_fountain_inert__4a32a4fc
+    - hospital_1__move_fountain_leave_demand__66723c25
+    - hospital_1__move_fountain__667253ac
+    - hospital_1__insert_fountain_inert__ccddef5c
+    - hospital_1__move_fountain_leave_demand__4c342703
+    - hospital_1__insert_gen_sm_waterdispenser_01a_1__ea26097f
+    - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__3505b3ba
+    - hospital_1__insert_gen_sm_waterdispenser_01a_1__1e59d925
+    - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__7495585f
+    - hospital_1__remove_fountain__6ed0b4ea
+    - hospital_1__remove_waiting_sofa_3__920f4b7c
+    - hospital_1__function_fountain__638f0641
+    - hospital_1__function_fountain__efd48775
+    - hospital_1__access_patient_ward_door_2__c485e3a4
+    - hospital_1__access_patient_ward_door_1__d24b53b6
+    - hospital_1__layout_move_wc_waiting_stall_3_door__54fbb0eb
+    - hospital_1__layout_move_doctors_resting_room_door__5af68761
+  held_out_edits:
+    - hospital_1__move_fountain__6a2c296b
+    - hospital_1__insert_fountain_inert__f1a0d57b
+    - hospital_1__move_fountain_leave_demand__a137df43
+    - hospital_1__insert_gen_sm_waterdispenser_01a_1__4d2a96ff
+    - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__2c51f17b
+    - hospital_1__remove_wc_pharmacy_toilet_paper_2__c4bd8e8b
+    - hospital_1__function_fountain__daff8b6d
+    - hospital_1__access_fire_alarm__8866ca6d
+    - hospital_1__layout_add_gen_door_1__71e5baec
+  held_out_worlds:
+    - office_1
+    - office_1__move_fountain__2af43765
+    - office_1__insert_fountain_inert__353ebd40
+    - office_1__move_fountain_leave_demand__9a241d12
+    - office_1__insert_gen_water_cooler_1__bed8a70e
+    - office_1__insert_gen_water_cooler_1_inert__3f7a030a
+    - office_1__remove_fountain__3578b71c
+    - office_1__function_fountain__63b53335
+    - office_1__access_reception_to_hallway_2__44c89ba8
+    - office_1__layout_move_meeting_1_to_sub_hallway__05d4edbd
+# edit world: its geometry-only controls, as `flowedit generate --controls` links them in its manifest
+control_worlds:
+  hospital_1__move_fountain__6e1d6873: [hospital_1__insert_fountain_inert__4a32a4fc, hospital_1__move_fountain_leave_demand__66723c25]
+  hospital_1__move_fountain__667253ac: [hospital_1__insert_fountain_inert__ccddef5c, hospital_1__move_fountain_leave_demand__4c342703]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__ea26097f: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__3505b3ba]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__1e59d925: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__7495585f]
+  hospital_1__move_fountain__6a2c296b: [hospital_1__insert_fountain_inert__f1a0d57b, hospital_1__move_fountain_leave_demand__a137df43]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__4d2a96ff: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__2c51f17b]
+  office_1__move_fountain__2af43765: [office_1__insert_fountain_inert__353ebd40, office_1__move_fountain_leave_demand__9a241d12]
+  office_1__insert_gen_water_cooler_1__bed8a70e: [office_1__insert_gen_water_cooler_1_inert__3f7a030a]
