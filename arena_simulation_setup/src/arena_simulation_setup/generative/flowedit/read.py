@@ -439,8 +439,28 @@ def _base(site: Site, base: Site | None, settings: Mapping[str, Any], robot_spec
     return Base(site.base, floor, graph, homes, crowd)
 
 
-def _people(base: Base, settings: Mapping[str, Any], needs: Mapping[str, NeedPlan], seed: int) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """The people present at the start, as populate places and routes them in the base world, each with its own need-driven type."""
+def _start_in(floor: Floor, start: Point, name: str, notes: list[str]) -> Point:
+    """`start`, drawn in the base world, as the edited `floor` lets a person stand there: unchanged while it is free, else
+    the nearest free point, so only the people an edit's footprint or wall covers start elsewhere."""
+    if floor.grid is None:
+        return start
+    local = (start[0] - floor.origin[0], start[1] - floor.origin[1])
+    if floor.grid.free(local, PERSON_CLEAR):
+        return start
+    near = floor.grid.nearest_free(local, PERSON_CLEAR, 3.0)
+    if near is None:
+        notes.append(f"people: {name} starts at ({start[0]}, {start[1]}), not free in this world and no free point within 3 m, left there")
+        return start
+    moved = floor.to_map(near)
+    notes.append(f"people: {name} starts at ({start[0]}, {start[1]}), not free in this world, moved to ({moved[0]}, {moved[1]})")
+    return moved
+
+
+def _people(base: Base, settings: Mapping[str, Any], needs: Mapping[str, NeedPlan], seed: int, floor: Floor | None = None, notes: list[str] | None = None) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """The people present at the start, as populate places and routes them in the base world, each with its own need-driven type.
+
+    `floor` is the world the scenario is read into: a start point its edit made unfree moves to the nearest free point there."""
+    notes = notes if notes is not None else []
     humans, types = [], {}
     for i, person in enumerate(base.crowd.people):
         name = f"flow_{i + 1}"
@@ -452,7 +472,10 @@ def _people(base: Base, settings: Mapping[str, Any], needs: Mapping[str, NeedPla
         # each of its edits would start the same person at another spot
         home_rng = random.Random(f"flowedit:{base.name}:{seed}:{name}:home")
         start = base.floor.point(person.home, home_rng)
-        pose: Any = person.home if start is None else [start[0], start[1], round(home_rng.uniform(-math.pi, math.pi), 2)]
+        yaw = round(home_rng.uniform(-math.pi, math.pi), 2)
+        if start is not None and floor is not None:
+            start = _start_in(floor, start, name, notes)
+        pose: Any = person.home if start is None else [start[0], start[1], yaw]
         humans.append({"name": name, "model": person.model, "pose": pose, "agent": {"agent_type": ref, "desired_velocity": person.speed}})
     return humans, types
 
@@ -557,7 +580,7 @@ def read(site: Site, settings: Mapping[str, Any] | None = None, seed: int = 0, n
     people_from = _base(site, base, settings, robot, seed, notes)
     if people_from.floor.level_id != floor.level_id:
         raise ValueError(f"{site.name}: people walk level {floor.level_id!r}, its base {site.base} level {people_from.floor.level_id!r}")
-    humans, types = _people(people_from, settings, needs, seed)
+    humans, types = _people(people_from, settings, needs, seed, floor, notes)
     regions, visitor_types = _entrances(floor, graph, people_from, settings, needs, seed, notes)
     doc: dict[str, Any] = {"objects": objects, "humans": humans, "regions": regions}
     if robot is not None:

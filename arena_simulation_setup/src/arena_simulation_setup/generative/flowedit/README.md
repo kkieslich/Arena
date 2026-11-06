@@ -158,7 +158,7 @@ chains:
 
 [`read.py`](read.py) reads a site from `open_site` (a shipped world and scenario, or a world `flowedit edit` saved), crowd settings and a seed into a scenario in the site's world, deterministic in all three. FLOWEDIT compares a run before an edit with a run after it, so the two may differ only by the edit:
 
-- **The people** (count, kind, speed, start room, route, idle points) come from the unedited base world (`site.base`), its graph, the settings and the seed alone, through populate's public `crowd`. Every edit of `hospital_1` gets the people of `hospital_1`.
+- **The people** (count, kind, speed, start room, route, idle points) come from the unedited base world (`site.base`), its graph, the settings and the seed alone, through populate's public `crowd`. Every edit of `hospital_1` gets the people of `hospital_1`. Each start is a point drawn in the base world, not the home room's name, which the runtime would draw again per world. A start an edit made unfree (an inserted or moved object's footprint, a new wall) moves to the nearest free point of the edited world, with a note; every other person starts where they start in the base.
 - **The binding** (objects, which object serves which need, the dwell, the entrances) comes from the edited site.
 
 | Site | Scenario |
