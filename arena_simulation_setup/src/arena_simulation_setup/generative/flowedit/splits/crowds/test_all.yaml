@@ -1,0 +1,6 @@
+# Test crowd: the need rates of test_rates, the size of test_size and the planner of test_orca at once.
+scale: 2.0
+local_planner: orca
+needs:
+  "*":
+    decay_rate: {mean: 1.5, std: 0.4, clip_low: 0.8, clip_high: 3.0}

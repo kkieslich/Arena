@@ -1,4 +1,5 @@
-# PEDS pilot runs over FLOWEDIT edits: train, held-out edits and held-out worlds. `flowedit sweep` records every run (see split.py).
+# PEDS pilot runs over FLOWEDIT edits: train, held-out edits and held-out worlds, and test crowds on the held-out edits.
+# `flowedit sweep` and `flowedit suite` record them (see split.py).
 #
 # A pilot, smaller than the study design's split (FLOWEDIT study design §5: 20 chains per edit type, office_1 in train,
 # reception held out). Each base world's edits come from `flowedit generate <base> --scenario <scenario> --seed <seed>
@@ -73,3 +74,11 @@ control_worlds:
   hospital_1__insert_gen_sm_waterdispenser_01a_1__4d2a96ff: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__2c51f17b]
   office_1__move_fountain__2af43765: [office_1__insert_fountain_inert__353ebd40, office_1__move_fountain_leave_demand__9a241d12]
   office_1__insert_gen_water_cooler_1__bed8a70e: [office_1__insert_gen_water_cooler_1_inert__3f7a030a]
+# Test crowds: settings merged over `settings` above, run on the held-out edits at their seeds, reference runs included.
+# Each differs from the base crowd (decay mean 0.5 /s, populate's count, sfm) in one way, test_all in all three.
+crowds:
+  test_rates: {settings: crowds/test_rates.yaml, partitions: [held_out_edits]}
+  test_size: {settings: crowds/test_size.yaml, partitions: [held_out_edits]}
+  test_orca: {settings: crowds/test_orca.yaml, partitions: [held_out_edits]}
+  test_hsfm: {settings: crowds/test_hsfm.yaml, partitions: [held_out_edits]}
+  test_all: {settings: crowds/test_all.yaml, partitions: [held_out_edits]}
