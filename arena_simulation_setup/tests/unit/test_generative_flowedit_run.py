@@ -196,7 +196,7 @@ def test_a_run_records_until_the_duration_and_stops_the_launch(worlds: Path, tmp
     assert time.monotonic() - started < 20
     assert R.done(run_dir) and run_dir.name == prepared.run_id
     doc = yaml.safe_load((run_dir / R.RUN_FILE).read_text())
-    assert doc["world"] == prepared.site.name and doc["base"] == "hospital_1" and doc["seed"] == 3
+    assert doc["world"] == prepared.site.name and doc["base"] == "hospital_1" and doc["seed"] == 3 and doc["paired"] is False
     assert [e["id"] for e in doc["edits"]] == [e.id for e in prepared.site.edits]
     assert doc["settings_digest"] == S.digest(FEW) and doc["tracks"]["agents"] == 1
     assert "robot:=jackal" in (run_dir / "args").read_text()

@@ -10,6 +10,11 @@ Every run is one directory under the runs root (`$ARENA_DATA_DIR/flowedit_runs` 
 
 The run id is `<world>__<scenario>`, the scenario named after the settings digest and seed, so the same inputs land in
 the same directory and a finished run is skipped unless asked to run again.
+
+A run is a look at one world, not one side of a pair: `--seed` keys the reader's draws, but the runtime seeds every
+episode from a `run_seed` drawn at random per launch (and the world's name), so a base and its edit run here never get
+the same crowd. `run.yaml` says so (`paired: false`); paired runs go through arena_evaluation's benchmark runner, which
+gives each stage its seed.
 """
 
 from __future__ import annotations
@@ -481,6 +486,8 @@ def record(
         "scenario": prepared.site.scenario,
         "generated_scenario": prepared.scenario,
         "seed": prepared.seed,
+        # the runtime's own seed is random per launch: this run pairs with no other, see the module docstring
+        "paired": False,
         "settings_digest": S.digest(prepared.settings),
         "settings": prepared.settings,
         "duration": duration,
