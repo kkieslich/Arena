@@ -5,6 +5,7 @@ import shutil
 import stat
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -87,6 +88,63 @@ def test_tracks_pair_released_people_by_source_and_placed_people_by_name() -> No
     assert R.keyed(df.iloc[:0], {}).empty
 
 
+def test_a_reused_agent_id_is_named_after_the_agent_under_it_at_that_frame() -> None:
+    # HumanSim hands a left agent's id to the next one: a whole-run name map would give flow_1 the visitor's name
+    df = pd.DataFrame({"time": [10.0, 60.0, 61.0], "agent_id": [1, 1, 2], "x": [0.0] * 3, "y": [0.0] * 3, "source_name": ["", "door_a", ""], "source_seq": [0, 4, 0]})
+    # agent 2 joins after the snapshot at 50 s: the first later one names it
+    names = [(0.0, {1: "env_1/flow_1"}), (50.0, {1: "env_1/door_a_4"}), (70.0, {2: "env_1/flow_2"})]
+    out = R.keyed(df, names)
+    assert list(out["name"]) == ["flow_1", "door_a_4", "flow_2"]
+    assert list(out["key"]) == ["flow_1", "door_a#4", "flow_2"]
+    assert list(R.names_at([5.0], [1], [(10.0, {1: "a"})])) == ["a"] and list(R.names_at([5.0], [3], names)) == [""]
+    # a snapshot listing an agent unnamed is the agent's name at that time, not a gap to fill
+    assert list(R.names_at([60.0], [2], [(50.0, {2: ""}), (70.0, {2: "flow_2"})])) == [""]
+
+
+def _interactions(live: list[tuple[int, int, str, bool, list[int], list[int]]], events: list[tuple[int, int, int, list[int]]] = ()) -> SimpleNamespace:
+    """An InteractionFrame: per live interaction (id, type, object, holding, members, roles), and edges (id, type, event, participants)."""
+    offsets = [0]
+    for *_, members, _ in live:
+        offsets.append(offsets[-1] + len(members))
+    return SimpleNamespace(
+        interaction_id=[i[0] for i in live],
+        interaction_type=[i[1] for i in live],
+        outcome=[1] * len(live),
+        object_id=[i[2] for i in live],
+        arrived=[i[3] for i in live],
+        holding=[i[3] for i in live],
+        duration=[8.0] * len(live),
+        member_offset=offsets,
+        member_id=[m for i in live for m in i[4]],
+        member_role=[r for i in live for r in i[5]],
+        member_seat=[-1 for i in live for _ in i[4]],
+        events=[SimpleNamespace(interaction_id=e[0], interaction_type=e[1], event=e[2], participants=e[3]) for e in events],
+    )
+
+
+def test_interactions_are_keyed_like_the_tracks_on_their_time_base() -> None:
+    tracks = R.keyed(pd.DataFrame({"time": [100.0, 100.0, 100.0], "agent_id": [1, 2, 3], "x": [0.0] * 3, "y": [0.0] * 3, "source_name": ["", "door_a", ""], "source_seq": [0, 4, 0]}), {1: "flow_1", 3: "flow_3"})
+    frames = [
+        # latched before the first agent frame: what is live at the start, its edges already past
+        (98.0, _interactions([(7, 6, "fountain", False, [1], [0])], [(7, 6, 0, [1])])),
+        (99.0, _interactions([(7, 6, "fountain", True, [1, 2], [0, 1])], [(7, 6, 1, [1])])),
+        (104.0, _interactions([(7, 6, "fountain", True, [2, 3], [0, 1]), (9, 0, "", False, [3], [0])], [(7, 6, 2, [1])])),
+        (200.0, _interactions([(7, 6, "fountain", True, [3], [0])])),
+    ]
+    rows = R.interaction_rows(frames, 100.0, tracks, duration=60.0)
+    assert set(rows["time"]) == {0.0, 4.0}
+    start = rows[rows["time"] == 0.0]
+    assert list(start["record"]) == ["member", "member"] and list(start["key"]) == ["flow_1", "door_a#4"] and list(start["role"]) == ["participant", "queued"]
+    assert list(start["type"]) == ["queue_use", "queue_use"] and list(start["position"]) == [0, 1]
+    released = rows[rows["record"] == "event"]
+    assert list(released["event"]) == ["released"] and list(released["object_id"]) == ["fountain"] and list(released["key"]) == ["flow_1"]
+    talk = rows[rows["interaction_id"] == 9]
+    assert list(talk["type"]) == ["talk_to"] and list(talk["object_id"]) == [""]
+    assert R.uses(rows) == {"fountain": {"uses": 1, "users": 2, "queue_max": 1}}
+    empty = R.interaction_rows([], 0.0)
+    assert empty.empty and list(empty.columns) == list(R.INTERACTION_COLUMNS) and R.uses(empty) == {}
+
+
 def _fake_arena(bin_dir: Path, behaviour: str) -> None:
     """An `arena` on PATH that opens HumanSim's bag dir like a launch, then `behaviour`."""
     script = bin_dir / "arena"
@@ -102,13 +160,14 @@ def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return bin_dir
 
 
-def _frames(bag: Path, duration: float | None = None) -> pd.DataFrame:
-    return R.keyed(pd.DataFrame({"time": [0.0, 1.0], "agent_id": [1, 1], "x": [0.0, 1.0], "y": [0.0, 0.0], "source_name": ["", ""], "source_seq": [0, 0]}), {1: "flow_1"}, duration)
+def _frames(bag: Path, duration: float | None = None) -> R.Extracted:
+    df = R.keyed(pd.DataFrame({"time": [0.0, 1.0], "agent_id": [1, 1], "x": [0.0, 1.0], "y": [0.0, 0.0], "source_name": ["", ""], "source_seq": [0, 0]}), {1: "flow_1"}, duration)
+    return R.Extracted(df, R.interaction_rows([(0.5, _interactions([(7, 6, "fountain", True, [1], [0])]))], 0.0, df, duration))
 
 
 def test_a_run_records_until_the_duration_and_stops_the_launch(worlds: Path, tmp_path: Path, fake_bin: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_arena(fake_bin, 'mkdir -p "$d/bag"; exec sleep 600')
-    monkeypatch.setattr(R, "tracks", _frames)
+    monkeypatch.setattr(R, "extract", _frames)
     base = open_site(worlds / "hospital_1", "queue")
     prepared = R.prepare(base, base, [DWELL], FEW, 3)
     started = time.monotonic()
@@ -121,6 +180,8 @@ def test_a_run_records_until_the_duration_and_stops_the_launch(worlds: Path, tmp
     assert doc["settings_digest"] == S.digest(FEW) and doc["tracks"]["agents"] == 1
     assert "robot:=jackal" in (run_dir / "args").read_text()
     assert len(pd.read_parquet(run_dir / R.TRACKS)) == 2
+    assert list(pd.read_parquet(run_dir / R.INTERACTIONS)["key"]) == ["flow_1"]
+    assert doc["uses"] == {"fountain": {"uses": 1, "users": 1, "queue_max": 0}}
 
 
 def test_a_launch_that_dies_is_reported_and_leaves_no_finished_run(worlds: Path, tmp_path: Path, fake_bin: Path) -> None:

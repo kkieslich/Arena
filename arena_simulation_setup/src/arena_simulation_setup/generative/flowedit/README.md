@@ -189,12 +189,13 @@ flowedit run hospital_1 queue --edit function obj:fountain -p dwell=20 --setting
 
 | File | Content |
 |---|---|
-| `run.yaml` | world, base, edits, settings and digest, seed, launch command, code commit, the reader's provenance, a track summary; written last |
+| `run.yaml` | world, base, edits, settings and digest, seed, launch command, code commit, the reader's provenance, a track summary, and `uses` per object (interactions that reached their hold, their users, the longest queue); written last |
 | `tracks.parquet` | HumanSim's agent states (`time` from the first frame, `agent_id`, `x`, `y`, `vx`, `vy`, `radius`, `planner`, `source_name`, `source_seq`) with `name` and `key` |
+| `interactions.parquet` | HumanSim's interactions on the tracks' time base: a `member` row per member of a live interaction per frame (`type`, `outcome`, `object_id`, `arrived`, `holding`, `duration`, `role`, `position`, `seat`), an `event` row per participant of an edge (`activated`, `hold_onset`, `released`, `interrupted`, `canceled`), members keyed like the tracks |
 | `humansim/` | HumanSim's recording: the bag and `recording.yaml` |
 | `launch.log` | the launch's output |
 
-`key` pairs an agent across runs: `<source_name>#<source_seq>` for a person an entrance released, never the agent id (HumanSim keys a released agent's draws on its source and release index), and the person's scenario name for the people the reader places, who are the same in every edit of a world. Tracks are cut to the first `--duration` seconds; `run.yaml` warns when the sim ran too slowly to fill them.
+`key` pairs an agent across runs: `<source_name>#<source_seq>` for a person an entrance released, never the agent id (HumanSim keys a released agent's draws on its source and release index), and the person's scenario name for the people the reader places, who are the same in every edit of a world. `name` is the agent's name at that frame: HumanSim hands a left agent's id to the next one. Tracks and interactions are cut to the first `--duration` seconds; `run.yaml` warns when the sim ran too slowly to fill them. Needs are not in the recording (HumanSim records no `viz_state`), so a use of an object is read from `interactions.parquet`, not from a need rising.
 
 `flowedit sweep <split> [--partition P] [--settings S] [--jobs N]` records every run of a split: it generates the split's edited worlds again, then runs each world of the chosen partitions once per seed, `--jobs` launches at a time, each on its own ROS domain from `--domain-base` (default 150). Runs land in `$ARENA_DATA_DIR/flowedit_runs/<split name>/`, one log per run in `_sweep/`; finished runs are skipped, so a sweep resumes. A split file ([`split.py`](split.py)) names the worlds of `train`, `held_out_edits` (other edits of the train worlds) and `held_out_worlds` (worlds with no run in train), and per base world the `flowedit generate` call that makes its edited worlds again under those names. [`splits/peds_v1.yaml`](splits/peds_v1.yaml) is the first.
 
