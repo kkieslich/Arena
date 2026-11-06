@@ -145,6 +145,27 @@ def test_interactions_are_keyed_like_the_tracks_on_their_time_base() -> None:
     assert empty.empty and list(empty.columns) == list(R.INTERACTION_COLUMNS) and R.uses(empty) == {}
 
 
+def test_provenance_names_each_checkout_and_whether_it_was_changed(tmp_path: Path) -> None:
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "a.txt").write_text("a")
+    git("add", "a.txt")
+    git("commit", "-qm", "a")
+    head, dirty = R._commit(tmp_path)
+    assert len(head or "") == 40 and dirty is False
+    # an untracked file, a generated scenario among them, leaves a checkout clean; a changed tracked file does not
+    (tmp_path / "b.txt").write_text("b")
+    assert R._commit(tmp_path) == (head, False)
+    (tmp_path / "a.txt").write_text("changed")
+    assert R._commit(tmp_path) == (head, True)
+    assert R._commit(tmp_path / "missing") == (None, None)
+    assert {"code", "code_dirty", "humansim", "humansim_dirty"} <= set(R.provenance())
+
+
 def _fake_arena(bin_dir: Path, behaviour: str) -> None:
     """An `arena` on PATH that opens HumanSim's bag dir like a launch, then `behaviour`."""
     script = bin_dir / "arena"
@@ -182,6 +203,7 @@ def test_a_run_records_until_the_duration_and_stops_the_launch(worlds: Path, tmp
     assert len(pd.read_parquet(run_dir / R.TRACKS)) == 2
     assert list(pd.read_parquet(run_dir / R.INTERACTIONS)["key"]) == ["flow_1"]
     assert doc["uses"] == {"fountain": {"uses": 1, "users": 1, "queue_max": 0}}
+    assert {"code", "code_dirty", "humansim", "humansim_dirty"} <= set(doc)
 
 
 def test_a_launch_that_dies_is_reported_and_leaves_no_finished_run(worlds: Path, tmp_path: Path, fake_bin: Path) -> None:

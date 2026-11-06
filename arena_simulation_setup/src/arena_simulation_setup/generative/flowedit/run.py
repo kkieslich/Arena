@@ -157,11 +157,40 @@ def _stop(proc: subprocess.Popen, grace: float) -> None:
             continue
 
 
-def _git_head(path: Path) -> str | None:
+def _git(path: Path, *args: str) -> str | None:
     try:
-        return subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, check=True).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def _commit(path: Path | None) -> tuple[str | None, bool | None]:
+    """The checkout of `path`: its HEAD, and whether tracked files differ from it (untracked files, generated
+    scenarios among them, do not count)."""
+    if path is None or (head := _git(path, "rev-parse", "HEAD")) is None:
+        return None, None
+    status = _git(path, "status", "--porcelain", "--untracked-files=no")
+    return head, None if status is None else bool(status)
+
+
+def provenance() -> dict[str, Any]:
+    """What code a run ran: `code` (this flowedit's checkout), `humansim` (the arena_humansim the launch imports), each with
+    a dirty flag, and `runtime_code` when $ARENA_DIR, the Arena the launch runs, is another checkout than `code`."""
+    here = Path(__file__).resolve().parent
+    code, code_dirty = _commit(here)
+    try:
+        import arena_humansim
+
+        # the build tree links back to the source checkout
+        humansim_dir: Path | None = Path(arena_humansim.__file__).resolve().parent
+    except ImportError:
+        humansim_dir = None
+    humansim, humansim_dirty = _commit(humansim_dir)
+    out: dict[str, Any] = {"code": code, "code_dirty": code_dirty, "humansim": humansim, "humansim_dirty": humansim_dirty}
+    arena_dir = os.environ.get("ARENA_DIR")
+    if arena_dir and (top := _git(Path(arena_dir), "rev-parse", "--show-toplevel")) and top != _git(here, "rev-parse", "--show-toplevel"):
+        out["runtime_code"], out["runtime_dirty"] = _commit(Path(arena_dir))
+    return out
 
 
 #: Agent names as AgentMeta gave them: one {agent id: name} snapshot per message, by its time (s). A plain mapping is one
@@ -458,7 +487,7 @@ def record(
         "launch": command,
         "started": started.isoformat(timespec="seconds"),
         "ended": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "code": _git_head(Path(__file__).parent),
+        **provenance(),
         "edits": dump_edits(prepared.site)["edits"],
         "edit_seed": prepared.site.seed,
         "reader": prepared.reader,
@@ -484,4 +513,4 @@ def default_out() -> Path:
     return Path(data) / RUNS
 
 
-__all__ = ["EDITS", "INTERACTIONS", "RUNS", "Edit", "Extracted", "Prepared", "default_out", "done", "extract", "interaction_rows", "keyed", "launch_command", "names_at", "prepare", "record", "scenario_name", "summary", "tracks", "uses"]
+__all__ = ["EDITS", "INTERACTIONS", "RUNS", "Edit", "Extracted", "Prepared", "default_out", "done", "extract", "interaction_rows", "keyed", "launch_command", "names_at", "prepare", "provenance", "record", "scenario_name", "summary", "tracks", "uses"]
