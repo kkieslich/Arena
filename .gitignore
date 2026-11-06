@@ -90,3 +90,6 @@ htmlcov/
 /data/audio_train_set_test/
 
 /.uv-workspace/
+
+# FLOWEDIT run scenarios: `flowedit run` writes one per crowd settings digest and seed into a shipped world, a sweep makes them again
+/arena_simulation_setup/worlds/*/scenarios/flowedit_*_????????_s[0-9]*/

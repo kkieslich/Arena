@@ -69,6 +69,44 @@ def test_hospital_graph_queues_at_the_fountain(hospital: Result) -> None:
     assert all(h["name"].startswith("flow_") and "colleague" not in h["agent"]["agent_type"] for h in hospital.doc["humans"])
 
 
+def test_people_start_at_points_in_their_home_room(queue: Site, hospital: Result) -> None:
+    # a zone name would leave the start point to the runtime, which draws it per world: an edit would move the people
+    import shapely
+    from arena_simulation_setup.generative.flowedit.read import _base
+
+    base = _base(queue, None, S.load(), None, 0, [])
+    for person, human in zip(base.crowd.people, hospital.doc["humans"], strict=True):
+        x, y, yaw = human["pose"]
+        shape = base.floor.shape(person.home)
+        assert shape is not None and shape.buffer(1e-6).contains(shapely.Point(x - base.floor.origin[0], y - base.floor.origin[1]))
+        assert -3.15 <= yaw <= 3.15
+    assert read(queue, seed=1).doc["humans"][0]["pose"] != hospital.doc["humans"][0]["pose"]
+
+
+def test_a_start_an_edit_covers_moves_to_the_nearest_free_point(queue: Site, hospital: Result) -> None:
+    # the base draws every start: an object an edit puts over one moves that person only, everyone else keeps their spot
+    from arena_simulation_setup.generative.flowedit.read import PERSON_CLEAR
+
+    first = hospital.doc["humans"][0]
+    origin = _floor(queue.root, queue.world, read_graph(queue.graph)).origin
+    covered = apply(queue, "insert", "obj:crate_1", {"model": "Hospital/SM_WaterDispenser_01a", "x": first["pose"][0] - origin[0], "y": first["pose"][1] - origin[1]})
+    notes: list[str] = []
+    edited = read(covered, notes=notes, base=queue)
+    floor = _floor(covered.root, covered.world, read_graph(covered.graph))
+
+    def free(pose: list[float]) -> bool:
+        return floor.grid.free((pose[0] - floor.origin[0], pose[1] - floor.origin[1]), PERSON_CLEAR)
+
+    moved = {b["name"] for b, e in zip(hospital.doc["humans"], edited.doc["humans"], strict=True) if b["pose"] != e["pose"]}
+    assert first["name"] in moved and len(moved) < len(hospital.doc["humans"])
+    for before, after in zip(hospital.doc["humans"], edited.doc["humans"], strict=True):
+        # covered starts move to a free point with their heading, free ones stay to the centimetre
+        assert (before["name"] in moved) == (not free(before["pose"]))
+        assert free(after["pose"]) and after["pose"][2] == before["pose"][2]
+    assert {n.split()[1] for n in notes if n.startswith("people: ") and "moved to" in n} == moved
+    assert not any(n.startswith("people: ") and "starts at" in n for n in hospital.notes)
+
+
 def test_only_stated_needs_are_sought_by_default(hospital: Result) -> None:
     assert list(hospital.needs) == ["thirst"]
     assert {o["name"] for o in hospital.doc["objects"]} == {"exam_chair_1", "fountain", "gathering_area", "patient_bed_1", "reception_desk"}

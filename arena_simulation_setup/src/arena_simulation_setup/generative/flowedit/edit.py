@@ -46,6 +46,8 @@ FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "clear")
 FLAGS = ("leave_demand", "clear", "remove")
 #: Suffix of the demand-only node a `move` with `leave_demand` leaves at the object's old spot.
 DEMAND_SUFFIX = "_demand"
+#: The state a schedule window written without a `value` takes while open
+SCHEDULE_ON = "on"
 DOOR_FIELDS = ("kind", "width", "height", "material", "activation_distance", "transition_time", "hold_time", "swing_direction")
 WALL_FIELDS = ("closed", "kind", "material")
 _ON_WALL_M = 0.05
@@ -478,6 +480,11 @@ def _access(site: Site, edit: Edit) -> None:
             current.update(settings)
             if not current.get("regime"):
                 raise ValueError(f"{edit.target} needs a regime")
+            windows = current.get("windows") or []
+            if not isinstance(windows, list) or any(not isinstance(w, Mapping) or not {"start", "end"} <= set(w) for w in windows):
+                raise ValueError(f"{edit.target}: windows are a list of {{start, end[, value]}}")
+            # the runtime reads every window's `value`, the schedule's state while it is open; the regime holds in any window
+            current["windows"] = [{**w, "value": w.get("value", SCHEDULE_ON)} for w in windows]
             world.schedules[i] = attrs.evolve(schedule, semantics=_set_presets(schedule.semantics, "schedule", {k: v for k, v in current.items() if v is not None}))
     else:
         raise ValueError(f"access edits a door:<name> or schedule:<name>, not {edit.target!r}")

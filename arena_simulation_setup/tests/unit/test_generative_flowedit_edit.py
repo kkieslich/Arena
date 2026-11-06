@@ -269,7 +269,11 @@ def test_a_false_flag_names_the_same_edit_as_leaving_it_out(queue: Site) -> None
 def test_schedule_access_keeps_remove_out_of_its_preset(queue: Site) -> None:
     timed = apply(queue, "access", "schedule:fire_alarm", {"remove": False, "windows": [{"start": 60, "end": 90}]})
     (params,) = presets(next(s for s in timed.world.schedules if s.name == "fire_alarm").semantics, "schedule")
-    assert "remove" not in params and params["windows"] == [{"start": 60, "end": 90}]
+    # the runtime reads a window's `value`: one written without it opens as "on", the edit record keeps what was asked
+    assert "remove" not in params and params["windows"] == [{"start": 60, "end": 90, "value": "on"}]
+    assert timed.edits[-1].params["windows"] == [{"start": 60, "end": 90}]
+    with pytest.raises(ValueError, match="windows are a list"):
+        apply(queue, "access", "schedule:fire_alarm", {"windows": [{"start": 60}]})
 
 
 def _docked(model: str, back: float, dock: list[list[float]]) -> dict[str, Any]:
