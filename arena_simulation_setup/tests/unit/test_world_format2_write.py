@@ -116,6 +116,14 @@ def test_positions_round_to_a_tenth_of_a_millimeter_and_angles_to_a_microradian(
     assert level['objects'][0]['pose'] == [1.0, -2.0001, 0.123457]
 
 
+def test_a_dock_is_written_in_the_object_frame_and_reads_back() -> None:
+    objects = [{'name': 'charger_1', 'model': 'charger', 'pose': [4, 2, 3.14159], 'dock': [[0.5, -0.5], [1.5, -0.5], [1.5, 0.5]]}]
+    world = _one_level(objects=objects)
+    written = _written(world)
+    assert written['levels'][0]['objects'][0]['dock'] == [[0.5, -0.5], [1.5, -0.5], [1.5, 0.5]]
+    assert parse_world(written) == world
+
+
 def test_positions_keep_z_only_when_nonzero() -> None:
     sounds = [{'name': 'low', 'asset_id': 'alarm', 'position': [1, 2, 0]}, {'name': 'high', 'asset_id': 'alarm', 'position': [1, 2, 1.5]}]
     written = _written(_one_level(sounds=sounds))['levels'][0]['sounds']

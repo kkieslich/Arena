@@ -685,7 +685,7 @@ class Level:
             names.add(zone.name)
 
     def lookup_zone_polygon(self, name: str) -> list[Position] | None:
-        """Look up a zone, door, elevator or stair by name and return its polygon vertices."""
+        """Look up a zone, door, elevator, stair or the dock of an object by name and return its polygon vertices."""
         for zone in self.zones:
             if zone.name == name:
                 return zone.polygon
@@ -698,11 +698,21 @@ class Level:
         for stair in self.stairs:
             if name in (stair.name, stair.group):
                 return stair.corners()
+        for entity in self.objects:
+            if entity.name == name and entity.dock is not None:
+                return entity.dock_polygon()
         return None
 
     def zone_ref_names(self) -> list[str]:
-        """Every name resolvable by lookup_zone_polygon (zones, doors, elevators, stairs)."""
-        return [*(zone.name for zone in self.zones), *(door.name for door in self.doors), *(elevator.name for elevator in self.elevators), *(stair.name for stair in self.stairs), *dict.fromkeys(stair.group for stair in self.stairs if stair.group)]
+        """Every name resolvable by lookup_zone_polygon (zones, doors, elevators, stairs, docked objects)."""
+        return [
+            *(zone.name for zone in self.zones),
+            *(door.name for door in self.doors),
+            *(elevator.name for elevator in self.elevators),
+            *(stair.name for stair in self.stairs),
+            *dict.fromkeys(stair.group for stair in self.stairs if stair.group),
+            *(entity.name for entity in self.objects if entity.dock is not None),
+        ]
 
     def point_resolver(self, rng: np.random.Generator, *, is_valid: typing.Callable[[Position], bool] | None = None) -> PointResolver:
         """Resolver that samples a point inside a named zone/door/elevator polygon."""
@@ -826,6 +836,8 @@ def _shift(value: object, d: Position) -> object:
             skip.add('pose')
         if isinstance(value, WorldMicrophone) and value.frame != 'map':
             skip.add('position')
+        if isinstance(value, Obstacle):
+            skip.add('dock')
         changes = {field.name: _shift(getattr(value, field.name), d) for field in attrs.fields(type(value)) if field.init and field.name not in skip and _moves(getattr(value, field.name))}
         return attrs.evolve(value, **changes) if changes else value
     return value

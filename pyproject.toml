@@ -195,6 +195,7 @@ reportPrivateImportUsage = "none"
 executionEnvironments = [
     { root = "arena_isaac/arena_isaac", reportMissingImports = "none" },
     { root = "arena_assets/src/arena_assets/utils/ModelConverter", reportMissingImports = "none" },
+    { root = "arena_assets/src/arena_assets/impl/collider_gen", reportMissingImports = "none" },
     { root = "arena_assets/blender/arena_assets_blender", reportMissingImports = "none" },
     { root = "_meta" },
     { root = "arena_assets/src" },

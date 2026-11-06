@@ -212,12 +212,31 @@ def _joints(value: object) -> Joints:
     return joints
 
 
+Dock = list[Position] | None
+
+
+def _dock(value: object) -> Dock:
+    if value is None:
+        return None
+    if not isinstance(value, list | tuple):
+        raise ValueError(f'dock is a polygon in the object frame, a list of at least 3 points, got {value!r}')
+    points = [point if isinstance(point, Position) else Position.parse(point) for point in value]
+    if len(points) < 3:
+        raise ValueError(f'dock is a polygon in the object frame with at least 3 points, got {len(points)}')
+    return points
+
+
 @attrs.define
 class Obstacle(Entity):
     scale: Scale | None = None
     light: ObjectLightSettings | None = None
     humansim: dict = attrs.field(factory=dict, converter=_humansim_object)
     joints: Joints = attrs.field(default=None, converter=_joints)
+    dock: Dock = attrs.field(default=None, converter=_dock)
+
+    def dock_polygon(self) -> list[Position] | None:
+        """The dock in the frame of the object's pose, None without one."""
+        return None if self.dock is None else [self.pose * corner for corner in self.dock]
 
     @property
     def target_only(self) -> bool:
@@ -263,6 +282,7 @@ class Obstacle(Entity):
 
 converter.register_structure_hook_func(lambda t: t == dict | str | None, lambda v, _t: v)
 converter.register_structure_hook_func(lambda t: t == Joints, lambda v, _t: _joints(v))
+converter.register_structure_hook_func(lambda t: t == Dock, lambda v, _t: _dock(v))
 
 
 def _waypoints_converter(value: object) -> list[Waypoint]:

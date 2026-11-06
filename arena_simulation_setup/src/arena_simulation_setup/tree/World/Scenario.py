@@ -277,6 +277,9 @@ def parse_scenario(raw: object, c: ArenaConverter = converter) -> Scenario:
             except Exception as exc:
                 raise ValueError(f"{key}[{index}]: {exc}") from exc
         fields[key] = parsed
+    for index, obj in enumerate(fields["objects"]):
+        if obj.dock is not None:
+            raise ValueError(f"objects[{index}]: dock is a world.yaml key, a scenario object is no goto target")
     robots = []
     for index, item in enumerate(raw.get("robots") or []):
         try:

@@ -44,7 +44,7 @@ as format 2, see [AUTHORING.md](../AUTHORING.md#format-1-worlds).
 | level | `elevators` | see [Elevator fields](#elevator-fields) |
 | level | `stairs` | stairs up from this level, see [Stairs fields](#stairs-fields) |
 | level | `escalators` | escalators up from this level, see [Stairs fields](#stairs-fields) |
-| level | `objects` | static obstacles, the scenario `objects:` schema |
+| level | `objects` | static obstacles, the scenario `objects:` schema plus `dock` (a polygon in the object frame that makes the object a robot goto target, see [AUTHORING.md](../AUTHORING.md#4-add-a-scenario)) |
 | level | `humans` | pedestrians, the scenario `humans:` schema |
 | level | `lights` | fixtures and ambient lights, see [AUTHORING.md](../AUTHORING.md#lights) |
 | level | `sounds` | standalone sounds, see [AUTHORING.md](../AUTHORING.md#m2-kinds-params-and-timelines) |
@@ -298,7 +298,7 @@ robots:
     goal_level: ""               # optional, level for goto phases
     phases:                      # ordered. each entry is one of:
       - {goto: [x, y, yaw]}      #   navigate to pose (same formats as start)
-      - {goto: kitchen}          #   navigate into a zone, door, elevator or to a pedestrian by name
+      - {goto: kitchen}          #   navigate into a zone, door, elevator or the dock of a world object, or to a pedestrian, by name
       - {gesture: wave}          #   arm gesture, "random" allowed, optional instance: <mount>
       - {reach: stow}            #   arm reach: named target, "random", or a pose (optional frame:)
       - {until: "door_1.open == true"}  # hold where the robot is until the atom holds

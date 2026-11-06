@@ -32,7 +32,7 @@
 	update = checkout
 [submodule "humansim"]
 	path = humansim
-	url = https://github.com/voshch/humansim.git
+	url = https://github.com/kkieslich/humansim.git
 	branch = jazzy
 	update = checkout
 [submodule "arena_auditory"]
@@ -42,7 +42,7 @@
 	update = checkout
 [submodule "arena_assets"]
 	path = arena_assets
-	url = https://github.com/voshch/arena-assets.git
+	url = https://github.com/kkieslich/arena-assets.git
 	branch = master
 	update = checkout
 [submodule "arena_hearing"]

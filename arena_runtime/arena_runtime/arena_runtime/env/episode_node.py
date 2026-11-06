@@ -46,6 +46,7 @@ from std_msgs.msg import Bool, Empty, Int16, String
 from arena_runtime.env.adapters import ResetContext
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.runtime import RUN_EPISODE_BUSY, RUN_EPISODE_SHUTTING_DOWN
+from arena_runtime.env.environment_manager import authored_statics
 from arena_runtime.env.goal_progress import GoalProgressTracker
 from arena_runtime.env.interactive import MarkerHub
 from arena_runtime.env.interactive.entities import EntityHandles
@@ -661,7 +662,7 @@ class EpisodeNode(EnvNode):
                 await self._reset_episode(record, clock)
             finally:
                 compacted = self._world_manager.world_compacted()
-                self._judge_zones = zone_polygons(compacted)
+                self._judge_zones = zone_polygons(authored_statics(compacted))
                 self._judge_walls = self._wall_grid(compacted)
                 for manager in self._robots_manager.managers.values():
                     manager.set_episode_conditions(self._episode_conditions)

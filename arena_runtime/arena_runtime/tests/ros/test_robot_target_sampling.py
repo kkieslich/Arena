@@ -9,6 +9,7 @@ import pytest
 try:
     import shapely
     from arena_rclpy_mixins.Time import Time
+    from arena_simulation_setup.shared import Obstacle
     from arena_simulation_setup.shared.task import GoToPhase
     from arena_simulation_setup.tree.World import Level, World, Zone
     from arena_simulation_setup.utils.geometry import Orientation, Pose, Position
@@ -17,12 +18,16 @@ try:
     from arena_runtime.env.robot_manager.robot_manager import RobotManager
     from arena_runtime.env.world_manager.utils import WorldLayers, WorldMap, WorldOccupancy
     from arena_runtime.env.world_manager.world_manager import WorldManager
+    from arena_runtime.shared import WORLD_ENTITY_PREFIX
 except ImportError:
     pytestmark = pytest.mark.skip(reason="ROS2 not available")
 
 RES = 0.05
 ROOM = [Position(1.0, 1.0), Position(3.0, 1.0), Position(3.0, 3.0), Position(1.0, 3.0), Position(1.0, 1.0)]
 SAFE = 0.3
+
+
+CHARGER_DOCK = [[0.5, -0.5], [1.5, -0.5], [1.5, 0.5], [0.5, 0.5]]
 
 
 def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0) -> SimpleNamespace:
@@ -35,7 +40,8 @@ def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0) -
     world_manager._multi_map = None
     world_manager._zone_masks = {}
     world_manager._stair_masks = {}
-    world_manager._world = World(levels={"0": Level(id="0", zones=[Zone(name="room", polygon=ROOM)])})
+    charger = Obstacle(name=f"{WORLD_ENTITY_PREFIX}charger_1", model="charger", pose=Pose(position=Position(4.0, 2.0), orientation=Orientation.from_yaw(math.pi)), dock=CHARGER_DOCK)
+    world_manager._world = World(levels={"0": Level(id="0", zones=[Zone(name="room", polygon=ROOM)], objects=[charger])})
     rng = EpisodeRng()
     rng.reseed(seed)
     node = SimpleNamespace(_world_manager=world_manager, conf=SimpleNamespace(General=SimpleNamespace(RNG=rng)))
@@ -60,6 +66,22 @@ def test_zone_target_lands_on_a_free_cell_with_clearance() -> None:
 def test_zone_target_without_a_free_cell_names_the_zone() -> None:
     with pytest.raises(ValueError, match="goto target 'room' has no free cell with 0.30 m clearance"):
         RobotManager._resolve_target(_manager((0.5, 0.5, 3.5, 3.5)), GoToPhase(target="room"))
+
+
+def test_docked_object_target_under_the_runtime_prefix_lands_in_its_dock_facing_the_object() -> None:
+    blocked = (3.5, 1.5, 4.5, 2.5)
+    for seed in range(20):
+        phase = RobotManager._resolve_target(_manager(blocked, seed), GoToPhase(target="charger_1"))
+        position = phase.pose.position
+        assert phase.target == "charger_1"
+        assert math.dist((position.x, position.y), (3.0, 2.0)) <= 0.25 + RES
+        assert _blocked_distance(position, blocked) >= SAFE - RES
+        assert phase.pose.orientation.to_yaw() == pytest.approx(math.atan2(2.0 - position.y, 4.0 - position.x))
+
+
+def test_docked_object_target_without_a_free_cell_near_its_middle_names_it() -> None:
+    with pytest.raises(ValueError, match="goto target 'charger_1' has no free cell with 0.30 m clearance"):
+        RobotManager._resolve_target(_manager((2.5, 1.5, 4.5, 2.5)), GoToPhase(target="charger_1"))
 
 
 def test_unknown_target_is_left_for_the_ped_follower() -> None:
