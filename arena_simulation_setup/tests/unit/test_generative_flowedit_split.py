@@ -39,6 +39,7 @@ def test_the_pilot_runs_train_and_test_seeds_with_references_for_held_out_edits(
     assert len(runs) == 155
     assert [(j.world, j.seed) for j in runs if j.reference] == [("hospital_1", 6), ("hospital_1", 7), ("hospital_1", 8)]
     assert {j.seed for j in runs if j.partition == "train"} == {1, 2, 3, 4, 5} and {j.seed for j in runs if j.partition != "train"} == {6, 7, 8}
+    assert SP.crowd(doc)["entrances"]["rate"] == 0
 
 
 def _mapped(doc: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +114,31 @@ def test_a_sweep_checks_the_generator_still_makes_every_listed_name(doc: dict[st
         SP.verify(controlled, "hospital_1", {"chains": manifest["chains"][:1]})
     with pytest.raises(ValueError, match="no controls of hospital_1__aa"):
         SP.verify(controlled, "hospital_1", {"chains": [{"world": "hospital_1__aa"}, {"world": "hospital_1__bb"}, {"world": "hospital_1__aa_inert"}]})
+
+
+def test_a_splits_crowd_settings_reach_every_run_under_a_sweeps_own(doc: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    doc = copy.deepcopy(doc)
+    doc["settings"] = {"entrances": {"rate": 0}}
+    SP.check(doc)
+    over = tmp_path / "test_crowd.yaml"
+    over.write_text("count: 3\n")
+    merged = SP.crowd(doc, over)
+    assert merged["entrances"]["rate"] == 0 and merged["count"] == 3 and SP.crowd(doc)["count"] is None
+    assert SP.crowd({})["entrances"] == S.load()["entrances"]
+    for bad, message in (({"entrances": {"rte": 0}}, "unknown crowd setting"), (["rate"], "settings is a mapping")):
+        with pytest.raises(ValueError, match=message):
+            SP.check({**doc, "settings": bad})
+    # every run reads one file with the merged settings, and a run finished under them is skipped
+    seen: list[list[str]] = []
+    monkeypatch.setattr(SP, "_flowedit", lambda args: (seen.append(list(args)), [sys.executable, "-c", "pass"])[1])
+    finished = tmp_path / "runs" / f"hospital_1__{R.scenario_name('queue', merged, 0)}"
+    finished.mkdir(parents=True)
+    (finished / R.RUN_FILE).write_text("format: flowedit-run/1\n")
+    (finished / R.TRACKS).write_text("")
+    counts = SP.sweep(doc, tmp_path / "runs", settings=over, regenerate=False, stagger=0.0, log=lambda _: None)
+    assert counts["skipped"] == 1 and counts["done"] == len(SP.jobs(doc)) - 1
+    files = {a[a.index("--settings") + 1] for a in seen}
+    assert len(files) == 1 and S.load(Path(files.pop())) == merged
 
 
 def test_a_split_keeps_its_partitions_apart(doc: dict[str, Any]) -> None:

@@ -306,7 +306,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument("split", type=Path, help="the split file (see split.py)")
     p.add_argument("--partition", action="append", choices=["train", "held_out_edits", "held_out_worlds"], default=None, help="a partition to run; repeatable (default: all)")
-    p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML of every run (default: the defaults, the training crowd)")
+    p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML of every run, merged over the split's own `settings` (default: those, else the defaults, the training crowd)")
     p.add_argument("--out", type=Path, default=None, help=f"runs root (default: $ARENA_DATA_DIR/{RUNS}/<split name>)")
     p.add_argument("--jobs", type=int, default=1, help="launches at a time (default 1)")
     p.add_argument("--domain-base", type=int, default=150, help="ROS domain of the first launch slot, the next slots counting up (default 150)")

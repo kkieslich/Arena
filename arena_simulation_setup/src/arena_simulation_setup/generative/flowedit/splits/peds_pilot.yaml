@@ -13,6 +13,10 @@ sources:
   hospital_1: {scenario: queue, seed: 0, per_type: 3, steps: 1, controls: true}
   office_1: {scenario: default, seed: 0, per_type: 1, steps: 1, controls: true}
 duration: 300
+# no door entrances: HumanSim despawns a released visitor once it is inside its sink, and the reader's sink strip lies
+# right in front of the source, so visitors vanish within a second on their way in. Only the reader's placed people run.
+settings:
+  entrances: {rate: 0}
 seeds:
   train: [1, 2, 3, 4, 5]
   held_out_edits: [6, 7, 8]

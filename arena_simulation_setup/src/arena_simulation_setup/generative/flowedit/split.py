@@ -7,6 +7,7 @@ its base's `sources` entry, so the file is all a sweep needs:
     sources:                 # base world: the generate call its edited worlds come from
       hospital_1: {scenario: queue, seed: 0, per_type: 3, steps: 1, controls: true}
     duration: 300            # seconds recorded per run
+    settings: {entrances: {rate: 0}}  # crowd settings of every run, a sweep's --settings merged over them (optional)
     seeds:                   # crowd seeds: one list for every partition, or a list per partition
       train: [1, 2, 3, 4, 5]
       held_out_edits: [6, 7, 8]
@@ -48,6 +49,19 @@ def base_of(world: str) -> str:
     return world.partition("__")[0]
 
 
+def crowd(doc: Mapping[str, Any], over: Path | None = None) -> dict[str, Any]:
+    """The crowd settings every run of the split gets: the defaults, the split's `settings`, then the file `over`."""
+    from . import settings as S
+
+    merged = S.load(doc.get("settings") or {})
+    if over is not None:
+        raw = yaml.safe_load(Path(over).read_text()) or {}
+        if not isinstance(raw, Mapping):
+            raise S.SettingsError(f"{over}: crowd settings are a mapping")
+        merged = S.load(S._merge(merged, raw))
+    return merged
+
+
 def check(doc: Mapping[str, Any]) -> None:
     """Raise ValueError unless `doc` is a split whose partitions are disjoint and whose held-out worlds never run in train."""
     if doc.get("format") != SPLIT_FORMAT:
@@ -82,6 +96,9 @@ def check(doc: Mapping[str, Any]) -> None:
     for part, values in lists.items():
         if not isinstance(values, list) or not values or not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
             raise ValueError(f"seeds of {part}: a non-empty list of crowd seeds, got {values!r}")
+    if not isinstance(doc.get("settings") or {}, Mapping):
+        raise ValueError("settings is a mapping of crowd settings, as a settings file holds them")
+    crowd(doc)
     _check_controls(doc, seen)
 
 
@@ -224,13 +241,17 @@ def sweep(
     from . import settings as S
     from .run import done, scenario_name
 
-    crowd = S.load(settings)
+    settings_doc = crowd(doc, settings)
+    if doc.get("settings") or settings is not None:
+        # one file holding the merged settings, so every run reads exactly what the skip check below names its run by
+        settings = logs / f"settings_{S.digest(settings_doc)}.yaml"
+        settings.write_text(yaml.safe_dump(settings_doc, sort_keys=True))
     duration = float(doc.get("duration", 300.0))
     counts = {"done": 0, "skipped": 0, "failed": 0}
     queue = []
     for job in jobs(doc, partitions):
         # a finished run is skipped here, without a launch slot or a stagger
-        if done(out / f"{job.world}__{scenario_name(doc['sources'][base_of(job.world)].get('scenario'), crowd, job.seed)}"):
+        if done(out / f"{job.world}__{scenario_name(doc['sources'][base_of(job.world)].get('scenario'), settings_doc, job.seed)}"):
             counts["skipped"] += 1
             log(f"{job.label}: already recorded")
         else:
@@ -260,4 +281,4 @@ def sweep(
     return counts
 
 
-__all__ = ["PARTITIONS", "SPLIT_FORMAT", "Job", "base_of", "check", "generate_argv", "jobs", "load", "seeds_of", "sweep", "verify"]
+__all__ = ["PARTITIONS", "SPLIT_FORMAT", "Job", "base_of", "check", "crowd", "generate_argv", "jobs", "load", "seeds_of", "sweep", "verify"]
