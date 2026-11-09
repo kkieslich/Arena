@@ -1457,6 +1457,55 @@ for level_id, result in nav_at_r(view, radius=0.267, levels=levels).items():
     print(level_id, result.value, result.components, result.cut_off_zones)
 ```
 
+An edited world or level is measured in memory, without writing a copy:
+`nav_at_r(view, world=edited)` takes a loaded and changed `World`, and
+`level_nav_at_r(level, radius=..., static_objects=[(name, polygon), ...])` one
+`Level` with extra level-frame footprints as occupancy (wrap it in
+`world_assets(view, world)` for world-local assets). `missing` lists the
+entities whose model does not resolve at all, e.g. bucket models with
+`ARENA_ASSETS_NET=off`; they are counted in `no bbox` and not rasterized.
+
+#### Placement filter
+
+`metrics/navr_filter.py` checks placement layouts against one base level
+(INFRA, Kolja's rule of 9 Nov 2026). A layout is rejected when more than
+0.5 m2 of floor beyond the elements' footprints and clearance leaves the
+dominant component at r = 0.325 m (the wheelchair), or when a dock goto point
+is outside the dominant component at r = 0.267 m (the Jackal):
+
+```python
+from arena_simulation_setup.metrics.navr_filter import NavrBase, PlacedElement, navr_check
+
+base = NavrBase(level, view=view, world=world)  # once: raster, distance transform, components
+bay = PlacedElement('bay_1', slot_polygon, (x, y), blocks_floor=False)
+verdict = navr_check(base, [charger_1, charger_2, bay, locker_1])
+verdict.ok, verdict.floor_loss_m2, verdict.unreachable_docks, verdict.new_cutoff_zones, verdict.nav_at_r
+```
+
+`PlacedElement(name, footprint, dock_point, blocks_floor)` is one placed
+object: its level-frame footprint polygon from the resolved asset, the point
+a robot is sent to (or None) and whether the footprint is an obstacle. A
+waiting-bay slot (the loading point too) is a floor marking
+(`blocks_floor=False`); the filter parks a Jackal on its dock point, a blocking
+disc of 0.267 m (`park_radius`). That Jackal blocks in every check except its
+own slot's goto check (the robot sent there is the one that parks). A blocking
+footprint over a dock point makes the dock unreachable. An element without a
+footprint, or a base object whose model does not resolve, raises
+`UnresolvedFootprintError` instead of counting as free floor. The placement
+module's `placed_elements(layout)` gives these elements.
+
+The floor loss counts cells that were in the base's dominant component, are
+still traversable with the elements placed (so neither under a footprint nor
+within r of one), and are outside the new dominant component. A layout changes
+the raster only within r of its footprints. Each check updates the clearance
+in disjoint windows around them. A piece of a window that does not touch its
+ring is a pocket, a component of its own. When every component that loses
+cells keeps at most one piece on each window's ring, any path through a window
+can be rerouted through that piece, so the rest stays connected: the check
+keeps the base's components, less the removed cells, plus the pockets.
+Otherwise it relabels the whole level. `navr_check(..., relabel=True)` always
+relabels, the reference the tests compare the incremental result against.
+
 ### Navigation mesh
 
 MeshNav plans on a triangle mesh of every walkable surface, built from the

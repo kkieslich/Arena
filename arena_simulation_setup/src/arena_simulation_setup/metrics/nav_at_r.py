@@ -20,7 +20,8 @@ from scipy import ndimage
 
 from arena_simulation_setup.shared import Obstacle
 from arena_simulation_setup.tree import Identifier
-from arena_simulation_setup.tree.World import Level, WorldIdentifier, WorldView, world_assets
+from arena_simulation_setup.tree.World import Level, World, WorldIdentifier, WorldView, world_assets
+from arena_simulation_setup.tree.World.Map import Map, PixelFrame
 from arena_simulation_setup.tree.World.model import _PASSAGE_CLEARANCE
 
 DEFAULT_RADIUS = 0.267
@@ -64,6 +65,8 @@ class NavAtR:
     unresolved: int
     start_share: float | None = None
     start_snap: float | None = None
+    #: Entities whose model does not resolve at all (counted in `unresolved`), e.g. bucket models with the network off
+    missing: tuple[str, ...] = ()
 
     @property
     def components(self) -> int:
@@ -134,15 +137,20 @@ def nav_at_r(
     resolution: float = RESOLUTION,
     spawn_clearance: float = SPAWN_CLEARANCE,
     image: Path | None = None,
+    world: World | None = None,
 ) -> dict[str, NavAtR]:
-    """NAV@r per level id, with static entities as occupancy unless `walls_only`, the single-start share when `start` is given, and the components painted to `image`."""
-    world = view.load(validate=False, level_filter=levels)
+    """NAV@r per level id, with static entities as occupancy unless `walls_only`, the single-start share when `start` is given, and the components painted to `image`.
+    An in-memory `world` (e.g. FLOWEDIT-edited) is measured instead of the one on disk, its assets resolved through `view`."""
+    if world is None:
+        world = view.load(validate=False, level_filter=levels)
+    elif levels is not None:
+        world = attrs.evolve(world, levels={level_id: level for level_id, level in world.levels.items() if level_id in levels})
     single = len(world.levels) == 1
     with world_assets(view, world):
         return {
-            level_id: _level_nav_at_r(
-                level_id,
+            level_id: level_nav_at_r(
                 level,
+                level_id,
                 radius=radius,
                 walls_only=walls_only,
                 start=start,
@@ -154,43 +162,90 @@ def nav_at_r(
         }
 
 
-def _level_nav_at_r(
-    level_id: str,
-    level: Level,
-    *,
-    radius: float,
-    walls_only: bool,
-    start: tuple[float, float] | None,
-    resolution: float,
-    spawn_clearance: float,
-    image: Path | None,
-) -> NavAtR:
+@attrs.frozen(eq=False)
+class Occupancy:
+    """The static occupancy of one level as NAV@r reads it: the `walls` grid, the `grid` with the entity footprints too
+    (uint8, 255 free), the level-frame `origin` of the bottom-left cell corner and the raster's pixel `frame`."""
+
+    walls: np.ndarray
+    grid: np.ndarray
+    origin: tuple[float, float]
+    frame: PixelFrame
+    entities: int
+    #: Entities without a footprint: no annotated bounding box, or a model that does not resolve
+    unresolved: int
+    #: Names of the entities whose model does not resolve at all
+    missing: tuple[str, ...]
+
+
+def occupancy(level: Level, *, resolution: float = RESOLUTION, walls_only: bool = False, static_objects: Iterable[tuple[str, shapely.Polygon]] = ()) -> Occupancy:
+    """The level's walls grid and, unless `walls_only`, its grid with every entity's annotated footprint and the
+    `static_objects` (name, level-frame polygon) as occupancy. Entity models resolve through the asset paths in effect,
+    so wrap the call in `world_assets(view, world)` for world-local assets."""
     entities = list(level.objects)
     walls_grid, origin = level.render_grid(resolution=resolution)
-    distance = ndimage.distance_transform_edt(walls_grid == _FREE)
-    assert isinstance(distance, np.ndarray)
-    clearance = distance * resolution
-    walls_traversable = clearance >= radius
-    unresolved = 0
-    grid = walls_grid
-    if not walls_only:
-        footprints, unresolved = _footprints(entities)
-        grid, _ = level.render_grid(resolution=resolution, asset_color='black', asset_name_color=None, static_objects=footprints)
-        distance = ndimage.distance_transform_edt(grid == _FREE)
-        assert isinstance(distance, np.ndarray)
-        clearance = distance * resolution
-    traversable = clearance >= radius
-    spawnable = traversable & (clearance >= spawn_clearance)
+    frame = Map.pixel_frame(resolution=resolution, **level._rasterize_kwargs())
+    if walls_only:
+        return Occupancy(walls_grid, walls_grid, origin, frame, len(entities), 0, ())
+    footprints, unresolved, missing = _footprints(entities)
+    grid, _ = level.render_grid(resolution=resolution, asset_color='black', asset_name_color=None, static_objects=[*footprints, *static_objects])
+    return Occupancy(walls_grid, grid, origin, frame, len(entities), unresolved, missing)
 
+
+def components(traversable: np.ndarray, spawnable: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The 8-connected components of `traversable` as (labels, cells, spawns): the label raster (0 off the traversable
+    cells) and per label 1..n its cell count and its count of `spawnable` cells."""
     labelled = ndimage.label(traversable, structure=_CONNECTIVITY)
     assert isinstance(labelled, tuple)
     labels, count = labelled
     cells = np.bincount(labels.ravel(), minlength=count + 1)[1:]
     spawns = np.bincount(labels[spawnable], minlength=count + 1)[1:]
+    return labels, cells, spawns
+
+
+def expectation(cells: np.ndarray, spawns: np.ndarray) -> tuple[float, np.ndarray, np.ndarray, np.ndarray]:
+    """NAV@r from the per-component cell and spawn counts: (value, order largest first, masses, spawn shares)."""
+    count = len(cells)
     order = np.argsort(-cells, kind='stable')
     masses = cells[order] / cells.sum() if count else np.zeros(0)
     shares = spawns[order] / spawns.sum() if spawns.sum() else np.zeros(count)
     value = float(np.dot(masses, shares)) if spawns.sum() else math.nan
+    return value, order, masses, shares
+
+
+def clearance_of(grid: np.ndarray, resolution: float) -> np.ndarray:
+    """Distance in meters from each cell centre to the nearest occupied cell centre."""
+    distance = ndimage.distance_transform_edt(grid == _FREE)
+    assert isinstance(distance, np.ndarray)
+    return distance * resolution
+
+
+def level_nav_at_r(
+    level: Level,
+    level_id: str = '0',
+    *,
+    radius: float = DEFAULT_RADIUS,
+    walls_only: bool = False,
+    start: tuple[float, float] | None = None,
+    resolution: float = RESOLUTION,
+    spawn_clearance: float = SPAWN_CLEARANCE,
+    image: Path | None = None,
+    static_objects: Iterable[tuple[str, shapely.Polygon]] = (),
+) -> NavAtR:
+    """NAV@r of one in-memory level, e.g. a FLOWEDIT-edited one, without writing it: `static_objects` (name, level-frame
+    polygon) are occupancy on top of its entities. Entity models resolve through the asset paths in effect, so wrap the
+    call in `world_assets(view, world)` for world-local assets."""
+    occ = occupancy(level, resolution=resolution, walls_only=walls_only, static_objects=static_objects)
+    walls_grid, grid, origin = occ.walls, occ.grid, occ.origin
+    walls_clearance = clearance_of(walls_grid, resolution)
+    walls_traversable = walls_clearance >= radius
+    clearance = walls_clearance if walls_only else clearance_of(grid, resolution)
+    traversable = clearance >= radius
+    spawnable = traversable & (clearance >= spawn_clearance)
+
+    labels, cells, spawns = components(traversable, spawnable)
+    count = len(cells)
+    value, order, masses, shares = expectation(cells, spawns)
     rank = np.zeros(count + 1, dtype=np.int64)
     rank[order + 1] = np.arange(1, count + 1)
     ranked = rank[labels]  # pyright: ignore[reportCallIssue, reportArgumentType]
@@ -212,10 +267,11 @@ def _level_nav_at_r(
         masses=tuple(float(m) for m in masses),
         spawn_shares=tuple(float(s) for s in shares),
         zones=tuple(_zone_reach(zone.name, zone.polygon, ranked, walls_traversable, origin, resolution) for zone in level.zones if len(zone.polygon) >= 3),
-        entities=len(entities),
-        unresolved=unresolved,
+        entities=occ.entities,
+        unresolved=occ.unresolved,
         start_share=start_share,
         start_snap=start_snap,
+        missing=occ.missing,
     )
 
 
@@ -231,7 +287,9 @@ def _paint(walls_grid: np.ndarray, grid: np.ndarray, ranked: np.ndarray) -> Imag
     return Image.fromarray(canvas)
 
 
-def _footprints(entities: Iterable[Obstacle]) -> tuple[list[tuple[str, shapely.Polygon]], int]:
+def _footprints(entities: Iterable[Obstacle]) -> tuple[list[tuple[str, shapely.Polygon]], int, tuple[str, ...]]:
+    """The annotated footprints of the entities without an inline `bbox`, the count of entities without one, and the
+    names of those whose model does not resolve at all."""
     pending = [entity for entity in entities if not entity.extra.get('bbox')]
 
     async def _gather() -> list[object]:
@@ -239,7 +297,10 @@ def _footprints(entities: Iterable[Obstacle]) -> tuple[list[tuple[str, shapely.P
 
     footprints: list[tuple[str, shapely.Polygon]] = []
     unresolved = 0
+    missing: list[str] = []
     for entity, bbox in zip(pending, Identifier._run_sync(_gather()), strict=True):
+        if bbox is _MISSING:
+            missing.append(entity.name)
         if not isinstance(bbox, Sequence):
             unresolved += 1
             continue
@@ -253,14 +314,18 @@ def _footprints(entities: Iterable[Obstacle]) -> tuple[list[tuple[str, shapely.P
         poly = shapely.box(x_min, y_min, x_max, y_max)
         poly = shapely.affinity.rotate(poly, entity.pose.orientation.to_yaw(), origin=(0, 0), use_radians=True)
         footprints.append((entity.name, shapely.affinity.translate(poly, xoff=entity.pose.position.x, yoff=entity.pose.position.y)))
-    return footprints, unresolved
+    return footprints, unresolved, tuple(missing)
+
+
+#: `_annotation_bbox` of an entity whose model does not resolve
+_MISSING = object()
 
 
 async def _annotation_bbox(entity: Obstacle) -> object:
     try:
         view = await entity.model.resolve()
     except FileNotFoundError:
-        return None
+        return _MISSING
     return (view.annotation or {}).get('bounding_box')
 
 
