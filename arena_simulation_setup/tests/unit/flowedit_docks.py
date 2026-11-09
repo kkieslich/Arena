@@ -23,3 +23,6 @@ LOCKER = Docked("locker_1", "Common/Object/parcel_locker", 0.06, [[0.55, 0.02], 
 BAY = Docked("bay_1", "Common/Object/waiting_bay", 0.65, [[-0.6, -0.5], [0.6, -0.5], [0.6, 0.5], [-0.6, 0.5]])
 DOCKED = [CHARGER, LOCKER, BAY]
 DOCKED_IDS = [d.model.rsplit("/", 1)[-1] for d in DOCKED]
+
+#: The fleet study's charger power, which a robot in the charger's dock charges with
+CHARGE_POWER_W = 125.0

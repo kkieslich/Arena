@@ -469,14 +469,20 @@ def _clone_demand(site: Site, obj: str) -> dict[str, Any]:
 
 
 def _clone_dock(site: Site, obj: str) -> dict[str, Any]:
-    """The `dock` param that gives a new object the dock of `obj`, none for an object without one in `world.yaml`."""
+    """The `dock` and `charge_power_w` params that give a new object the dock of `obj` and, for a charger, its charge
+    power, none for an object without a dock in `world.yaml`."""
     found = world_object(site.world, obj.partition(":")[2])
-    dock = None if found is None else found[0].objects[found[1]].dock
-    return {} if dock is None else {"dock": [[p.x, p.y] for p in dock]}
+    source = None if found is None else found[0].objects[found[1]]
+    if source is None or source.dock is None:
+        return {}
+    out: dict[str, Any] = {"dock": [[p.x, p.y] for p in source.dock]}
+    if source.charge_power_w is not None:
+        out["charge_power_w"] = source.charge_power_w
+    return out
 
 
 def _insert(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
-    """Insert a copy of an object on the floor, one with demand first, its demand and dock copied, in a room of its level (`room`)."""
+    """Insert a copy of an object on the floor, one with demand first, its demand, dock and charge power copied, in a room of its level (`room`)."""
     modelled = floor_objects(site)
     source = _prefer(rng, [obj for obj in demand_objects(site) if obj in modelled], modelled, wide)
     placed = _at(site, source)
@@ -773,7 +779,7 @@ def controls(site: Site, chain: Generated) -> list[tuple[Control, Site]]:
             (Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}{INERT_SUFFIX}", inert)),
             (Control.MOVED_WITHOUT_DEMAND, apply(site, EditType.MOVE, first.target, moved)),
         ]
-    keep = ("model", "x", "y", "yaw", "level", "dock")
+    keep = ("model", "x", "y", "yaw", "level", "dock", "charge_power_w")
     return [(Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}{INERT_SUFFIX}", {k: v for k, v in first.params.items() if k in keep}))]
 
 

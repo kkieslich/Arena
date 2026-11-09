@@ -9,7 +9,7 @@ import pytest
 import yaml
 from arena_simulation_setup.generative.flowedit.edit import DEMAND_VERBS, EditType, Site, dump_edits, open_site, save, world_object
 from arena_simulation_setup.generative.flowedit.generate import CAPACITY, DEFAULT_DWELL_S, DWELL_S, FIELDS, FLOOR_HEIGHT_M, Generated, dump_manifest, floor_objects, generate
-from flowedit_docks import FACING_NORTH, LOCKER
+from flowedit_docks import CHARGE_POWER_W, CHARGER, FACING_NORTH, LOCKER, Docked
 
 if TYPE_CHECKING:
     from arena_simulation_setup.generative.flowedit.generate import WallPiece
@@ -472,16 +472,26 @@ def test_without_a_known_face_people_queue_behind_the_yaw(queue: Site, monkeypat
     assert generate.front_angle(queue.root, "Odd/Model") == pytest.approx(math.pi)
 
 
-@pytest.fixture
-def docked_locker(tmp_path: Path) -> Site:
-    """hospital_1 without scenario plus a docked parcel locker against a wall, its only object with a need."""
+def _docked_site(tmp_path: Path, docked: Docked, humansim: dict[str, Any], **fields: Any) -> Site:
+    """hospital_1 without scenario plus `docked` against a wall with `fields`, its `humansim` block the only need."""
     root = tmp_path / "worlds" / "hospital_docked"
     shutil.copytree(HOSPITAL, root, ignore=shutil.ignore_patterns("scenarios"))
     world = yaml.safe_load((root / "world.yaml").read_text())
-    humansim = {"type": "parcel_locker", "capacity": 1, "satisfies": {"parcel": 50.0}}
-    world["levels"][0]["objects"].append({"name": LOCKER.name, "model": LOCKER.model, "pose": [20.0, LOCKER.back, FACING_NORTH], "dock": LOCKER.dock, "humansim": humansim})
+    world["levels"][0]["objects"].append({"name": docked.name, "model": docked.model, "pose": [20.0, docked.back, FACING_NORTH], "dock": docked.dock, "humansim": humansim, **fields})
     (root / "world.yaml").write_text(yaml.safe_dump(world, sort_keys=False))
     return open_site(root)
+
+
+@pytest.fixture
+def docked_locker(tmp_path: Path) -> Site:
+    """hospital_1 without scenario plus a docked parcel locker against a wall, its only object with a need."""
+    return _docked_site(tmp_path, LOCKER, {"type": "parcel_locker", "capacity": 1, "satisfies": {"parcel": 50.0}})
+
+
+@pytest.fixture
+def docked_charger(tmp_path: Path) -> Site:
+    """hospital_1 without scenario plus a docked charger against a wall, given the only need so the generator draws it."""
+    return _docked_site(tmp_path, CHARGER, {"type": "robot_charger", "capacity": 1, "satisfies": {"charge": 50.0}}, charge_power_w=CHARGE_POWER_W)
 
 
 def _dock(site: Site, obj: str) -> list[Position] | None:
@@ -505,3 +515,27 @@ def test_the_inert_copy_keeps_the_dock(docked_locker: Site, kind: EditType) -> N
     (chain,) = generate(docked_locker, seed=0, types=[kind])
     inert = dict(controls(docked_locker, chain))[Control.INERT_OBJECT]
     assert _dock(inert, f"{chain.site.edits[0].target}_inert") == _dock(docked_locker, f"obj:{LOCKER.name}")
+
+
+def _charge_power(site: Site, obj: str) -> float | None:
+    found = world_object(site.world, obj.partition(":")[2])
+    assert found is not None, obj
+    level, i = found
+    return level.objects[i].charge_power_w
+
+
+def test_insert_copies_a_chargers_charge_power(docked_charger: Site) -> None:
+    (chain,) = generate(docked_charger, seed=0, types=[EditType.INSERT])
+    edit = chain.site.edits[-1]
+    assert edit.params["dock"] == CHARGER.dock and edit.params["charge_power_w"] == CHARGE_POWER_W
+    assert _charge_power(chain.site, edit.target) == CHARGE_POWER_W
+    assert _charge_power(open_site(save(chain.site)), edit.target) == CHARGE_POWER_W
+
+
+@pytest.mark.parametrize("kind", [EditType.MOVE, EditType.INSERT])
+def test_the_inert_copy_keeps_the_charge_power(docked_charger: Site, kind: EditType) -> None:
+    from arena_simulation_setup.generative.flowedit.generate import Control, controls
+
+    (chain,) = generate(docked_charger, seed=0, types=[kind])
+    inert = dict(controls(docked_charger, chain))[Control.INERT_OBJECT]
+    assert _charge_power(inert, f"{chain.site.edits[0].target}_inert") == CHARGE_POWER_W
