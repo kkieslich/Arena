@@ -260,6 +260,21 @@ local_planner: orca
 entrances: {rate: 0.1, max_concurrent: 6, max_total: 30}
 ```
 
+## Placement (INFRA)
+
+[`place.py`](place.py) places the INFRA study's elements (study design §3, §4) through these edits. `CATALOG` holds a charger pair (`charger_1`, `charger_2`: `robot_charger`, 1.0 m apart centre to centre, 125 W, 1.2 m approach), a bay pair (`bay_1`, `bay_2`: `waiting_bay` slots, 1.0 m apart), `locker_1` (`parcel_locker`, 1.5 m access zone) and `loading_point` (a `waiting_bay` slot), each object with its jackal dock. The names are the ones the fleet task mode refers to.
+
+`candidate_spots(site, element)` lists, deterministically and cached, a spot every 1 m along every wall piece (`wall_pieces`) of the allowed zones, less `EXCLUDED_ZONES` (the twin's ramp, stair landing and the zones NAV@r at 0.325 m cuts off). A pair is one spot on one piece. A spot carries its objects' poses (fronts into the room, backs at the wall gap), footprints, docks and dock goto points, the clear zone and turning circle in front, the corridor width it leaves (distance transform of the floor raster), and a verdict per §3 rule: `pass` or `fail` where the site has the data, `unknown` (filtering nothing) for outlets, tactile paths, exit width, dead ends, and doors or lifts on a level without any. An object whose model resolves without a bounding box (a floor marking, the twin's `link_scan`) is no obstacle; its dock is. An element model must resolve and carry a `face`.
+
+```python
+spots = {name: candidate_spots(site, name) for name in CATALOG}
+layout = Layout.of([charger_spot, bay_spot, locker_spot, loading_spot])  # layout.layout_id: a short hash of its spots
+check_layout(site, layout)          # failing rules, overlapping elements, a corridor the others narrow
+edited = apply_layout(site, layout) # insert (dock, charge power) or move each object, in memory
+path = save_layout(site, layout)    # <site key>__layout_<layout id>, assets hardlinked
+placed_elements(layout)             # PlacedElement(name, footprint, dock_point, blocks_floor) for the NAV@r filter
+```
+
 ## Files
 
 | File | Purpose |
@@ -270,6 +285,7 @@ entrances: {rate: 0.1, max_concurrent: 6, max_total: 30}
 | `settings.py` | crowd settings and their defaults |
 | `edit.py` | edit operations, sites, saving edited worlds |
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
+| `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |

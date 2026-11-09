@@ -1,0 +1,792 @@
+"""INFRA placement operators: the MVP elements (study design §3), their deterministic wall-adjacent candidate spots every
+1 m (§4) with a verdict per §3 rule, and layouts of one spot per element inserted, moved or removed through FLOWEDIT edits.
+
+A spot stands against a straight wall piece of an allowed zone (`generate.wall_pieces`), its objects' fronts (the
+models' annotated `face`) turned into the room, their backs at the generator's wall gap. A pair (2 chargers, 2 bays)
+is one spot: its members stand `spacing_m` apart, centre to centre, on the same piece. Rules with data say pass or fail;
+rules without site data (outlets, tactile paths, exit width, dead ends, and doors or lifts on a level without any) say
+unknown and filter nothing. NAV@r is not a rule here: `placed_elements` hands a layout to the NAV@r filter."""
+
+from __future__ import annotations
+
+import dataclasses
+import enum
+import fnmatch
+import hashlib
+import json
+import math
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import attrs
+
+from .edit import SEPARATOR, EditType, Site, apply, save
+
+if TYPE_CHECKING:
+    import numpy as np
+    import shapely
+
+    from arena_simulation_setup.tree.World.model import Level
+
+    from .generate import WallPiece
+
+#: Spots lie this far apart along a wall piece (§4)
+STEP_M = 1.0
+#: The members of a pair stand this far apart, centre to centre, on one wall piece
+PAIR_SPACING_M = 1.0
+#: The remaining clear corridor width beyond an element, its docks and its clear zone (§3, placeholder)
+CORRIDOR_MIN_M = 1.8
+#: Corridor widths are measured up to this width; a wider corridor reports it
+CORRIDOR_CAP_M = 5.0
+#: The wheelchair turning circle's diameter that stays free in front of each element (§3)
+TURNING_CIRCLE_M = 1.5
+#: Chargers and waiting bays keep this far from door spans and lift cabins (§3)
+DOOR_DISTANCE_M = 2.0
+#: The fleet study's charger power (Kolja, 9 Nov)
+CHARGE_POWER_W = 125.0
+#: The floor raster's cell size, the one NAV@r and the nav map use
+RESOLUTION_M = 0.05
+#: Zones no element goes to, as `fnmatch` patterns: the ramp, the stair landing and the zones NAV@r at 0.325 m cuts
+#: off from the twin's main floor (side corridor, side room, south arm). Other worlds name their own.
+EXCLUDED_ZONES = ("ramp", "stair_landing", "side_corridor_*", "side_room", "south_arm")
+#: Overlaps below this area (m^2) are shared edges, not overlaps
+AREA_EPS = 1e-4
+
+#: The jackal dock, 1.2 m deep and 1.0 m wide, in front of a charger whose origin is its middle (face +x)
+CHARGER_DOCK = ((0.25, -0.5), (1.45, -0.5), (1.45, 0.5), (0.25, 0.5))
+#: The jackal dock in front of a parcel locker whose origin is a back corner (face +x)
+LOCKER_DOCK = ((0.55, 0.02), (1.75, 0.02), (1.75, 1.02), (0.55, 1.02))
+#: A waiting bay's slot around its origin, 1.2 m deep and 1.0 m wide: its footprint and its dock (face +x)
+SLOT = ((-0.6, -0.5), (0.6, -0.5), (0.6, 0.5), (-0.6, 0.5))
+
+
+class Verdict(enum.StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+
+
+class Rule(enum.StrEnum):
+    """The §3 rules a spot gets a verdict on, in report order."""
+
+    AGAINST_WALL = "against_wall"  # every object backs onto the wall piece (§3: against a wall)
+    NO_OVERLAP = "no_overlap"  # footprints on the floor, clear of walls, door spans and objects
+    CLEAR_ZONE = "clear_zone"  # the approach or access zone in front is free floor
+    TURNING_CIRCLE = "turning_circle"  # a free 1.5 m circle in front
+    CORRIDOR_WIDTH = "corridor_width"  # remaining clear corridor width
+    DOCKS_ON_FLOOR = "docks_on_floor"  # every dock free floor, its goto point on a free cell
+    PEDS_ZONES = "peds_zones"  # outside PEDS source and sink zones; unknown until they are given
+    DOOR_DISTANCE = "door_distance"  # >= 2 m from door spans; unknown on a level without doors
+    LIFT_DISTANCE = "lift_distance"  # >= 2 m from lift cabins; unknown on a level without lifts
+    OUTLET_CABLE = "outlet_cable"  # cable run <= 10 m to an outlet; no outlet data
+    TACTILE_PATH = "tactile_path"  # tactile paths clear with a 0.6 m margin; no data
+    EXIT_WIDTH = "exit_width"  # required exit width clear; no data
+    DEAD_END_TURNING = "dead_end_turning"  # a turning circle at every dead end the element makes; not computed
+
+
+#: Rules every element gets a verdict on
+COMMON_RULES = (Rule.AGAINST_WALL, Rule.NO_OVERLAP, Rule.TURNING_CIRCLE, Rule.CORRIDOR_WIDTH, Rule.DOCKS_ON_FLOOR, Rule.PEDS_ZONES, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
+#: Rules without site data: always unknown
+NO_DATA_RULES = (Rule.OUTLET_CABLE, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
+
+Point = tuple[float, float]
+
+
+@attrs.frozen
+class Element:
+    """One placeable element of the catalog: `members` objects of `model`, `spacing_m` apart along the wall, each with
+    `dock` (object frame) and, for a model without a bounding box, `footprint` (object frame); `clear_m` of clear
+    approach or access in front of the footprints; a robot in a dock charges with `charge_power_w`. `blocks_floor` is
+    False for floor markings, which only a parked robot blocks. `rules` are the §3 rules it gets a verdict on."""
+
+    name: str
+    model: str
+    members: tuple[str, ...]
+    dock: tuple[Point, ...]
+    spacing_m: float = 0.0
+    footprint: tuple[Point, ...] | None = None
+    clear_m: float = 0.0
+    turning_circle_m: float = TURNING_CIRCLE_M
+    charge_power_w: float | None = None
+    blocks_floor: bool = True
+    door_distance_m: float | None = None
+    rules: tuple[Rule, ...] = COMMON_RULES
+
+
+def _rules(*extra: Rule) -> tuple[Rule, ...]:
+    return tuple(rule for rule in Rule if rule in COMMON_RULES or rule in extra)
+
+
+#: The MVP catalog (§3, §4: 1 charger dock of 2 chargers, 1 waiting bay of 2 slots, 1 parcel locker) and the loading
+#: point the fleet's deliveries start from (§8), by element name. Object names as the fleet mode refers to them.
+CATALOG: Mapping[str, Element] = {
+    element.name: element
+    for element in (
+        Element("charger_pair", "Common/Object/robot_charger", ("charger_1", "charger_2"), CHARGER_DOCK, PAIR_SPACING_M, clear_m=1.2, charge_power_w=CHARGE_POWER_W, door_distance_m=DOOR_DISTANCE_M, rules=_rules(Rule.CLEAR_ZONE, Rule.DOOR_DISTANCE, Rule.LIFT_DISTANCE, Rule.OUTLET_CABLE)),
+        Element("bay_pair", "Common/Object/waiting_bay", ("bay_1", "bay_2"), SLOT, PAIR_SPACING_M, footprint=SLOT, blocks_floor=False, door_distance_m=DOOR_DISTANCE_M, rules=_rules(Rule.DOOR_DISTANCE, Rule.LIFT_DISTANCE)),
+        Element("locker", "Common/Object/parcel_locker", ("locker_1",), LOCKER_DOCK, clear_m=1.5, rules=_rules(Rule.CLEAR_ZONE, Rule.OUTLET_CABLE)),
+        Element("loading_point", "Common/Object/waiting_bay", ("loading_point",), SLOT, footprint=SLOT, blocks_floor=False),
+    )
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class PlacedElement:
+    """What the NAV@r filter needs of one placed object: its level-frame `footprint`, the `dock_point` a robot goes to,
+    and whether the object itself `blocks_floor` (a waiting bay does not; the filter parks a jackal on it)."""
+
+    name: str
+    footprint: shapely.Polygon
+    dock_point: Point
+    blocks_floor: bool
+
+
+@attrs.frozen(eq=False)
+class PlacedObject:
+    """One object of a spot: its pose, level-frame footprint and dock, and the dock's goto point (the deepest point of
+    the dock, where the runtime sends a robot)."""
+
+    name: str
+    model: str
+    x: float
+    y: float
+    yaw: float
+    footprint: shapely.Polygon
+    dock: shapely.Polygon
+    goto: Point
+
+
+@attrs.frozen(eq=False)
+class Spot:
+    """A candidate spot of `element`: step `step` along wall piece `piece` (ring order, `piece_m` long) of `zone` on
+    `level`, its centre `along_m` from the piece's start, the piece's `frame`, its `objects`, the `clear` (approach or
+    access) zone and the `turning` circle in front, the remaining `corridor_m`, and a verdict per rule of the element."""
+
+    element: Element
+    level: str
+    zone: str
+    piece: int
+    step: int
+    along_m: float
+    piece_m: float
+    frame: _Frame
+    objects: tuple[PlacedObject, ...]
+    clear: shapely.Polygon
+    turning: shapely.Polygon | None
+    corridor_m: float
+    verdicts: tuple[tuple[Rule, Verdict], ...]
+
+    @property
+    def id(self) -> str:
+        """Short hash of the element and its objects' poses, to the mm: the same spot on the same site keeps it."""
+        record = {"element": self.element.name, "level": self.level, "objects": [[o.name, o.model, round(o.x, 3), round(o.y, 3), round(o.yaw, 4)] for o in self.objects]}
+        return hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()[:8]
+
+    @property
+    def verdict(self) -> dict[Rule, Verdict]:
+        return dict(self.verdicts)
+
+    @property
+    def failed(self) -> tuple[Rule, ...]:
+        return tuple(rule for rule, verdict in self.verdicts if verdict is Verdict.FAIL)
+
+    @property
+    def valid(self) -> bool:
+        """Whether no rule fails; unknown rules do not filter."""
+        return not self.failed
+
+    @property
+    def taken(self) -> shapely.Polygon:
+        """The floor the element and the robots in its docks stand on."""
+        import shapely
+
+        return shapely.union_all([g for o in self.objects for g in (o.footprint, o.dock)])
+
+    @property
+    def keep_clear(self) -> shapely.Polygon:
+        """The floor no other element may take: `taken`, the clear zone and the turning circle."""
+        import shapely
+
+        return shapely.union_all([self.taken, self.clear, *([self.turning] if self.turning is not None else [])])
+
+
+@attrs.frozen(eq=False)
+class Layout:
+    """One spot per element. Its `layout_id` is a short hash of its spots, in any order."""
+
+    spots: tuple[Spot, ...]
+
+    @classmethod
+    def of(cls, spots: Iterable[Spot]) -> Layout:
+        spots = tuple(spots)
+        names = [s.element.name for s in spots]
+        if len(set(names)) != len(names):
+            raise ValueError(f"a layout takes one spot per element, got {names}")
+        order = list(CATALOG)
+        return cls(tuple(sorted(spots, key=lambda s: (order.index(s.element.name) if s.element.name in order else len(order), s.element.name))))
+
+    @property
+    def layout_id(self) -> str:
+        return hashlib.sha256(json.dumps(sorted(s.id for s in self.spots)).encode()).hexdigest()[:8]
+
+    @property
+    def objects(self) -> tuple[PlacedObject, ...]:
+        return tuple(o for s in self.spots for o in s.objects)
+
+
+def placed_elements(layout: Layout) -> list[PlacedElement]:
+    """The objects of `layout` as the NAV@r filter takes them, in layout order."""
+    return [PlacedElement(o.name, o.footprint, o.goto, s.element.blocks_floor) for s in layout.spots for o in s.objects]
+
+
+# --- the site's geometry ---------------------------------------------------------------------------------------------
+
+
+@attrs.define
+class _Context:
+    """The geometry of one level of a site that spots are checked against."""
+
+    root: Path
+    level_id: str
+    level: Level
+    wall_segments: list[tuple[Point, Point]]
+    walls: shapely.Geometry
+    door_spans: shapely.Geometry
+    doors: shapely.Geometry
+    lifts: shapely.Geometry
+    shapes: dict[str, shapely.Polygon]
+    floor: shapely.Geometry
+    floor_inner: shapely.Geometry
+    obstacles: dict[str, shapely.Polygon]
+    obstacle_union: shapely.Geometry
+    _grid: tuple[np.ndarray, Point] | None = attrs.field(default=None, init=False)
+
+    @property
+    def grid(self) -> tuple[np.ndarray, Point]:
+        """The floor raster: True where a cell is floor, not wall and no obstacle; and its origin."""
+        if self._grid is None:
+            grid, origin = attrs.evolve(self.level, objects=[]).render_grid(resolution=RESOLUTION_M, asset_color="black", asset_name_color=None, static_objects=sorted(self.obstacles.items()))
+            self._grid = (grid == 255, (float(origin[0]), float(origin[1])))
+        return self._grid
+
+
+_CONTEXTS: dict[tuple[Any, ...], _Context] = {}
+_SPOTS: dict[tuple[Any, ...], tuple[Spot, ...]] = {}
+
+
+def clear_cache() -> None:
+    """Forget the cached site geometry and spots."""
+    _CONTEXTS.clear()
+    _SPOTS.clear()
+
+
+def _site_key(site: Site) -> tuple[Any, ...]:
+    return (str(site.root.resolve()), site.key, site.scenario, site.seed)
+
+
+def _obstacles(site: Site, level_id: str, ignore: frozenset[str]) -> dict[str, shapely.Polygon]:
+    """The footprints of the objects on the level that block floor, by id, except `ignore`. A model that resolves
+    without a bounding box blocks nothing (a floor marking, a scan of the whole site such as the twin's `link_scan`);
+    one that does not resolve keeps the generator's fallback box; an object over the passage clearance is skipped. The
+    docks of docked objects are obstacles too, as `<id>#dock`."""
+    import shapely
+
+    from arena_simulation_setup.tree.World.model import _PASSAGE_CLEARANCE
+
+    from . import generate as gen
+
+    raised = {f"obj:{o.name}" for o in site.world.levels[level_id].objects if o.pose.position.z > _PASSAGE_CLEARANCE}
+    here: dict[str, tuple[dict[str, Any], str]] = {}
+    for obj in gen.objects(site):
+        placed = gen._at(site, obj)
+        model = gen._model(site, obj)
+        if placed is None or placed[0] != level_id or model is None or obj in ignore or obj in raised:
+            continue
+        here[obj] = (placed[1], model)
+    gen.resolve_footprints(site, sorted({model for _, model in here.values()}))
+    out = {}
+    for obj, (pose, model) in sorted(here.items()):
+        if gen._FOOTPRINTS.get((site.root, model)) is None and (site.root, model) not in gen._UNRESOLVED:
+            continue
+        out[obj] = gen.footprint(site.root, model, float(pose["x"]), float(pose["y"]), float(pose["yaw"]))
+    # a dock is floor a robot stands on, whether its object blocks floor or not (a waiting bay)
+    for o in site.world.levels[level_id].objects:
+        corners = o.dock_polygon()
+        if corners is not None and f"obj:{o.name}" not in ignore:
+            out[f"obj:{o.name}#dock"] = shapely.Polygon([(p.x, p.y) for p in corners])
+    return out
+
+
+def _context(site: Site, level_id: str, ignore: frozenset[str]) -> _Context:
+    import shapely
+
+    from . import generate as gen
+
+    present = frozenset(obj for obj in ignore if obj in site.graph.entities)
+    key = (*_site_key(site), level_id, present)
+    if key in _CONTEXTS:
+        return _CONTEXTS[key]
+    level = site.world.levels[level_id]
+    segments = [((w.start.x, w.start.y), (w.end.x, w.end.y)) for w in level.all_walls]
+    lines = [shapely.LineString(s) for s in segments]
+    spans = [shapely.LineString([(d.start.x, d.start.y), (d.end.x, d.end.y)]) for d in level.doors]
+    door_spans = shapely.union_all(spans) if spans else shapely.GeometryCollection()
+    lifts = [shapely.Polygon([(c.x, c.y) for c in e.cabin_corners()]) for e in level.elevators]
+    shapes = {z.name: z.shape() for z in level.zones if len(z.polygon) >= 3}
+    floor = shapely.union_all([s.buffer(0) for s in shapes.values()]).buffer(1e-3)
+    obstacles = _obstacles(site, level_id, present)
+    context = _Context(
+        root=site.root,
+        level_id=level_id,
+        level=level,
+        wall_segments=segments,
+        walls=shapely.union_all(lines).buffer(gen.WALL_GAP_M) if lines else shapely.Polygon(),
+        door_spans=door_spans,
+        doors=door_spans.buffer(gen.DOOR_CLEARANCE_M) if spans else shapely.Polygon(),
+        lifts=shapely.union_all(lifts) if lifts else shapely.GeometryCollection(),
+        shapes=shapes,
+        floor=floor,
+        floor_inner=floor.buffer(-gen.WALL_GAP_M - 1e-3),
+        obstacles=obstacles,
+        obstacle_union=shapely.union_all(list(obstacles.values())) if obstacles else shapely.Polygon(),
+    )
+    _CONTEXTS[key] = context
+    return context
+
+
+def resolve_element(site: Site, element: Element) -> shapely.Polygon:
+    """The footprint of one of `element`'s objects in its own frame. ValueError when its model does not resolve, when it
+    has no annotated `face` (its front, and so the side its dock is on, would be a guess), or when neither the element
+    nor the model's bounding box gives a footprint."""
+    import shapely
+
+    from arena_simulation_setup.utils.face import front_angle as annotated_front
+
+    from . import generate as gen
+
+    gen.resolve_footprints(site, [element.model], strict=True)
+    face = gen._FACES.get((site.root, element.model))
+    if annotated_front(face) is None:
+        raise ValueError(f"model {element.model!r} has no face annotation ({face!r}): its front, and so the side its dock is on, is unknown")
+    if element.footprint is not None:
+        return shapely.Polygon(element.footprint)
+    local = gen._FOOTPRINTS.get((site.root, element.model))
+    if local is None:
+        raise ValueError(f"model {element.model!r} has no bounding box: give element {element.name!r} a footprint")
+    return local
+
+
+def element_named(element: str | Element) -> Element:
+    if isinstance(element, Element):
+        return element
+    if element not in CATALOG:
+        raise ValueError(f"no element {element!r} (catalog: {', '.join(CATALOG)})")
+    return CATALOG[element]
+
+
+def candidate_zones(level: Level, zones: Sequence[str] | None = None, exclude: Sequence[str] = EXCLUDED_ZONES) -> list[str]:
+    """The zones of `level` elements may go to: `zones` (default: the generator's allowed zones), less those matching a
+    pattern of `exclude`."""
+    from . import generate as gen
+
+    allowed = [z.name for z in gen.allowed_zones(level)]
+    if zones is not None:
+        unknown = sorted(set(zones) - {z.name for z in level.zones})
+        if unknown:
+            raise ValueError(f"no zones {unknown} on level {level.id!r}")
+        allowed = [z for z in allowed if z in zones]
+    return [z for z in allowed if not any(fnmatch.fnmatchcase(z, pattern) for pattern in exclude)]
+
+
+# --- spots -------------------------------------------------------------------------------------------------------------
+
+
+@attrs.frozen
+class _Frame:
+    """A wall piece's frame: `start` on the zone edge's line, `u` along it, `n` into the zone."""
+
+    start: Point
+    u: Point
+    n: Point
+
+    def at(self, along: float, depth: float) -> Point:
+        return (self.start[0] + self.u[0] * along + self.n[0] * depth, self.start[1] + self.u[1] * along + self.n[1] * depth)
+
+    def along(self, x: float, y: float) -> float:
+        return (x - self.start[0]) * self.u[0] + (y - self.start[1]) * self.u[1]
+
+    def depth(self, x: float, y: float) -> float:
+        return (x - self.start[0]) * self.n[0] + (y - self.start[1]) * self.n[1]
+
+    def extent(self, geometry: shapely.Geometry) -> tuple[float, float, float, float]:
+        """`geometry`'s along and depth ranges: (along_lo, along_hi, depth_lo, depth_hi)."""
+        import shapely
+
+        coords = shapely.get_coordinates(geometry)
+        along = [self.along(x, y) for x, y in coords]
+        depth = [self.depth(x, y) for x, y in coords]
+        return min(along), max(along), min(depth), max(depth)
+
+    def rect(self, along_lo: float, along_hi: float, depth_lo: float, depth_hi: float) -> shapely.Polygon:
+        import shapely
+
+        return shapely.Polygon([self.at(along_lo, depth_lo), self.at(along_hi, depth_lo), self.at(along_hi, depth_hi), self.at(along_lo, depth_hi)])
+
+
+def _placed(polygon: shapely.Polygon, x: float, y: float, yaw: float) -> shapely.Polygon:
+    import shapely.affinity
+
+    return shapely.affinity.translate(shapely.affinity.rotate(polygon, yaw, origin=(0, 0), use_radians=True), xoff=x, yoff=y)
+
+
+def _overlaps(a: shapely.Geometry, b: shapely.Geometry) -> bool:
+    return bool(a.intersects(b)) and a.intersection(b).area > AREA_EPS
+
+
+def _span(local: shapely.Polygon, dock: shapely.Polygon, element: Element) -> float:
+    """The length of wall `element` takes: its members' spacing plus the wider of a footprint and a dock, both turned
+    so their front faces along the wall's normal (their along-wall extent is their extent across the front)."""
+    import shapely
+
+    out = 0.0
+    for geometry in (local, dock):
+        ys = shapely.get_coordinates(geometry)[:, 1]
+        out = max(out, float(ys.max() - ys.min()))
+    return (len(element.members) - 1) * element.spacing_m + out
+
+
+def _member(ctx: _Context, piece: WallPiece, frame: _Frame, local: shapely.Polygon, front: float, centre: float) -> tuple[float, float, float, bool]:
+    """The pose of one object whose footprint's middle stands `centre` along the piece: turned so its front points
+    along the piece's normal, its back at the wall gap from the wall behind or the zone edge, whichever lies further in,
+    as `generate.Spots.against_wall` places it; and whether a wall stands behind it (`generate.backs_onto_wall`)."""
+    import shapely.affinity
+
+    from . import generate as gen
+
+    nx, ny = frame.n
+    yaw = math.atan2(ny, nx) - front
+    yaw = round(math.atan2(math.sin(yaw), math.cos(yaw)), 4) + 0.0
+    turned = shapely.affinity.rotate(local, yaw, origin=(0, 0), use_radians=True)
+    coords = list(turned.exterior.coords)
+    lo = min(vx * frame.u[0] + vy * frame.u[1] for vx, vy in coords)
+    hi = max(vx * frame.u[0] + vy * frame.u[1] for vx, vy in coords)
+    back = max(-(vx * nx + vy * ny) for vx, vy in coords)
+    px, py = frame.at(centre - (lo + hi) / 2.0, 0.0)
+    offset = piece.offset(px, py)
+    behind = max(offset or 0.0, 0.0) + gen.WALL_GAP_M + gen.WALL_SLACK_M
+    x, y = gen._round(px + nx * (behind + back)), gen._round(py + ny * (behind + back))
+    return x, y, yaw, offset is not None and gen.backs_onto_wall(piece, turned, x, y)
+
+
+def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, along: tuple[float, float], front: float, others: shapely.Geometry | None = None) -> float:
+    """The clear corridor width left in front of `blocked` (and `others`, painted as obstacles too), up to
+    `CORRIDOR_CAP_M`, to about 1.5 raster cells (where the walls fall on the raster): on rays from `blocked`'s front along the normal, across its width, twice
+    the largest distance to an obstacle (the floor raster's distance transform) a ray meets before it hits one; the
+    narrowest ray's."""
+    import numpy as np
+    import shapely
+    from scipy import ndimage
+
+    grid, (ox, oy) = ctx.grid
+    height, width = grid.shape
+    res = RESOLUTION_M
+    cap = CORRIDOR_CAP_M
+    lo, hi = along
+    x0, y0, x1, y1 = _window(frame, along, front).bounds
+    c0, c1 = max(0, math.floor((x0 - ox) / res)), min(width, math.ceil((x1 - ox) / res))
+    r0, r1 = max(0, height - math.ceil((y1 - oy) / res)), min(height, height - math.floor((y0 - oy) / res))
+    if c1 <= c0 or r1 <= r0:
+        return 0.0
+    free = grid[r0:r1, c0:c1].copy()
+    paint = blocked if others is None or others.is_empty else shapely.union_all([blocked, others])
+    bx0, by0, bx1, by1 = paint.bounds
+    pc0, pc1 = max(c0, math.floor((bx0 - ox) / res)), min(c1, math.ceil((bx1 - ox) / res))
+    pr0, pr1 = max(r0, height - math.ceil((by1 - oy) / res)), min(r1, height - math.floor((by0 - oy) / res))
+    if pc1 > pc0 and pr1 > pr0:
+        xs = ox + (np.arange(pc0, pc1) + 0.5) * res
+        ys = oy + (height - 1 - np.arange(pr0, pr1) + 0.5) * res
+        xx, yy = np.meshgrid(xs, ys)
+        free[pr0 - r0 : pr1 - r0, pc0 - c0 : pc1 - c0] &= ~shapely.contains_xy(paint, xx, yy)
+    distance = ndimage.distance_transform_edt(np.pad(free, 1, constant_values=False))[1:-1, 1:-1] * res
+    rays = np.linspace(lo + res, hi - res, max(2, math.ceil((hi - lo) / 0.25) + 1))
+    depths = np.arange(front + res, front + cap + res, res)
+    best = cap
+    for a in rays:
+        px = frame.start[0] + frame.u[0] * a + frame.n[0] * depths
+        py = frame.start[1] + frame.u[1] * a + frame.n[1] * depths
+        cols = np.floor((px - ox) / res).astype(int) - c0
+        rows = height - 1 - np.floor((py - oy) / res).astype(int) - r0
+        inside = (rows >= 0) & (rows < free.shape[0]) & (cols >= 0) & (cols < free.shape[1])
+        open_ = np.zeros(len(depths), dtype=bool)
+        open_[inside] = free[rows[inside], cols[inside]]
+        run = len(depths) if open_.all() else int(np.argmin(open_))
+        # twice the distance between cell centres misses about one cell of the gap between the obstacles' edges
+        across = 0.0 if run == 0 else 2.0 * float(distance[rows[:run], cols[:run]].max()) + res
+        best = min(best, across)
+    return round(min(best, cap), 3)
+
+
+def _window(frame: _Frame, along: tuple[float, float], front: float) -> shapely.Polygon:
+    """The floor `_corridor_width` reads for an element spanning `along` with its front at `front`: wide enough that
+    every distance under `CORRIDOR_CAP_M / 2` from a ray cell is measured, not cut off by the window."""
+    res = RESOLUTION_M
+    return frame.rect(along[0] - CORRIDOR_CAP_M / 2.0 - res, along[1] + CORRIDOR_CAP_M / 2.0 + res, front - CORRIDOR_CAP_M / 2.0, front + 1.5 * CORRIDOR_CAP_M + res)
+
+
+def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], against: bool, clear: shapely.Polygon, turning: shapely.Polygon | None, corridor: float, corridor_min_m: float, peds: Sequence[shapely.Polygon] | None) -> tuple[tuple[Rule, Verdict], ...]:
+    import shapely
+
+    from . import generate as gen
+
+    def ok(condition: bool) -> Verdict:
+        return Verdict.PASS if condition else Verdict.FAIL
+
+    def free_floor(geometry: shapely.Geometry) -> bool:
+        return bool(ctx.floor.covers(geometry)) and not ctx.walls.intersects(geometry) and not ctx.obstacle_union.intersects(geometry)
+
+    footprints = [o.footprint for o in objects]
+    docks = [o.dock for o in objects]
+    out: dict[Rule, Verdict] = {}
+    out[Rule.AGAINST_WALL] = ok(against)
+    out[Rule.NO_OVERLAP] = ok(
+        all(ctx.floor_inner.covers(f) and not ctx.walls.intersects(f) and not ctx.doors.intersects(f) and not ctx.obstacle_union.intersects(f.buffer(gen.MARGIN_M)) for f in footprints)
+        and not any(_overlaps(a, b) for i, a in enumerate(footprints) for b in footprints[i + 1 :])
+    )
+    out[Rule.CLEAR_ZONE] = ok(clear.is_empty or (free_floor(clear) and not ctx.doors.intersects(clear)))
+    out[Rule.TURNING_CIRCLE] = ok(turning is None or free_floor(turning))
+    out[Rule.CORRIDOR_WIDTH] = ok(corridor >= corridor_min_m)
+    grid, (ox, oy) = ctx.grid
+
+    def on_free_cell(point: Point) -> bool:
+        row = grid.shape[0] - 1 - math.floor((point[1] - oy) / RESOLUTION_M)
+        col = math.floor((point[0] - ox) / RESOLUTION_M)
+        return 0 <= row < grid.shape[0] and 0 <= col < grid.shape[1] and bool(grid[row, col])
+
+    out[Rule.DOCKS_ON_FLOOR] = ok(all(free_floor(d) for d in docks) and all(on_free_cell(o.goto) for o in objects))
+    taken = shapely.union_all([*footprints, *docks, clear])
+    out[Rule.PEDS_ZONES] = Verdict.UNKNOWN if peds is None else ok(not any(_overlaps(taken, zone) for zone in peds))
+    near = shapely.union_all([*footprints, *docks])
+    distance = element.door_distance_m if element.door_distance_m is not None else DOOR_DISTANCE_M
+    out[Rule.DOOR_DISTANCE] = Verdict.UNKNOWN if ctx.door_spans.is_empty else ok(near.distance(ctx.door_spans) >= distance)
+    out[Rule.LIFT_DISTANCE] = Verdict.UNKNOWN if ctx.lifts.is_empty else ok(near.distance(ctx.lifts) >= distance)
+    for rule in NO_DATA_RULES:
+        out[rule] = Verdict.UNKNOWN
+    return tuple((rule, out[rule]) for rule in Rule if rule in element.rules)
+
+
+def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float, zone: str, index: int, piece: WallPiece, step: int, centre: float, corridor_min_m: float, peds: Sequence[shapely.Polygon] | None) -> Spot:
+    import shapely
+    from shapely.ops import polylabel
+
+    frame = _Frame(tuple(piece.line.coords[0]), piece.direction, piece.normal)  # type: ignore[arg-type]
+    dock_local = shapely.Polygon(element.dock)
+    objects: list[PlacedObject] = []
+    against = True
+    count = len(element.members)
+    for i, name in enumerate(element.members):
+        x, y, yaw, backed = _member(ctx, piece, frame, local, front, centre + (i - (count - 1) / 2.0) * element.spacing_m)
+        against = against and backed
+        dock = _placed(dock_local, x, y, yaw)
+        goto = polylabel(dock, tolerance=0.01)
+        objects.append(PlacedObject(name, element.model, x, y, yaw, _placed(local, x, y, yaw), dock, (round(goto.x, 3), round(goto.y, 3))))
+    footprints = shapely.union_all([o.footprint for o in objects])
+    docks = shapely.union_all([o.dock for o in objects])
+    lo, hi, _, _ = frame.extent(shapely.union_all([footprints, docks]))
+    fp_lo, fp_hi, _, fp_front = frame.extent(footprints)
+    dock_front = frame.extent(docks)[3]
+    # the clear zone runs from the footprints' front over the clear depth and the docks, as wide as both
+    far = max(fp_front + element.clear_m, dock_front) if element.clear_m > 0 else fp_front
+    clear = frame.rect(lo, hi, fp_front, far) if far > fp_front + 1e-6 else shapely.Polygon()
+    turning = None
+    if element.turning_circle_m > 0:
+        radius = element.turning_circle_m / 2.0
+        turning = shapely.Point(frame.at((fp_lo + fp_hi) / 2.0, fp_front + radius)).buffer(radius, quad_segs=16)
+    blocked = shapely.union_all([footprints, docks, clear])
+    corridor = _corridor_width(ctx, frame, blocked, (lo, hi), max(far, dock_front, fp_front))
+    verdicts = _verdicts(ctx, element, objects, against, clear, turning, corridor, corridor_min_m, peds)
+    return Spot(element, ctx.level_id, zone, index, step, round(centre, 3), round(piece.line.length, 3), frame, tuple(objects), clear, turning, corridor, verdicts)
+
+
+def candidate_spots(
+    site: Site,
+    element: str | Element,
+    *,
+    zones: Sequence[str] | None = None,
+    exclude: Sequence[str] = EXCLUDED_ZONES,
+    peds_zones: Sequence[str] | None = None,
+    step_m: float = STEP_M,
+    corridor_min_m: float = CORRIDOR_MIN_M,
+) -> tuple[Spot, ...]:
+    """Every candidate spot of `element` on `site`, the same ones for the same site and arguments (and cached): on each
+    level, in each zone of `candidate_zones(zones, exclude)` by name, along each wall piece in ring order, every
+    `step_m` where the element fits on the piece, the steps centred on it. Spots that fail a rule are kept, with their
+    verdicts; `Spot.valid` tells them apart. `peds_zones` names the PEDS source and sink zones; until given, that rule
+    is unknown. The element's own objects, if the site has them, are no obstacles to it (a move)."""
+    from . import generate as gen
+
+    element = element_named(element)
+    key = (*_site_key(site), element, None if zones is None else tuple(zones), tuple(exclude), None if peds_zones is None else tuple(peds_zones), step_m, corridor_min_m)
+    if key in _SPOTS:
+        return _SPOTS[key]
+    local = resolve_element(site, element)
+    front = gen.front_angle(site.root, element.model)
+    turned_dock = _turned(element.dock, -front)
+    span = _span(_turned(tuple(local.exterior.coords)[:-1], -front), turned_dock, element)
+    ignore = frozenset(f"obj:{name}" for name in element.members)
+    if peds_zones is not None:
+        unknown = sorted(set(peds_zones) - {z.name for level in site.world.levels.values() for z in level.zones})
+        if unknown:
+            raise ValueError(f"no zones {unknown} for the PEDS zones")
+    out: list[Spot] = []
+    for level_id, level in site.world.levels.items():
+        names = candidate_zones(level, zones, exclude)
+        if not names:
+            continue
+        ctx = _context(site, level_id, ignore)
+        peds = None if peds_zones is None else [ctx.shapes[name] for name in peds_zones if name in ctx.shapes]
+        for zone in names:
+            for index, piece in enumerate(gen.wall_pieces(ctx.shapes[zone], ctx.wall_segments)):
+                length = piece.line.length
+                if length + 1e-9 < span:
+                    continue
+                count = math.floor((length - span) / step_m + 1e-9) + 1
+                first = span / 2.0 + (length - span - (count - 1) * step_m) / 2.0
+                out += [_spot(ctx, element, local, front, zone, index, piece, k, first + k * step_m, corridor_min_m, peds) for k in range(count)]
+    spots = tuple(out)
+    _SPOTS[key] = spots
+    return spots
+
+
+def _turned(points: Sequence[Point], angle: float) -> shapely.Polygon:
+    """`points` as a polygon turned by `angle` about the origin, so a model's front (at `-angle`) points along +x."""
+    import shapely
+    import shapely.affinity
+
+    return shapely.affinity.rotate(shapely.Polygon(points), angle, origin=(0, 0), use_radians=True)
+
+
+# --- layouts -----------------------------------------------------------------------------------------------------------
+
+
+def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR_MIN_M) -> list[str]:
+    """Why `layout` is no valid layout on `site`, empty when it is: a spot with a failing rule, two elements whose
+    floor overlaps (`Spot.taken` of one in `Spot.keep_clear` of another, or a footprint within the generator's margin
+    of the other's footprints and docks, as `no_overlap` keeps it from objects), an object name taken twice, or a
+    corridor that the other elements narrow below `corridor_min_m`. Objects of the layout's elements that `site`
+    already has are no obstacles here: the layout places them anew."""
+    import shapely
+
+    from . import generate as gen
+
+    def footprints(spot: Spot) -> shapely.Geometry:
+        return shapely.union_all([o.footprint for o in spot.objects]).buffer(gen.MARGIN_M)
+
+    problems = [f"{s.element.name} at {s.zone} piece {s.piece} step {s.step}: {', '.join(s.failed)} fails" for s in layout.spots if s.failed]
+    names = [o.name for o in layout.objects]
+    problems += [f"object {name!r} is placed twice" for name in sorted({n for n in names if names.count(n) > 1})]
+    for i, a in enumerate(layout.spots):
+        for b in layout.spots[i + 1 :]:
+            if a.level == b.level and (_overlaps(a.taken, b.keep_clear) or _overlaps(b.taken, a.keep_clear) or _overlaps(footprints(a), b.taken) or _overlaps(footprints(b), a.taken)):
+                problems.append(f"{a.element.name} and {b.element.name} overlap")
+    placed = frozenset(f"obj:{o.name}" for o in layout.objects)
+    for s in layout.spots:
+        others = [o for o in layout.spots if o is not s and o.level == s.level]
+        if not others:
+            continue
+        blocked = shapely.union_all([s.taken, s.clear])
+        lo, hi, _, front = s.frame.extent(blocked)
+        near = shapely.union_all([shapely.union_all([o.taken, o.clear]) for o in others])
+        if not near.intersects(_window(s.frame, (lo, hi), front)):
+            continue
+        ctx = _context(site, s.level, placed)
+        width = _corridor_width(ctx, s.frame, blocked, (lo, hi), front, near)
+        if width < corridor_min_m:
+            problems.append(f"{s.element.name}: the other elements leave a {width:.2f} m corridor, under {corridor_min_m} m")
+    return problems
+
+
+def insert_params(spot: Spot, obj: PlacedObject) -> dict[str, Any]:
+    """The `insert` edit params of one object of `spot`: model, pose, level, dock and a charger's charge power."""
+    element = spot.element
+    params: dict[str, Any] = {"model": element.model, "x": obj.x, "y": obj.y, "yaw": obj.yaw, "level": spot.level, "dock": [[float(x), float(y)] for x, y in element.dock]}
+    if element.charge_power_w is not None:
+        params["charge_power_w"] = float(element.charge_power_w)
+    return params
+
+
+def apply_layout(site: Site, layout: Layout, *, check: bool = True) -> Site:
+    """`site` with every object of `layout` in place, in memory: an `insert` edit (with its dock and a charger's charge
+    power) for an object the site lacks, a `move` edit for one it has. ValueError for an invalid layout (`check_layout`)
+    unless not `check`."""
+    if check:
+        problems = check_layout(site, layout)
+        if problems:
+            raise ValueError(f"layout {layout.layout_id}: " + "; ".join(problems))
+    for spot in layout.spots:
+        for obj in spot.objects:
+            target = f"obj:{obj.name}"
+            if target in site.graph.entities:
+                site = apply(site, EditType.MOVE, target, {"x": obj.x, "y": obj.y, "yaw": obj.yaw, "level": spot.level})
+            else:
+                site = apply(site, EditType.INSERT, target, insert_params(spot, obj))
+    return site
+
+
+def remove_element(site: Site, element: str | Element) -> Site:
+    """`site` without the objects of `element` it has, one `remove` edit each."""
+    for name in element_named(element).members:
+        if f"obj:{name}" in site.graph.entities:
+            site = apply(site, EditType.REMOVE, f"obj:{name}")
+    return site
+
+
+@attrs.define
+class _NamedSite(Site):
+    """A site that `edit.save` writes under `world_name` instead of the name its edits give it."""
+
+    world_name: str = ""
+
+    @property
+    def name(self) -> str:
+        return self.world_name
+
+
+def layout_name(site: Site, layout: Layout) -> str:
+    """The default world name of `layout` applied to `site`: `<site key>__layout_<layout id>`."""
+    return f"{site.key}{SEPARATOR}layout_{layout.layout_id}"
+
+
+def save_layout(site: Site, layout: Layout, name: str | None = None, *, check: bool = True) -> Path:
+    """Apply `layout` to `site` (`apply_layout`) and save the world copy through `edit.save` under `name` (default
+    `layout_name`), its assets hardlinked; the path it was written to."""
+    edited = apply_layout(site, layout, check=check)
+    fields = {f.name: getattr(edited, f.name) for f in attrs.fields(Site)}
+    return save(_NamedSite(**fields, world_name=name or layout_name(site, layout)))
+
+
+__all__ = [
+    "CATALOG",
+    "CHARGE_POWER_W",
+    "CORRIDOR_MIN_M",
+    "EXCLUDED_ZONES",
+    "STEP_M",
+    "Element",
+    "Layout",
+    "PlacedElement",
+    "PlacedObject",
+    "Rule",
+    "Spot",
+    "Verdict",
+    "apply_layout",
+    "candidate_spots",
+    "candidate_zones",
+    "check_layout",
+    "clear_cache",
+    "insert_params",
+    "layout_name",
+    "placed_elements",
+    "remove_element",
+    "resolve_element",
+    "save_layout",
+]
