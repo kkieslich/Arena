@@ -102,6 +102,7 @@ and an async `done` flag. Shipped modes:
 | `stationary` | [`stationary/`](stationary/) | robot stays parked without goal dispatch, at `pos_x`/`pos_y`/`pos_theta` or a free pose sampled per episode |
 | `scenario` | [`scenario/`](scenario/) | reads `start`/`goal` pairs from the world's scenario YAML. A robot past the `robots:` entries, or on an entry without `phases`, stays parked, and an episode with only parked robots runs until `task.episode.timeout` |
 | `characterization` | [`characterization/`](characterization/) | open-loop maneuver sweep: publishes exact `cmd_vel` profiles through the robot's rated envelope (no nav goals), tags each maneuver with `characterization_phase` markers, odom stall watchdog |
+| `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, with charging trips below a battery level, see [Fleet task stream](#fleet-task-stream) |
 | `null` | [`composite.py`](composite.py) | idle sink for robots unallocated by the fleet manager |
 | `composite` | [`composite.py`](composite.py) | fan-out: each sub-TM sees a scoped `TaskContext` covering only its allocated robots |
 
@@ -161,7 +162,9 @@ share one definition. [`request.py`](../../../../arena_runtime/arena_runtime/are
 - `GoToPhase(pose | target, tolerance_radius?, tolerance_angle?, hold_time?, signal?)`:
   navigate to a pose, or to a zone, door, elevator, docked object or pedestrian
   by name. A zone target dispatches to a free map cell inside the zone with the
-  robot's spawn clearance, a docked object (a world object with a `dock:`
+  robot's spawn clearance, at least `ZONE_GOAL_MARGIN_M` (0.3 m) inside its
+  edge when the zone has such a cell, so nav2's 0.25 m goal tolerance cannot
+  stop the robot outside the zone, a docked object (a world object with a `dock:`
   polygon) to such a cell within half the dock's inner radius of its deepest
   point (a planner's goal tolerance then cannot stop the robot outside the
   dock), facing the object, or its annotated front where the dock covers the
@@ -211,6 +214,29 @@ active), and the resolved phases in `EpisodeRecord.phases` together with
 renders any phase list to one instruction sentence per phase, and
 [`shared/route.py`](../../../../arena_simulation_setup/src/arena_simulation_setup/shared/route.py)
 words a goto as walking directions through the world's doors and openings.
+
+## Fleet task stream
+
+`fleet` ([`fleet/impl.py`](fleet/impl.py)) hands a stream of jobs to a fleet, configured under `task.fleet`:
+
+| Parameter | Meaning |
+| --- | --- |
+| `homes` | zone or docked object each robot starts and parks at, one per robot in robot order |
+| `loading`, `locker` | zone where a delivery loads, docked object where it unloads, a pickup the other way round |
+| `rate`, `pickup_share` | jobs released per hour of sim time, share of pickups |
+| `load_s`, `unload_s` | seconds held where a job loads and unloads |
+| `charge_below`, `charge_until` | battery percent that sends a free robot to a charger, and that frees it again |
+
+- Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
+  every world. Released jobs queue until a robot is free.
+- Each tick, free robots under `charge_below` go to a charger, lowest battery first, the others take queued jobs,
+  fullest battery first, and the rest park at their home. Chargers are the world's objects with `charge_power_w`. A
+  robot whose home is a charger charges there, any other takes a charger whose owner is away and swaps homes with it.
+- The battery is the robot's `power_publisher/energy`. A robot counts as full until it reports.
+- No zone is forbidden at the homes, since a forbidden zone stays in the map for the whole episode. The reset fails
+  when a name is no goto target of the world. `done` is always `False`.
+- At info level the mode logs each release, each finished job with its release and finish time, each charging trip
+  and each full charge.
 
 ## Fleet manager
 
