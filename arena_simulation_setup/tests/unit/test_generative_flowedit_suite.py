@@ -146,3 +146,18 @@ def test_the_shipped_pilot_lists_one_stage_per_job() -> None:
     names = [SU.stage_name(j.world, j.seed) for j in SP.jobs(doc)]
     assert len(names) == len(set(names)) == len(SP.jobs(doc))
     assert all(SU.parse_stage_name(n)[1] in (1, 2, 3, 4, 5, 6, 7, 8) for n in names)
+
+
+def test_a_test_crowd_is_its_own_suite_of_its_partitions(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path) -> None:
+    path, doc = split
+    (tmp_path / "orca.yaml").write_text("local_planner: orca\n")
+    path.write_text(yaml.safe_dump({**doc, "crowds": {"orca": {"settings": "orca.yaml", "partitions": ["held_out_edits"]}}}))
+    suite = _suite(path, worlds, tmp_path / "orca_suite.yaml", "--crowd", "orca")
+    # the held-out edit and its base world as reference, at seed 6, under the merged settings' scenario
+    merged = SP.crowd(SP.load(path), name="orca")
+    assert [s["name"] for s in suite["stages"]] == ["hospital_1__s6", f"{doc['partitions']['held_out_edits'][0]}__s6"]
+    assert {s["config"]["scenario"]["file"].split("_")[-2] for s in suite["stages"]} == {S.digest(merged)[:8]}
+    assert SU.suite_name(path, "orca") == "flowedit_pilot__orca" and SU.suite_name(path) == "flowedit_pilot"
+    # a crowd asked for on partitions it does not run on would be an empty suite
+    assert main(["suite", str(path), "--worlds", str(worlds), "--no-generate", "--out", str(tmp_path / "empty.yaml"), "--crowd", "orca", "--partition", "train"]) == 1
+    assert not (tmp_path / "empty.yaml").exists()

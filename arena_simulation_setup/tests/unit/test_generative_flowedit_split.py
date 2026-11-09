@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from arena_simulation_setup.generative.flowedit import run as R
 from arena_simulation_setup.generative.flowedit import settings as S
 from arena_simulation_setup.generative.flowedit import split as SP
@@ -209,4 +210,79 @@ def test_a_sweep_runs_every_job_and_counts_how_each_ended(doc: dict[str, Any], t
 def test_cli_lists_a_split(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["sweep", str(SPLITS / "peds_pilot.yaml"), "--partition", "held_out_worlds", "--dry-run"]) == 0
     rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
-    assert rows and {r[0] for r in rows} == {"held_out_worlds"} and rows[0][1] == "office_1"
+    assert rows and {(r[0], r[1]) for r in rows} == {(SP.BASE_CROWD, "held_out_worlds")} and rows[0][2] == "office_1"
+    # a test crowd runs on its partitions only: the held-out edits at seeds 6-8 and their base world as reference
+    assert main(["sweep", str(SPLITS / "peds_pilot.yaml"), "--crowd", "test_orca", "--dry-run"]) == 0
+    rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
+    assert len(rows) == 30 and {(r[0], r[1]) for r in rows} == {("test_orca", "held_out_edits")} and sum(r[-1] == "reference" for r in rows) == 3
+    assert main(["sweep", str(SPLITS / "peds_pilot.yaml"), "--crowd", "all", "--dry-run"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == 155 + 5 * 30
+    assert main(["sweep", str(SPLITS / "peds_pilot.yaml"), "--crowd", "sfm", "--dry-run"]) == 1
+
+
+def _crowded(doc: dict[str, Any], tmp_path: Path) -> Path:
+    """`doc` written next to a test crowd `orca` on the held-out edits, with the split's own settings under it."""
+    doc = {**copy.deepcopy(doc), "settings": {"entrances": {"rate": 0}}, "crowds": {"orca": {"settings": "crowds/orca.yaml", "partitions": ["held_out_edits"]}}}
+    (tmp_path / "crowds").mkdir()
+    (tmp_path / "crowds" / "orca.yaml").write_text("local_planner: orca\ncount: 3\n")
+    (tmp_path / "split.yaml").write_text(yaml.safe_dump(doc))
+    return tmp_path / "split.yaml"
+
+
+def test_a_test_crowd_is_merged_over_the_splits_settings_and_runs_on_its_partitions(doc: dict[str, Any], tmp_path: Path) -> None:
+    loaded = SP.load(_crowded(doc, tmp_path))
+    assert SP.crowd_names(loaded) == [SP.BASE_CROWD, "orca"] and SP.partitions_of(loaded, "orca") == ["held_out_edits"]
+    orca = SP.crowd(loaded, name="orca")
+    assert (orca["local_planner"], orca["count"], orca["entrances"]["rate"]) == ("orca", 3, 0)
+    assert SP.crowd(loaded)["local_planner"] is None and S.digest(orca) != S.digest(SP.crowd(loaded))
+    # the base crowd keeps every partition; the test crowd gets the held-out edit and its base as reference, per seed
+    assert len(SP.jobs(loaded)) == 8 and SP.jobs(loaded, ["train"], "orca") == []
+    assert [(j.world, j.reference, j.crowd) for j in SP.jobs(loaded, crowd="orca")] == [("hospital_1", True, "orca")] * 2 + [("hospital_1__bb", False, "orca")] * 2
+    with pytest.raises(ValueError, match="unknown crowd"):
+        SP.jobs(loaded, crowd="sfm")
+    (tmp_path / "crowds" / "orca.yaml").unlink()
+    with pytest.raises(ValueError, match="no settings file"):
+        SP.load(tmp_path / "split.yaml")
+
+
+def test_a_split_names_its_crowds_well(doc: dict[str, Any]) -> None:
+    for crowds, message in (
+        ({"orca": {"settings": "o.yaml", "partitions": ["test"]}}, r"crowds.orca: unknown partitions"),
+        ({"orca": {"settings": "o.yaml", "partitions": []}}, "names no partition"),
+        ({"orca": {"settings": "o.yaml"}}, "exactly"),
+        ({"orca": {"planner": "orca", "settings": "o.yaml", "partitions": ["train"]}}, "exactly"),
+        ({"orca": {"settings": None, "partitions": ["train"]}}, "path of a crowd settings file"),
+        ({SP.BASE_CROWD: {"settings": "o.yaml", "partitions": ["train"]}}, "no crowd name"),
+        ({"Test Orca": {"settings": "o.yaml", "partitions": ["train"]}}, "no crowd name"),
+        ({SP.ALL_CROWDS: {"settings": "o.yaml", "partitions": ["train"]}}, "no crowd name"),
+        (["orca"], "crowds maps"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            SP.check({**doc, "crowds": crowds})
+
+
+def test_a_sweep_records_each_crowd_under_its_own_settings(doc: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    loaded = SP.load(_crowded(doc, tmp_path))
+    seen: list[list[str]] = []
+    monkeypatch.setattr(SP, "_flowedit", lambda args: (seen.append(list(args)), [sys.executable, "-c", "pass"])[1])
+    counts = SP.sweep(loaded, tmp_path / "runs", crowds=[SP.BASE_CROWD, "orca"], regenerate=False, stagger=0.0, log=lambda _: None)
+    assert counts == {"done": 12, "skipped": 0, "failed": 0}
+    files = {a[a.index("--settings") + 1] for a in seen}
+    assert {S.digest(S.load(Path(f))) for f in files} == {S.digest(SP.crowd(loaded)), S.digest(SP.crowd(loaded, name="orca"))}
+    assert len(list((tmp_path / "runs" / "_sweep").glob("orca__*.log"))) == 4
+
+
+@pytest.mark.parametrize("name", [n for n in SP.crowd_names(SP.load(SPLITS / "peds_pilot.yaml")) if n != SP.BASE_CROWD])
+def test_every_test_crowd_of_the_pilot_differs_from_its_base_crowd(name: str) -> None:
+    doc = SP.load(SPLITS / "peds_pilot.yaml")
+    base, test = SP.crowd(doc), SP.crowd(doc, name=name)
+    changed = {
+        "rates": S.need(test, "thirst")["decay_rate"] != S.need(base, "thirst")["decay_rate"],
+        "size": (test["scale"], test["count"]) != (base["scale"], base["count"]),
+        "planner": (test["local_planner"] or "sfm") != (base["local_planner"] or "sfm"),
+    }
+    assert any(changed.values()) and test["entrances"] == base["entrances"]
+    if changed["rates"]:
+        # the test draws start above where nearly every base draw ends (mean + 3 std)
+        base_rate = S.need(base, "thirst")["decay_rate"]
+        assert S.need(test, "thirst")["decay_rate"]["clip_low"] > base_rate["mean"] + base_rate["std"]

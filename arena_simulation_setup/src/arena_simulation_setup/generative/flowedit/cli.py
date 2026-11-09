@@ -186,28 +186,42 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     doc = SP.load(args.split)
     out = args.out or default_out() / args.split.stem
     parts = args.partition or list(SP.PARTITIONS)
+    crowds = _crowds(doc, args.crowd)
     if args.dry_run:
-        for job in SP.jobs(doc, parts):
-            print(f"{job.partition}\t{job.world}\tseed {job.seed}" + ("\treference" if job.reference else ""))
+        for job in (j for name in crowds for j in SP.jobs(doc, parts, name)):
+            print(f"{job.crowd}\t{job.partition}\t{job.world}\tseed {job.seed}" + ("\treference" if job.reference else ""))
         return 0
-    counts = SP.sweep(doc, out, partitions=parts, settings=args.settings, jobs_at_once=args.jobs, domain_base=args.domain_base, regenerate=not args.no_generate, stagger=args.stagger, log=lambda m: print(m, file=sys.stderr))
+    counts = SP.sweep(doc, out, partitions=parts, crowds=crowds, settings=args.settings, jobs_at_once=args.jobs, domain_base=args.domain_base, regenerate=not args.no_generate, stagger=args.stagger, log=lambda m: print(m, file=sys.stderr))
     print(f"{out}: {counts['done']} recorded, {counts['skipped']} already there, {counts['failed']} failed")
     return 1 if counts["failed"] else 0
+
+
+def _crowds(doc: dict[str, Any], chosen: list[str] | None) -> list[str]:
+    """The crowds `--crowd` picks, `all` for every one; the base crowd without it."""
+    if not chosen:
+        return [SP.BASE_CROWD]
+    names = SP.crowd_names(doc) if SP.ALL_CROWDS in chosen else list(dict.fromkeys(chosen))
+    for name in names:
+        SP.partitions_of(doc, name)
+    return names
 
 
 def _cmd_suite(args: argparse.Namespace) -> int:
     doc = SP.load(args.split)
     parts = args.partition or list(SP.PARTITIONS)
-    crowd = SP.crowd(doc, args.settings)
-    suite = SU.build(doc, crowd, parts, worlds=args.worlds, robot=args.robot, regenerate=not args.no_generate, dry_run=args.dry_run, log=lambda m: print(m, file=sys.stderr))
+    SP.partitions_of(doc, args.crowd)
+    crowd = SP.crowd(doc, args.settings, args.crowd)
+    suite = SU.build(doc, crowd, parts, worlds=args.worlds, robot=args.robot, crowd_name=args.crowd, regenerate=not args.no_generate, dry_run=args.dry_run, log=lambda m: print(m, file=sys.stderr))
     stages = len(suite["stages"])
+    if not stages:
+        raise ValueError(f"crowd {args.crowd} runs on {SP.partitions_of(doc, args.crowd)}, none of {parts}: the suite would be empty")
     if args.dry_run:
         print(to_yaml(suite), end="")
         print(f"(dry run - no scenario or suite written, {stages} stages)", file=sys.stderr)
         return 0
-    header = [f"split {args.split.name}, partitions {', '.join(parts)}, crowd settings {S.digest(crowd)}", f"{stages} stages, each one episode at the seed its name ends in; an edit stage pairs with its base world's stage at that seed"]
+    header = [f"split {args.split.name}, partitions {', '.join(parts)}, crowd {args.crowd}, settings {S.digest(crowd)}", f"{stages} stages, each one episode at the seed its name ends in; an edit stage pairs with its base world's stage at that seed"]
     try:
-        written = SU.write(suite, args.out or SU.default_out(args.split), header, force=args.force)
+        written = SU.write(suite, args.out or SU.default_out(args.split, args.crowd), header, force=args.force)
     except ValueError as exc:
         print(f"flowedit: {exc}", file=sys.stderr)
         return 1
@@ -299,11 +313,12 @@ def _parser() -> argparse.ArgumentParser:
     p = verbs.add_parser(
         "sweep",
         help="record every run of a split",
-        description="generate the split's edited worlds again, then `flowedit run` every world of the chosen partitions once per seed, --jobs launches at a time on their own ROS domains; finished runs are skipped",
+        description="generate the split's edited worlds again, then `flowedit run` every world of the chosen partitions once per seed and chosen crowd, --jobs launches at a time on their own ROS domains; finished runs are skipped",
     )
     p.add_argument("split", type=Path, help="the split file (see split.py)")
     p.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to run; repeatable (default: all)")
-    p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML of every run, merged over the split's own `settings` (default: those, else the defaults, the training crowd)")
+    p.add_argument("--crowd", action="append", default=None, help=f"a crowd of the split to record, `{SP.BASE_CROWD}` or one of its `crowds`, `all` for every one; repeatable (default: {SP.BASE_CROWD}, the split's own settings)")
+    p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over every chosen crowd's settings")
     p.add_argument("--out", type=Path, default=None, help=f"runs root (default: $ARENA_DATA_DIR/{RUNS}/<split name>)")
     p.add_argument("--jobs", type=int, default=1, help="launches at a time (default 1)")
     p.add_argument("--domain-base", type=int, default=150, help="ROS domain of the first launch slot, the next slots counting up (default 150)")
@@ -319,8 +334,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument("split", type=Path, help="the split file (see split.py)")
     p.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to write; repeatable (default: all)")
-    p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML of every run, merged over the split's own `settings`")
-    p.add_argument("--out", type=Path, default=None, help="suite file (default: <imported assets root>/suites/flowedit_<split name>.yaml, where `--suite flowedit_<split name>` finds it)")
+    p.add_argument("--crowd", default=SP.BASE_CROWD, help=f"the crowd to write, `{SP.BASE_CROWD}` (the split's own settings, default) or one of its `crowds`; each crowd is its own suite")
+    p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over the crowd's settings")
+    p.add_argument("--out", type=Path, default=None, help="suite file (default: <imported assets root>/suites/flowedit_<split name>[__<crowd>].yaml, where `--suite` finds it by that name)")
     p.add_argument("--robot", default=SU.ROBOT, help=f"robot of every stage, parked off the map and unseen (default {SU.ROBOT}, the robot of the shipped suites)")
     p.add_argument("--lanes", type=int, default=2, help="lanes in the printed benchmark call (default 2)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds, then the resolvers)")

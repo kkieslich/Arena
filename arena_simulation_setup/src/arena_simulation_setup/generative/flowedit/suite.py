@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .split import PARTITIONS, base_of, duration_of, is_base, jobs, regenerate_worlds
+from .split import BASE_CROWD, PARTITIONS, base_of, duration_of, is_base, jobs, regenerate_worlds
 
 #: The stage name's seed suffix: `<world>__s<seed>`
 STAGE_SEP = "__s"
@@ -72,11 +72,13 @@ def build(
     *,
     worlds: Path | None = None,
     robot: str = ROBOT,
+    crowd_name: str = BASE_CROWD,
     regenerate: bool = True,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """The suite of split `doc`: its edited worlds made again, the crowd read into every job's world (none written on a dry run), one stage per job."""
+    """The suite of crowd `crowd_name` of split `doc`, `crowd` its settings: the edited worlds made again, the crowd read
+    into every job's world (none written on a dry run), one stage per job of that crowd."""
     import tempfile
 
     from ..scenario.cli import world_root
@@ -88,7 +90,7 @@ def build(
             regenerate_worlds(doc, Path(manifests), log)
     duration = duration_of(doc)
     stages = []
-    for job in jobs(doc, partitions):
+    for job in jobs(doc, partitions, crowd_name):
         root = world_root(worlds, job.world)
         notes: list[str] = []
         site = open_site(root, doc["sources"][job.world].get("scenario") if is_base(job.world) else None, None, notes)
@@ -115,11 +117,16 @@ def pairs(doc: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
-def default_out(split: Path) -> Path:
-    """`<imported assets root>/suites/flowedit_<split name>.yaml`, where `arena evaluation benchmark --suite <name>` finds it."""
+def suite_name(split: Path, crowd: str = BASE_CROWD) -> str:
+    """`flowedit_<split name>`, and `__<crowd>` for a test crowd: stage names repeat across crowds, so each has its own suite."""
+    return f"flowedit_{Path(split).stem}" + ("" if crowd == BASE_CROWD else f"__{crowd}")
+
+
+def default_out(split: Path, crowd: str = BASE_CROWD) -> Path:
+    """`<imported assets root>/suites/<suite name>.yaml`, where `arena evaluation benchmark --suite <name>` finds it."""
     from arena_simulation_setup.tree import imported_root
 
-    return imported_root() / SUITES / f"flowedit_{Path(split).stem}.yaml"
+    return imported_root() / SUITES / f"{suite_name(split, crowd)}.yaml"
 
 
 def write(doc: Mapping[str, Any], out: Path, header: Sequence[str] = (), *, force: bool = False) -> Path:
@@ -139,4 +146,4 @@ def benchmark_command(name: str, lanes: int | None = None, contest: str = CONTES
     return shlex.join(["arena", "evaluation", "benchmark", "--suite", name, "--contest", contest, *(["--lanes", str(lanes)] if lanes else [])])
 
 
-__all__ = ["CONTEST", "LAUNCH", "MARKER", "PARK", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "default_out", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "write"]
+__all__ = ["CONTEST", "LAUNCH", "MARKER", "PARK", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "default_out", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]
