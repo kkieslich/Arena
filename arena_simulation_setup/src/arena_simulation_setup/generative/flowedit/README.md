@@ -30,6 +30,8 @@ flowedit edit hospital_1 move obj:fountain --scenario queue -p x=15 -p y=11.5 --
 flowedit edit hospital_1__move_fountain__b6b7b494 layout door:or_door -p op=remove --write
 ```
 
+`flowedit forecast fit|predict|score` [forecasts](#forecasting-flow) a world's flow map from its graph and geometry, fits the forecaster on a split's recorded maps and scores it.
+
 `flowedit generate <world> [--scenario <scenario>] [--seed N] [--per-type K] [--steps N] [--types move,...] [--controls]` samples edits with the [generator](#generator). A dry run prints the manifest, `--write` saves every edited world and writes the manifest to `$ARENA_ASSETS_DIR_LOCAL/flowedit/<world>__seed<seed>.yaml` (or `--manifest`).
 
 ```bash
@@ -271,6 +273,46 @@ local_planner: orca
 entrances: {rate: 0.1, max_concurrent: 6, max_total: 30}
 ```
 
+## Forecasting flow
+
+[`forecast/`](forecast/) forecasts a site's flow map from its graph and geometry, without a PEDS run. The map is arena_evaluation's (`processing/flow/grid.py`): pedestrian-seconds per 0.5 m cell over the base world's rooms, 8 headings and a standing bin. The target is a world's seed-pooled map (its runs' normalized maps averaged over the partition's seeds), the score the JSD in bits against it. [`maps.py`](forecast/maps.py) mirrors arena_evaluation's grid, `jsd` and `pooled`, and a test checks they agree.
+
+**Model.** The forecaster mirrors the [reader](#reading-a-site) in expectation:
+- **People** are populate's crowd of the unedited base world, as the reader draws them (start point, idle stops, speed), at 16 crowd seeds that no split uses, each person weighted 1/16. A person walks from its start to its first stop, then cycles through its stops, standing `idle.stand` at each (the reader's `idle` sequence).
+- **Needs** send people to the objects the edited graph says satisfy them (the reader's `plan_needs`). A need starts at its initial value, decays at its rate, and starts a trip below `below`; a use adds `amount`. The expected number of trips within the run's duration comes from the settings' distributions. A trip leaves from one of the person's stops, walks to the object's front, waits, uses the object for its `dwells`, and walks back to the first stop, where `idle` starts again. The front lies `front_offset` from the object along its annotated `face`, else behind its yaw, as the runtime queues it.
+- **Choice and queues.** The objects of one need share a person's trips by a softmin of their path lengths with temperature τ (HumanSim takes the nearest). Each object's arrival rate λ gives its utilisation ρ = λ · dwell / capacity (at most 0.9) and a wait q · dwell · ρ^c / (2c(1 − ρ)), an M/D/c-like wait with c = capacity. The wait is stood on the queue's spots, `base_step` apart behind the front, in proportion to ρ^k.
+- **Walks** follow shortest paths on the edited world's free space: 0.25 m cells that keep HumanSim's navmesh inflation (0.38 m) from walls and objects, its comfort radius (0.6 m) as a cost, and locked doors (`gated true`) closed. Walking time goes to each step's heading, averaged over 5 steps and spread by σ_θ over the heading bins, so a corridor along an axis, which lies on a bin edge, splits as recorded walkers do. Standing time goes to the standing bin. A person whose start is off the free space or cut off from its stops stands there for the whole run, as HumanSim's router leaves it.
+- **Map.** The time is blurred by a Gaussian of width σ, kept to the reachable cells of the rooms, and scaled to people × duration.
+
+**Parameters.** Six parameters are fitted on the train partition: σ (kernel, m), σ_θ (heading spread, rad), w (walking mass per walked second, relative to standing), g (trips per expected trip of the needs model), τ (softmin temperature, m) and q (queue wait gain). The fit uses Nelder–Mead in log space and minimises the mean pooled JSD over the partition's worlds, the base world included. Everything else comes from the graph, the geometry and the crowd settings.
+
+**Inputs.** The forecaster reads the edited graph (objects, poses, `satisfies`, `dwells`, `serves` capacity, `has_formation`, `affords` through the reader's plan, doors' `gated`), the edited world's geometry, the base world's room purposes (for the crowd) and the crowd settings. It reads no PEDS run and no recorded map, so it carries over to a world that never ran, such as office_1.
+
+**Not modelled yet:**
+- entrance visitors (the pilot runs without them);
+- schedules and regimes (a schedule window changes nothing in a forecast);
+- what `meet` and `SERVICE` interactions do beyond walking to the object;
+- collisions and social forces;
+- people stuck on furniture that the navmesh does not hold.
+
+```bash
+flowedit forecast fit splits/peds_pilot.yaml --cells <benchmark dir>/flow_cells.parquet --out params.yaml
+flowedit forecast score splits/peds_pilot.yaml --cells <benchmark dir>/flow_cells.parquet --params params.yaml --plots plots/
+flowedit forecast predict office_1__move_fountain__2af43765 --params params.yaml --split splits/peds_pilot.yaml --png forecast.png
+```
+
+| Verb | What it does |
+|---|---|
+| `fit` | params that minimise the mean pooled JSD on a partition (`--partition`, default `train`); writes `flowedit-forecast/1` with each world's JSD |
+| `score` | per world of each partition (default the held-out ones): the JSD of the forecast and of its occupancy alone, of the anchored forecast, and of the stale and the transplanted base map; the seed floor; a PNG per world with `--plots` |
+| `predict` | one world's forecast, as cell rows (parquet, arena_evaluation's `CELL_SCHEMA` columns) or a PNG |
+
+`--crowd runs` draws the people at the seeds of the runs being scored instead: the people the reader placed in those runs, still without PEDS. The two baselines are quick versions for a sanity check; the study's baselines are FLOWEDIT #26:
+- **stale:** the base world's pooled map at the same seeds;
+- **transplanted:** the stale map with the mass within 2 m of the edited object moved with it (`move`, headings turned by its yaw change), copied to the new object (`insert`, from the object it copies) or dropped (`remove`).
+
+The **anchored** forecast adds the forecast's change (edit minus base) to the stale map, so it uses the recorded base map as the two baselines do. The **seed floor** is the JSD between the base world's pooled maps at the partition's seeds and at the split's other seeds: how far another crowd draw of the same world lies.
+
 ## Placement (INFRA)
 
 [`place.py`](place.py) places the INFRA study's elements (study design §3, §4) through these edits. `CATALOG` holds a charger pair (`charger_1`, `charger_2`: `robot_charger`, 1.0 m apart centre to centre, 175 W, 1.2 m approach), a bay pair (`bay_1`, `bay_2`: `waiting_bay` slots, 1.0 m apart), `locker_1` (`parcel_locker`, 1.5 m access zone) and `loading_point` (a `waiting_bay` slot), each object with its jackal dock. The names are the ones the fleet task mode refers to.
@@ -312,4 +354,5 @@ occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |
 | `splits/` | committed splits, and their test crowds' settings in `splits/crowds/` |
-| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite` |
+| `forecast/` | the flow forecaster: `maps.py` (grid, JSD), `scene.py` (a site as the forecaster reads it), `model.py` (layers and params), `evaluate.py` (fit, score, baselines), `plot.py`, `cli.py` (`flowedit forecast`) |
+| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast` |
