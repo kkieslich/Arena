@@ -26,6 +26,7 @@ EPISODE_PARAMS: dict[str, str] = {
     'task.episode.goto_pose.signal': 'Signal the robot must send to end a goto_pose phase, such as arrived (empty = Arena judges arrival).',
     'task.episode.battery.soc.min': 'Lowest battery charge in percent (0 to 100) a robot starts an episode with, drawn per episode seed and robot name.',
     'task.episode.battery.soc.max': 'Highest battery charge in percent (0 to 100, at least soc.min) a robot starts an episode with, drawn per episode seed and robot name.',
+    'task.episode.battery.capacity_wh': "Battery capacity in Wh every robot runs with, sent to its power publisher at each reset before its start charge (0 = the robot's own power.yaml).",
 }
 
 RUN_EPISODE_BUSY = 'busy'
@@ -72,6 +73,11 @@ def Configuration(server: ROSParamServer) -> type:
     def _percent(v: object) -> float:
         if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0.0 <= v <= 100.0:
             raise ValueError(f'expected a percentage between 0 and 100, got {v!r}')
+        return float(v)
+
+    def _capacity_wh(v: object) -> float:
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0.0 <= v < float('inf'):
+            raise ValueError(f"expected a battery capacity in Wh of at least 0 (0 = the robot's own power.yaml), got {v!r}")
         return float(v)
 
     class Config:
@@ -144,6 +150,8 @@ def Configuration(server: ROSParamServer) -> type:
             BATTERY_SOC_MIN = server.ROSParam[float]('task.episode.battery.soc.min', 40.0, parse=_percent)
 
             BATTERY_SOC_MAX = server.ROSParam[float]('task.episode.battery.soc.max', 100.0, parse=_percent)
+
+            BATTERY_CAPACITY_WH = server.ROSParam[float]('task.episode.battery.capacity_wh', 0.0, parse=_capacity_wh)
 
             SPAWN_ROBOT_SAFE_DIST = server.ROSParam[float](
                 'task.episode.spawn.robot_clearance',

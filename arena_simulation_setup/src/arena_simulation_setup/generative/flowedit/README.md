@@ -249,6 +249,17 @@ arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{n
 
 The suite's `launch` runs flatsim headless under lockstep with `human.robots.visible: false`, so the people never see the parked robot, and `references: false`, since the split names its own reference runs. The contestant needs no planner: `[{name: peds_only}]` brings the robot up with the sim's default adapter. `--dry-run` prints the suite without writing a scenario or the suite, and a suite file `flowedit suite` did not write is kept unless `--force`.
 
+### Planners through the edit
+
+A split with a `robot_task` (a scenario `robots:` entry: `start` and `phases`) has the robot drive it in every stage. The task is added to the scenario after the crowd is read, so the people are the ones of the robot-free suite at the same seed. The scenario is `flowedit_<scenario>_<settings digest>_r<task digest>_s<seed>`, beside the robot-free one, and the stage runs `modes.robots: scenario` instead of the parking spot, under `human.robots.visible: true`. Every goto of the task must be a pose: a named target (a zone, a door, an object's dock) can resolve differently in an edited world, a pose is the same in all of them. A loop without `until` repeats until the episode's `timeout`, so every stage drives for the split's `duration`. `contest` lists the planners, as arena_evaluation contestants; `flowedit suite` writes them as contest `flowedit_<split name>` into `<imported assets root>/contests/` and prints `--contest flowedit_<split name>`. `flowedit sweep` refuses a split with a robot task, since `flowedit run` records without one.
+
+[`splits/h2_planners.yaml`](splits/h2_planners.yaml) is the Stage 1 test of H2: hospital_1, its first pilot fountain move and the move's two geometry-only controls, at the pilot's train seeds 1-5 on its base crowd, with Nav2 DWB (`dwb_blind`), DWB with `arena_social_cost_layer` (`dwb_social`) and DRL-VO (`drlvo`) shuttling between the central hallway and the laboratory past both fountain spots: 60 episodes of 300 s.
+
+```sh
+flowedit suite splits/h2_planners.yaml
+arena evaluation benchmark --suite flowedit_h2_planners --contest flowedit_h2_planners --lanes 2
+```
+
 ## Crowd settings
 
 Global, not per site: the same file gives a crowd on any graph. Every key and its default is in [`settings.py`](settings.py); a file sets only what it changes, an unknown key is an error. A distribution (`mean`, `std`, `clip_low`, `clip_high`) given in a file replaces the default one whole, so a raised mean never keeps the default's clips, and a mean outside its own clips is an error. A need's own `initial`, `decay_rate` or `below` replaces the `"*"` entry's.
@@ -302,6 +313,21 @@ flowedit forecast predict office_1__move_fountain__2af43765 --params params.yaml
 
 The **anchored** forecast adds the forecast's change (edit minus base) to the stale map, so it uses the recorded base map as the two baselines do. The **seed floor** is the JSD between the base world's pooled maps at the partition's seeds and at the split's other seeds: how far another crowd draw of the same world lies.
 
+## Placement (INFRA)
+
+[`place.py`](place.py) places the INFRA study's elements (study design §3, §4) through these edits. `CATALOG` holds a charger pair (`charger_1`, `charger_2`: `robot_charger`, 1.0 m apart centre to centre, 175 W, 1.2 m approach), a bay pair (`bay_1`, `bay_2`: `waiting_bay` slots, 1.0 m apart), `locker_1` (`parcel_locker`, 1.5 m access zone) and `loading_point` (a `waiting_bay` slot), each object with its jackal dock. The names are the ones the fleet task mode refers to.
+
+`candidate_spots(site, element)` lists, deterministically and cached, a spot every 1 m along every wall piece (`wall_pieces`) of the allowed zones, less `EXCLUDED_ZONES` (the twin's ramp, stair landing and the zones NAV@r at 0.325 m cuts off). A pair is one spot on one piece. A spot carries its objects' poses (fronts into the room, backs at the wall gap), footprints, docks and dock goto points, the clear zone and turning circle in front, the corridor width it leaves (distance transform of the floor raster), and a verdict per §3 rule: `pass` or `fail` where the site has the data, `unknown` (filtering nothing) for outlets, tactile paths, exit width, dead ends, and doors or lifts on a level without any. An object whose model resolves without a bounding box (a floor marking, the twin's `link_scan`) is no obstacle; its dock is. An element model must resolve and carry a `face`.
+
+```python
+spots = {name: candidate_spots(site, name) for name in CATALOG}
+layout = Layout.of([charger_spot, bay_spot, locker_spot, loading_spot])  # layout.layout_id: a short hash of its spots
+check_layout(site, layout)          # failing rules, overlapping elements, a corridor the others narrow
+edited = apply_layout(site, layout) # insert (dock, charge power) or move each object, in memory
+path = save_layout(site, layout)    # <site key>__layout_<layout id> (a name must keep that prefix), assets hardlinked
+placed_elements(layout)             # PlacedElement(name, footprint, dock_point, blocks_floor) for the NAV@r filter
+```
+
 ## Files
 
 | File | Purpose |
@@ -312,6 +338,7 @@ The **anchored** forecast adds the forecast's change (edit minus base) to the st
 | `settings.py` | crowd settings and their defaults |
 | `edit.py` | edit operations, sites, saving edited worlds |
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
+| `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |

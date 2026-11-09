@@ -18,7 +18,7 @@ try:
     from arena_simulation_setup.utils.geometry import Orientation, Pose, Position
 
     from arena_runtime.env.constants.rng import EpisodeRng
-    from arena_runtime.env.robot_manager.robot_manager import RobotManager
+    from arena_runtime.env.robot_manager.robot_manager import ZONE_GOAL_MARGIN_M, RobotManager
     from arena_runtime.env.world_manager.utils import WorldLayers, WorldMap, WorldOccupancy
     from arena_runtime.env.world_manager.world_manager import WorldManager
     from arena_runtime.shared import WORLD_ENTITY_PREFIX
@@ -63,21 +63,29 @@ def _blocked_distance(position: Position, blocked: tuple[float, float, float, fl
 def test_zone_target_lands_on_a_free_cell_with_clearance() -> None:
     blocked = (1.0, 1.0, 3.0, 2.6)
     for seed in range(20):
-        phase = RobotManager._resolve_target(_manager(blocked, seed), GoToPhase(target="room"))
+        phase = RobotManager.resolve_target(_manager(blocked, seed), GoToPhase(target="room"))
         assert phase.target == "room"
         assert 1.0 <= phase.pose.position.x <= 3.0 and 2.6 <= phase.pose.position.y <= 3.0
         assert _blocked_distance(phase.pose.position, blocked) >= SAFE - RES
 
 
+def test_zone_target_keeps_off_the_zone_edge() -> None:
+    room = shapely.Polygon([(p.x, p.y) for p in ROOM])
+    for seed in range(40):
+        position = RobotManager.resolve_target(_manager(None, seed), GoToPhase(target="room")).pose.position
+        point = shapely.Point(position.x, position.y)
+        assert room.contains(point) and room.exterior.distance(point) >= ZONE_GOAL_MARGIN_M - RES
+
+
 def test_zone_target_without_a_free_cell_names_the_zone() -> None:
     with pytest.raises(ValueError, match="goto target 'room' has no free cell with 0.30 m clearance"):
-        RobotManager._resolve_target(_manager((0.5, 0.5, 3.5, 3.5)), GoToPhase(target="room"))
+        RobotManager.resolve_target(_manager((0.5, 0.5, 3.5, 3.5)), GoToPhase(target="room"))
 
 
 def test_docked_object_target_under_the_runtime_prefix_lands_in_its_dock_facing_the_object() -> None:
     blocked = (3.5, 1.5, 4.5, 2.5)
     for seed in range(20):
-        phase = RobotManager._resolve_target(_manager(blocked, seed), GoToPhase(target="charger_1"))
+        phase = RobotManager.resolve_target(_manager(blocked, seed), GoToPhase(target="charger_1"))
         position = phase.pose.position
         assert phase.target == "charger_1"
         assert math.dist((position.x, position.y), (3.0, 2.0)) <= 0.25 + RES
@@ -92,7 +100,7 @@ def test_docked_object_target_over_the_objects_origin_faces_its_front(model: str
     (bundle / "annotation.yaml").write_text(yaml.safe_dump({"name": model, "face": face}))
     bay = Obstacle(name=f"{WORLD_ENTITY_PREFIX}bay_1", model=f"Common/Object/{model}", pose=Pose(position=Position(2.0, 4.0), orientation=Orientation.from_yaw(BAY_YAW)), dock=BAY_DOCK)
     for seed in range(5):
-        phase = RobotManager._resolve_target(_manager(None, seed, (bay,)), GoToPhase(target="bay_1"))
+        phase = RobotManager.resolve_target(_manager(None, seed, (bay,)), GoToPhase(target="bay_1"))
         position = phase.pose.position
         assert math.dist((position.x, position.y), (2.0, 4.0)) <= 0.25 + RES
         assert math.remainder(phase.pose.orientation.to_yaw() - BAY_YAW - front, math.tau) == pytest.approx(0.0, abs=1e-9)
@@ -100,14 +108,14 @@ def test_docked_object_target_over_the_objects_origin_faces_its_front(model: str
 
 def test_docked_object_target_without_a_free_cell_near_its_middle_names_it() -> None:
     with pytest.raises(ValueError, match="goto target 'charger_1' has no free cell with 0.30 m clearance"):
-        RobotManager._resolve_target(_manager((2.5, 1.5, 4.5, 2.5)), GoToPhase(target="charger_1"))
+        RobotManager.resolve_target(_manager((2.5, 1.5, 4.5, 2.5)), GoToPhase(target="charger_1"))
 
 
 def test_unknown_target_is_left_for_the_ped_follower() -> None:
     phase = GoToPhase(target="pedestrian_3")
-    assert RobotManager._resolve_target(_manager(None), phase) is phase
+    assert RobotManager.resolve_target(_manager(None), phase) is phase
 
 
 def test_authored_dispatch_pose_of_a_zone_target_is_kept() -> None:
     phase = GoToPhase(target="room", pose=Pose(position=Position(2.5, 1.5), orientation=Orientation.identity()))
-    assert RobotManager._resolve_target(_manager(None), phase) is phase
+    assert RobotManager.resolve_target(_manager(None), phase) is phase

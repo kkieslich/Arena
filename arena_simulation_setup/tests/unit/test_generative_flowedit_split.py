@@ -31,7 +31,11 @@ def doc() -> dict[str, Any]:
 def test_shipped_splits_hold_out_what_they_say(path: Path) -> None:
     doc = SP.load(path)
     assert set(doc["partitions"]) == set(SP.PARTITIONS)
-    assert all(doc["partitions"][p] for p in SP.PARTITIONS)
+    if SP.robot_task_of(doc) is None:
+        assert all(doc["partitions"][p] for p in SP.PARTITIONS)
+    else:
+        # a split with a robot task scores planners on its worlds, not a forecaster on held-out ones
+        assert doc["partitions"]["train"] and SP.contest_of(doc)
 
 
 def test_the_pilot_runs_train_and_test_seeds_with_references_for_held_out_edits() -> None:
