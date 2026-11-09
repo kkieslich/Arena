@@ -13,7 +13,7 @@ import yaml
 from arena_simulation_setup.generative.flowedit import place
 from arena_simulation_setup.generative.flowedit.edit import EditType, Site, open_site, world_object
 from arena_simulation_setup.generative.flowedit.place import CATALOG, Layout, Rule, Verdict, candidate_spots
-from flowedit_docks import BAY, CHARGE_POWER_W, CHARGER, LOCKER, Docked
+from flowedit_docks import BAY, CHARGER, LOCKER, Docked
 
 if TYPE_CHECKING:
     from arena_simulation_setup.generative.flowedit.place import Spot
@@ -25,6 +25,8 @@ pytestmark = pytest.mark.usefixtures("local_root")
 WORLDS = Path(__file__).resolve().parents[2] / "worlds"
 HOSPITAL = WORLDS / "hospital_1"
 MEMBERS = ["charger_1", "charger_2", "bay_1", "bay_2", "locker_1", "loading_point"]
+#: The fleet study's chargers (Kolja: 22 Wh batteries, 175 W chargers)
+STUDY_CHARGE_POWER_W = 175.0
 #: How close the floor raster's corridor width comes to the geometric one: about 1.5 cells, by where walls fall on it
 RASTER_M = 1.5 * place.RESOLUTION_M
 
@@ -124,6 +126,34 @@ def test_pair_members_stand_one_metre_apart_on_one_wall_piece(hospital: Site, el
         assert a.yaw == b.yaw
         assert s.frame.depth(a.x, a.y) == pytest.approx(s.frame.depth(b.x, b.y), abs=0.02)
         assert a.dock.intersection(b.dock).area < place.AREA_EPS
+
+
+def _slanted(root: Path, degrees: float = 30.0, seed: int | None = None) -> Site:
+    """A 12 x 6 m hall walled all round, turned by `degrees`, with nothing in it."""
+    turn = math.radians(degrees)
+    corners = [[round(20.0 + x * math.cos(turn) - y * math.sin(turn), 6), round(20.0 + x * math.sin(turn) + y * math.cos(turn), 6)] for x, y in [(0.0, 0.0), (12.0, 0.0), (12.0, 6.0), (0.0, 6.0)]]
+    if not (root / "world.yaml").is_file():
+        root.mkdir(parents=True)
+        world = {"format": "arena-world/2", "levels": [{"id": "0", "zones": [{"name": "hall", "polygon": corners}], "walls": [{"path": corners, "closed": True}], "objects": []}]}
+        (root / "world.yaml").write_text(yaml.safe_dump(world, sort_keys=False))
+    return open_site(root, seed=seed)
+
+
+@pytest.mark.parametrize("element", ["charger_pair", "bay_pair"])
+def test_pair_members_stand_exactly_one_metre_apart_on_a_slanted_wall(tmp_path: Path, element: str) -> None:
+    """Rounding each member's pose on its own would leave them up to a cm off the spacing on a slanted wall, and a
+    pair's docks (and a bay pair's slots) would overlap; the row's middle is rounded once instead."""
+    spots = candidate_spots(_slanted(tmp_path / "worlds" / "slanted"), element)
+    assert spots and all(abs(s.frame.u[0]) > 0.4 and abs(s.frame.u[1]) > 0.4 for s in spots)  # no wall runs along an axis
+    for s in spots:
+        a, b = s.objects
+        assert math.dist((a.x, a.y), (b.x, b.y)) == pytest.approx(place.PAIR_SPACING_M, abs=2e-4)  # poses to 0.1 mm, as world.yaml keeps them
+        assert a.dock.intersection(b.dock).area < place.AREA_EPS and a.footprint.intersection(b.footprint).area < place.AREA_EPS
+        span = 2.0
+        # a metre clear of the corners: nearer, the side wall bounds the corridor rays at the pair's edge (for review)
+        if s.along_m - span / 2.0 > 1.0 and s.piece_m - s.along_m - span / 2.0 > 1.0:
+            assert s.valid, s.failed
+    assert sum(s.valid for s in spots) >= 10
 
 
 @pytest.mark.parametrize(("element", "docked"), [("charger_pair", CHARGER), ("locker", LOCKER), ("bay_pair", BAY), ("loading_point", BAY)])
@@ -329,7 +359,7 @@ def test_apply_layout_inserts_every_object_with_its_dock_and_charge_power(hospit
             dock = obj.dock_polygon()
             assert dock is not None
             assert [(round(p.x, 3), round(p.y, 3)) for p in dock] == [(round(x, 3), round(y, 3)) for x, y in list(o.dock.exterior.coords)[:-1]]
-            assert obj.charge_power_w == (CHARGE_POWER_W if spot.element.name == "charger_pair" else None)
+            assert obj.charge_power_w == (STUDY_CHARGE_POWER_W if spot.element.name == "charger_pair" else None)
             assert edited.graph.entities[f"obj:{o.name}"].props["model"] == spot.element.model.rsplit("/", 1)[-1]
 
 
@@ -379,19 +409,64 @@ def test_save_layout_writes_a_world_copy_that_opens_with_the_layout(hospital_cop
         obj = level.objects[i]
         assert (obj.pose.position.x, obj.pose.position.y) == pytest.approx((o.x, o.y), abs=1e-6)
         assert obj.dock is not None and len(obj.dock) == 4
-        assert obj.charge_power_w == (CHARGE_POWER_W if o.name.startswith("charger") else None)
+        assert obj.charge_power_w == (STUDY_CHARGE_POWER_W if o.name.startswith("charger") else None)
     # the same spots on the reopened copy: its own objects are no obstacles to their element
     assert {s.id for s in candidate_spots(reopened, "charger_pair") if s.valid} >= {layout.spots[0].id}
     asset = next(p for p in (hospital_copy / "assets").rglob("*") if p.is_file())
     assert (path / asset.relative_to(hospital_copy)).stat().st_ino == asset.stat().st_ino
-    assert place.save_layout(site, layout, "hospital_layout_a").name == "hospital_layout_a"
 
 
 def test_insert_params_carry_the_dock_and_a_chargers_power(hospital: Site) -> None:
     layout = _valid_layout(hospital)
     chargers, bays = layout.spots[0], layout.spots[1]
     params = place.insert_params(chargers, chargers.objects[0])
-    assert params["dock"] == [list(p) for p in place.CHARGER_DOCK] and params["charge_power_w"] == CHARGE_POWER_W
+    assert CATALOG["charger_pair"].charge_power_w == STUDY_CHARGE_POWER_W
+    assert params["dock"] == [list(p) for p in place.CHARGER_DOCK] and params["charge_power_w"] == STUDY_CHARGE_POWER_W
     assert params["model"] == CHARGER.model and params["level"] == "0"
     assert "charge_power_w" not in place.insert_params(bays, bays.objects[0])
     assert place.insert_params(bays, bays.objects[0])["dock"] == [list(p) for p in place.SLOT]
+
+
+def test_save_layout_refuses_a_name_without_the_layout_prefix(hospital_copy: Path) -> None:
+    """`edit.save` replaces a world of the same name in the writable local root: a layout copy saved as the site's
+    own name would delete it."""
+    site = open_site(hospital_copy)
+    layout = _valid_layout(site)
+    for name in ("hospital_copy", "hospital_1", "anything", place.layout_prefix(site)):
+        with pytest.raises(ValueError, match="hospital_copy__layout_<suffix>"):
+            place.save_layout(site, layout, name)
+    assert (hospital_copy / "world.yaml").is_file() and not (hospital_copy / "edits.yaml").exists()
+    path = place.save_layout(site, layout, f"{place.layout_prefix(site)}premise_narrow")
+    assert path.name == "hospital_copy__layout_premise_narrow"
+    assert place.save_layout(site, layout, path.name) == path  # replaces its own layout copy
+
+
+def test_apply_layout_gives_a_differing_object_the_catalogs_model_dock_and_power(hospital: Site) -> None:
+    layout = _valid_layout(hospital)
+    chargers = layout.spots[0]
+    stale = attrs.evolve(CATALOG["charger_pair"], model="Common/Object/parcel_locker", dock=place.LOCKER_DOCK, charge_power_w=125.0)
+    old = place.apply_layout(hospital, Layout.of([attrs.evolve(chargers, element=stale)]), check=False)
+    edited = place.apply_layout(old, Layout.of([chargers]))
+    assert [(e.type, e.target) for e in edited.edits[len(old.edits) :]] == [(EditType.REMOVE, "obj:charger_1"), (EditType.INSERT, "obj:charger_1"), (EditType.REMOVE, "obj:charger_2"), (EditType.INSERT, "obj:charger_2")]
+    for o in chargers.objects:
+        found = world_object(edited.world, o.name)
+        assert found is not None
+        obj = found[0].objects[found[1]]
+        assert obj.charge_power_w == STUDY_CHARGE_POWER_W and [(p.x, p.y) for p in obj.dock or []] == list(place.CHARGER_DOCK)
+        assert edited.graph.entities[f"obj:{o.name}"].props["model"] == "robot_charger"
+    # as the catalog has them, they move
+    again = place.apply_layout(edited, Layout.of([chargers]))
+    assert [e.type for e in again.edits[len(edited.edits) :]] == [EditType.MOVE, EditType.MOVE]
+
+
+def test_the_caches_keep_the_last_sites_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    place.clear_cache()
+    monkeypatch.setattr(place, "CACHED_SITES", 2)
+    root = tmp_path / "worlds" / "slanted"
+    sites = [_slanted(root, seed=seed) for seed in (1, 2, 3)]
+    first = candidate_spots(sites[0], "locker")
+    candidate_spots(sites[1], "locker")
+    assert candidate_spots(sites[0], "locker") is first  # used again: now the latest
+    candidate_spots(sites[2], "locker")  # drops sites[1]
+    assert {key[3] for key in place._SPOTS} == {1, 3} and {key[3] for key in place._CONTEXTS} == {1, 3}
+    assert len(place._SITES) == 2

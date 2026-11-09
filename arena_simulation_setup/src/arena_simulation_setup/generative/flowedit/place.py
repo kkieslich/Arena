@@ -9,6 +9,7 @@ unknown and filter nothing. NAV@r is not a rule here: `placed_elements` hands a 
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 import enum
 import fnmatch
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import attrs
 
-from .edit import SEPARATOR, EditType, Site, apply, save
+from .edit import SEPARATOR, EditType, Site, apply, save, world_object
 
 if TYPE_CHECKING:
     import numpy as np
@@ -43,15 +44,16 @@ CORRIDOR_CAP_M = 5.0
 TURNING_CIRCLE_M = 1.5
 #: Chargers and waiting bays keep this far from door spans and lift cabins (§3)
 DOOR_DISTANCE_M = 2.0
-#: The fleet study's charger power (Kolja, 9 Nov)
-CHARGE_POWER_W = 125.0
+#: The fleet study's charger power (Kolja: 22 Wh batteries, 175 W chargers)
+CHARGE_POWER_W = 175.0
 #: The floor raster's cell size, the one NAV@r and the nav map use
 RESOLUTION_M = 0.05
 #: Zones no element goes to, as `fnmatch` patterns: the ramp, the stair landing and the zones NAV@r at 0.325 m cuts
 #: off from the twin's main floor (side corridor, side room, south arm). Other worlds name their own.
 EXCLUDED_ZONES = ("ramp", "stair_landing", "side_corridor_*", "side_room", "south_arm")
-#: Overlaps below this area (m^2) are shared edges, not overlaps
-AREA_EPS = 1e-4
+#: Overlaps below this area (m^2) are shared edges, not overlaps: under a mm along a pair's 1.2 m dock edge, which
+#: poses to 0.1 mm (`POSITION_DECIMALS`, as world.yaml keeps them) can leave between docks that meet
+AREA_EPS = 1e-3
 
 #: The jackal dock, 1.2 m deep and 1.0 m wide, in front of a charger whose origin is its middle (face +x)
 CHARGER_DOCK = ((0.25, -0.5), (1.45, -0.5), (1.45, 0.5), (0.25, 0.5))
@@ -271,18 +273,31 @@ class _Context:
         return self._grid
 
 
+#: How many sites keep their geometry (a floor raster each) and spots cached, the least recently used dropped first
+CACHED_SITES = 8
 _CONTEXTS: dict[tuple[Any, ...], _Context] = {}
 _SPOTS: dict[tuple[Any, ...], tuple[Spot, ...]] = {}
+_SITES: collections.OrderedDict[tuple[Any, ...], None] = collections.OrderedDict()
 
 
 def clear_cache() -> None:
     """Forget the cached site geometry and spots."""
     _CONTEXTS.clear()
     _SPOTS.clear()
+    _SITES.clear()
 
 
 def _site_key(site: Site) -> tuple[Any, ...]:
-    return (str(site.root.resolve()), site.key, site.scenario, site.seed)
+    """The cache key of `site`, marked as used just now: the caches keep the `CACHED_SITES` sites used last."""
+    key = (str(site.root.resolve()), site.key, site.scenario, site.seed)
+    _SITES[key] = None
+    _SITES.move_to_end(key)
+    while len(_SITES) > CACHED_SITES:
+        old, _ = _SITES.popitem(last=False)
+        for cache in (_CONTEXTS, _SPOTS):
+            for stale in [k for k in cache if k[: len(old)] == old]:
+                del cache[stale]
+    return key
 
 
 def _obstacles(site: Site, level_id: str, ignore: frozenset[str]) -> dict[str, shapely.Polygon]:
@@ -456,11 +471,16 @@ def _span(local: shapely.Polygon, dock: shapely.Polygon, element: Element) -> fl
     return (len(element.members) - 1) * element.spacing_m + out
 
 
-def _member(ctx: _Context, piece: WallPiece, frame: _Frame, local: shapely.Polygon, front: float, centre: float) -> tuple[float, float, float, bool]:
-    """The pose of one object whose footprint's middle stands `centre` along the piece: turned so its front points
-    along the piece's normal, its back at the wall gap from the wall behind or the zone edge, whichever lies further in,
-    as `generate.Spots.against_wall` places it; and whether a wall stands behind it (`generate.backs_onto_wall`)."""
+def _members(piece: WallPiece, frame: _Frame, local: shapely.Polygon, front: float, centre: float, count: int, spacing: float) -> list[tuple[float, float, float, bool]]:
+    """The poses of a row of `count` objects whose footprints' middles stand `spacing` apart, the row's middle `centre`
+    along the piece: turned so their fronts point along the piece's normal, each back at the wall gap from its wall or
+    the zone edge, whichever lies further in, as `generate.Spots.against_wall` places an object; and whether a wall
+    stands behind each (`generate.backs_onto_wall`). The row's middle is placed once and the objects `spacing` apart
+    along their own frame, all to the 0.1 mm world.yaml keeps (`POSITION_DECIMALS`), so a pair's docks meet without
+    overlapping on a slanted wall too and a saved layout stands where its spots say."""
     import shapely.affinity
+
+    from arena_simulation_setup.tree.World.write import POSITION_DECIMALS
 
     from . import generate as gen
 
@@ -472,11 +492,20 @@ def _member(ctx: _Context, piece: WallPiece, frame: _Frame, local: shapely.Polyg
     lo = min(vx * frame.u[0] + vy * frame.u[1] for vx, vy in coords)
     hi = max(vx * frame.u[0] + vy * frame.u[1] for vx, vy in coords)
     back = max(-(vx * nx + vy * ny) for vx, vy in coords)
-    px, py = frame.at(centre - (lo + hi) / 2.0, 0.0)
-    offset = piece.offset(px, py)
-    behind = max(offset or 0.0, 0.0) + gen.WALL_GAP_M + gen.WALL_SLACK_M
-    x, y = gen._round(px + nx * (behind + back)), gen._round(py + ny * (behind + back))
-    return x, y, yaw, offset is not None and gen.backs_onto_wall(piece, turned, x, y)
+    # the objects' own front and along-wall axes, from the rounded yaw, the latter pointing the way the piece runs
+    fx, fy = math.cos(yaw + front), math.sin(yaw + front)
+    ax, ay = (-fy, fx) if -fy * frame.u[0] + fx * frame.u[1] >= 0 else (fy, -fx)
+    shifts = [(i - (count - 1) / 2.0) * spacing for i in range(count)]
+    offsets = [piece.offset(*frame.at(centre + shift - (lo + hi) / 2.0, 0.0)) for shift in shifts]
+    depths = [max(offset or 0.0, 0.0) + gen.WALL_GAP_M + gen.WALL_SLACK_M + back for offset in offsets]
+    middle = max(depths)
+    rx, ry = frame.at(centre - (lo + hi) / 2.0, middle)
+    out = []
+    for shift, offset, depth in zip(shifts, offsets, depths, strict=True):
+        x = round(rx + ax * shift + fx * (depth - middle), POSITION_DECIMALS) + 0.0
+        y = round(ry + ay * shift + fy * (depth - middle), POSITION_DECIMALS) + 0.0
+        out.append((x, y, yaw, offset is not None and gen.backs_onto_wall(piece, turned, x, y)))
+    return out
 
 
 def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, along: tuple[float, float], front: float, others: shapely.Geometry | None = None) -> float:
@@ -583,9 +612,8 @@ def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float,
     dock_local = shapely.Polygon(element.dock)
     objects: list[PlacedObject] = []
     against = True
-    count = len(element.members)
-    for i, name in enumerate(element.members):
-        x, y, yaw, backed = _member(ctx, piece, frame, local, front, centre + (i - (count - 1) / 2.0) * element.spacing_m)
+    poses = _members(piece, frame, local, front, centre, len(element.members), element.spacing_m)
+    for name, (x, y, yaw, backed) in zip(element.members, poses, strict=True):
         against = against and backed
         dock = _placed(dock_local, x, y, yaw)
         goto = polylabel(dock, tolerance=0.01)
@@ -715,10 +743,26 @@ def insert_params(spot: Spot, obj: PlacedObject) -> dict[str, Any]:
     return params
 
 
+def _as_catalog(site: Site, obj: str, element: Element) -> bool:
+    """Whether the world object `obj` of `site` has `element`'s model, dock and charge power."""
+    from arena_simulation_setup.shared.entities import Obstacle
+    from arena_simulation_setup.tree.World.write import short_identifier
+
+    found = world_object(site.world, obj.partition(":")[2])
+    if found is None:
+        return False
+    placed = found[0].objects[found[1]]
+    model = Obstacle.parse({"name": "probe", "model": element.model, "pose": [0.0, 0.0, 0.0]}).model
+    if short_identifier(placed.model) != short_identifier(model) or placed.charge_power_w != element.charge_power_w:
+        return False
+    dock = [(p.x, p.y) for p in placed.dock or []]
+    return len(dock) == len(element.dock) and all(math.dist(a, b) < 1e-6 for a, b in zip(dock, element.dock, strict=True))
+
+
 def apply_layout(site: Site, layout: Layout, *, check: bool = True) -> Site:
-    """`site` with every object of `layout` in place, in memory: an `insert` edit (with its dock and a charger's charge
-    power) for an object the site lacks, a `move` edit for one it has. ValueError for an invalid layout (`check_layout`)
-    unless not `check`."""
+    """`site` with every object of `layout` in place, in memory: a `move` edit for an object the site has as the
+    catalog has it (model, dock, charge power), else an `insert` edit with the catalog's (after a `remove` edit of the
+    site's object of that name, if any). ValueError for an invalid layout (`check_layout`) unless not `check`."""
     if check:
         problems = check_layout(site, layout)
         if problems:
@@ -726,10 +770,12 @@ def apply_layout(site: Site, layout: Layout, *, check: bool = True) -> Site:
     for spot in layout.spots:
         for obj in spot.objects:
             target = f"obj:{obj.name}"
-            if target in site.graph.entities:
+            if target in site.graph.entities and _as_catalog(site, target, spot.element):
                 site = apply(site, EditType.MOVE, target, {"x": obj.x, "y": obj.y, "yaw": obj.yaw, "level": spot.level})
-            else:
-                site = apply(site, EditType.INSERT, target, insert_params(spot, obj))
+                continue
+            if target in site.graph.entities:
+                site = apply(site, EditType.REMOVE, target)
+            site = apply(site, EditType.INSERT, target, insert_params(spot, obj))
     return site
 
 
@@ -752,17 +798,28 @@ class _NamedSite(Site):
         return self.world_name
 
 
+def layout_prefix(site: Site) -> str:
+    """How the world name of every layout copy of `site` starts: `<site key>__layout_`."""
+    return f"{site.key}{SEPARATOR}layout_"
+
+
 def layout_name(site: Site, layout: Layout) -> str:
     """The default world name of `layout` applied to `site`: `<site key>__layout_<layout id>`."""
-    return f"{site.key}{SEPARATOR}layout_{layout.layout_id}"
+    return f"{layout_prefix(site)}{layout.layout_id}"
 
 
 def save_layout(site: Site, layout: Layout, name: str | None = None, *, check: bool = True) -> Path:
     """Apply `layout` to `site` (`apply_layout`) and save the world copy through `edit.save` under `name` (default
-    `layout_name`), its assets hardlinked; the path it was written to."""
+    `layout_name`), its assets hardlinked; the path it was written to. `edit.save` replaces a world of the same name in
+    the writable local root, so `name` must start with `layout_prefix(site)`: a layout copy only ever replaces another
+    layout copy of the same site, never the site itself or another world."""
+    name = name or layout_name(site, layout)
+    prefix = layout_prefix(site)
+    if not name.startswith(prefix) or name == prefix:
+        raise ValueError(f"a layout copy of {site.key} is named {prefix}<suffix>, not {name!r}: saving replaces any world of that name")
     edited = apply_layout(site, layout, check=check)
     fields = {f.name: getattr(edited, f.name) for f in attrs.fields(Site)}
-    return save(_NamedSite(**fields, world_name=name or layout_name(site, layout)))
+    return save(_NamedSite(**fields, world_name=name))
 
 
 __all__ = [
@@ -785,6 +842,7 @@ __all__ = [
     "clear_cache",
     "insert_params",
     "layout_name",
+    "layout_prefix",
     "placed_elements",
     "remove_element",
     "resolve_element",
