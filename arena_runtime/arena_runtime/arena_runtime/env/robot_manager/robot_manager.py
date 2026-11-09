@@ -69,6 +69,9 @@ _MOVEIT_QUIET_RULES = '+[**/moveit/**:error]'
 
 _COLLISION_MONITOR_RULES = '+[**/collision_monitor:info]'
 
+#: nav2's 0.25 m xy_goal_tolerance plus a map cell
+ZONE_GOAL_MARGIN_M = 0.3
+
 _CONTROLLER_POLL = 0.2
 _CM_CALL_TIMEOUT = 10.0
 _CM_REFUSAL_GRACE_S = 20.0
@@ -640,8 +643,8 @@ class RobotManager(NodeInterface):
             return attrs.evolve(phase, pose=self._environment_manager.realize(phase.pose))
         return phase
 
-    def _resolve_target(self, phase: GoToPhase) -> GoToPhase:
-        """Give a named zone, door, elevator or docked object target its dispatch pose unless it carries one, a ped target keeps following the ped. A docked object's pose lies within half the dock's inner radius of its deepest point, facing the object, or its front where the dock covers the object's origin."""
+    def resolve_target(self, phase: GoToPhase) -> GoToPhase:
+        """Give a named zone, door, elevator or docked object target its dispatch pose unless it carries one, a ped target keeps following the ped. A zone's pose keeps ZONE_GOAL_MARGIN_M off its edge while the zone has a free cell there. A docked object's pose lies within half the dock's inner radius of its deepest point, facing the object, or its front where the dock covers the object's origin."""
         if phase.target is None or phase.pose is not None:
             return phase
         world = authored_statics(self.node._world_manager.world_compacted())
@@ -651,15 +654,22 @@ class RobotManager(NodeInterface):
         outline = shapely.Polygon([(corner.x, corner.y) for corner in corners])
         docked = next((entity for entity in world.objects if entity.name == phase.target and entity.dock is not None), None)
         if docked is not None or any(zone.name == phase.target for zone in world.zones):
-            area = outline
             if docked is not None:
                 # away from the dock's edges, so a planner's goal tolerance cannot stop the robot outside it
-                deepest = polylabel(area)
-                area = area.intersection(deepest.buffer(area.exterior.distance(deepest) / 2))
-            try:
-                position = self.node._world_manager.get_position_on_map(self.safe_distance, forbid=False, polygon=area)
-            except RuntimeError as e:
-                raise ValueError(f"robot {self.name!r}: goto target {phase.target!r} has no free cell with {self.safe_distance:.2f} m clearance") from e
+                deepest = polylabel(outline)
+                areas = [outline.intersection(deepest.buffer(outline.exterior.distance(deepest) / 2))]
+            else:
+                inner = outline.buffer(-ZONE_GOAL_MARGIN_M)
+                areas = [outline] if inner.is_empty else [inner, outline]
+            position, error = None, None
+            for area in areas:
+                try:
+                    position = self.node._world_manager.get_position_on_map(self.safe_distance, forbid=False, polygon=area)
+                    break
+                except RuntimeError as e:
+                    error = e
+            if position is None:
+                raise ValueError(f"robot {self.name!r}: goto target {phase.target!r} has no free cell with {self.safe_distance:.2f} m clearance") from error
         else:
             position = world.point_resolver(self.node.conf.General.RNG.stream("robots", "target", self.name)).resolve(phase.target)
         if docked is None:
@@ -688,7 +698,7 @@ class RobotManager(NodeInterface):
         def resolve(phase: TaskPhase) -> TaskPhase:
             if isinstance(phase, LoopPhase):
                 return attrs.evolve(phase, phases=[resolve(inner) for inner in phase.phases])
-            return self._resolve_target(phase) if isinstance(phase, GoToPhase) else phase
+            return self.resolve_target(phase) if isinstance(phase, GoToPhase) else phase
 
         mobile = self._adapters.get(TaskKind.GOTO_POSE)
         walks = self._climbs if mobile is not None and mobile.routes_levels else frozenset()
