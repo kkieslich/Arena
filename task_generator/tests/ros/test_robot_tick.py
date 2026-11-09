@@ -224,6 +224,8 @@ def _fleet_world() -> object:
 
 LOADING_XY = (4.5, 0.5)
 LOCKER_XY = (7.0, 3.0)
+#: the charger nearest the locker, charger_2's dock centre
+CHARGER_2_XY = (4.0, 3.0)
 JACKAL = {"static_power_w": 42.2, "odometry_linear_w_per_mps": 50.0, "odometry_angular_w_per_radps": 17.0}
 
 
@@ -315,8 +317,8 @@ def _job_index(manager: _Manager) -> int:
 
 
 def _job_wh(start: tuple[float, float], per_m: float = 0.046) -> float:
-    """The mode's estimate for a delivery from `start`: 1.2 times the straight line to the loading point and on to the locker, plus the jackal's 42.2 W over 25 s of loading and unloading."""
-    return (math.dist(start, LOADING_XY) + math.dist(LOADING_XY, LOCKER_XY)) * 1.2 * per_m + 42.2 * 25.0 / 3600.0
+    """The mode's estimate for a delivery from `start`: 1.2 times the straight line to the loading point, on to the locker and on to the charger nearest it, plus the jackal's 42.2 W over 25 s of loading and unloading."""
+    return (math.dist(start, LOADING_XY) + math.dist(LOADING_XY, LOCKER_XY) + math.dist(LOCKER_XY, CHARGER_2_XY)) * 1.2 * per_m + 42.2 * 25.0 / 3600.0
 
 
 def test_fleet_releases_depend_on_the_seed_alone() -> None:
@@ -482,7 +484,7 @@ def test_fleet_logs_a_failed_job_as_failed_frees_its_dock_and_does_not_queue_it_
 
 
 def test_fleet_abandons_a_job_past_its_timeout_and_sends_the_robot_home(monkeypatch: pytest.MonkeyPatch) -> None:
-    mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0)
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0, job_timeout_per_m=0.0)
     asyncio.run(mode.reset())
     _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
     _at(node, 1.0)
@@ -499,7 +501,7 @@ def test_fleet_abandons_a_job_past_its_timeout_and_sends_the_robot_home(monkeypa
 
 
 def test_fleet_abandons_a_trip_to_a_charger_past_the_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], job_timeout=100.0)
+    mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], job_timeout=100.0, job_timeout_per_m=0.0)
     asyncio.run(mode.reset())
     _socs(managers, r0=20.0, r1=90.0, r2=90.0, r3=90.0)
     _at(node, 1.0)
@@ -511,6 +513,55 @@ def test_fleet_abandons_a_trip_to_a_charger_past_the_timeout(monkeypatch: pytest
     assert "charge.0.started" not in record.log
     # still under charge_below, it queues again and is sent to its charger home once more
     assert (record.log["charge.1.robot"], record.log["charge.1.dispatched"]) == ("r0", "102.001")
+
+
+def test_fleet_job_timeout_grows_with_the_route_estimate(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0, job_timeout_per_m=10.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _job_index(managers["r0"]) == 0
+    # r0 on bay_1: 1.2 x (bay_1 to the loading point to the locker), the leg to a charger after it not counted
+    timeout = 100.0 + 10.0 * 1.2 * (math.dist((0.5, 0.5), LOADING_XY) + math.dist(LOADING_XY, LOCKER_XY))
+    assert record.log["job.0.timeout"] == f"{timeout:.3f}"
+    _at(node, 1.0 + timeout - 1.0)
+    _tick(mode)
+    assert "job.0.ended" not in record.log
+    _at(node, 1.0 + timeout + 0.5)
+    _tick(mode)
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"]) == ("abandoned", "timeout")
+
+
+def test_fleet_charger_trip_timeout_grows_with_the_distance_to_the_charger(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], job_timeout=100.0, job_timeout_per_m=10.0)
+    asyncio.run(mode.reset())
+    # r3 on bay_4 (10.5, 0.5) goes to charger_1 (1, 3), the first one whose holder is away
+    _socs(managers, r0=90.0, r1=90.0, r2=90.0, r3=20.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _phase_text(managers["r3"]) == "charge at charger_1"
+    timeout = 100.0 + 10.0 * 1.2 * math.dist((10.5, 0.5), (1.0, 3.0))
+    _at(node, 1.0 + timeout - 1.0)
+    _tick(mode)
+    assert "charge.0.ended" not in record.log
+    _at(node, 1.0 + timeout + 0.5)
+    _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.0.reason"]) == ("abandoned", "timeout")
+
+
+def test_fleet_job_energy_counts_the_leg_to_the_charger_nearest_the_second_dock(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="dp", charge_below=5.0)
+    asyncio.run(mode.reset())
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 22.0, {"static_power_w": 42.2}
+    _socs(managers, r0=90.0, r1=80.0, r2=4.0, r3=4.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # the delivery unloads at the locker (7, 3), nearest charger_2 (4, 3); the pickup unloads at the loading point (4.5, 0.5), nearest charger_2 too
+    assert record.log["job.0.energy_wh"] == f"{_job_wh((0.5, 0.5)):.3f}"
+    pickup = (math.dist((2.5, 0.5), LOCKER_XY) + math.dist(LOCKER_XY, LOADING_XY) + math.dist(LOADING_XY, CHARGER_2_XY)) * 1.2 * 0.046 + 42.2 * 25.0 / 3600.0
+    assert record.log["job.1.energy_wh"] == f"{pickup:.3f}"
 
 
 @pytest.mark.parametrize(

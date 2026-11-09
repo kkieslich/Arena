@@ -28,7 +28,8 @@ def _declare_schema(node: ROSParamServer, ns: Namespace) -> None:
     declare_double(node, ns("reserve"), 10.0, label="Reserve", description="Battery percent a job must leave by its energy estimate, else the robot charges first.", lo=0.0, hi=100.0)
     declare_double(node, ns("wh_per_m"), 0.046, label="Energy per metre", description="Wh a robot uses per metre driven, standby while driving included, for the job energy estimate; 0 derives it from the robot's power profile at 0.4 m/s and 0.2 rad/s.", lo=0.0, hi=10.0)
     declare_double(node, ns("detour"), 1.2, label="Detour factor", description="Route length over straight-line distance assumed for the job energy estimate.", lo=1.0, hi=10.0)
-    declare_double(node, ns("job_timeout"), 1200.0, label="Job timeout", description="Seconds a job may take from its assignment, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home; 0 for none.", lo=0.0, hi=86400.0)
+    declare_double(node, ns("job_timeout"), 300.0, label="Job timeout", description="Seconds a job may take from its assignment, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home, on top of job_timeout_per_m for each metre of its route estimate; 0 for none.", lo=0.0, hi=86400.0)
+    declare_double(node, ns("job_timeout_per_m"), 5.0, label="Job timeout per metre", description="Seconds the job timeout grows by per metre of the route estimate (straight line times detour): to both docks for a job, to the charger for a charging trip.", lo=0.0, hi=3600.0)
 
 
 @ROBOTS_MODES.register(Modes.TM_Robots.FLEET, namespace=_NS, schema=_declare_schema)
