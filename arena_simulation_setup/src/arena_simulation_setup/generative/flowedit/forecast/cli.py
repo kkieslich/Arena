@@ -122,7 +122,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     if args.png:
         from .plot import plot_world
 
-        plot_world(args.png, grid, forecast, forecast, None, scene, title=f"{args.world} forecast")
+        plot_world(args.png, grid, None, forecast, None, scene, title=f"{args.world} forecast")
         print(f"wrote {args.png}")
     return 0
 
