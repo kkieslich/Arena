@@ -10,7 +10,7 @@ from arena_simulation_setup.generative.flowedit.build import presets
 from arena_simulation_setup.generative.flowedit.cli import main
 from arena_simulation_setup.generative.flowedit.edit import DEMAND_VERBS, EDITS, GRAPH, Site, apply, open_site, save
 from arena_simulation_setup.kg import Scene, Value, dumps, load
-from flowedit_docks import CHARGER, DOCKED, DOCKED_IDS, FACING_NORTH, LOCKER
+from flowedit_docks import CHARGE_POWER_W, CHARGER, DOCKED, DOCKED_IDS, FACING_NORTH, LOCKER
 
 if TYPE_CHECKING:
     from arena_simulation_setup.shared.entities import Obstacle
@@ -333,3 +333,34 @@ def test_a_removed_object_takes_its_dock_along(queue: Site, name: str, model: st
     path = save(apply(inserted, "remove", f"obj:{name}"))
     assert name not in _saved_objects(path)
     assert name not in open_site(path).world.levels["0"].zone_ref_names()
+
+
+def _charger(**params: Any) -> dict[str, Any]:
+    _, model, back, dock = CHARGER
+    return {**_docked(model, back, dock), "charge_power_w": CHARGE_POWER_W, **params}
+
+
+def test_insert_writes_a_chargers_charge_power(queue: Site) -> None:
+    path = save(apply(queue, "insert", f"obj:{CHARGER.name}", _charger()))
+    assert _saved_objects(path)[CHARGER.name]["charge_power_w"] == CHARGE_POWER_W
+    assert _world_object(open_site(path), CHARGER.name).charge_power_w == CHARGE_POWER_W
+
+
+@pytest.mark.parametrize(("params", "message"), [({"dock": None}, "'charger_1' has no dock"), ({"charge_power_w": 0.0}, "above 0, got 0.0")], ids=["no_dock", "zero"])
+def test_insert_refuses_a_charge_power_without_a_dock_or_at_zero(queue: Site, params: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        apply(queue, "insert", f"obj:{CHARGER.name}", _charger(**params))
+
+
+def test_a_moved_charger_keeps_its_charge_power(queue: Site) -> None:
+    inserted = apply(queue, "insert", f"obj:{CHARGER.name}", _charger())
+    path = save(apply(inserted, "move", f"obj:{CHARGER.name}", {"x": 25.0 - CHARGER.back, "y": 5.0, "yaw": 3.1416}))
+    assert _saved_objects(path)[CHARGER.name]["charge_power_w"] == CHARGE_POWER_W
+    assert _world_object(open_site(path), CHARGER.name).charge_power_w == CHARGE_POWER_W
+
+
+def test_a_removed_charger_takes_its_charge_power_along(queue: Site) -> None:
+    inserted = apply(queue, "insert", f"obj:{CHARGER.name}", _charger())
+    path = save(apply(inserted, "remove", f"obj:{CHARGER.name}"))
+    assert CHARGER.name not in _saved_objects(path)
+    assert not [o.name for level in open_site(path).world.levels.values() for o in level.objects if o.charge_power_w is not None]

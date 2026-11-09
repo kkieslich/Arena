@@ -321,7 +321,7 @@ def _move(site: Site, edit: Edit) -> None:
 
 
 def _insert(site: Site, edit: Edit) -> None:
-    """Insert a world object: `model`, `x`, `y`, `z` (default 0), `yaw` (default 0), `level`, `dock` (where a robot stands to use it, a polygon in its frame), and the demand `function` takes."""
+    """Insert a world object: `model`, `x`, `y`, `z` (default 0), `yaw` (default 0), `level`, `dock` (where a robot stands to use it, a polygon in its frame), `charge_power_w` (the power in W a robot in the dock charges with, which makes it a charger), and the demand `function` takes."""
     from arena_simulation_setup.shared.entities import Obstacle
     from arena_simulation_setup.tree.World.write import short_identifier
 
@@ -335,7 +335,7 @@ def _insert(site: Site, edit: Edit) -> None:
     level = _level(site.world, params.pop("level", None))
     level_id = next(k for k, v in site.world.levels.items() if v is level)
     x, y, z, yaw = (float(params.pop(k, 0.0)) for k in ("x", "y", "z", "yaw"))
-    obstacle: Obstacle = Obstacle.parse({"name": name, "model": params.pop("model"), "pose": [x, y, z, 0.0, 0.0, yaw], "dock": params.pop("dock", None)})
+    obstacle: Obstacle = Obstacle.parse({"name": name, "model": params.pop("model"), "pose": [x, y, z, 0.0, 0.0, yaw], "dock": params.pop("dock", None), "charge_power_w": params.pop("charge_power_w", None)})
     level.objects.append(obstacle)
     model = short_identifier(obstacle.model)
     site.graph.add_entity(edit.target, {"model": model[0] if isinstance(model, list) else model})

@@ -78,9 +78,9 @@ Load and save it with `arena_simulation_setup.kg.load` and `write`.
 
 | Type | Target | Params | Graph | `world.yaml` |
 |---|---|---|---|---|
-| `move` | `obj:<name>` | `x`, `y`, `yaw`, `level` (default: unchanged), `leave_demand: true` (the demand stays at the old spot) | `at`; with `leave_demand` the demand facts, `affords` among them, go to a new `obj:<name>_demand` at the old spot, turned so people queue at the model's front | the pose, for a world object, its height, roll and pitch kept and its `dock`, in its own frame, moved with it; with `leave_demand` its `humansim:` block keeps only `seats`, the dock stays with the model |
-| `insert` | `obj:<new name>` | `model`, `x`, `y`, `z` (0), `yaw` (0), `level`, `dock` (where a robot stands to use it, `[[x, y], ...]` in the object frame, see [AUTHORING.md](../../../../AUTHORING.md#4-add-a-scenario)), and any `function` params | entity, `at`, demand | a new world object with its `humansim:` block and `dock` |
-| `remove` | `obj:<name>` | none | the entity and every fact about it | the object with its `dock`, and its `kg.yaml` entity |
+| `move` | `obj:<name>` | `x`, `y`, `yaw`, `level` (default: unchanged), `leave_demand: true` (the demand stays at the old spot) | `at`; with `leave_demand` the demand facts, `affords` among them, go to a new `obj:<name>_demand` at the old spot, turned so people queue at the model's front | the pose, for a world object, its height, roll and pitch kept and its `dock`, in its own frame, and `charge_power_w` moved with it; with `leave_demand` its `humansim:` block keeps only `seats`, the dock stays with the model |
+| `insert` | `obj:<new name>` | `model`, `x`, `y`, `z` (0), `yaw` (0), `level`, `dock` (where a robot stands to use it, `[[x, y], ...]` in the object frame, see [AUTHORING.md](../../../../AUTHORING.md#4-add-a-scenario)), `charge_power_w` (the power in W a robot in the dock charges with, above 0, only with a `dock`: the object is a charger), and any `function` params | entity, `at`, demand | a new world object with its `humansim:` block, `dock` and `charge_power_w` |
+| `remove` | `obj:<name>` | none | the entity and every fact about it | the object with its `dock` and `charge_power_w`, and its `kg.yaml` entity |
 | `function` | `obj:<name>` | `type`, `capacity`, `interaction_radius`, `satisfies: {<need>: amount or null}`, `dwell: seconds, {mean, std, clip_low, clip_high} or null`, `clear: true` (first drop all demand, the formation included) | `serves`, `satisfies`, `dwells` (`from: edit:<id>`), `has_formation` (by `clear`) | the `humansim:` block, for a world object |
 | `access` | `door:<name>` | `locked`, `authorized`, `unlock_on`, or `remove: true` | access facts | the door's `gate` preset (new gates start unlocked) |
 | `access` | `schedule:<name>` | `regime`, `windows`, `default`, or `remove: true` | access facts | the `schedules:` entry |
@@ -116,7 +116,7 @@ edits:
 | Type | Target | Params drawn |
 |---|---|---|
 | `move` | an object on the floor, one with a need (`satisfies`) first | a spot in its own room 0.5-3 m away (`scope: local`, 30 %), else in another room of its level (`scope: room`) |
-| `insert` | `obj:gen_<model>_<n>`, a copy of an object on the floor, one with a need first | a spot in any room of its level (`scope: room`), the source's demand (service, needs, dwell) and `dock` copied |
+| `insert` | `obj:gen_<model>_<n>`, a copy of an object on the floor, one with a need first | a spot in any room of its level (`scope: room`), the source's demand (service, needs, dwell), `dock` and `charge_power_w` copied |
 | `remove` | an object, one with a need first | none |
 | `function` | an object with a need | `capacity`: a new value in the type's range (`CAPACITY`), objects whose type others share first, none with capacity 0. Or `dwell`: a new mean in the type's range (`DWELL_S`, 3-20 s for dispensers), the authored spread scaled to it, only on the sole object for its need |
 | `access` | a door whose rooms keep another door, a gated door, or a schedule with a regime | lock a door; unlock or ungate a gated one; a schedule window |
@@ -128,7 +128,7 @@ Only objects with a need count as demand: in PEDS only needs send people to an o
 
 | Control | Edit | Result |
 |---|---|---|
-| `inert_object` | `insert obj:<name>_inert` (move or insert) | the same model and `dock` without demand at the edit's spot, the original left in place |
+| `inert_object` | `insert obj:<name>_inert` (move or insert) | the same model, `dock` and `charge_power_w` without demand at the edit's spot, the original left in place |
 | `moved_without_demand` | `move obj:<name>` with `leave_demand: true` (move only) | the model at the edit's spot, its demand at the old spot on `obj:<name>_demand` |
 
 Only a chain's first edit has controls. An object without `humansim.type` takes its type from its asset's `annotation.yaml` at runtime, so the inert copy, and the moved model of `moved_without_demand`, may still be a target by that name.
