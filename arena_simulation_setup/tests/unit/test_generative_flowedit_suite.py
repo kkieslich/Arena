@@ -161,3 +161,73 @@ def test_a_test_crowd_is_its_own_suite_of_its_partitions(split: tuple[Path, dict
     # a crowd asked for on partitions it does not run on would be an empty suite
     assert main(["suite", str(path), "--worlds", str(worlds), "--no-generate", "--out", str(tmp_path / "empty.yaml"), "--crowd", "orca", "--partition", "train"]) == 1
     assert not (tmp_path / "empty.yaml").exists()
+
+
+TASK = {"start": [10.0, 2.0, 1.5708], "phases": [{"loop": [{"goto": [14.8, 22.9, -0.82], "tolerance_angle": 3.1416}, {"goto": [10.0, 2.0, -1.5708], "tolerance_angle": 3.1416}]}]}
+CONTEST = [{"name": "dwb_blind", "mobile": {"driver": "nav2", "local_planner": "dwb"}}, {"name": "drlvo", "mobile": "drl", "mobile.planner": "drlvo"}]
+
+
+def test_a_robot_task_drives_every_stage_among_the_robot_free_suite_s_people(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path, doc = split
+    plain = _suite(path, worlds, tmp_path / "plain.yaml")
+    path.write_text(yaml.safe_dump({**doc, "robot_task": TASK, "contest": CONTEST}))
+    capsys.readouterr()
+    suites = tmp_path / "imported" / "suites"
+    driven = _suite(path, worlds, suites / "flowedit_pilot.yaml")
+    assert driven["launch"]["human.robots.visible"] == "true" and driven["launch"]["lockstep"] == "true"
+    assert [s["name"] for s in driven["stages"]] == [s["name"] for s in plain["stages"]] and SU.pairs(driven) == SU.pairs(plain)
+    for with_robot, without in zip(driven["stages"], plain["stages"], strict=True):
+        assert set(with_robot) == STAGE_KEYS and with_robot["modes"] == {"robots": "scenario", "obstacles": "scenario"}
+        assert with_robot["config"] == {"scenario": {"file": R.scenario_name("queue", SP.crowd(doc), with_robot["seed"], TASK)}}
+        scenarios = worlds / with_robot["map"] / "scenarios"
+        robot_doc = yaml.safe_load((scenarios / with_robot["config"]["scenario"]["file"] / "scenario.yaml").read_text())
+        crowd_doc = yaml.safe_load((scenarios / without["config"]["scenario"]["file"] / "scenario.yaml").read_text())
+        assert robot_doc["humans"] == crowd_doc["humans"] and len(robot_doc["robots"]) == 1 and "robots" not in crowd_doc
+    contest = yaml.safe_load((tmp_path / "imported" / "contests" / "flowedit_pilot.yaml").read_text())
+    assert contest == {"name": "flowedit_pilot", "contestants": CONTEST}
+    assert "--suite flowedit_pilot --contest flowedit_pilot --lanes 2" in capsys.readouterr().out
+    # elsewhere than a suites directory the contest lands beside the suite
+    _suite(path, worlds, tmp_path / "s.yaml")
+    assert yaml.safe_load((tmp_path / "s.contest.yaml").read_text())["contestants"] == CONTEST
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"robot_task": {**TASK, "phases": [{"goto": "laboratory"}]}}, "name a target"),
+        ({"robot_task": {**TASK, "phases": [{"loop": [{"goto": [14.8, 22.9, 0.0]}, {"goto": "fountain"}]}]}}, "name a target"),
+        ({"robot_task": {**TASK, "start": "central_hallway"}}, "not the zone"),
+        ({"robot_task": {**TASK, "phases": []}}, "no phases"),
+        ({"robot_task": {**TASK, "speed": 1.0}}, "unknown keys"),
+        ({"robot_task": TASK, "settings": {**CROWD, "robot": {"start": [10.0, 2.0, 0.0]}}}, "both give the robot"),
+        ({"contest": CONTEST}, "without a robot_task"),
+        ({"robot_task": TASK, "contest": [*CONTEST, CONTEST[0]]}, "appear twice"),
+        ({"robot_task": TASK, "contest": [{"mobile": "drl"}]}, "each a mapping with a name"),
+    ],
+)
+def test_a_robot_task_gives_every_goto_as_a_pose_and_a_contest_needs_one(split: tuple[Path, dict[str, Any]], change: dict[str, Any], match: str) -> None:
+    _, doc = split
+    with pytest.raises(ValueError, match=match):
+        SP.check({**doc, **change})
+
+
+def test_a_sweep_refuses_a_robot_task(split: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    _, doc = split
+    with pytest.raises(ValueError, match="record it with `flowedit suite`"):
+        SP.sweep({**doc, "robot_task": TASK}, tmp_path / "runs", regenerate=False, log=lambda _: None)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_the_shipped_h2_split_runs_its_planners_on_the_pilot_s_fountain_move_and_controls() -> None:
+    splits = Path(SP.__file__).parent / "splits"
+    h2, pilot = SP.load(splits / "h2_planners.yaml"), SP.load(splits / "peds_pilot.yaml")
+    worlds = h2["partitions"]["train"]
+    names = [SU.stage_name(j.world, j.seed) for j in SP.jobs(h2)]
+    assert len(names) == len(set(names)) == 20 and {SU.parse_stage_name(n)[1] for n in names} == {1, 2, 3, 4, 5}
+    # the pilot's worlds, sources, crowd and train seeds: the same edited worlds and the same people per seed
+    assert set(worlds) <= set(pilot["partitions"]["train"]) and h2["sources"] == {"hospital_1": pilot["sources"]["hospital_1"]}
+    assert SP.crowd(h2) == SP.crowd(pilot) and SP.seeds_of(h2, "train") == SP.seeds_of(pilot, "train")
+    edit = "hospital_1__move_fountain__6e1d6873"
+    assert h2["control_worlds"] == {edit: pilot["control_worlds"][edit]} and set(worlds) == {"hospital_1", edit, *pilot["control_worlds"][edit]}
+    assert SP.robot_task_of(h2) is not None and [c["name"] for c in SP.contest_of(h2) or []] == ["dwb_blind", "dwb_social", "drlvo"]
+    assert SP.duration_of(h2) == 300.0
