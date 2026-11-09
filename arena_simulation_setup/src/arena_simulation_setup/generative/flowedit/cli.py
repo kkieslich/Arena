@@ -189,7 +189,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     crowds = _crowds(doc, args.crowd)
     if args.dry_run:
         for job in (j for name in crowds for j in SP.jobs(doc, parts, name)):
-            print(f"{job.crowd}\t{job.partition}\t{job.world}\tseed {job.seed}" + ("\treference" if job.reference else ""))
+            print(f"{job.crowd}\t{job.partition}\t{job.world}\tseed {job.seed}" + ("\treference" if job.reference else "") + ("\tbaseline only" if job.baseline else ""))
         return 0
     counts = SP.sweep(doc, out, partitions=parts, crowds=crowds, settings=args.settings, jobs_at_once=args.jobs, domain_base=args.domain_base, regenerate=not args.no_generate, stagger=args.stagger, log=lambda m: print(m, file=sys.stderr))
     print(f"{out}: {counts['done']} recorded, {counts['skipped']} already there, {counts['failed']} failed")
