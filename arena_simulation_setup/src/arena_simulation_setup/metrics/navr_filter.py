@@ -52,7 +52,7 @@ class PlacedElement:
       point of every non-blocking element instead. That jackal blocks in every check but its own slot's goto check (the
       robot sent there is the one that parks). A blocking footprint over a dock point makes that dock unreachable.
 
-    The same four fields as `generative.flowedit.place.PlacedElement`, which builds them from a layout.
+    `generative.flowedit.place.placed_elements` builds them from a placement layout.
     """
 
     name: str

@@ -296,6 +296,9 @@ def test_an_element_model_without_a_face_or_that_does_not_resolve_is_refused(tmp
 
 
 def test_placed_elements_give_the_nav_filter_footprints_dock_points_and_blocking(hospital: Site) -> None:
+    from arena_simulation_setup.metrics import navr_filter
+
+    assert place.PlacedElement is navr_filter.PlacedElement  # one definition, the filter's
     assert [f.name for f in dataclasses.fields(place.PlacedElement)] == ["name", "footprint", "dock_point", "blocks_floor"]
     layout = _valid_layout(hospital)
     placed = place.placed_elements(layout)
