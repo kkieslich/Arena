@@ -1,0 +1,2 @@
+# Test crowd: headed social force model (hsfm) instead of HumanSim's default sfm.
+local_planner: hsfm
