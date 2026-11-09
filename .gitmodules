@@ -7,7 +7,7 @@
 	update = checkout
 [submodule "arena_evaluation"]
 	path = arena_evaluation
-	url = https://github.com/voshch/arena-evaluation.git
+	url = https://github.com/kkieslich/arena-evaluation.git
 	branch = jazzy
 	update = checkout
 [submodule "arena_isaac"]
