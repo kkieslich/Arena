@@ -7,6 +7,7 @@ import enum
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 from collections.abc import Callable, Mapping, Sequence
@@ -661,8 +662,20 @@ def dump_edits(site: Site) -> dict[str, Any]:
     return {"format": FORMAT, "base": site.base, "scenario": site.scenario, "seed": site.seed, "edits": [e.dump() for e in site.edits]}
 
 
+def _link_or_copy(source: str, target: str) -> str:
+    """Hardlink `source` at `target`, a copy where the link fails (another filesystem, one without hardlinks)."""
+    try:
+        os.link(source, target)
+    except OSError:
+        return shutil.copy2(source, target)
+    return target
+
+
 def save(site: Site) -> Path:
-    """Write the edited world to the writable local worlds root under `site.name`, its graph and `edits.yaml` beside `world.yaml`."""
+    """Write the edited world to the writable local worlds root under `site.name`, its graph and `edits.yaml` beside
+    `world.yaml`. The files of the source world's `assets/` are hardlinked, not copied (a world can hold gigabytes of
+    splats and meshes), so they are shared with the source and must be replaced, never written in place; every file
+    the save writes is its own."""
     from arena_simulation_setup.tree.World import WorldIdentifier
     from arena_simulation_setup.tree.World.view import LEVEL_ORIGINS_FILE, world_assets
     from arena_simulation_setup.tree.World.write import to_yaml
@@ -676,7 +689,7 @@ def save(site: Site) -> Path:
         shutil.rmtree(view.path)
     view.path.mkdir(parents=True)
     if (site.root / "assets").is_dir():
-        shutil.copytree(site.root / "assets", view.path / "assets")
+        shutil.copytree(site.root / "assets", view.path / "assets", copy_function=_link_or_copy)
     if (site.root / LEVEL_ORIGINS_FILE).is_file():
         shutil.copy2(site.root / LEVEL_ORIGINS_FILE, view.path / LEVEL_ORIGINS_FILE)
     with world_assets(view, site.world):
