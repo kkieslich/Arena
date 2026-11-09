@@ -612,7 +612,7 @@ class RobotManager(NodeInterface):
             return attrs.evolve(phase, pose=self._environment_manager.realize(phase.pose))
         return phase
 
-    def _resolve_target(self, phase: GoToPhase) -> GoToPhase:
+    def resolve_target(self, phase: GoToPhase) -> GoToPhase:
         """Give a named zone, door, elevator or docked object target its dispatch pose unless it carries one, a ped target keeps following the ped. A docked object's pose lies within half the dock's inner radius of its deepest point, facing the object, or its front where the dock covers the object's origin."""
         if phase.target is None or phase.pose is not None:
             return phase
@@ -660,7 +660,7 @@ class RobotManager(NodeInterface):
         def resolve(phase: TaskPhase) -> TaskPhase:
             if isinstance(phase, LoopPhase):
                 return attrs.evolve(phase, phases=[resolve(inner) for inner in phase.phases])
-            return self._resolve_target(phase) if isinstance(phase, GoToPhase) else phase
+            return self.resolve_target(phase) if isinstance(phase, GoToPhase) else phase
 
         mobile = self._adapters.get(TaskKind.GOTO_POSE)
         walks = self._climbs if mobile is not None and mobile.routes_levels else frozenset()

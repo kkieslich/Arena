@@ -42,7 +42,7 @@ new ones), `RobotManager.stop_task` or `move`. `explore` hands a robot whose tas
 just ended a fresh random goal and teleports a robot that ran into
 `task.episode.timeout`, except a robot assigned from outside, which it leaves
 alone until the next reset. Its `done` is always `False`. `guided` assigns from
-its own goal clicks. `TM_Composite.tick` hands each sub-mode the part of `ended`
+its own goal clicks. `fleet` assigns jobs and charging trips, see [Fleet task stream](#fleet-task-stream). `TM_Composite.tick` hands each sub-mode the part of `ended`
 and `assigned` that belongs to its robots, runs every sub-mode even when one
 raises, then raises the first error. A robot's runner state is reachable as
 `ctx.robots[name].runner` (`active_state`, `outcomes`).
@@ -102,6 +102,7 @@ and an async `done` flag. Shipped modes:
 | `stationary` | [`stationary/`](stationary/) | robot stays parked without goal dispatch, at `pos_x`/`pos_y`/`pos_theta` or a free pose sampled per episode |
 | `scenario` | [`scenario/`](scenario/) | reads `start`/`goal` pairs from the world's scenario YAML. A robot past the `robots:` entries, or on an entry without `phases`, stays parked, and an episode with only parked robots runs until `task.episode.timeout` |
 | `characterization` | [`characterization/`](characterization/) | open-loop maneuver sweep: publishes exact `cmd_vel` profiles through the robot's rated envelope (no nav goals), tags each maneuver with `characterization_phase` markers, odom stall watchdog |
+| `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, charging trips below a battery level; see [Fleet task stream](#fleet-task-stream) |
 | `null` | [`composite.py`](composite.py) | idle sink for robots unallocated by the fleet manager |
 | `composite` | [`composite.py`](composite.py) | fan-out: each sub-TM sees a scoped `TaskContext` covering only its allocated robots |
 
@@ -211,6 +212,32 @@ active), and the resolved phases in `EpisodeRecord.phases` together with
 renders any phase list to one instruction sentence per phase, and
 [`shared/route.py`](../../../../arena_simulation_setup/src/arena_simulation_setup/shared/route.py)
 words a goto as walking directions through the world's doors and openings.
+
+## Fleet task stream
+
+`fleet` ([`fleet/impl.py`](fleet/impl.py)) runs a robot fleet on a stream of jobs, all names from `task.fleet.*`:
+
+- Each robot starts at its spot in `homes` (one per robot, in robot order: waiting bays and chargers, zones or docked
+  objects), placed where a goto to that spot would stop. The mode forbids no zone there: a forbidden zone stays in the
+  map for the episode and would leave the robot no free cell to return to, so pair it with obstacles that keep out of
+  the homes on their own (`scenario`). The reset fails when `homes`, `loading` or `locker` names no zone or docked
+  object of the world.
+- Jobs come from the episode seed alone (`RNG.stream("robots", "fleet")`): exponential gaps at `rate` per hour of sim
+  time, each a pickup with `pickup_share`, else a delivery. So a seed releases the same jobs at the same times in
+  every world and layout. A delivery loads `load_s` at `loading` and unloads `unload_s` at `locker`, a pickup the
+  other way round. Released jobs queue until a robot is free.
+- Every tick, free robots (idle or parked) with a battery under `charge_below` percent go to a charger first, lowest
+  battery first, then the rest take queued jobs, fullest battery first, then the rest park at their home. A robot
+  under `charge_below` takes no job: it waits for a charger. Chargers are the world's objects with `charge_power_w`.
+  A robot whose home is a charger charges there. Any other takes only a charger whose owner is away (on a job or done
+  with one), so the dock is empty, and once its goto is accepted swaps homes with that owner, who then parks in the
+  spot it left. A charging robot stays until `charge_until` percent, then is free again, parked in the dock. A goto
+  that cannot start yet (its spot has no free cell while another robot stands there) is retried on the next tick.
+- The battery is the robot's `power_publisher/energy` (`battery_soc_percent`), its start charge drawn per seed from
+  `task.episode.battery.soc.min`/`max`. A robot that has not reported yet counts as full.
+- The phase texts carry the job, its kind and release time. At info level the mode logs each release, each finished
+  job with its release and finish time (its task time), each charging trip and each full charge. `done` is always
+  `False`: the episode runs to its timeout.
 
 ## Fleet manager
 
