@@ -69,6 +69,16 @@ def test_zone_target_lands_on_a_free_cell_with_clearance() -> None:
         assert _blocked_distance(phase.pose.position, blocked) >= SAFE - RES
 
 
+def test_zone_target_keeps_off_the_zone_edge() -> None:
+    from arena_runtime.env.robot_manager.robot_manager import ZONE_GOAL_MARGIN_M
+
+    room = shapely.Polygon([(p.x, p.y) for p in ROOM])
+    for seed in range(40):
+        position = RobotManager.resolve_target(_manager(None, seed), GoToPhase(target="room")).pose.position
+        point = shapely.Point(position.x, position.y)
+        assert room.contains(point) and room.exterior.distance(point) >= ZONE_GOAL_MARGIN_M - RES
+
+
 def test_zone_target_without_a_free_cell_names_the_zone() -> None:
     with pytest.raises(ValueError, match="goto target 'room' has no free cell with 0.30 m clearance"):
         RobotManager.resolve_target(_manager((0.5, 0.5, 3.5, 3.5)), GoToPhase(target="room"))

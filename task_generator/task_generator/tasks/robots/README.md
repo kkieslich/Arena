@@ -162,7 +162,9 @@ share one definition. [`request.py`](../../../../arena_runtime/arena_runtime/are
 - `GoToPhase(pose | target, tolerance_radius?, tolerance_angle?, hold_time?, signal?)`:
   navigate to a pose, or to a zone, door, elevator, docked object or pedestrian
   by name. A zone target dispatches to a free map cell inside the zone with the
-  robot's spawn clearance, a docked object (a world object with a `dock:`
+  robot's spawn clearance, at least `ZONE_GOAL_MARGIN_M` (0.3 m) inside its
+  edge while the zone has such a cell (nav2's 0.25 m goal tolerance then cannot
+  stop the robot outside the zone; the whole zone otherwise), a docked object (a world object with a `dock:`
   polygon) to such a cell within half the dock's inner radius of its deepest
   point (a planner's goal tolerance then cannot stop the robot outside the
   dock), facing the object, or its annotated front where the dock covers the
