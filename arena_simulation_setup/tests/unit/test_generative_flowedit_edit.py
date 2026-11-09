@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
 import math
+import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -97,6 +100,43 @@ def test_moved_world_object_moves_in_world_yaml(queue: Site) -> None:
     objects = yaml.safe_load((path / "world.yaml").read_text())["levels"][0]["objects"]
     assert next(o for o in objects if o["name"] == "reception_counter_1")["pose"][:2] == [3.0, 2.8]
     assert (path / "kg.yaml").read_text() == (HOSPITAL / "kg.yaml").read_text()
+
+
+@pytest.fixture
+def hospital_copy(local_root: Path) -> Path:
+    """hospital_1 in the local worlds root, on the filesystem its edits are saved to, so their assets can be hardlinked."""
+    root = local_root / "worlds" / "hospital_copy"
+    shutil.copytree(HOSPITAL, root)
+    return root
+
+
+def _files(root: Path) -> dict[Path, os.stat_result]:
+    return {p.relative_to(root): p.stat() for p in root.rglob("*") if p.is_file()}
+
+
+def test_save_hardlinks_the_assets_and_writes_its_own_world_yaml(hospital_copy: Path) -> None:
+    before = {rel: (hospital_copy / rel).read_bytes() for rel in _files(hospital_copy)}
+    path = save(apply(open_site(hospital_copy), "move", "obj:reception_counter_1", {"x": 3.0}))
+    source, saved = _files(hospital_copy), _files(path)
+    assets = sorted(rel for rel in saved if rel.parts[0] == "assets")
+    assert assets == sorted(rel for rel in source if rel.parts[0] == "assets")
+    assert all(saved[rel].st_ino == source[rel].st_ino for rel in assets)
+    assert saved[Path("world.yaml")].st_ino != source[Path("world.yaml")].st_ino
+    assert {rel for rel in saved if rel.parts[0] != "assets" and saved[rel].st_nlink != 1} == set()
+    assert {rel: (hospital_copy / rel).read_bytes() for rel in source} == before  # the source world is unchanged
+
+
+def test_save_copies_the_assets_where_a_hardlink_fails(hospital_copy: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def cross_device(source: str, target: str, **_: object) -> None:
+        raise OSError(errno.EXDEV, "Invalid cross-device link", source, None, target)
+
+    monkeypatch.setattr(os, "link", cross_device)
+    path = save(apply(open_site(hospital_copy), "move", "obj:reception_counter_1", {"x": 3.0}))
+    source, saved = _files(hospital_copy), _files(path)
+    assets = sorted(rel for rel in saved if rel.parts[0] == "assets")
+    assert assets == sorted(rel for rel in source if rel.parts[0] == "assets")
+    assert all(saved[rel].st_ino != source[rel].st_ino and saved[rel].st_nlink == 1 for rel in assets)
+    assert all((path / rel).read_bytes() == (hospital_copy / rel).read_bytes() for rel in assets)
 
 
 def test_function_changes_demand_and_dwell(queue: Site) -> None:
