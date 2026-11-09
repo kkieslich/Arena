@@ -76,18 +76,6 @@ def test_declare_catalog_array_empty_default() -> None:
     assert desc.additional_constraints == "catalog:objects"
 
 
-def test_declare_string_array() -> None:
-    import rclpy
-    from arena_rclpy_mixins.declarations import declare_string_array
-
-    node = _StubNode()
-    declare_string_array(node, "task.fleet.homes", ("bay_1", "charger_1"), label="Homes")
-    name, value, desc = _last(node)
-    assert (name, value) == ("task.fleet.homes", ["bay_1", "charger_1"])
-    assert desc.type == rclpy.Parameter.Type.STRING_ARRAY.value
-    assert desc.additional_constraints == "label:Homes"
-
-
 def test_declare_enum() -> None:
     import rclpy
     from arena_rclpy_mixins.declarations import declare_enum

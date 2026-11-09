@@ -42,7 +42,7 @@ new ones), `RobotManager.stop_task` or `move`. `explore` hands a robot whose tas
 just ended a fresh random goal and teleports a robot that ran into
 `task.episode.timeout`, except a robot assigned from outside, which it leaves
 alone until the next reset. Its `done` is always `False`. `guided` assigns from
-its own goal clicks. `fleet` assigns jobs and charging trips, see [Fleet task stream](#fleet-task-stream). `TM_Composite.tick` hands each sub-mode the part of `ended`
+its own goal clicks. `TM_Composite.tick` hands each sub-mode the part of `ended`
 and `assigned` that belongs to its robots, runs every sub-mode even when one
 raises, then raises the first error. A robot's runner state is reachable as
 `ctx.robots[name].runner` (`active_state`, `outcomes`).
@@ -234,7 +234,7 @@ words a goto as walking directions through the world's doors and openings.
   robot whose home is a charger charges there, any other takes a charger whose owner is away and swaps homes with it.
 - The battery is the robot's `power_publisher/energy`. A robot counts as full until it reports.
 - No zone is forbidden at the homes, since a forbidden zone stays in the map for the whole episode. The reset fails
-  when a name is no zone or docked object of the world. `done` is always `False`.
+  when a name is no goto target of the world. `done` is always `False`.
 - At info level the mode logs each release, each finished job with its release and finish time, each charging trip
   and each full charge.
 

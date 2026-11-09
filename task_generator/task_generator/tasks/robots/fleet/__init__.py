@@ -1,8 +1,10 @@
 import typing
 
-from arena_rclpy_mixins.declarations import declare_double, declare_string, declare_string_array
+from arena_rclpy_mixins.declarations import declare_double, declare_string
 from arena_rclpy_mixins.ROSParamServer import ROSParamServer
 from arena_rclpy_mixins.shared import Namespace
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy import Parameter
 
 from task_generator.modes import Modes
 from task_generator.tasks.registry import _REGISTRY_NAMESPACE, ROBOTS_MODES
@@ -14,7 +16,7 @@ _NS = _REGISTRY_NAMESPACE("fleet")
 
 
 def _declare_schema(node: ROSParamServer, ns: Namespace) -> None:
-    declare_string_array(node, ns("homes"), [], label="Homes", description="Zone or docked object each robot starts and parks at, one per robot in robot order.")
+    node.rosparam.declare_forward(ns("homes"), [], descriptor=ParameterDescriptor(type=Parameter.Type.STRING_ARRAY.value, description="Zone or docked object each robot starts and parks at, one per robot in robot order."))
     declare_string(node, ns("loading"), "", label="Loading point", description="Zone where deliveries load and pickups unload.")
     declare_string(node, ns("locker"), "", label="Locker", description="Docked object where deliveries unload and pickups load.")
     declare_double(node, ns("rate"), 12.0, label="Rate", description="Jobs released per hour of sim time.", lo=0.1, hi=3600.0)

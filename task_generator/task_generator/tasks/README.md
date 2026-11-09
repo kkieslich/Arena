@@ -169,7 +169,6 @@ load the same scenario file and project different sections out of it).
 | `declare_float_pair` | `DOUBLE_ARRAY` | `range:float_pair` | min/max paired double spinboxes |
 | `declare_catalog` | `STRING` | `catalog:<name>` | combobox from `query/<name>` |
 | `declare_catalog_array` | `STRING_ARRAY` | `catalog:<name>` | multiselect from `query/<name>` |
-| `declare_string_array` | `STRING_ARRAY` | - | line edit |
 | `declare_enum` | `STRING` | `enum:a,b,c` | combobox of literal choices |
 | `declare_string` | `STRING` | - | line edit (or text edit if "prompt"-flavoured) |
 | `declare_int` | `INTEGER` | - (uses `integer_range` if `lo`/`hi` given) | spinbox |

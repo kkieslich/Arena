@@ -18,7 +18,7 @@ try:
     from arena_simulation_setup.utils.geometry import Orientation, Pose, Position
 
     from arena_runtime.env.constants.rng import EpisodeRng
-    from arena_runtime.env.robot_manager.robot_manager import RobotManager
+    from arena_runtime.env.robot_manager.robot_manager import ZONE_GOAL_MARGIN_M, RobotManager
     from arena_runtime.env.world_manager.utils import WorldLayers, WorldMap, WorldOccupancy
     from arena_runtime.env.world_manager.world_manager import WorldManager
     from arena_runtime.shared import WORLD_ENTITY_PREFIX
@@ -70,8 +70,6 @@ def test_zone_target_lands_on_a_free_cell_with_clearance() -> None:
 
 
 def test_zone_target_keeps_off_the_zone_edge() -> None:
-    from arena_runtime.env.robot_manager.robot_manager import ZONE_GOAL_MARGIN_M
-
     room = shapely.Polygon([(p.x, p.y) for p in ROOM])
     for seed in range(40):
         position = RobotManager.resolve_target(_manager(None, seed), GoToPhase(target="room")).pose.position

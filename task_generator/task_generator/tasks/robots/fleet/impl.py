@@ -85,10 +85,10 @@ class TM_Fleet(TM_Robots):
         if len(homes) < len(robots):
             raise ValueError(f"task.fleet.homes names {len(homes)} spots for {len(robots)} robots")
         world = authored_statics(self._ctx.world_manager.world_compacted())
-        spots = {zone.name for zone in world.zones} | {entity.name for entity in world.objects if entity.dock is not None}
+        spots = set(world.zone_ref_names())
         unknown = [spot for spot in (*homes, self._loading.value, self._locker.value) if spot not in spots]
         if unknown:
-            raise ValueError(f"task.fleet names {unknown}, which are no zone or docked object of the world")
+            raise ValueError(f"task.fleet names {unknown}, which are no goto target of the world")
 
         self._chargers = [entity.name for entity in world.objects if entity.charge_power_w is not None]
         self._home = {robot.name: home for robot, home in zip(robots, homes, strict=False)}
