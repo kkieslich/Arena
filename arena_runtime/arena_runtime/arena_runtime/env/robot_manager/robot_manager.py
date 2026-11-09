@@ -9,6 +9,7 @@ import typing
 
 import ament_index_python
 import arena_bringup.extensions.NodeLogLevelExtension as NodeLogLevelExtension
+import arena_robots_msgs.msg
 import attrs
 import geometry_msgs.msg
 import launch
@@ -138,6 +139,7 @@ class RobotManager(NodeInterface):
     _on_collision: Callable[[], None] | None
     _phase_failure: tuple[int, str] | None
     _launch_handle: LaunchHandle | None
+    _soc: float | None
 
     @property
     def robot(self) -> Robot:
@@ -294,6 +296,7 @@ class RobotManager(NodeInterface):
         self._phase_failure = None
         self._cabin_to_clear = ""
         self._charge_power_w = 0.0
+        self._soc = None
 
     def bind_abort(self, fn: Callable[[str], None]) -> None:
         self._abort_episode = fn
@@ -329,13 +332,22 @@ class RobotManager(NodeInterface):
 
         self._stop_pub = self.node.create_publisher(geometry_msgs.msg.Twist, str(self.namespace("cmd_vel")), 1)
         self._task_pose_pub = self.node.create_publisher(geometry_msgs.msg.PoseStamped, str(self.namespace("task_pose")), 10)
-        self._charge_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "charge_power")), _LATCHED)
-        self._soc_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "soc_percent")), _LATCHED)
+        self._set_up_battery()
         self._goal_pub = self.node.create_publisher(
             geometry_msgs.msg.PoseStamped,
             _gen_goal_topic,
             10,
         )
+
+    def _set_up_battery(self) -> None:
+        """The latched inputs of the robot's power publisher, and its energy output, which this subscription also wakes as it publishes only while subscribed."""
+        self._charge_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "charge_power")), _LATCHED)
+        self._soc_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "soc_percent")), _LATCHED)
+        self._capacity_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "battery_capacity_wh")), _LATCHED)
+        self._energy_sub = self.node.create_subscription(arena_robots_msgs.msg.Energy, str(self.namespace("power_publisher", "energy")), self._on_energy, rclpy.qos.QoSProfile(depth=1))
+
+    def _on_energy(self, msg: arena_robots_msgs.msg.Energy) -> None:
+        self._soc = float(msg.battery_soc_percent)
 
     async def launch(self, node_names: set[str]):
         """Bring up the robot's navstack. Split from set_up_robot so callers can sequence the
@@ -458,8 +470,24 @@ class RobotManager(NodeInterface):
         return float(rng.stream("robots", "soc", self.name).uniform(low, high))
 
     def publish_soc(self, soc: float) -> None:
-        """Set the battery charge in percent on the robot's power publisher."""
+        """Set the battery charge in percent on the robot's power publisher, and `soc` to it until the power publisher reports."""
+        self._soc = soc
         self._soc_pub.publish(std_msgs.msg.Float64(data=soc))
+
+    def publish_battery_capacity(self, capacity_wh: float) -> None:
+        """Set the battery capacity in Wh on the robot's power publisher, 0 for its own power.yaml; it keeps the charge in percent."""
+        self._capacity_pub.publish(std_msgs.msg.Float64(data=capacity_wh))
+
+    def reset_battery(self, rng: EpisodeRng, capacity_wh: float, soc_min: float, soc_max: float) -> None:
+        """Send the episode's battery capacity, then the start charge drawn for this robot."""
+        soc = self.initial_soc(rng, soc_min, soc_max)
+        self.publish_battery_capacity(capacity_wh)
+        self.publish_soc(soc)
+
+    @property
+    def soc(self) -> float | None:
+        """Battery charge in percent, the power publisher's latest `battery_soc_percent`, else the start charge sent this reset, None before either."""
+        return self._soc
 
     def set_episode_conditions(self, conditions: Sequence[EpisodeCondition]) -> None:
         self._runner.set_episode_conditions(conditions)

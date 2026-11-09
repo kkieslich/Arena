@@ -1091,7 +1091,19 @@ of transport, counts the same with or without charging. Each robot starts
 every episode with a charge drawn per episode seed and robot name between
 `task.episode.battery.soc.min` and `task.episode.battery.soc.max` (40 to
 100 %; each within 0 to 100, min at most max), sent to
-`<robot_ns>/power_publisher/soc_percent`.
+`<robot_ns>/power_publisher/soc_percent`. `task.episode.battery.capacity_wh`
+(default 0, the robot's own `telemetry/power.yaml`, 270 Wh for a jackal)
+gives every robot a battery of that many Wh instead, sent to
+`<robot_ns>/power_publisher/battery_capacity_wh` at each reset before the start
+charge; the power publisher keeps the charge in percent when the capacity
+changes, so the start charge is a percentage of the new capacity whichever
+arrives first. A small battery lets a robot run low within an episode: flatsim
+publishes no joint effort, so a jackal draws only its 35 W standby power, about
+4 % of 270 Wh in 20 min, while 15 Wh last about 26 min and a 125 W charger
+refills them in about 10. The runtime reads the charge back from
+`<robot_ns>/power_publisher/energy` (`battery_soc_percent`); a task mode gets it
+as `RobotManager.soc`, in percent: the start charge from the reset until the
+power publisher reports, None before the first reset.
 
 ```yaml
 objects:
