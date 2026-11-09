@@ -102,7 +102,7 @@ and an async `done` flag. Shipped modes:
 | `stationary` | [`stationary/`](stationary/) | robot stays parked without goal dispatch, at `pos_x`/`pos_y`/`pos_theta` or a free pose sampled per episode |
 | `scenario` | [`scenario/`](scenario/) | reads `start`/`goal` pairs from the world's scenario YAML. A robot past the `robots:` entries, or on an entry without `phases`, stays parked, and an episode with only parked robots runs until `task.episode.timeout` |
 | `characterization` | [`characterization/`](characterization/) | open-loop maneuver sweep: publishes exact `cmd_vel` profiles through the robot's rated envelope (no nav goals), tags each maneuver with `characterization_phase` markers, odom stall watchdog |
-| `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, charging trips below a battery level; see [Fleet task stream](#fleet-task-stream) |
+| `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, with charging trips below a battery level, see [Fleet task stream](#fleet-task-stream) |
 | `null` | [`composite.py`](composite.py) | idle sink for robots unallocated by the fleet manager |
 | `composite` | [`composite.py`](composite.py) | fan-out: each sub-TM sees a scoped `TaskContext` covering only its allocated robots |
 
@@ -163,8 +163,8 @@ share one definition. [`request.py`](../../../../arena_runtime/arena_runtime/are
   navigate to a pose, or to a zone, door, elevator, docked object or pedestrian
   by name. A zone target dispatches to a free map cell inside the zone with the
   robot's spawn clearance, at least `ZONE_GOAL_MARGIN_M` (0.3 m) inside its
-  edge while the zone has such a cell (nav2's 0.25 m goal tolerance then cannot
-  stop the robot outside the zone; the whole zone otherwise), a docked object (a world object with a `dock:`
+  edge when the zone has such a cell, so nav2's 0.25 m goal tolerance cannot
+  stop the robot outside the zone, a docked object (a world object with a `dock:`
   polygon) to such a cell within half the dock's inner radius of its deepest
   point (a planner's goal tolerance then cannot stop the robot outside the
   dock), facing the object, or its annotated front where the dock covers the
@@ -217,29 +217,26 @@ words a goto as walking directions through the world's doors and openings.
 
 ## Fleet task stream
 
-`fleet` ([`fleet/impl.py`](fleet/impl.py)) runs a robot fleet on a stream of jobs, all names from `task.fleet.*`:
+`fleet` ([`fleet/impl.py`](fleet/impl.py)) hands a stream of jobs to a fleet, configured under `task.fleet`:
 
-- Each robot starts at its spot in `homes` (one per robot, in robot order: waiting bays and chargers, zones or docked
-  objects), placed where a goto to that spot would stop. The mode forbids no zone there: a forbidden zone stays in the
-  map for the episode and would leave the robot no free cell to return to, so pair it with obstacles that keep out of
-  the homes on their own (`scenario`). The reset fails when `homes`, `loading` or `locker` names no zone or docked
-  object of the world.
-- Jobs come from the episode seed alone (`RNG.stream("robots", "fleet")`): exponential gaps at `rate` per hour of sim
-  time, each a pickup with `pickup_share`, else a delivery. So a seed releases the same jobs at the same times in
-  every world and layout. A delivery loads `load_s` at `loading` and unloads `unload_s` at `locker`, a pickup the
-  other way round. Released jobs queue until a robot is free.
-- Every tick, free robots (idle or parked) with a battery under `charge_below` percent go to a charger first, lowest
-  battery first, then the rest take queued jobs, fullest battery first, then the rest park at their home. A robot
-  under `charge_below` takes no job: it waits for a charger. Chargers are the world's objects with `charge_power_w`.
-  A robot whose home is a charger charges there. Any other takes only a charger whose owner is away (on a job or done
-  with one), so the dock is empty, and once its goto is accepted swaps homes with that owner, who then parks in the
-  spot it left. A charging robot stays until `charge_until` percent, then is free again, parked in the dock. A goto
-  that cannot start yet (its spot has no free cell while another robot stands there) is retried on the next tick.
-- The battery is the robot's `power_publisher/energy` (`battery_soc_percent`), its start charge drawn per seed from
-  `task.episode.battery.soc.min`/`max`. A robot that has not reported yet counts as full.
-- The phase texts carry the job, its kind and release time. At info level the mode logs each release, each finished
-  job with its release and finish time (its task time), each charging trip and each full charge. `done` is always
-  `False`: the episode runs to its timeout.
+| Parameter | Meaning |
+| --- | --- |
+| `homes` | zone or docked object each robot starts and parks at, one per robot in robot order |
+| `loading`, `locker` | zone where a delivery loads, docked object where it unloads, a pickup the other way round |
+| `rate`, `pickup_share` | jobs released per hour of sim time, share of pickups |
+| `load_s`, `unload_s` | seconds held where a job loads and unloads |
+| `charge_below`, `charge_until` | battery percent that sends a free robot to a charger, and that frees it again |
+
+- Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
+  every world. Released jobs queue until a robot is free.
+- Each tick, free robots under `charge_below` go to a charger, lowest battery first, the others take queued jobs,
+  fullest battery first, and the rest park at their home. Chargers are the world's objects with `charge_power_w`. A
+  robot whose home is a charger charges there, any other takes a charger whose owner is away and swaps homes with it.
+- The battery is the robot's `power_publisher/energy`. A robot counts as full until it reports.
+- No zone is forbidden at the homes, since a forbidden zone stays in the map for the whole episode. The reset fails
+  when a name is no zone or docked object of the world. `done` is always `False`.
+- At info level the mode logs each release, each finished job with its release and finish time, each charging trip
+  and each full charge.
 
 ## Fleet manager
 

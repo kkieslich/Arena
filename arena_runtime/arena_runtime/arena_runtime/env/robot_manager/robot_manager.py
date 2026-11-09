@@ -68,8 +68,7 @@ _MOVEIT_QUIET_RULES = '+[**/moveit/**:error]'
 
 _COLLISION_MONITOR_RULES = '+[**/collision_monitor:info]'
 
-#: How far inside its edge a zone target's dispatch pose lies when the zone has a free cell there: nav2's 0.25 m
-#: xy_goal_tolerance plus a map cell, so the planner cannot stop the robot outside the zone the judge checks.
+#: nav2's 0.25 m xy_goal_tolerance plus a map cell
 ZONE_GOAL_MARGIN_M = 0.3
 
 _CONTROLLER_POLL = 0.2
@@ -632,7 +631,6 @@ class RobotManager(NodeInterface):
                 deepest = polylabel(outline)
                 areas = [outline.intersection(deepest.buffer(outline.exterior.distance(deepest) / 2))]
             else:
-                # off the zone's edge for the same reason (the map grid lets cells on the edge in), the whole zone when its inside has no free cell
                 inner = outline.buffer(-ZONE_GOAL_MARGIN_M)
                 areas = [outline] if inner.is_empty else [inner, outline]
             position, error = None, None
