@@ -1,4 +1,4 @@
-"""`flowedit`: build the FLOWEDIT graph of a world and scenario, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, and write a split as a seed-paired benchmark suite."""
+"""`flowedit`: build the FLOWEDIT graph of a world and scenario, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, write a split as a seed-paired benchmark suite, and forecast its flow."""
 
 from __future__ import annotations
 
@@ -232,7 +232,7 @@ def _cmd_suite(args: argparse.Namespace) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="flowedit", description="FLOWEDIT graphs: each object's demand on its KG node. `flowedit <verb> --help` lists a verb's options.")
-    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,edit,generate,read,run,sweep,suite}")
+    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,edit,generate,read,run,sweep,suite,forecast}")
     p = verbs.add_parser("build", help="build the graph of a world and scenario", description="build the graph of a world and scenario, a dry run that prints it without --write")
     p.add_argument("world", help="the world to build from")
     p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
@@ -344,6 +344,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="replace a suite file flowedit did not write")
     p.add_argument("--dry-run", action="store_true", help="print the suite without writing scenarios or the suite")
     p.set_defaults(fn=_cmd_suite)
+
+    from .forecast.cli import register
+
+    register(verbs)
     return parser
 
 
