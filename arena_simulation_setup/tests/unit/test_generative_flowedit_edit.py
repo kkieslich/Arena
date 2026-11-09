@@ -36,6 +36,14 @@ def queue() -> Site:
     return open_site(HOSPITAL, "queue")
 
 
+@pytest.fixture(autouse=True)
+def docked_assets(local_root: Path) -> dict[str, Path]:
+    """The docked models resolve in every test, as a docked object's model must (`resolve_footprints`)."""
+    from flowedit_docks import write_docked_assets
+
+    return write_docked_assets(local_root)
+
+
 def _facts(scene: Scene, subject: str, verb: str) -> list[tuple[Value, dict[str, Value]]]:
     return [(f.object, dict(f.params)) for f in scene.facts if f.subject == subject and f.verb == verb]
 
@@ -228,6 +236,19 @@ def test_the_demand_only_node_faces_where_its_model_did_and_is_used_as_it_was(qu
     assert node["yaw"] == pytest.approx(math.atan2(math.sin(queued), math.cos(queued)), abs=1e-3)
     assert _facts(moved.graph, "obj:gathering_area_demand", "affords") == _facts(queue.graph, "obj:gathering_area", "affords") != []
     assert not _facts(moved.graph, "obj:gathering_area", "affords")
+
+
+def test_a_docked_object_whose_model_does_not_resolve_cannot_leave_its_demand(queue: Site, docked_assets: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    from arena_simulation_setup.generative.flowedit import generate
+
+    for cache in ("_FOOTPRINTS", "_FACES", "_UNRESOLVED"):
+        monkeypatch.setattr(generate, cache, {})  # nothing resolved yet
+    shutil.rmtree(docked_assets[LOCKER.model])
+    inserted = apply(queue, "insert", f"obj:{LOCKER.name}", {**_docked(LOCKER.model, LOCKER.back, LOCKER.dock), "type": "parcel_locker", "capacity": 1})
+    with pytest.raises(ValueError, match="model 'parcel_locker' of a docked object does not resolve"):
+        apply(inserted, "move", f"obj:{LOCKER.name}", {"x": 22.0, "leave_demand": True})
 
 
 def test_move_leaving_demand_needs_demand_and_a_free_name(queue: Site) -> None:
