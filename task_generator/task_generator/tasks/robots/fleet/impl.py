@@ -46,6 +46,7 @@ class _Run:
     job: Job
     docks: tuple[str, str]
     assigned_s: float
+    timeout_s: float = 0.0
     leg: int = 0
     waiting_s: float | None = None
     sent_home: bool = False
@@ -53,11 +54,12 @@ class _Run:
 
 @attrs.define
 class _Charge:
-    """One charge of one robot: its index in the task log, where and when it went, when it arrived."""
+    """One charge of one robot: its index in the task log, where and when it went, how long the trip may take, when it arrived."""
 
     index: int
     charger: str
     dispatched_s: float
+    timeout_s: float = 0.0
     started_s: float | None = None
 
 
@@ -93,6 +95,7 @@ class TM_Fleet(TM_Robots):
     _wh_per_m: ROSParamT[float]
     _detour: ROSParamT[float]
     _job_timeout: ROSParamT[float]
+    _job_timeout_per_m: ROSParamT[float]
 
     def __init__(self, **kwargs: typing.Unpack[TaskModeKwargs]) -> None:
         super().__init__(**kwargs)
@@ -109,7 +112,8 @@ class TM_Fleet(TM_Robots):
         self._reserve = self.node.ROSParam[float](self.namespace("reserve"), 10.0)
         self._wh_per_m = self.node.ROSParam[float](self.namespace("wh_per_m"), 0.046)
         self._detour = self.node.ROSParam[float](self.namespace("detour"), 1.2)
-        self._job_timeout = self.node.ROSParam[float](self.namespace("job_timeout"), 1200.0)
+        self._job_timeout = self.node.ROSParam[float](self.namespace("job_timeout"), 300.0)
+        self._job_timeout_per_m = self.node.ROSParam[float](self.namespace("job_timeout_per_m"), 5.0)
 
         self._chargers: list[str] = []
         self._xy: dict[str, tuple[float, float]] = {}
@@ -269,7 +273,8 @@ class TM_Fleet(TM_Robots):
                     self._logger.info(f"{name} needs {energy_wh:.2f} Wh for {job.kind} {job.index} and would keep {left:.1f} %, it charges first")
                     self._queue_charge(name, f"job {job.index}", now)
                     continue
-                self._run[name] = _Run(job=job, docks=docks, assigned_s=now)
+                timeout_s = self._timeout(self._job_route_m(name, docks))
+                self._run[name] = _Run(job=job, docks=docks, assigned_s=now, timeout_s=timeout_s)
                 if not await self._start_leg(name):
                     del self._run[name]
                     break
@@ -278,6 +283,7 @@ class TM_Fleet(TM_Robots):
                 self._note(f"job.{job.index}.robot", name)
                 self._note(f"job.{job.index}.assigned", _s(now))
                 self._note(f"job.{job.index}.energy_wh", f"{energy_wh:.3f}")
+                self._note(f"job.{job.index}.timeout", _s(timeout_s))
                 break
 
     def _takers(self) -> list[str]:
@@ -286,11 +292,25 @@ class TM_Fleet(TM_Robots):
         idle = [name for name in idle if (soc := self._soc(name)) is None or soc >= self._charge_below.value]
         return sorted(idle, key=lambda name: (self._soc(name) is None, -(self._soc(name) or 0.0)))
 
+    def _job_route_m(self, name: str, docks: tuple[str, str]) -> float:
+        """The route estimate of a job in m: the straight line from where the robot is to both docks, times `detour`."""
+        return (math.dist(self._where(name), self._xy[docks[0]]) + math.dist(self._xy[docks[0]], self._xy[docks[1]])) * self._detour.value
+
+    def _to_charger_m(self, dock: str) -> float:
+        """The route estimate in m from `dock` to the nearest charger (straight line times `detour`), 0 without chargers."""
+        return min((math.dist(self._xy[dock], self._xy[charger]) for charger in self._chargers), default=0.0) * self._detour.value
+
+    def _timeout(self, route_m: float) -> float:
+        """Seconds a job or a charging trip on a route estimate of `route_m` may take, 0 for none."""
+        if self._job_timeout.value <= 0.0:
+            return 0.0
+        return self._job_timeout.value + self._job_timeout_per_m.value * route_m
+
     def _job_energy(self, name: str, job: Job, docks: tuple[str, str]) -> tuple[float, float | None]:
-        """The Wh the job takes the robot, by straight-line distance from where it is to both docks times `detour` at `wh_per_m`, plus its standby power over the load and unload time, and the battery percent it would leave, None while its charge or capacity is unknown."""
+        """The Wh the job takes the robot, by the route estimate from where it is to both docks and on to the charger nearest the second dock (straight lines times `detour`) at `wh_per_m`, plus its standby power over the load and unload time, and the battery percent it would leave, None while its charge or capacity is unknown. The leg to a charger keeps the reserve for after the job: a robot that takes it can still reach a charger."""
         robot = self._ctx.robots[name]
         profile = robot.power_profile
-        route_m = (math.dist(self._where(name), self._xy[docks[0]]) + math.dist(self._xy[docks[0]], self._xy[docks[1]])) * self._detour.value
+        route_m = self._job_route_m(name, docks) + self._to_charger_m(docks[1])
         per_m = self._wh_per_m.value if self._wh_per_m.value > 0.0 else wh_per_m(profile)
         standby_w = float(profile.get("static_power_w", 0.0)) if profile is not None else 0.0
         energy_wh = route_m * per_m + standby_w * (self._load_s.value + self._unload_s.value) / 3600.0
@@ -320,7 +340,7 @@ class TM_Fleet(TM_Robots):
             self._note(f"job.{run.job.index}.loaded", _s(now))
             run.leg, run.waiting_s, run.sent_home = 1, now, False
             self._state[name] = _State.WAIT
-        elif self._timed_out(run.assigned_s, now):
+        elif self._timed_out(run.assigned_s, run.timeout_s, now):
             self._end_job(name, "abandoned", "timeout", now)
 
     def _end_job(self, name: str, outcome: str, reason: str, now: float) -> None:
@@ -343,8 +363,9 @@ class TM_Fleet(TM_Robots):
         if self._docks.get(dock) == name:
             del self._docks[dock]
 
-    def _timed_out(self, since_s: float, now: float) -> bool:
-        return self._job_timeout.value > 0.0 and now - since_s > self._job_timeout.value
+    @staticmethod
+    def _timed_out(since_s: float, timeout_s: float, now: float) -> bool:
+        return timeout_s > 0.0 and now - since_s > timeout_s
 
     # CHARGING
 
@@ -374,18 +395,22 @@ class TM_Fleet(TM_Robots):
                 self._note(f"charge.{self._charge[name].index}.soc_start", _pct(self._soc(name)))
             else:
                 charger = home if home in self._chargers else next((charger for charger in self._chargers if self._owner_away(charger)), None)
-                if charger is None or not await self._submit(name, [GoToPhase(target=charger, on_failure="stop_task", text=f"charge at {charger}")]):
+                if charger is None:
+                    continue
+                trip_m = math.dist(self._where(name), self._xy[charger]) * self._detour.value
+                if not await self._submit(name, [GoToPhase(target=charger, on_failure="stop_task", text=f"charge at {charger}")]):
                     continue
                 owner = self._holder(charger)
                 if owner is not None and owner != name:
                     self._home[owner] = home
                 self._home[name] = charger
-                self._start_charge(name, charger, now)
+                self._start_charge(name, charger, now, trip_m)
             self._logger.info(f"{name} charges at {self._home[name]} from {self._soc(name):.1f} %, {now:.1f} s")
 
-    def _start_charge(self, name: str, charger: str, now: float) -> None:
+    def _start_charge(self, name: str, charger: str, now: float, trip_m: float = 0.0) -> None:
+        """Start the robot's queued charge at `charger`, a trip of `trip_m` by the route estimate (0 at its charger home)."""
         index, _ = self._charge_queue.pop(name)
-        charge = _Charge(index=index, charger=charger, dispatched_s=now)
+        charge = _Charge(index=index, charger=charger, dispatched_s=now, timeout_s=self._timeout(trip_m))
         self._charge[name] = charge
         self._state[name] = _State.CHARGE
         self._note(f"charge.{charge.index}.charger", charger)
@@ -402,7 +427,7 @@ class TM_Fleet(TM_Robots):
             elif last is not None:
                 self._end_charge(name, "abandoned", str(last.reason) or last.outcome, now)
                 return
-            elif self._timed_out(charge.dispatched_s, now):
+            elif self._timed_out(charge.dispatched_s, charge.timeout_s, now):
                 self._end_charge(name, "abandoned", "timeout", now)
                 return
         soc = self._soc(name)

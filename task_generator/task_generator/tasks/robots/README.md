@@ -229,7 +229,7 @@ words a goto as walking directions through the world's doors and openings.
 | `reserve` | 10 | battery percent a job must leave by its energy estimate, else the robot charges first |
 | `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
 | `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
-| `job_timeout` | 1200 | seconds a job may take from its assignment, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home; 0 for none |
+| `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job may take from its assignment, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
 
 - Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
   every world. Released jobs queue until a robot is free.
@@ -240,15 +240,18 @@ words a goto as walking directions through the world's doors and openings.
   longest waiting first.
 - **Jobs.** Each tick, queued jobs go to free robots at or above `charge_below`, fullest battery first (a robot whose
   charge is unknown last). Before a robot takes a job the mode estimates its energy: the straight-line distance from
-  the robot to the first dock and on to the second, times `detour`, at `wh_per_m`, plus the robot's standby power
+  the robot to the first dock, on to the second and on to the charger nearest the second, times `detour`, at
+  `wh_per_m` (so the reserve is what is left once the robot could be at a charger), plus the robot's standby power
   (the power profile's `static_power_w`) over `load_s + unload_s`. When that would leave less than `reserve` percent
   of the robot's battery capacity (`task.episode.battery.capacity_wh`, else its power.yaml), the robot joins the
   charger queue instead, unless it is at `charge_until` already. The default 0.046 Wh/m is the jackal's 42.2 W
   standby plus 50 W per m/s and 17 W per rad/s at 0.4 m/s and 0.2 rad/s; `wh_per_m: 0` computes the same from each
   robot's power profile. The default `detour` 1.2 is about the 90th percentile of geodesic over straight-line distance
   on the `smu_link_full` map (mean 1.09, 0.25 m grid, 0.3 m clearance).
-- **Ends.** A leg that ends failed fails its job; a job running past `job_timeout`, or whose robot is assigned a task
-  from outside, is abandoned. Neither is queued again: the job ends there, its docks are freed and the robot goes
+- **Ends.** A leg that ends failed fails its job; a job running past its timeout, or whose robot is assigned a task
+  from outside, is abandoned. The timeout scales with the job: `job_timeout` plus `job_timeout_per_m` times its route
+  estimate (the straight line from the robot to both docks, times `detour`; for a charging trip, to the charger), so
+  a job across the twin's 313 m route gets about 300 + 5 x 1.2 x 313 = 2,180 s and a short one about 360 s. Neither is queued again: the job ends there, its docks are freed and the robot goes
   home (or runs the outside task, and goes home once that is done).
 - **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
   a charger lowest battery first: a robot parked on its charger home charges there, any other takes a charger whose
@@ -274,6 +277,7 @@ with 3 decimals; battery charges are percent with 2.
 | `job.<i>.released` | release time from the seed's stream |
 | `job.<i>.robot`, `job.<i>.assigned` | robot that took the job, and when |
 | `job.<i>.energy_wh` | the energy estimate it was taken on |
+| `job.<i>.timeout` | seconds it may take from `assigned` before it is abandoned (0: none) |
 | `job.<i>.loaded` | when the robot finished loading |
 | `job.<i>.ended`, `job.<i>.outcome` | when the job ended, as `completed`, `failed` or `abandoned` |
 | `job.<i>.reason` | for `failed`, the failed phase's reason; for `abandoned`, `timeout` or `assigned from outside` |
