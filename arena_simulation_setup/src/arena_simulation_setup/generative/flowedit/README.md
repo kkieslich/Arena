@@ -286,6 +286,16 @@ path = save_layout(site, layout)    # <site key>__layout_<layout id> (a name mus
 placed_elements(layout)             # PlacedElement(name, footprint, dock_point, blocks_floor) for the NAV@r filter
 ```
 
+[`search.py`](search.py) searches the layouts (§4, §5). `Search(site, loading=(x, y))` pins the loading point (to the nearest valid loading spot) and keeps the valid spots of the other elements, less those over a `keep_out` polygon (PEDS sources and sinks) or clashing with the loading point. Its candidates are the triples of pairwise compatible spots: `check_layout` reads only a corridor window around a spot, so only near pairs are checked. A pick gets the full check, `check_layout` plus `navr_check` against a `NavrBase` of the site. Robot travel runs on the jackal's NAV@r floor at r 0.267 m (`RobotPaths`) and is weighed per job by the §8 job cycle (`TaskMix`).
+
+```python
+space = Search(site, loading=TWIN_LOADING_XY, keep_out=sources_and_sinks)
+robot_only(space)                   # the valid layout with the shortest expected robot travel per job
+joint(space, occupancy, n=2000)     # n random valid layouts by pedestrians under their elements + NAV@r floor loss, top 10
+random_valid(space, 5, seed=0)      # the random control
+occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=1500)  # from the site-as-is runs
+```
+
 ## Files
 
 | File | Purpose |
@@ -297,6 +307,7 @@ placed_elements(layout)             # PlacedElement(name, footprint, dock_point,
 | `edit.py` | edit operations, sites, saving edited worlds |
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
 | `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
+| `search.py` | INFRA layout searches: robot-only, joint (occupancy fallback), random valid |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |
