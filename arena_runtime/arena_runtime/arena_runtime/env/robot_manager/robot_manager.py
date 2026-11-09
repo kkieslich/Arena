@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import math
 import os
@@ -140,6 +141,8 @@ class RobotManager(NodeInterface):
     _phase_failure: tuple[int, str] | None
     _launch_handle: LaunchHandle | None
     _soc: float | None
+    _soc_since: float | None
+    _capacity_wh: float
 
     @property
     def robot(self) -> Robot:
@@ -297,6 +300,8 @@ class RobotManager(NodeInterface):
         self._cabin_to_clear = ""
         self._charge_power_w = 0.0
         self._soc = None
+        self._soc_since = None
+        self._capacity_wh = 0.0
 
     def bind_abort(self, fn: Callable[[str], None]) -> None:
         self._abort_episode = fn
@@ -347,6 +352,10 @@ class RobotManager(NodeInterface):
         self._energy_sub = self.node.create_subscription(arena_robots_msgs.msg.Energy, str(self.namespace("power_publisher", "energy")), self._on_energy, rclpy.qos.QoSProfile(depth=1))
 
     def _on_energy(self, msg: arena_robots_msgs.msg.Energy) -> None:
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self._soc_since is not None and 0.0 < stamp <= self._soc_since:
+            # computed before this reset's start charge, from the last episode's battery; an unstamped reading has no order and counts
+            return
         self._soc = float(msg.battery_soc_percent)
 
     async def launch(self, node_names: set[str]):
@@ -470,12 +479,14 @@ class RobotManager(NodeInterface):
         return float(rng.stream("robots", "soc", self.name).uniform(low, high))
 
     def publish_soc(self, soc: float) -> None:
-        """Set the battery charge in percent on the robot's power publisher, and `soc` to it until the power publisher reports."""
+        """Set the battery charge in percent on the robot's power publisher, and `soc` to it until the power publisher reports a reading stamped after this sim time."""
         self._soc = soc
+        self._soc_since = self.node.sim_time.to_seconds()
         self._soc_pub.publish(std_msgs.msg.Float64(data=soc))
 
     def publish_battery_capacity(self, capacity_wh: float) -> None:
         """Set the battery capacity in Wh on the robot's power publisher, 0 for its own power.yaml; it keeps the charge in percent."""
+        self._capacity_wh = capacity_wh
         self._capacity_pub.publish(std_msgs.msg.Float64(data=capacity_wh))
 
     def reset_battery(self, rng: EpisodeRng, capacity_wh: float, soc_min: float, soc_max: float) -> None:
@@ -486,8 +497,22 @@ class RobotManager(NodeInterface):
 
     @property
     def soc(self) -> float | None:
-        """Battery charge in percent, the power publisher's latest `battery_soc_percent`, else the start charge sent this reset, None before either."""
+        """Battery charge in percent, the power publisher's latest `battery_soc_percent` stamped after this reset's start charge, else that start charge, None before either."""
         return self._soc
+
+    @functools.cached_property
+    def power_profile(self) -> dict[str, float | int] | None:
+        """The parameters the robot's power publisher runs on (static draw with its parts, odometry drive power, power.yaml capacity), None for a robot without one."""
+        return self._config.power_profile(self._robot.resolved_request)
+
+    @property
+    def battery_capacity_wh(self) -> float | None:
+        """Battery capacity in Wh this episode: the capacity sent at the reset, else the power profile's, None when neither is above 0."""
+        if self._capacity_wh > 0.0:
+            return self._capacity_wh
+        profile = self.power_profile
+        capacity = float(profile.get("battery_capacity_wh", 0.0)) if profile is not None else 0.0
+        return capacity if capacity > 0.0 else None
 
     def set_episode_conditions(self, conditions: Sequence[EpisodeCondition]) -> None:
         self._runner.set_episode_conditions(conditions)
