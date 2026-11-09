@@ -1,0 +1,36 @@
+format: arena-scenario/2
+# Authored demand for FLOWEDIT (held-out world of data v2), in the form of hospital_1's `queue` and office_1's `default`:
+# a check-in counter, a waiting group, a water dispenser that satisfies thirst, an exam chair, a patient bed and a staff
+# workstation. Poses are coordinates, so every edit and seed finds the objects where they are authored.
+objects:
+- name: reception_desk
+  model: Hospital/Reception_Counter
+  pose: [6.0, 11.2, 1.5708]
+  humansim: {type: desk, capacity: 3, interaction_radius: 1.0, formation: {type: line, params: {base_step: 0.8, front_offset: 0.6}}}
+- name: gathering_area
+  model: Hospital/Waiting_Room_Bench
+  pose: [6.0, 20.5, 0.0]
+  humansim:
+    type: gathering_area
+    capacity: 0
+    formation: {type: f_formation, anchor: {kind: object, ref: gathering_area}, params: {base_radius: 0.8, radius_per_member: 0.12}}
+- name: fountain
+  model: Hospital/SM_WaterDispenser_01a
+  pose: [11.5, 23.5, 0.0]
+  humansim:
+    type: fountain
+    capacity: 1
+    satisfies: {thirst: 100.0}
+    formation: {type: line, params: {base_step: 1.0, front_offset: 0.8}}
+- name: exam_chair_1
+  model: Hospital/Patient_Armchair
+  pose: [18.0, 17.0, -1.5708]
+  humansim: {type: chair, capacity: 1, interaction_radius: 0.8}
+- name: patient_bed_1
+  model: Hospital/Isolation_Bed
+  pose: [24.5, 18.5, 0.0]
+  humansim: {type: patient_bed, capacity: 1, interaction_radius: 1.2}
+- name: workstation_1
+  model: Office/Stand_Table_Work
+  pose: [26.9, 9.0, 0.0]
+  humansim: {type: desk, capacity: 1, interaction_radius: 1.2}
