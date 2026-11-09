@@ -20,6 +20,11 @@ its base's `sources` entry, so the file is all a sweep needs:
       hospital_1__move_fountain__6e1d6873: [hospital_1__insert_fountain_inert__4a32a4fc, ...]
     crowds:                  # test crowds (optional): a settings file, relative to the split, and the partitions it runs on
       test_orca: {settings: crowds/test_orca.yaml, partitions: [held_out_edits]}
+    robot_task:              # the robot's task in every run of `flowedit suite` (optional), a scenario `robots:` entry
+      start: [10.0, 2.0, 1.5708]
+      phases: [{loop: [{goto: [14.8, 22.9, -0.82]}, {goto: [10.0, 2.0, -1.5708]}]}]
+    contest:                 # the planners `flowedit suite` runs every stage with (optional, needs `robot_task`)
+      - {name: dwb_blind, mobile: {driver: nav2, local_planner: dwb}}
 
 A control's name does not say which edit it controls (an inert insert is named after its model), so `control_worlds`
 holds the link, as `flowedit generate --controls` writes it in its manifest; a sweep checks it against that manifest.
@@ -29,6 +34,13 @@ base world (held-out edits run at test seeds) gets the base world at its seeds a
 
 The split's own `settings` are its base crowd, which runs on every partition. A test crowd's file is merged over them and
 runs only on its partitions, its reference runs included, so an edit still pairs with its base world under one crowd.
+
+Without `robot_task` the robot parks off the map, unseen, and the runs record the crowd alone. With it, `flowedit suite`
+adds the task to every run's scenario after the crowd is read, so the people are the same as without it, and the people
+see the robot. Every goto of the task is a pose: a named target can resolve differently in an edited world (a moved
+object takes its dock along), and a pose keeps the task the same in every world. `contest` lists arena_evaluation
+contestants (`name` plus the contestant's keys, as a contest file lists them). `flowedit sweep` records without a robot
+and refuses a split with a `robot_task`.
 """
 
 from __future__ import annotations
@@ -49,6 +61,9 @@ SPLIT_FORMAT = "flowedit-split/1"
 PARTITIONS = ("train", "held_out_edits", "held_out_worlds")
 SOURCE_KEYS = ("scenario", "seed", "per_type", "steps", "controls")
 CROWD_KEYS = ("settings", "partitions")
+#: Top-level keys of a split that `flowedit suite` reads and `flowedit sweep` cannot record
+ROBOT_TASK = "robot_task"
+CONTEST = "contest"
 #: The crowd every split has: its own `settings`, on every partition
 BASE_CROWD = "base"
 #: `--crowd` of every crowd, so no crowd takes the name
@@ -162,6 +177,49 @@ def check(doc: Mapping[str, Any]) -> None:
     crowd(doc)
     _check_crowds(doc)
     _check_controls(doc, seen)
+    robot_task_of(doc)
+    contest_of(doc)
+
+
+def robot_task_of(doc: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The split's `robot_task` as a scenario `robots:` entry, None without one; ValueError unless every goto is a pose."""
+    from arena_simulation_setup.shared.task import GoToPhase, LoopPhase
+    from arena_simulation_setup.tree.World.Scenario import RobotGoal
+
+    task = doc.get(ROBOT_TASK)
+    if task is None:
+        return None
+    if not isinstance(task, Mapping):
+        raise ValueError(f"{ROBOT_TASK} is a scenario robots entry: start, phases")
+    if (doc.get("settings") or {}).get("robot"):
+        raise ValueError(f"{ROBOT_TASK} and settings.robot both give the robot; settings.robot also moves the people, keep only {ROBOT_TASK}")
+    if isinstance(task.get("start"), str):
+        raise ValueError(f"{ROBOT_TASK}.start is a pose [x, y, yaw], not the zone {task['start']!r}")
+    try:
+        goal = RobotGoal.parse(dict(task))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{ROBOT_TASK}: {exc}") from exc
+    if not goal.phases:
+        raise ValueError(f"{ROBOT_TASK} has no phases: the robot would park, leave the task out for a parked robot")
+    gotos = [inner for phase in goal.phases for inner in (phase.phases if isinstance(phase, LoopPhase) else [phase]) if isinstance(inner, GoToPhase)]
+    if named := [g.target or ", ".join(g.via) for g in gotos if g.target is not None or g.via]:
+        raise ValueError(f"{ROBOT_TASK}: gotos to {named} name a target, give every goto as a pose [x, y, yaw] so it is the same in every world")
+    return dict(task)
+
+
+def contest_of(doc: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+    """The split's `contest`, None without one; ValueError unless it is a list of named contestants and the split has a robot task."""
+    contest = doc.get(CONTEST)
+    if contest is None:
+        return None
+    if not isinstance(contest, list) or not contest or not all(isinstance(c, Mapping) and isinstance(c.get("name"), str) and c["name"] for c in contest):
+        raise ValueError(f"{CONTEST} is a non-empty list of contestants, each a mapping with a name")
+    names = [c["name"] for c in contest]
+    if dup := sorted({n for n in names if names.count(n) > 1}):
+        raise ValueError(f"{CONTEST}: contestants {dup} appear twice")
+    if doc.get(ROBOT_TASK) is None:
+        raise ValueError(f"{CONTEST} without a {ROBOT_TASK}: the planners would drive a parked robot nowhere")
+    return [dict(c) for c in contest]
 
 
 def _check_controls(doc: Mapping[str, Any], partition_of: Mapping[str, str]) -> None:
@@ -319,6 +377,8 @@ def sweep(
     The edited worlds are generated again first, so the names in the split resolve. A finished run is skipped. Returns the
     count of runs that finished, were skipped and failed; a failed run's reason is in its launch.log. Launches start at
     least `stagger` seconds apart: runtimes coming up at the same moment on a loaded host have stalled before registering."""
+    if doc.get(ROBOT_TASK) is not None:
+        raise ValueError(f"the split has a {ROBOT_TASK}, which `flowedit run` does not drive: record it with `flowedit suite`")
     logs = out / "_sweep"
     logs.mkdir(parents=True, exist_ok=True)
     if regenerate:
@@ -369,4 +429,4 @@ def sweep(
     return counts
 
 
-__all__ = ["ALL_CROWDS", "BASE_CROWD", "PARTITIONS", "SPLIT_FORMAT", "Job", "base_of", "check", "crowd", "crowd_names", "duration_of", "generate_argv", "is_base", "jobs", "load", "partitions_of", "regenerate_worlds", "seeds_of", "sweep", "verify"]
+__all__ = ["ALL_CROWDS", "BASE_CROWD", "CONTEST", "PARTITIONS", "ROBOT_TASK", "SPLIT_FORMAT", "Job", "base_of", "check", "contest_of", "crowd", "crowd_names", "duration_of", "generate_argv", "is_base", "jobs", "load", "partitions_of", "regenerate_worlds", "robot_task_of", "seeds_of", "sweep", "verify"]
