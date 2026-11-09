@@ -1,16 +1,14 @@
-"""Fit the forecaster on a split's recorded flow maps and score it, with two trivial baselines beside it.
+"""The demand model's fit on a split's recorded flow maps, the recorded maps themselves, and the transplanted baseline.
 
 Recorded maps come from arena_evaluation's `flow_cells.parquet` (one map per stage `<world>__s<seed>`, on the base world's
 grid). The target of a world is its seed-pooled map (the mean of its normalized maps over the partition's seeds), the score
-the JSD in bits against it, as `process_benchmark` pools them.
+the JSD in bits against it, as `process_benchmark` pools them. Scoring against the baselines is `validity.py`.
 
-Baselines (quick versions for a sanity check; the study's baselines are FLOWEDIT #26):
-- **stale**: the base world's pooled map at the same seeds, unchanged.
-- **transplanted**: that map with the mass within `TRANSPLANT_M` of the edited object moved with it (`move`, headings
+- **transplanted**: a base map with the mass within `TRANSPLANT_M` of the edited object moved with it (`move`, headings
   turned by its yaw change), copied to the new object (`insert`, from the object it copies) or dropped (`remove`); other
   edits leave it stale.
-- **anchored** forecast: the stale map plus the forecast's change (forecast of the edit minus forecast of the base), so the
-  forecast supplies only what the edit changes.
+- **anchored** forecast: a recorded base map plus the demand model's change (forecast of the edit minus forecast of the
+  base). It reads recorded flow, so it is not an H1 forecaster.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 
 from .. import split as SP
-from .maps import HEADINGS, STANDING, FlowGrid, jsd, normalized, occupancy, pooled
+from .maps import HEADINGS, STANDING, FlowGrid, jsd, normalized, pooled
 from .model import Layers, Params, layers, predict
 from .scene import CROWD_SEEDS, base_people, scene_of
 
@@ -235,8 +233,9 @@ def objective(params: Params, found: Sequence[Target]) -> float:
     return float(np.mean([jsd(predict(t.layers, params), t.truth) for t in found]))
 
 
-def fit(found: Sequence[Target], init: Params = Params(), max_evals: int = 400, log: Callable[[str], None] = print) -> tuple[Params, float]:
-    """The params minimising the mean pooled JSD over `found`: Nelder-Mead in log space from `init`, within Params.BOUNDS."""
+def fit(found: Sequence[Target], init: Params | None = None, max_evals: int = 400, log: Callable[[str], None] = print) -> tuple[Params, float]:
+    """The params minimising the mean pooled JSD over `found`: Nelder-Mead in log space from `init` (default the built-in params), within Params.BOUNDS."""
+    init = init or Params()
     import numpy as np
     import scipy.optimize
 
@@ -268,54 +267,4 @@ def label(doc: Mapping[str, Any], world: str) -> str:
     return f"{what} (control)" if world in controls else what
 
 
-def score(forecaster: Forecaster, runs: Runs, doc: Mapping[str, Any], partition: str, params: Params, crowd: str = "expected", plots: Path | None = None, log: Callable[[str], None] = print) -> list[dict[str, Any]]:
-    """One row per world of `partition`: the forecast's pooled JSD (full and occupancy), the anchored forecast's, and the baselines'."""
-    scenario_of = {base: src.get("scenario") for base, src in (doc.get("sources") or {}).items()}
-    rows = []
-    for t in targets(forecaster, runs, doc, partition, crowd, log):
-        base = SP.base_of(t.world)
-        scenario = scenario_of.get(base)
-        crowd_seeds = t.seeds if crowd == "runs" else None
-        fc = predict(t.layers, params)
-        row: dict[str, Any] = {"world": t.world, "what": label(doc, t.world), "seeds": list(t.seeds), "forecast": jsd(fc, t.truth), "forecast_occupancy": jsd(occupancy(fc), occupancy(t.truth))}
-        base_map = runs.pooled(base, t.seeds) if base != t.world and runs.seeds(base, t.seeds) == list(t.seeds) else None
-        if base_map is not None:
-            site, base_site = forecaster.site(t.world), forecaster.site(base, scenario)
-            fb = forecaster.predict(base, params, scenario, crowd_seeds)
-            moves = transplant_moves(base_site, site)
-            moved = transplanted(base_map, forecaster.grid(base), moves)
-            row.update({"anchored": jsd(anchored(base_map, fc, fb), t.truth), "stale": jsd(base_map, t.truth), "transplanted": jsd(moved, t.truth), "transplant": [m[2] for m in moves]})
-        if plots is not None:
-            from .plot import plot_world
-
-            path = plots / f"{t.world}.png"
-            plot_world(path, forecaster.grid(base), t.truth, fc, base_map, t.layers.scene, title=f"{t.world} ({partition}, seeds {list(t.seeds)})")
-            row["plot"] = str(path)
-        rows.append(row)
-        log(f"{t.world}: forecast {row['forecast']:.3f}" + (f", stale {row['stale']:.3f}, transplanted {row['transplanted']:.3f}, anchored {row['anchored']:.3f}" if "stale" in row else ""))
-    return rows
-
-
-def seed_floor(runs: Runs, world: str, seeds_a: Iterable[int], seeds_b: Iterable[int]) -> float | None:
-    """JSD between a world's pooled maps at two seed sets: how far another crowd draw of the same world lies."""
-    a, b = runs.pooled(world, seeds_a), runs.pooled(world, seeds_b)
-    return None if a is None or b is None else jsd(a, b)
-
-
-def table(rows: Sequence[Mapping[str, Any]]) -> str:
-    """The rows as a markdown table, the mean over edits last."""
-    cols = ("forecast", "forecast_occupancy", "anchored", "stale", "transplanted")
-
-    def fmt(v: Any) -> str:  # noqa: ANN401
-        return "" if v is None else f"{v:.3f}"
-
-    out = ["| World | What | " + " | ".join(cols) + " |", "|---|---|" + "---|" * len(cols)]
-    for r in rows:
-        out.append(f"| {r['world']} | {r['what']} | " + " | ".join(fmt(r.get(c)) for c in cols) + " |")
-    edits = [r for r in rows if "stale" in r]
-    if edits:
-        out.append("| mean over edits | | " + " | ".join(fmt(sum(r[c] for r in edits) / len(edits)) for c in cols) + " |")
-    return "\n".join(out)
-
-
-__all__ = ["Forecaster", "Runs", "Target", "anchored", "fit", "label", "objective", "score", "seed_floor", "table", "targets", "transplant_moves", "transplanted"]
+__all__ = ["Forecaster", "Runs", "Target", "anchored", "fit", "label", "objective", "targets", "transplant_moves", "transplanted"]

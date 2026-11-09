@@ -153,6 +153,43 @@ class FlowGrid:
         }
 
 
+#: arena_evaluation's STANDING_MPS and MAX_STEP_FACTOR: below this speed a frame is standing; a frame lasts until the
+#: pedestrian's next one, at most this many of its median steps
+STANDING_MPS = 0.2
+MAX_STEP_FACTOR = 4.0
+
+
+def counts(tracks: Any, grid: FlowGrid) -> np.ndarray:  # noqa: ANN401 - a polars track table
+    """Pedestrian-seconds per cell and bin of a track table (arena_evaluation's `ped_track_store` columns key, t, x, y, vx,
+    vy), inside the rooms only, as arena_evaluation's `FlowGrid.counts` bins them."""
+    import numpy as np
+    import polars as pl
+
+    h = grid.empty()
+    if tracks is None or len(tracks) == 0:
+        return h
+    df = tracks.select("key", "t", "x", "y", "vx", "vy").sort("key", "t")
+    step = (pl.col("t").shift(-1) - pl.col("t")).over("key")
+    df = df.with_columns(step.alias("dt"))
+    df = df.with_columns(pl.col("dt").median().over("key").alias("median_dt"))
+    df = df.with_columns(pl.when(pl.col("dt").is_null()).then(pl.col("median_dt")).otherwise(pl.min_horizontal("dt", MAX_STEP_FACTOR * pl.col("median_dt"))).fill_null(0.0).alias("w"))
+    derived_x = ((pl.col("x").shift(-1) - pl.col("x")) / pl.col("dt")).over("key")
+    derived_y = ((pl.col("y").shift(-1) - pl.col("y")) / pl.col("dt")).over("key")
+    df = df.with_columns(
+        pl.when(pl.col("vx").is_nan() | pl.col("vx").is_null()).then(derived_x).otherwise(pl.col("vx")).alias("vx"),
+        pl.when(pl.col("vy").is_nan() | pl.col("vy").is_null()).then(derived_y).otherwise(pl.col("vy")).alias("vy"),
+    ).with_columns(pl.col("vx").forward_fill().over("key").fill_null(0.0), pl.col("vy").forward_fill().over("key").fill_null(0.0))
+    x, y = df["x"].to_numpy(), df["y"].to_numpy()
+    vx, vy, w = df["vx"].to_numpy(), df["vy"].to_numpy(), df["w"].to_numpy()
+    i, j, keep = grid.index(x, y)
+    keep &= w > 0
+    keep &= grid.in_rooms(x, y)
+    speed = np.hypot(vx, vy)
+    b = np.where(speed < STANDING_MPS, STANDING, heading_bin(np.arctan2(vy, vx)))
+    np.add.at(h, (i[keep], j[keep], b[keep]), w[keep])
+    return h
+
+
 def occupancy(counts: np.ndarray) -> np.ndarray:
     """The map with its headings summed: pedestrian-seconds per cell."""
     return counts.sum(axis=-1, keepdims=True)
@@ -189,4 +226,4 @@ def pooled(maps: Sequence[np.ndarray]) -> np.ndarray | None:
     return None if not shares else np.mean(shares, axis=0)
 
 
-__all__ = ["BINS", "CELL_M", "HEADINGS", "STANDING", "FlowGrid", "bin_centre", "heading_bin", "jsd", "normalized", "occupancy", "pooled", "zone_polygons"]
+__all__ = ["BINS", "CELL_M", "HEADINGS", "STANDING", "FlowGrid", "bin_centre", "counts", "heading_bin", "jsd", "normalized", "occupancy", "pooled", "zone_polygons"]
