@@ -29,6 +29,14 @@ def queue() -> Site:
     return open_site(HOSPITAL, "queue")
 
 
+@pytest.fixture(autouse=True)
+def docked_assets(local_root: Path) -> dict[str, Path]:
+    """The docked models resolve in every test, as a docked object's model must (`resolve_footprints`)."""
+    from flowedit_docks import write_docked_assets
+
+    return write_docked_assets(local_root)
+
+
 def _edits(chains: list[Generated]) -> list[dict[str, Any]]:
     return [dump_edits(chain.site) for chain in chains]
 
@@ -183,6 +191,36 @@ def test_a_moved_object_never_overlaps_its_old_footprint(queue: Site) -> None:
         assert not old.intersects(new)  # the inert_object copy stands there next to the original
         local += chain.records[0]["scope"] == "local"
     assert local > 0
+
+
+def test_an_unresolved_model_keeps_the_fallback_unless_strict(queue: Site) -> None:
+    from arena_simulation_setup.generative.flowedit.generate import FALLBACK_HALF_M, footprint, front_angle, resolve_footprints
+
+    resolve_footprints(queue, ["no_such_model"])  # decor without its asset: the generator goes on with the fallback
+    assert footprint(queue.root, "no_such_model", 0.0, 0.0, 0.0).bounds == pytest.approx((-FALLBACK_HALF_M, -FALLBACK_HALF_M, FALLBACK_HALF_M, FALLBACK_HALF_M))
+    assert front_angle(queue.root, "no_such_model") == pytest.approx(math.pi)
+    with pytest.raises(ValueError, match="model 'no_such_model' does not resolve"):
+        resolve_footprints(queue, ["no_such_model"], strict=True)
+    resolve_footprints(queue, ["robot_charger"], strict=True)
+    assert front_angle(queue.root, "robot_charger") == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("kind", [EditType.MOVE, EditType.INSERT])
+def test_a_docked_object_whose_model_does_not_resolve_is_refused(docked_locker: Site, docked_assets: dict[str, Path], kind: EditType) -> None:
+    shutil.rmtree(docked_assets[LOCKER.model])
+    with pytest.raises(ValueError, match="model 'parcel_locker' of a docked object does not resolve"):
+        generate(docked_locker, seed=0, types=[kind])
+
+
+def test_a_docked_copy_faces_its_dock_into_the_room(docked_locker: Site) -> None:
+    import shapely
+
+    (chain,) = generate(docked_locker, seed=0, types=[EditType.INSERT])
+    level = chain.site.world.levels["0"]
+    corners = level.lookup_zone_polygon(chain.site.edits[-1].target.partition(":")[2])
+    assert corners is not None
+    walls = shapely.union_all([shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in level.all_walls])
+    assert not shapely.Polygon([(c.x, c.y) for c in corners]).intersects(walls)
 
 
 def test_insert_copies_an_objects_demand_onto_a_new_name_at_a_valid_spot(queue: Site) -> None:

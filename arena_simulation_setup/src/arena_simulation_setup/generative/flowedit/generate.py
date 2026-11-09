@@ -161,27 +161,55 @@ def _prefer(rng: random.Random, preferred: Sequence[str], others: Sequence[str],
 
 _FOOTPRINTS: dict[tuple[Path, str], shapely.Polygon | None] = {}
 _FACES: dict[tuple[Path, str], str | None] = {}
+#: Why a model did not resolve, by world root and model: its footprint and front are then the fallback's
+_UNRESOLVED: dict[tuple[Path, str], str] = {}
 
 
-def resolve_footprints(site: Site, models: Sequence[str]) -> None:
-    """Resolve the footprint ring and annotated front (`face`) of each of `models` at the origin, as the site's world resolves its assets, None when unannotated."""
+def _docked_models(site: Site) -> set[str]:
+    """The models, as the graph names them, of the objects of the site's world that have a dock."""
+    from arena_simulation_setup.tree.World.write import short_identifier
+
+    names = [short_identifier(o.model) for level in site.world.levels.values() for o in level.objects if o.dock is not None]
+    return {str(name[0]) if isinstance(name, list) else name for name in names}
+
+
+def resolve_footprints(site: Site, models: Sequence[str], strict: bool = False) -> None:
+    """Resolve the footprint ring and annotated front (`face`) of each of `models` at the origin, as the site's world
+    resolves its assets, None when unannotated. A model that does not resolve keeps the fallback, a `FALLBACK_HALF_M`
+    box with its front at pi, so the generator still runs on a world with unresolved decor; but ValueError naming the
+    model when `strict` or when an object of the site's world with that model has a dock, which the fallback front can
+    turn to the wall."""
     from arena_simulation_setup.shared.entities import Obstacle
     from arena_simulation_setup.tree import Identifier
     from arena_simulation_setup.tree.World.view import WorldView, world_assets
 
     missing = sorted({m for m in models if (site.root, m) not in _FOOTPRINTS})
-    if not missing:
+    if missing:
+        with world_assets(WorldView(site.root), site.world):
+            for model in missing:
+                probe = Obstacle.parse({"name": "probe", "model": model, "pose": [0.0, 0.0, 0.0]})
+                try:
+                    view = Identifier._run_sync(probe.model.resolve())
+                    polygon = Identifier._run_sync(probe.footprint())
+                    face = (view.annotation or {}).get("face")
+                except Exception as exc:  # noqa: BLE001 - any failure to resolve leaves the fallback box, its front at pi
+                    polygon, face = None, None
+                    _UNRESOLVED[(site.root, model)] = f"{type(exc).__name__}: {exc}"
+                _FOOTPRINTS[(site.root, model)] = polygon
+                _FACES[(site.root, model)] = None if face is None else str(face)
+    unresolved = sorted({m for m in models if (site.root, m) in _UNRESOLVED})
+    if not unresolved:
         return
-    with world_assets(WorldView(site.root), site.world):
-        for model in missing:
-            probe = Obstacle.parse({"name": "probe", "model": model, "pose": [0.0, 0.0, 0.0]})
-            try:
-                polygon = Identifier._run_sync(probe.footprint())
-                face = (Identifier._run_sync(probe.model.resolve()).annotation or {}).get("face")
-            except Exception:  # noqa: BLE001 - any failure to resolve leaves the fallback box facing +x
-                polygon, face = None, None
-            _FOOTPRINTS[(site.root, model)] = polygon
-            _FACES[(site.root, model)] = None if face is None else str(face)
+    docked = _docked_models(site)
+    refused = [
+        f"model {m!r} of a docked object does not resolve ({_UNRESOLVED[(site.root, m)]}): the fallback box faces pi and can turn its dock to the wall"
+        if m in docked
+        else f"model {m!r} does not resolve ({_UNRESOLVED[(site.root, m)]}): its footprint and front are unknown"
+        for m in unresolved
+        if strict or m in docked
+    ]
+    if refused:
+        raise ValueError("; ".join(refused))
 
 
 def footprint(root: Path, model: str, x: float, y: float, yaw: float) -> shapely.Polygon:
