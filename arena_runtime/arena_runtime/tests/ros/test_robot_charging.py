@@ -159,7 +159,8 @@ def _capacity(value: object = None) -> float:
     overrides = [rclpy.Parameter("world", value="map_empty")]
     if value is not None:
         overrides.append(rclpy.Parameter("task.episode.battery.capacity_wh", value=value))
-    node = ROSParamServer("test_battery_capacity", parameter_overrides=overrides)
+    # declared from the overrides like the env node, so an int launch value such as capacity_wh:=15 arrives as an int
+    node = ROSParamServer("test_battery_capacity", parameter_overrides=overrides, automatically_declare_parameters_from_overrides=True)
     try:
         return Configuration(node).Robot.BATTERY_CAPACITY_WH.value
     finally:
