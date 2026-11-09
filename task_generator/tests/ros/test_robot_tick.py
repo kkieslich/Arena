@@ -190,6 +190,13 @@ def test_composite_ticks_every_sub_mode_when_one_raises_then_raises_the_first_er
     assert set(seen) == {"a,b", "c"}
 
 
+def test_a_scoped_robots_view_keeps_the_parents_robot_order() -> None:
+    from task_generator.tasks.robots.composite import _ScopedRobotsView
+
+    view = _ScopedRobotsView(SimpleNamespace(managers={"c": 3, "a": 1, "b": 2, "d": 4}), frozenset({"b", "c", "d"}))
+    assert list(view.managers.items()) == [("c", 3), ("b", 2), ("d", 4)]
+
+
 def _fleet_world() -> object:
     from arena_runtime.shared import WORLD_ENTITY_PREFIX, Orientation, Pose, Position
     from arena_simulation_setup.shared import Obstacle

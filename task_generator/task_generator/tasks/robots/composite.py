@@ -27,8 +27,8 @@ class _ScopedRobotsView:
 
     @property
     def managers(self) -> dict:
-        all_mgrs = self._inner.managers
-        return {n: all_mgrs[n] for n in self._names if n in all_mgrs}
+        """The parent's managers of this subset, in the parent's robot order."""
+        return {n: manager for n, manager in self._inner.managers.items() if n in self._names}
 
 
 def _scoped_ctx(parent: TaskContext, robot_names: typing.Iterable[str]) -> TaskContext:
