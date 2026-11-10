@@ -302,8 +302,53 @@ def curve(
     return result
 
 
+#: prior strengths (pedestrian-seconds) the cross-validation tries
+STRENGTHS = (30.0, 100.0, 300.0, 1000.0, 3000.0, 10000.0, 30000.0, 100000.0)
+#: tracks seen the cross-validation scores a strength at (k = 0 is the prior itself, the same for every strength)
+STRENGTH_COUNTS = (1, 2, 4, 8)
+
+
+def seed_folds(seeds: Sequence[int]) -> list[tuple[int, int]]:
+    """Leave-two-seeds-out folds over `seeds`: each seed with the next (cyclic), so every seed is held out twice. Two held-out
+    seeds per fold, because the curve needs one run to take tracks from and another to score against, neither seen in
+    training."""
+    s = sorted(seeds)
+    if len(s) < 3:
+        raise ValueError(f"leave-two-seeds-out needs at least 3 training seeds, got {s}")
+    return [(s[i], s[(i + 1) % len(s)]) for i in range(len(s))]
+
+
+def fold_strengths(worlds: Sequence[str], fold: Sequence[int], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, grid_of: Callable[[str], FlowGrid], prior_of: Callable[[str], np.ndarray], strengths: Sequence[float] = STRENGTHS) -> dict[float, float]:
+    """Per strength, the mean curve (STRENGTH_COUNTS) over `worlds` with tracks from one seed of `fold` and the truth at the
+    other: the fold's score of each strength for a prior that saw neither seed."""
+    import numpy as np
+
+    cache: dict[tuple[str, int], dict[str, np.ndarray]] = {}
+    scores: dict[float, list[float]] = {c: [] for c in strengths}
+    for world in worlds:
+        prior = prior_of(world)
+        res = curve(world, list(fold), tracks_of, runs, grid_of(SP.base_of(world)), {str(c): (prior, c) for c in strengths}, counts=STRENGTH_COUNTS, orders=10, cache=cache)
+        for c in strengths:
+            scores[c].extend(v for v in res[str(c)] if v is not None)
+    return {c: float(np.mean(v)) for c, v in scores.items() if v}
+
+
+def choose_strength(folds: Sequence[Mapping[float, float]]) -> tuple[float, dict[str, Any]]:
+    """The strength with the lowest mean over folds, and the spread: each fold's own best, and the folds' scores at the choice."""
+    import numpy as np
+
+    common = sorted(set.intersection(*(set(f) for f in folds)))
+    mean = {c: float(np.mean([f[c] for f in folds])) for c in common}
+    chosen = min(mean, key=mean.__getitem__)
+    best = [min(f, key=f.__getitem__) for f in folds]
+    at = [f[chosen] for f in folds]
+    return chosen, {"fold_best": best, "fold_best_min": min(best), "fold_best_max": max(best), "score_at_chosen": {"mean": mean[chosen], "sd": float(np.std(at)), "min": min(at), "max": max(at)}, "mean_by_strength": mean}
+
+
 def fit_strength(world_seeds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, grid_of: Callable[[str], FlowGrid], prior_of: Callable[[str], np.ndarray], grid: Sequence[float] = (30.0, 100.0, 300.0, 1000.0, 3000.0, 10000.0)) -> float:
-    """The prior strength (pedestrian-seconds) with the lowest mean curve over `world_seeds` (training worlds and seeds)."""
+    """The prior strength (pedestrian-seconds) with the lowest mean curve over `world_seeds` (training worlds and seeds).
+    Valid only for a prior that did not learn from those runs (the uniform prior); a learned forecaster needs the
+    cross-validated `forecast strength` (`seed_folds`, `fold_strengths`, `choose_strength`)."""
     import numpy as np
 
     best, value = grid[0], np.inf
@@ -320,4 +365,31 @@ def fit_strength(world_seeds: Sequence[tuple[str, Sequence[int]]], tracks_of: Ca
     return best
 
 
-__all__ = ["ONE_SEED_FLOOR", "PREDICTED_COLUMNS", "TRACK_COUNTS", "Method", "Predicted", "Truth", "changes", "curve", "dirichlet", "fit_strength", "floor", "other_seeds", "score", "stale", "table", "track_maps", "transplant", "truths", "uniform", "world_seeds", "write_predicted"]
+__all__ = [
+    "ONE_SEED_FLOOR",
+    "PREDICTED_COLUMNS",
+    "STRENGTHS",
+    "STRENGTH_COUNTS",
+    "TRACK_COUNTS",
+    "Method",
+    "Predicted",
+    "Truth",
+    "changes",
+    "choose_strength",
+    "curve",
+    "fold_strengths",
+    "dirichlet",
+    "fit_strength",
+    "floor",
+    "other_seeds",
+    "score",
+    "seed_folds",
+    "stale",
+    "table",
+    "track_maps",
+    "transplant",
+    "truths",
+    "uniform",
+    "world_seeds",
+    "write_predicted",
+]

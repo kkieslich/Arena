@@ -315,7 +315,8 @@ Two forecasters read the same inputs:
   - `forecaster 1m` is the occupancy JSD on 1 m cells: the coarse scale at which the Bayesian Floor Field transferred to unseen worlds.
   - A second table puts each edit's and control's **recorded change** (against its base at the same seeds) beside each forecaster's **predicted change** (its map of the edit against its map of the base). The inert copy and the object moved without its demand should change little, the function-carrying edit a lot.
 - `curve`: forecast error against post-edit tracks seen.
-  - The forecast is a Dirichlet prior over cells and bins with strength c (pedestrian-seconds, fitted on the train partition). After k tracks the map is (c·p + n) / (c + N), the Bayesian Floor Field's conjugate update.
+  - The forecast is a Dirichlet prior over cells and bins with strength c (pedestrian-seconds). After k tracks the map is (c·p + n) / (c + N), the Bayesian Floor Field's conjugate update.
+  - c comes from `forecast strength`, by leave-two-seeds-out over the train partition: per fold, a network is trained without two of the training seeds. Each c is then scored on the curve with tracks from one held-out seed and the truth at the other. The c with the lowest mean over folds is chosen, and the output reports each fold's best and the spread. A learned prior has seen the train runs, so fitting c on them directly would lean heavy; `curve` asks for `--strength-file NAME=FILE` (or `--strength`) for every network. The uniform prior learns nothing, so without a file it is fitted on train.
   - Leave-one-seed-out: the tracks come from one scored seed's run, and the score is against the pooled map of the partition's other seeds, averaged over which seed is seen and over 20 random track orders.
   - Zero tracks is the forecast itself (the flat line). The same update from a uniform prior over the rooms is the online-only reference.
 - `scaling`: the learned forecaster trained on 25/50/100 % of the training edit chains (an edit with its controls; the base world always kept), 3 draws each, scored on the held-out partitions.
@@ -326,7 +327,8 @@ flowedit forecast train $S --cells $C --out net.pt
 flowedit forecast train $S --cells $C --no-demand --out geometry.pt
 flowedit forecast fit $S --cells $C --out params.yaml
 flowedit forecast score $S --cells $C --net net.pt --net geometry.pt --params params.yaml --predicted cliff=cliff.parquet --plots plots/ --out score.yaml
-flowedit forecast curve $S --benchmark <benchmark dir> --net net.pt --png curve.png --out curve.yaml
+flowedit forecast strength $S --benchmark <benchmark dir> --out strength.yaml
+flowedit forecast curve $S --benchmark <benchmark dir> --net forecaster=net.pt --strength-file forecaster=strength.yaml --png curve.png --out curve.yaml
 flowedit forecast scaling $S --cells $C --out-dir scaling/
 flowedit forecast predict office_1__move_fountain__2af43765 --net net.pt --split $S --png forecast.png --out forecast.parquet
 ```
@@ -371,6 +373,7 @@ Six parameters are fitted on the train partition (`forecast fit`): σ (kernel, m
 | `train` | the learned forecaster on a partition's single runs (`--no-demand`: the demand ablation; `--fraction`: a share of the edit chains) |
 | `score` | per world of each partition (default the held-out ones): JSD of each `--net`, the demand model (`--params`), each `--predicted` map, stale and transplanted at other seeds; the across-seed floor; recorded vs predicted change; a PNG per world with `--plots` |
 | `curve` | forecast error against post-edit tracks seen, leave-one-seed-out, beside the uniform-prior reference |
+| `strength` | the tracks-seen prior weight by leave-two-seeds-out over the train partition, with the fold spread |
 | `scaling` | the learned forecaster on 25/50/100 % of the training edits, scored on the held-out partitions |
 | `fit` | the demand model's params on a partition |
 | `predict` | one world's forecast (`--net`, else the demand model), as cell rows in the map file format or a PNG |
