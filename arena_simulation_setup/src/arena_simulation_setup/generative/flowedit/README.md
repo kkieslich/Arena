@@ -482,6 +482,12 @@ flowedit forecast baseline deepflow train $S --cells $R/flow_cells.parquet --out
 flowedit forecast baseline deepflow predict $S --model deepflow.pt --out deepflow.parquet --cells $R/flow_cells.parquet --report deepflow.yaml
 ```
 
+`figure` draws curve files of `baseline cliff` and `forecast curve` in one figure per partition: the online CLiFF-maps beside the forecaster's Dirichlet update, with the one-seed floor and the stale lines. The files must share the track counts and the scored seeds, so they are the same leave-one-seed-out folds:
+
+```bash
+flowedit forecast baseline figure curve.yaml cliff.yaml --png tracks_seen.png
+```
+
 A map file (`geometry`, `deepflow predict`) has one map per world in the columns `flow_world`, `x`, `y`, `heading_rad` (null for standing) and `ped_seconds`, on the world's base grid. It holds each edit's base world too, so `forecast score` can put the predicted change beside the recorded one.
 
 ## Files
