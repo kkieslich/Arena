@@ -30,6 +30,8 @@ flowedit edit hospital_1 move obj:fountain --scenario queue -p x=15 -p y=11.5 --
 flowedit edit hospital_1__move_fountain__b6b7b494 layout door:or_door -p op=remove --write
 ```
 
+`flowedit forecast fit|predict|score` [forecasts](#forecasting-flow) a world's flow map from its graph and geometry, fits the forecaster on a split's recorded maps and scores it.
+
 `flowedit generate <world> [--scenario <scenario>] [--seed N] [--per-type K] [--steps N] [--types move,...] [--controls]` samples edits with the [generator](#generator). A dry run prints the manifest, `--write` saves every edited world and writes the manifest to `$ARENA_ASSETS_DIR_LOCAL/flowedit/<world>__seed<seed>.yaml` (or `--manifest`).
 
 ```bash
@@ -247,6 +249,17 @@ arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{n
 
 The suite's `launch` runs flatsim headless under lockstep with `human.robots.visible: false`, so the people never see the parked robot, and `references: false`, since the split names its own reference runs. The contestant needs no planner: `[{name: peds_only}]` brings the robot up with the sim's default adapter. `--dry-run` prints the suite without writing a scenario or the suite, and a suite file `flowedit suite` did not write is kept unless `--force`.
 
+### Planners through the edit
+
+A split with a `robot_task` (a scenario `robots:` entry: `start` and `phases`) has the robot drive it in every stage. The task is added to the scenario after the crowd is read, so the people are the ones of the robot-free suite at the same seed. The scenario is `flowedit_<scenario>_<settings digest>_r<task digest>_s<seed>`, beside the robot-free one, and the stage runs `modes.robots: scenario` instead of the parking spot, under `human.robots.visible: true`. Every goto of the task must be a pose: a named target (a zone, a door, an object's dock) can resolve differently in an edited world, a pose is the same in all of them. A loop without `until` repeats until the episode's `timeout`, so every stage drives for the split's `duration`. `contest` lists the planners, as arena_evaluation contestants; `flowedit suite` writes them as contest `flowedit_<split name>` into `<imported assets root>/contests/` and prints `--contest flowedit_<split name>`. `flowedit sweep` refuses a split with a robot task, since `flowedit run` records without one.
+
+[`splits/h2_planners.yaml`](splits/h2_planners.yaml) is the Stage 1 test of H2: hospital_1, its first pilot fountain move and the move's two geometry-only controls, at the pilot's train seeds 1-5 on its base crowd, with Nav2 DWB (`dwb_blind`), DWB with `arena_social_cost_layer` (`dwb_social`) and DRL-VO (`drlvo`) shuttling between the central hallway and the laboratory past both fountain spots: 60 episodes of 300 s.
+
+```sh
+flowedit suite splits/h2_planners.yaml
+arena evaluation benchmark --suite flowedit_h2_planners --contest flowedit_h2_planners --lanes 2
+```
+
 ## Crowd settings
 
 Global, not per site: the same file gives a crowd on any graph. Every key and its default is in [`settings.py`](settings.py); a file sets only what it changes, an unknown key is an error. A distribution (`mean`, `std`, `clip_low`, `clip_high`) given in a file replaces the default one whole, so a raised mean never keeps the default's clips, and a mean outside its own clips is an error. A need's own `initial`, `decay_rate` or `below` replaces the `"*"` entry's.
@@ -259,6 +272,46 @@ needs:
 local_planner: orca
 entrances: {rate: 0.1, max_concurrent: 6, max_total: 30}
 ```
+
+## Forecasting flow
+
+[`forecast/`](forecast/) forecasts a site's flow map from its graph and geometry, without a PEDS run. The map is arena_evaluation's (`processing/flow/grid.py`): pedestrian-seconds per 0.5 m cell over the base world's rooms, 8 headings and a standing bin. The target is a world's seed-pooled map (its runs' normalized maps averaged over the partition's seeds), the score the JSD in bits against it. [`maps.py`](forecast/maps.py) mirrors arena_evaluation's grid, `jsd` and `pooled`, and a test checks they agree.
+
+**Model.** The forecaster mirrors the [reader](#reading-a-site) in expectation:
+- **People** are populate's crowd of the unedited base world, as the reader draws them (start point, idle stops, speed), at 16 crowd seeds that no split uses, each person weighted 1/16. A person walks from its start to its first stop, then cycles through its stops, standing `idle.stand` at each (the reader's `idle` sequence).
+- **Needs** send people to the objects the edited graph says satisfy them (the reader's `plan_needs`). A need starts at its initial value, decays at its rate, and starts a trip below `below`; a use adds `amount`. The expected number of trips within the run's duration comes from the settings' distributions. A trip leaves from one of the person's stops, walks to the object's front, waits, uses the object for its `dwells`, and walks back to the first stop, where `idle` starts again. The front lies `front_offset` from the object along its annotated `face`, else behind its yaw, as the runtime queues it.
+- **Choice and queues.** The objects of one need share a person's trips by a softmin of their path lengths with temperature τ (HumanSim takes the nearest). Each object's arrival rate λ gives its utilisation ρ = λ · dwell / capacity (at most 0.9) and a wait q · dwell · ρ^c / (2c(1 − ρ)), an M/D/c-like wait with c = capacity. The wait is stood on the queue's spots, `base_step` apart behind the front, in proportion to ρ^k.
+- **Walks** follow shortest paths on the edited world's free space: 0.25 m cells that keep HumanSim's navmesh inflation (0.38 m) from walls and objects, its comfort radius (0.6 m) as a cost, and locked doors (`gated true`) closed. Walking time goes to each step's heading, averaged over 5 steps and spread by σ_θ over the heading bins, so a corridor along an axis, which lies on a bin edge, splits as recorded walkers do. Standing time goes to the standing bin. A person whose start is off the free space or cut off from its stops stands there for the whole run, as HumanSim's router leaves it.
+- **Map.** The time is blurred by a Gaussian of width σ, kept to the reachable cells of the rooms, and scaled to people × duration.
+
+**Parameters.** Six parameters are fitted on the train partition: σ (kernel, m), σ_θ (heading spread, rad), w (walking mass per walked second, relative to standing), g (trips per expected trip of the needs model), τ (softmin temperature, m) and q (queue wait gain). The fit uses Nelder–Mead in log space and minimises the mean pooled JSD over the partition's worlds, the base world included. Everything else comes from the graph, the geometry and the crowd settings.
+
+**Inputs.** The forecaster reads the edited graph (objects, poses, `satisfies`, `dwells`, `serves` capacity, `has_formation`, `affords` through the reader's plan, doors' `gated`), the edited world's geometry, the base world's room purposes (for the crowd) and the crowd settings. It reads no PEDS run and no recorded map, so it carries over to a world that never ran, such as office_1.
+
+**Not modelled yet:**
+- entrance visitors (the pilot runs without them);
+- schedules and regimes (a schedule window changes nothing in a forecast);
+- what `meet` and `SERVICE` interactions do beyond walking to the object;
+- collisions and social forces;
+- people stuck on furniture that the navmesh does not hold.
+
+```bash
+flowedit forecast fit splits/peds_pilot.yaml --cells <benchmark dir>/flow_cells.parquet --out params.yaml
+flowedit forecast score splits/peds_pilot.yaml --cells <benchmark dir>/flow_cells.parquet --params params.yaml --plots plots/
+flowedit forecast predict office_1__move_fountain__2af43765 --params params.yaml --split splits/peds_pilot.yaml --png forecast.png
+```
+
+| Verb | What it does |
+|---|---|
+| `fit` | params that minimise the mean pooled JSD on a partition (`--partition`, default `train`); writes `flowedit-forecast/1` with each world's JSD |
+| `score` | per world of each partition (default the held-out ones): the JSD of the forecast and of its occupancy alone, of the anchored forecast, and of the stale and the transplanted base map; the seed floor; a PNG per world with `--plots` |
+| `predict` | one world's forecast, as cell rows (parquet, arena_evaluation's `CELL_SCHEMA` columns) or a PNG |
+
+`--crowd runs` draws the people at the seeds of the runs being scored instead: the people the reader placed in those runs, still without PEDS. The two baselines are quick versions for a sanity check; the study's baselines are FLOWEDIT #26:
+- **stale:** the base world's pooled map at the same seeds;
+- **transplanted:** the stale map with the mass within 2 m of the edited object moved with it (`move`, headings turned by its yaw change), copied to the new object (`insert`, from the object it copies) or dropped (`remove`).
+
+The **anchored** forecast adds the forecast's change (edit minus base) to the stale map, so it uses the recorded base map as the two baselines do. The **seed floor** is the JSD between the base world's pooled maps at the partition's seeds and at the split's other seeds: how far another crowd draw of the same world lies.
 
 ## Placement (INFRA)
 
@@ -275,6 +328,26 @@ path = save_layout(site, layout)    # <site key>__layout_<layout id> (a name mus
 placed_elements(layout)             # PlacedElement(name, footprint, dock_point, blocks_floor) for the NAV@r filter
 ```
 
+[`search.py`](search.py) searches the layouts (§4, §5). `Search(site, loading=(x, y))` pins the loading point (to the nearest valid loading spot) and keeps the valid spots of the other elements, less those over a `keep_out` polygon (PEDS sources and sinks) or clashing with the loading point. Its candidates are the triples of pairwise compatible spots: `check_layout` reads only a corridor window around a spot, so only near pairs are checked. A pick gets the full check, `check_layout` plus `navr_check` against a `NavrBase` of the site. Robot travel runs on the jackal's NAV@r floor at r 0.267 m (`RobotPaths`) and is weighed per job by the §8 job cycle (`TaskMix`).
+
+```python
+space = Search(site, loading=TWIN_LOADING_XY, keep_out=sources_and_sinks)
+robot_only(space)                   # the valid layout with the shortest expected robot travel per job
+joint(space, occupancy, n=2000)     # n random valid layouts by pedestrians under their elements + NAV@r floor loss, top 10
+random_valid(space, 5, seed=0)      # the random control
+occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=1500)  # from the site-as-is runs
+```
+
+[`infra.py`](infra.py) writes the INFRA Stage 1 suites (the Exposé's mini H1), seed-paired by `flowedit suite`'s stage names `<world>__s<seed>`, both launched with `human.robots.visible: true` and `jackal[4]`:
+
+```bash
+flowedit infra reference                               # suite infra_h1_site: the site as is without robots, seeds 1-5; run it first
+flowedit infra layouts --occupancy <benchmark dir>      # search, save 7 layout copies (with study_mix), write suite infra_h1
+flowedit infra layouts --dry-run                       # the robot-only and random picks without the occupancy, nothing written
+```
+
+`layouts` takes the robot-only pick, the best of the joint top 10 and 5 random valid layouts. It saves each as `<site>__layout_<id>` (assets hardlinked; it refuses a local root on another mount) with the scenario copied in. Each copy gets a stage per seed with the robots in `fleet` mode (homes on the bays and chargers, `loading_point`, `locker_1`) and `references: true`, which adds the layout without robots (`unhindered_peds`). It writes `<suite>.layouts.json` beside the suite and prints the benchmark call, whose contest sets the 22 Wh battery. `--rate` defaults to 75 % of the fleet's capacity in the slowest layout at `--speed` (0.5 m/s, the jackal's planner limit).
+
 ## Files
 
 | File | Purpose |
@@ -286,8 +359,11 @@ placed_elements(layout)             # PlacedElement(name, footprint, dock_point,
 | `edit.py` | edit operations, sites, saving edited worlds |
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
 | `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
+| `search.py` | INFRA layout searches: robot-only, joint (occupancy fallback), random valid |
+| `infra.py` | the INFRA Stage 1 suites: the site as is, and the searched layouts with the fleet |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |
 | `splits/` | committed splits, and their test crowds' settings in `splits/crowds/` |
-| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite` |
+| `forecast/` | the flow forecaster: `maps.py` (grid, JSD), `scene.py` (a site as the forecaster reads it), `model.py` (layers and params), `evaluate.py` (fit, score, baselines), `plot.py`, `cli.py` (`flowedit forecast`) |
+| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast`, `flowedit infra` |
