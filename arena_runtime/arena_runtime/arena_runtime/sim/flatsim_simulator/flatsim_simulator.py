@@ -454,7 +454,9 @@ class FlatsimSimulator(BaseSim):
             if known is not None and ped_radius(radius) != ped_radius(known):
                 resized.append(name)
             self._pedestrians[name] = radius
-            discs.append(_disc(name, Pose.from_msg(pedestrian.pose), radius, (pedestrian.twist.linear.x, pedestrian.twist.linear.y)))
+            position = pedestrian.pose.position
+            z_min, z_max = _ped_extent(position.z)
+            discs.append(Disc(name=name, radius=ped_radius(radius), x=position.x, y=position.y, vx=pedestrian.twist.linear.x, vy=pedestrian.twist.linear.y, z_min=z_min, z_max=z_max))
         if resized:
             # the server sizes a disc only when it first sees it
             self._discs.publish(Discs(removed=resized))

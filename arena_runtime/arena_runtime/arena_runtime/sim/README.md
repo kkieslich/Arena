@@ -341,7 +341,10 @@ Components self-register their data channels via
 `channels[]` of `{name, topic, type, period_s, hard}`. Re-registering under
 a `caller` replaces its set, an empty `channels[]` clears it, per-env
 registrations drop when their env despawns, and registrations merge into a
-running lockstep live. The arena_humansim adapter self-registers `engine`
+running lockstep live. A gate needs only each message's `header.stamp`: the scheduler
+subscribes raw and reads the stamp off the CDR of a leading `std_msgs/Header`
+(`stamp_reader`), decoding the message only for a type without one, so gating
+on a large roster such as `arena_peds` costs no decode. The arena_humansim adapter self-registers `engine`
 and `peds` (both hard). Its roster never trails the engine: every `arena_peds`
 is stamped no earlier than the last engine frame, and removing all agents
 publishes an empty roster at that stamp, so `peds` is covered whenever

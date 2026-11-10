@@ -8,6 +8,7 @@ import pytest
 
 from arena_simulation_setup.shared.body import (
     BODY_JOINTS,
+    BODY_POSE_JOINTS,
     DEFAULT_STANCE,
     DIGIT_JOINTS,
     FINGERS,
@@ -26,6 +27,7 @@ from arena_simulation_setup.shared.body import (
     quat_to_matrix,
     rest_offsets,
     semantic_to_body,
+    semantic_to_body_batch,
 )
 from arena_assets.rig import write_rig
 from arena_simulation_setup.testing import make_rig
@@ -371,3 +373,33 @@ def test_digit_dofs_round_trip_through_the_body_pose_over_a_stance() -> None:
 def test_a_missing_digit_dof_is_straight() -> None:
     assert body_to_semantic(semantic_to_body({}))["l_curl_index"] == pytest.approx(0.0)
     assert semantic_to_body({"r_spread": 0.2})["left_index1"] == pytest.approx(semantic_to_body({})["left_index1"])
+
+
+def _batch_angles(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Random poses, some DOFs at exactly 0 (an idle hand, a straight knee) and some whole poses at rest."""
+    angles = rng.uniform(-1.5, 1.5, size=(n, len(SEMANTIC_DOFS)))
+    angles[rng.random(angles.shape) < 0.3] = 0.0
+    angles[: n // 5] = 0.0
+    return angles
+
+
+@pytest.mark.parametrize("stance_seed", [None, 3, 7])
+def test_the_batch_is_semantic_to_body_pose_by_pose(stance_seed: int | None) -> None:
+    stance = DEFAULT_STANCE if stance_seed is None else _stance(stance_seed)
+    angles = _batch_angles(np.random.default_rng(5), 60)
+    batch = semantic_to_body_batch(angles, stance)
+    assert batch.shape == (60, len(BODY_POSE_JOINTS), 4)
+    for row, quats in zip(angles, batch, strict=True):
+        single = semantic_to_body(dict(zip(SEMANTIC_DOFS, row.tolist(), strict=True)), stance)
+        assert tuple(single) == BODY_POSE_JOINTS
+        assert np.abs(np.array(list(single.values())) - quats).max() < 1e-12
+
+
+def test_a_pose_comes_out_of_the_batch_the_same_bits_as_alone() -> None:
+    """A ped's body does not depend on who else is in the roster, so a cached body equals a fresh one exactly."""
+    stance = _stance(3)
+    angles = _batch_angles(np.random.default_rng(9), 40)
+    batch = semantic_to_body_batch(angles, stance)
+    for i, row in enumerate(angles):
+        assert np.array_equal(semantic_to_body_batch(row[None], stance)[0], batch[i])
+    assert semantic_to_body_batch(np.empty((0, len(SEMANTIC_DOFS))), stance).shape == (0, len(BODY_POSE_JOINTS), 4)

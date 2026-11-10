@@ -10,7 +10,7 @@ from arena_people_msgs.msg import Pedestrian
 from arena_simulation_setup.shared.body import BODY_JOINTS, DEFAULT_STANCE, DIGIT_JOINTS, SEMANTIC_DOFS, body_to_semantic, quat_to_matrix
 from arena_runtime.humans.animation_manager import BodyLayer, nlerp
 from arena_runtime.humans.profile import JOINT_NAMES
-from arena_runtime.humans.wire import fill_body
+from arena_runtime.humans.wire import fill_bodies, fill_body
 
 
 def _ped(angles: dict[str, float]) -> Pedestrian:
@@ -79,3 +79,46 @@ def test_a_clip_body_group_blends_over_the_compiled_pose() -> None:
     assert half.z == pytest.approx(nlerp((0.0, 0.0, 0.0, 1.0), quarter, 0.5)[2])
     assert ped.body.rotations[index("spine2")] == plain.body.rotations[index("spine2")]
     assert ped.body.root_offset.z == pytest.approx(-0.4)
+
+
+def _quats(ped: Pedestrian) -> list[tuple[float, float, float, float]]:
+    return [(q.x, q.y, q.z, q.w) for q in ped.body.rotations]
+
+
+def test_a_roster_filled_at_once_matches_each_ped_filled_alone() -> None:
+    rng = np.random.default_rng(4)
+    wrist = quat_to_matrix((0.0, 0.0, math.sin(0.2), math.cos(0.2)))
+    stances = [DEFAULT_STANCE, {**DEFAULT_STANCE, "right_index1": wrist}]
+    quarter = (0.0, 0.0, math.sin(math.pi / 8.0), math.cos(math.pi / 8.0))
+    layer = BodyLayer({"spine1": (quarter, 0.5)}, np.array([0.0, 0.0, -0.4]), 1.0)
+    poses = [dict.fromkeys(JOINT_NAMES, 0.0) | {str(name): float(rng.uniform(-1.0, 1.0)) for name in rng.choice(JOINT_NAMES, 8)} | {"l_wheel": float(i)} for i in range(6)]
+    roster = [_ped(angles) for angles in poses] + [_ped({"l_wheel": 1.5})]
+    alone = [_ped(angles) for angles in poses] + [_ped({"l_wheel": 1.5})]
+    ped_stances = [stances[i % 2] for i in range(len(roster))]
+    ped_layers = [[layer] if i == 3 else [] for i in range(len(roster))]
+    fill_bodies(roster, ped_stances, ped_layers)
+    for together, single, stance, layers in zip(roster, alone, ped_stances, ped_layers, strict=True):
+        fill_body(single, stance, layers)
+        assert list(together.body.joints) == list(single.body.joints)
+        assert _quats(together) == pytest.approx(_quats(single), abs=1e-12)
+        assert dict(zip(together.joint_state.name, together.joint_state.position, strict=True)) == dict(zip(single.joint_state.name, single.joint_state.position, strict=True))
+    assert list(roster[-1].body.joints) == []
+
+
+def test_the_cache_hands_back_the_last_body_while_stance_and_angles_repeat() -> None:
+    angles = dict.fromkeys(JOINT_NAMES, 0.0) | {"l_knee": -0.7, "waist": 0.1}
+    cache: dict = {}
+    first, again, moved, other_stance = _ped(angles), _ped(angles), _ped(angles | {"l_knee": -0.6}), _ped(angles)
+    for ped in (first, again, moved, other_stance):
+        ped.id = 7
+    fill_bodies([first], [DEFAULT_STANCE], [[]], cache)
+    fill_bodies([again], [DEFAULT_STANCE], [[]], cache)
+    assert again.body is first.body
+    assert list(again.joint_state.name) == []
+    fill_bodies([moved], [DEFAULT_STANCE], [[]], cache)
+    assert moved.body is not first.body and _quats(moved) != _quats(first)
+    stance = {**DEFAULT_STANCE, "left_knee": quat_to_matrix((0.0, math.sin(0.1), 0.0, math.cos(0.1)))}
+    fill_bodies([other_stance], [stance], [[]], cache)
+    fresh = _ped(angles)
+    fill_body(fresh, stance)
+    assert _quats(other_stance) == _quats(fresh)

@@ -226,3 +226,16 @@ def test_animation_manager_hands_phase_and_profile_to_the_gait() -> None:
     expected = GaitGenerator().compute(11, _WALKING, 1.0, 0.05, phase=1.25, profile=profile)
     assert mgr.compute(11, _WALKING, 1.0, 0.05, phase=1.25, profile=profile) == expected
     assert mgr.phase(11) == 1.25
+
+
+def test_a_repeated_phase_call_gives_the_same_angles_in_a_fresh_dict() -> None:
+    gen = GaitGenerator()
+    first = gen.compute(4, 1, 1.3, 0.05, phase=2.0)
+    first["l_knee"] = 99.0
+    again = gen.compute(4, 1, 1.3, 0.07, phase=2.0)
+    assert again == GaitGenerator().compute(4, 1, 1.3, 0.05, phase=2.0)
+    assert again is not first and again["l_knee"] != 99.0
+    assert gen.compute(4, 1, 0.6, 0.05, phase=2.0) != again
+    assert gen.phase(4) == 2.0
+    gen.forget(4)
+    assert gen.compute(4, 1, 1.3, 0.05, phase=2.0) == again

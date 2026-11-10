@@ -19,7 +19,7 @@ from arena_robots.caps import PolygonSpec
 from rclpy.parameter import Parameter
 
 from arena_runtime.env.collision_grid import Cell
-from arena_runtime.humans import ped_radius
+from arena_runtime.humans import ped_radius, wire_radius
 
 if TYPE_CHECKING:
     from arena_runtime.env.environment_manager import EnvironmentManager
@@ -99,12 +99,8 @@ class CollisionTrackerNode(rclpy.node.Node):
         self._pub_state: LazyPublisher[nav2_msgs.msg.CollisionMonitorState] = LazyPublisher(self.create_publisher(nav2_msgs.msg.CollisionMonitorState, 'collision_monitor_state', 10))
         self._pub_events = None if self._footprint_base is None else self.create_publisher(arena_robots_msgs.msg.CollisionEvents, 'collision_events', 10)
         env_ns = Namespace(robot_manager.node.get_namespace())
-        self._sub_peds = self.create_subscription(
-            arena_people_msgs.msg.Pedestrians,
-            str(env_ns('arena_peds')),
-            self._on_peds,
-            10,
-        )
+        # the env's own roster, handed over in-process: a subscription would decode every arena_peds again per robot
+        self._unsubscribe_peds = self._env.on_arena_peds(self._on_peds)
         self._sub_reset_start = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_start')), self._on_reset_start, 1)
         self._sub_reset_end = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_end')), self._on_reset_end, 1)
         self._timer = self.create_timer(1.0 / rate_hz, self._tick)
@@ -179,8 +175,8 @@ class CollisionTrackerNode(rclpy.node.Node):
             ev.obstacle_position = geometry_msgs.msg.Point(x=rx, y=ry, z=0.0) if static is None else geometry_msgs.msg.Point(x=float(static.centroid.x), y=float(static.centroid.y), z=0.0)
             events.append(ev)
 
-        for p, px, py in self._pedestrians():
-            if not footprint.intersects(shapely.Point(px, py).buffer(ped_radius(p.radius))):
+        for p, px, py, r in self._pedestrians(footprint):
+            if not footprint.intersects(shapely.Point(px, py).buffer(r)):
                 continue
             ev = arena_robots_msgs.msg.CollisionEvent()
             ev.kind = arena_robots_msgs.msg.CollisionEvent.KIND_PEDESTRIAN
@@ -198,19 +194,25 @@ class CollisionTrackerNode(rclpy.node.Node):
         if events:
             self._rm.report_collision()
 
-    def _pedestrians(self) -> list[tuple[arena_people_msgs.msg.Pedestrian, float, float]]:
+    def _pedestrians(self, near: shapely.Polygon) -> list[tuple[arena_people_msgs.msg.Pedestrian, float, float, float]]:
+        """The roster's pedestrians (ped, x, y, radius) whose disc can touch `near`: a disc's buffer stays within its radius box, so one whose box misses the polygon's bounds cannot intersect it."""
         if self._peds_msg is None:
             return []
-        out: list[tuple[arena_people_msgs.msg.Pedestrian, float, float]] = []
+        minx, miny, maxx, maxy = near.bounds
+        out: list[tuple[arena_people_msgs.msg.Pedestrian, float, float, float]] = []
         for p in self._peds_msg.pedestrians:
             px, py = p.pose.position.x, p.pose.position.y
             if math.isnan(px) or math.isnan(py):
                 continue
-            out.append((p, px, py))
+            r = ped_radius(wire_radius(p.radius))
+            if px + r < minx or px - r > maxx or py + r < miny or py - r > maxy:
+                continue
+            out.append((p, px, py, r))
         return out
 
     def _hits_pedestrian(self, poly: shapely.Polygon) -> bool:
-        return any(poly.intersects(shapely.Point(px, py).buffer(ped_radius(p.radius))) for p, px, py in self._pedestrians())
+        return any(poly.intersects(shapely.Point(px, py).buffer(r)) for _p, px, py, r in self._pedestrians(poly))
 
     def shutdown(self):
+        self._unsubscribe_peds()
         self.destroy_node()
