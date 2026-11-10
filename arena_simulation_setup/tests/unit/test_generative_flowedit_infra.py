@@ -242,7 +242,7 @@ def with_visitors(hospital_copy: Path) -> Path:
 
 def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_point_by_rule() -> None:
     config = infra.site_config("smu_link_full")
-    assert config.site == "smu_link_full" and config.scenario == "study_mix_v2"
+    assert config.site == "smu_link_full" and config.scenario == "study_entrances" and config.crowd_side == "left"
     assert config.exclude == ("ramp",)
     facts = config.facts
     assert facts.courier_access == search.TWIN_LOADING_XY and facts.outlets == ()
@@ -280,6 +280,8 @@ FACTS = {"site": "s", "courier_access": [1, 2]}
         ({**FACTS, "flow_split": [{"types": ["kiosk"], "share": 1.0}]}, "each group names"),
         ({"courier_access": [1, 2]}, "no site"),
         ({**FACTS, "zones": {}}, "unknown keys"),
+        ({**FACTS, "crowd_density": {"density": 0.3, "area_m2": 100.0}}, "needs exactly density, area_m2, mean_time_s"),
+        ({**FACTS, "crowd_density": {"density": 0.3, "area_m2": 100.0, "mean_time_s": 0.0}}, "must be > 0"),
     ],
 )
 def test_a_site_config_refuses_what_is_no_site_fact(doc: dict, match: str) -> None:
@@ -396,3 +398,113 @@ def test_cli_evaluation_writes_the_two_picks_and_the_site_on_fresh_seeds(tmp_pat
     assert cli.main(args) == 1
     pick.write_text(json.dumps({"joint_pick": "bbbb2222", "robot_only": "aaaa1111"}))
     assert cli.main([*args, "--seeds", "5-12", "--force"]) == 1
+
+
+# --- the crowd from the entrances ---------------------------------------------------------------------------------------
+
+
+def _entrance_config(**extra: object) -> infra.SiteConfig:
+    doc = {
+        "site": "s",
+        "courier_access": [1, 2],
+        "entrances": [
+            {"name": "m1", "type": "mrt", "polygon": [[0, 0], [2, 0], [2, 2], [0, 2]]},
+            {"name": "m2", "type": "mrt", "at": [20, 1], "recipients": True},
+            {"name": "b1", "type": "building", "at": [10, 9]},
+        ],
+        "flow_split": [{"types": ["mrt"], "share": 0.5}, {"types": ["building", "shop"], "share": 0.3}, {"types": ["other"], "share": 0.2}],
+        **extra,
+    }
+    return infra.SiteConfig.parse(doc)
+
+
+def test_entrance_shares_split_by_type_group_and_spread_the_empty_groups_share() -> None:
+    shares = infra.entrance_shares(_entrance_config())
+    assert shares == pytest.approx({"m1": 0.3125, "m2": 0.3125, "b1": 0.375})  # 0.5 and 0.3 of 0.8, the mrt share halved
+    assert sum(shares.values()) == pytest.approx(1.0)
+    loose = infra.SiteConfig.parse({**FACTS, "entrances": [{"name": "l", "type": "lift", "at": [0, 0]}], "flow_split": [{"types": ["mrt"], "share": 1.0}]})
+    with pytest.raises(ValueError, match="no flow_split group"):
+        infra.entrance_shares(loose)
+    even = infra.SiteConfig.parse({**FACTS, "entrances": [{"name": "a", "type": "mrt", "at": [0, 0]}, {"name": "b", "type": "shop", "at": [5, 0]}]})
+    assert infra.entrance_shares(even) == {"a": 0.5, "b": 0.5}
+
+
+def test_the_entrance_crowd_makes_every_entrance_a_source_and_sink_at_the_total_rate() -> None:
+    import shapely
+
+    config = _entrance_config()
+    floor = shapely.box(-5, -5, 30, 15)
+    scenario, visitors_doc, types = infra.entrance_crowd(config, floor, rate=1.2, visitor_rate_per_h=12.0, robots=[{"start": [1, 1, 0], "phases": []}])
+    regions = scenario["regions"]
+    sources = {n: r for n, r in regions.items() if r["type"] == "source"}
+    assert set(sources) == {f"{e}_{g}" for e in ("m1", "m2", "b1") for g, _, _ in infra.GROUPS}
+    assert {n for n, r in regions.items() if r["type"] == "sink"} == {"m1_sink", "m2_sink", "b1_sink"}
+    assert sum(r["config"]["rate_profile"][0]["rate"] for r in sources.values()) == pytest.approx(1.2, abs=1e-4)
+    assert sources["b1_wheelchair"]["config"]["rate_profile"][0]["rate"] == pytest.approx(1.2 * 0.375 * 0.15, abs=1e-6)
+    assert sources["b1_long_cane"]["config"]["agent"]["agent_type"] == "blind_white_cane"
+    # a walker leaves by another entrance, in proportion to its share
+    affinity = {a["sink"]: a["weight"] for a in sources["m1_adult"]["config"]["agent"]["sink_affinity"]}
+    assert affinity == pytest.approx({"m2_sink": 0.3125 / 0.6875, "b1_sink": 0.375 / 0.6875}, abs=1e-5)
+    # a point entrance gets a square cut to the floor kept clear of the walls; a polygon entrance keeps its polygon
+    assert regions["m1_sink"]["polygon"] == [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.0}, {"x": 2.0, "y": 2.0}, {"x": 0.0, "y": 2.0}]
+    square = shapely.Polygon([(p["x"], p["y"]) for p in regions["m2_sink"]["polygon"]])
+    assert square.area == pytest.approx(infra.ENTRANCE_SQUARE_M**2, abs=0.01) and square.centroid.distance(shapely.Point(20, 1)) < 0.01
+    near_wall = infra.entrance_crowd(config, shapely.box(-5, -5, 30, 9.5))[0]["regions"]["b1_sink"]["polygon"]
+    assert max(p["y"] for p in near_wall) == pytest.approx(9.5 - infra.ENTRANCE_WALL_M, abs=0.01)
+    assert scenario["robots"] == [{"start": [1, 1, 0], "phases": []}]
+    # locker visitors from the recipient entrance only, back out by its sink
+    assert set(visitors_doc["regions"]) == {f"m2_locker_{g}" for g, _, _ in infra.GROUPS}
+    assert sum(r["config"]["rate_profile"][0]["rate"] for r in visitors_doc["regions"].values()) == pytest.approx(12.0 / 3600, abs=1e-6)
+    leave = types["locker_visitor__m2_adult.yaml"]["sequences"]["leave"]["steps"]["exit"]["target_pose"]
+    assert (leave["x"], leave["y"]) == pytest.approx((20.0, 1.0), abs=0.01)
+    assert visitors_doc["regions"]["m2_locker_adult"]["config"]["agent"]["sink_affinity"] == [{"sink": "m2_sink", "weight": 1.0}]
+
+
+def test_write_crowd_writes_the_scenario_directory_once(tmp_path: Path) -> None:
+    import shapely
+
+    scenario, visitors_doc, types = infra.entrance_crowd(_entrance_config(), shapely.box(-5, -5, 30, 15))
+    folder = infra.write_crowd(tmp_path / "crowd", scenario, visitors_doc, types, "the crowd\nof the test")
+    text = (folder / "scenario.yaml").read_text()
+    assert text.startswith("# the crowd\n# of the test\n") and yaml.safe_load(text)["format"] == "arena-scenario/2"
+    assert (folder / infra.VISITORS).is_file() and (folder / "types" / "locker_visitor__m2_adult.yaml").is_file()
+    assert len(infra.keep_out(folder / "scenario.yaml")) == 4 * 3 + 3  # 3 sources and a sink per entrance, and the visitors
+    with pytest.raises(FileExistsError):
+        infra.write_crowd(tmp_path / "crowd", scenario, visitors_doc, types, "again")
+
+
+def test_the_crowd_density_sets_the_inflow_by_littles_law() -> None:
+    import argparse
+
+    from arena_simulation_setup.generative.flowedit import infra_cli
+
+    config = _entrance_config(crowd_density={"density": 0.3, "area_m2": 1000.0, "mean_time_s": 200.0})
+    cd = config.crowd_density
+    assert (cd.present(), cd.rate(), cd.rate(0.6)) == pytest.approx((300.0, 1.5, 3.0))
+    assert config.record()["crowd_density"] == {"density": 0.3, "area_m2": 1000.0, "mean_time_s": 200.0}
+
+    def rate(config: infra.SiteConfig, rate: float | None = None, density: float | None = None) -> float:
+        return infra_cli._crowd_rate(argparse.Namespace(rate=rate, density=density), config)[0]
+
+    assert rate(config) == pytest.approx(1.5) and rate(config, density=0.45) == pytest.approx(2.25)
+    assert rate(config, rate=0.9) == 0.9  # --rate wins
+    with pytest.raises(ValueError, match="not both"):
+        rate(config, rate=0.9, density=0.3)
+    plain = _entrance_config()
+    assert plain.crowd_density is None and rate(plain) == infra.CROWD_RATE
+    with pytest.raises(ValueError, match="no crowd_density"):
+        rate(plain, density=0.3)
+    twin = infra.site_config("smu_link_full").crowd_density
+    assert twin.density == 0.3 and twin.present() == pytest.approx(379.2)
+
+
+def test_the_crowd_side_goes_from_the_site_config_into_every_suites_launch_block() -> None:
+    assert _entrance_config(crowd_side="left").crowd_side == "left"
+    assert _entrance_config(crowd_side="left").record()["crowd_side"] == "left"
+    with pytest.raises(ValueError, match="crowd_side"):
+        _entrance_config(crowd_side="middle")
+    assert infra.reference_suite("s", [1], side="left")["launch"]["humansim.global_planner.lane_side"] == "left"
+    assert "humansim.global_planner.lane_side" not in infra.reference_suite("s", [1])["launch"]
+    assert infra.layout_suite(["w"], infra.fleet_config(10.0), [1], side="right")["launch"]["humansim.global_planner.lane_side"] == "right"
+    assert infra.site_config("smu_link_full").crowd_side == "left"
+
