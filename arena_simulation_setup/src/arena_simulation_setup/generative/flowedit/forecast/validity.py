@@ -307,7 +307,8 @@ def curve(
         if truth is None:
             continue
         if (world, s) in runs.maps:
-            floors.append(float(jsd(runs.maps[(world, s)], truth) or 0.0))
+            if (value := jsd(runs.maps[(world, s)], truth)) is not None:
+                floors.append(float(value))
         per = None if cache is None else cache.get((world, s))
         if per is None:
             tracks = tracks_of(world, s)
@@ -329,7 +330,9 @@ def curve(
                     cum += per[order[taken]]
                     taken += 1
                 for name, (prior, strength) in priors.items():
-                    out[name][ci].append(float(jsd(dirichlet(prior, strength, cum, mask), truth) or 0.0))
+                    # an empty posterior (a prior with no mass on the rooms and no track yet) has no score, not a perfect one
+                    if (value := jsd(dirichlet(prior, strength, cum, mask), truth)) is not None:
+                        out[name][ci].append(float(value))
     result = {name: [float(np.mean(v)) if v else None for v in vals] for name, vals in out.items()}
     # what every track of the seen run reaches: its own recorded map against the other seeds' pool
     result[ONE_SEED_FLOOR] = [float(np.mean(floors)) if floors else None] * len(counts)
