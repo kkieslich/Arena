@@ -45,6 +45,7 @@ build/
 # python
 __pycache__/
 *.py[cod]
+*.egg-info/
 
 #vscode
 .vscode/
@@ -91,5 +92,10 @@ htmlcov/
 
 /.uv-workspace/
 
-# FLOWEDIT run scenarios: `flowedit run` writes one per crowd settings digest and seed into a shipped world, a sweep makes them again
+# FLOWEDIT run scenarios: `flowedit run` and `flowedit suite` write one per crowd settings digest (and robot task digest) and seed into a shipped world, a sweep or suite makes them again
 /arena_simulation_setup/worlds/*/scenarios/flowedit_*_????????_s[0-9]*/
+/arena_simulation_setup/worlds/*/scenarios/flowedit_*_????????_r????????_s[0-9]*/
+
+# the writable local asset root ($ARENA_ASSETS_DIR_LOCAL, _assets/_local links here): saved and edited worlds, layout copies, `flowedit generate` manifests
+/arena_simulation_setup/assets/worlds/
+/arena_simulation_setup/assets/flowedit/
