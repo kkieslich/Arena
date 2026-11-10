@@ -88,6 +88,7 @@ from arena_people_msgs.msg import Gesture as GestureMsg
 from arena_people_msgs.msg import Pedestrian, Pedestrians
 from arena_rclpy_mixins.Async import ClientWrapper
 from arena_rclpy_mixins.lazy import LazySubscription
+from arena_rclpy_mixins.Time import Time
 from arena_runtime_msgs.msg import LockstepChannel
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET, CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, Stairs
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
@@ -124,6 +125,11 @@ from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orie
 
 from .agent import ArenaHumanDynamicObstacle, agent_type_def, agent_type_stimuli, flow_agent_template, path_agent_type_name
 from .rng_keys import AgentSource, flow_model_key, seats_key, walker_key
+
+try:
+    from arena_humansim_msgs.srv import StartClock
+except ImportError:  # an engine built before start_clock: its crowd starts at its first clock after a reset
+    StartClock = None
 
 _DEFERRED_ID_BASE = 1 << 24
 
@@ -338,6 +344,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
     SERVICE_SET_TELEPORT_ZONES = "set_teleport_zones"
     SERVICE_SET_ZONE_ACCESS = "set_zone_access"
     SERVICE_TELEPORT_AGENTS = "teleport_agents"
+    SERVICE_START_CLOCK = "start_clock"
     TAKES_STIMULI = True
 
     def __init__(self, **kwargs: typing.Unpack[HumanSimulatorOptions]) -> None:
@@ -443,6 +450,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             TeleportAgents,
             self.node.service_namespace(self.SERVICE_TELEPORT_AGENTS),
         )
+        self._start_clock_client: ClientWrapper | None = None if StartClock is None else self.node.create_client_wrapper(StartClock, self.node.service_namespace(self.SERVICE_START_CLOCK))
+        # whether the engine waits for start_clock after every remove-all, set in setup()
+        self._clock_on_request = False
 
         self._spawns_in_flight: int = 0
         self._contact_config: tuple[str, float] = ("enabled", 1.2)
@@ -770,6 +780,35 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         msg.theta = array.array("d", theta.tobytes())
         return msg
 
+    async def _hold_clock_until_start(self) -> None:
+        """Have the engine hold its tick clock after every remove-all until `start_clock` gives it the episode start.
+
+        Without it the engine's first tick after the reset's remove-all lands wherever the clock is then, and the reset moves
+        the clock by a varying amount afterwards (robot placement steps, bringup windows): the crowd starts a varying number of
+        ticks and a varying phase of a tick before the episode, so the same world and seed do not give the same crowd.
+        """
+        if self._start_clock_client is None:
+            self._logger.warning("arena_humansim_msgs has no StartClock: the crowd starts at the engine's first clock after a reset, so seed-paired episodes can differ")
+            return
+        request = SetParametersAtomically.Request(parameters=[Parameter("start_on_request", value=True).to_parameter_msg()])
+        response = await self._set_params_client.call_timeout(request)
+        if response is None or not response.result.successful:
+            reason = response.result.reason if response is not None else "timeout"
+            self._logger.warning(f"arena_humansim does not hold its clock for the episode start ({reason}): the crowd starts at its first clock after a reset, so seed-paired episodes can differ")
+            return
+        await self._start_clock_client.ensure()
+        self._clock_on_request = True
+
+    async def start_clock(self, epoch: Time) -> None:
+        """Start the engine's tick clock, held since the reset's remove-all, at the episode start: its first tick is stamped `epoch`."""
+        if not self._clock_on_request or self._start_clock_client is None:
+            return
+        assert StartClock is not None
+        response = await self._start_clock_client.call_timeout(StartClock.Request(epoch=epoch.to_msg()))
+        if response is None or not response.success:
+            # a reset that failed before its remove-all leaves the engine ticking; a held one would stall the lockstep gate
+            self._logger.error(f"arena_humansim did not start its clock at {epoch.to_seconds():.3f} s: {'timeout' if response is None else response.message}")
+
     _ENGINE_DT_DEFAULT = 0.05
 
     async def _engine_dt(self) -> float:
@@ -859,6 +898,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             )
         )
         self._logger.info("All arena_humansim services available")
+        await self._hold_clock_until_start()
 
         # gate period = engine dt: one sample per window paces the sim to the
         # engine's true coverage, so the clock cannot outrun the ped simulation

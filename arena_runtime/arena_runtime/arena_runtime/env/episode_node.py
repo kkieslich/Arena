@@ -689,6 +689,10 @@ class EpisodeNode(EnvNode):
                 self._judge_walls = self._wall_grid(compacted)
                 for manager in self._robots_manager.managers.values():
                     manager.set_episode_conditions(self._episode_conditions)
+                # the episode starts here, while the hold still stops the clock: the crowd's tick clock starts with it, so
+                # the crowd is the same one at the same times after the start however far the reset moved the clock
+                start = self.sim_time
+                await self._human_simulator.start_clock(start)
                 await self.release("reset")
                 clock.lap("release")
                 self.get_logger().info(f"reset took {clock}")
@@ -700,8 +704,9 @@ class EpisodeNode(EnvNode):
             self._pub_state_world.publish(String(data=record.world))
 
             # This is the first instant at which the reset world, robot and
-            # pedestrians are all committed. Dataset export clips audio to it.
-            record.start_time = self.sim_time
+            # pedestrians are all committed, the crowd's first tick. Dataset
+            # export clips audio to it.
+            record.start_time = start
             record.outcome_state = arena_runtime_msgs.action.RunEpisode.Result.RUNNING
             self._publish_episode_state()
             if self._cam_setup.value:

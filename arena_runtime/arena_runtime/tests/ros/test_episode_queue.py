@@ -390,3 +390,33 @@ def test_a_reset_episode_arriving_after_the_outcome_is_set_respawns_through_the_
         assert not env._episodes.respawn_requested
 
     asyncio.run(_on_running_env(body))
+
+
+def test_the_crowd_clock_starts_at_the_episode_start_while_the_reset_still_holds_the_sim(rclpy_context: object, fake_task_layer: object) -> None:
+    """The human simulator gets the start time right before the reset releases the sim, and the record starts there too."""
+    from arena_runtime_msgs.action import RunEpisode
+
+    events: list[tuple[str, object]] = []
+
+    async def body(env: object, rig: object) -> None:
+        release = env.release
+
+        async def recording_release(reason: str) -> None:
+            events.append(("release", reason))
+            await release(reason)
+
+        async def start_clock(epoch: object) -> None:
+            events.append(("start", epoch))
+
+        env.release = recording_release
+        env._human_simulator.start_clock = start_clock
+        first = asyncio.create_task(env._run_episode())
+        await _until(lambda: env._episodes.current.outcome_state == RunEpisode.Result.RUNNING, "episode 1 running")
+        starts = [event for event in events if event[0] == "start"]
+        assert len(starts) == 1
+        assert events[events.index(starts[0]) + 1] == ("release", "reset")
+        assert env._episodes.current.start_time == starts[0][1]
+        fake_task_layer.task.finished = True
+        await asyncio.wait_for(first, TIMEOUT)
+
+    asyncio.run(_on_running_env(body))
