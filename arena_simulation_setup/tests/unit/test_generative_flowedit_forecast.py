@@ -189,6 +189,19 @@ def test_maps_match_arena_evaluation() -> None:
     assert np.allclose(ours.dense(np.array(rows["x"]), np.array(rows["y"]), rows["heading_rad"], np.array(rows["ped_seconds"])), counts)
 
 
+def test_jsd_stays_finite_with_denormal_shares() -> None:
+    # half of the smallest denormal rounds to 0, so (a + b) / 2 can vanish where a holds mass
+    a, b = np.array([1.0, 5e-324]), np.array([1.0, 0.0])
+    assert M.jsd(a, b) == pytest.approx(0.0, abs=1e-12) and M.jsd(b, a) == pytest.approx(0.0, abs=1e-12)
+    rng = np.random.default_rng(0)
+    p, q = rng.random(200), rng.random(200)
+    p[rng.random(200) < 0.3] = 0.0
+    p, q = p / p.sum(), q / q.sum()
+    m = (p + q) / 2
+    textbook = 0.5 * sum(x * np.log2(x / y) for x, y in zip(p, m, strict=True) if x > 0) + 0.5 * sum(x * np.log2(x / y) for x, y in zip(q, m, strict=True) if x > 0)
+    assert M.jsd(p, q) == pytest.approx(textbook)
+
+
 # --- on hospital_1: the reader's people and the graph's demand --------------------------------------------------------
 
 
