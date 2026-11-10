@@ -299,12 +299,14 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
         import yaml
 
         robots = (yaml.safe_load(template.read_text()) or {}).get("robots") or []
-    scenario, visitors_doc, types = IN.entrance_crowd(config, floor, rate=args.rate, visitor_rate_per_h=args.visitor_rate, robots=robots)
+    rate, how = _crowd_rate(args, config)
+    scenario, visitors_doc, types = IN.entrance_crowd(config, floor, rate=rate, visitor_rate_per_h=args.visitor_rate, robots=robots)
     shares = IN.entrance_shares(config)
-    lines = [f"{e.name} ({e.type}{', recipients' if e.recipients else ''}): {shares[e.name] * args.rate:.3f} ped/s" for e in config.facts.entrances]
+    lines = [f"{e.name} ({e.type}{', recipients' if e.recipients else ''}): {shares[e.name] * rate:.3f} ped/s" for e in config.facts.entrances]
     header = "\n".join([
         f"INFRA study crowd from the entrances of {config.path.name if config.path else site.key} (study design §2, §9), written by `flowedit infra crowd`.",
-        f"Every entrance is a PEDS source and sink. Walkers come in at {args.rate:g} ped/s in all, split by entrance type",
+        f"The inflow: {how}.",
+        f"Every entrance is a PEDS source and sink. Walkers come in at {rate:.4g} ped/s in all, split by entrance type",
         "(flow_split, evenly within a group; groups without an entrance spread over the others), 70/15/15 adult /",
         "wheelchair / long cane per entrance, and leave by another entrance in proportion to its share.",
         f"Parcel recipients ({args.visitor_rate:g}/h in all, locker_visitors.yaml) come in at a recipient entrance and leave by it.",
@@ -320,6 +322,26 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
     folder = IN.write_crowd(args.out / args.name, scenario, visitors_doc, types, header)
     _log(f"wrote {folder}")
     return 0
+
+
+def _crowd_rate(args: argparse.Namespace, config: IN.SiteConfig) -> tuple[float, str]:
+    """The crowd's inflow in all [ped/s] and how it was set: `--rate`, else the site config's crowd density (at
+    `--density` if given) by Little's law, else `IN.CROWD_RATE`."""
+    cd = config.crowd_density
+    if args.rate is not None:
+        if args.density is not None:
+            raise ValueError("--rate or --density, not both: the density sets the rate")
+        return args.rate, f"--rate {args.rate:g} ped/s"
+    if cd is None:
+        if args.density is not None:
+            raise ValueError(f"--density: the site config {config.path} has no crowd_density (area and mean time) to turn it into a rate")
+        return IN.CROWD_RATE, f"{IN.CROWD_RATE:g} ped/s (no crowd_density in the site config)"
+    density = cd.density if args.density is None else args.density
+    rate = cd.rate(density)
+    return rate, (
+        f"{density:g} ped/m2 on {cd.area_m2:g} m2 = {cd.present(density):.0f} walkers present; by Little's law over the"
+        f" mean time in the site, {cd.mean_time_s:g} s (site config crowd_density), {rate:.4g} ped/s in all"
+    )
 
 
 def _cmd_evaluation(args: argparse.Namespace) -> int:
@@ -419,7 +441,8 @@ def add_parser(verbs: Any) -> None:
     q.set_defaults(fn=_cmd_layouts)
     q = infra.add_parser("crowd", parents=[common], help="the study crowd from the site config's entrances", description="write a scenario directory <out>/<name>: every entrance of the site config a PEDS source and sink, the inflow split by entrance type (flow_split), through-walkers between entrances and locker visitors from the recipient entrances")
     q.add_argument("--name", default="study_entrances", help="scenario name (default %(default)s)")
-    q.add_argument("--rate", type=float, default=IN.CROWD_RATE, help="the inflow in all [ped/s] (default %(default)s, study_mix_v2's)")
+    q.add_argument("--rate", type=float, default=None, help=f"the inflow in all [ped/s] (default: the site config's crowd_density by Little's law, density x area / mean time in the site; without one {IN.CROWD_RATE:g}, study_mix_v2's)")
+    q.add_argument("--density", type=float, default=None, help="the crowd density [ped/m2] the inflow keeps, in place of the site config's (crowd_density: its area and mean time set the rate)")
     q.add_argument("--visitor-rate", type=float, default=12.0, help="locker visitors per hour in all (default %(default)s)")
     q.set_defaults(fn=_cmd_crowd)
     q = infra.add_parser("evaluation", parents=[common], help="the evaluation: the two picks and the site as is on fresh seeds", description=f"write suites {IN.EVALUATION_SUITE} (the joint pick and the robot-only pick, each with the fleet and without robots) and {IN.EVALUATION_SITE_SUITE} (the site as is) on seeds {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]}, from the pick `evaluation infra pick` wrote and the selection's manifest")

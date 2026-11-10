@@ -108,7 +108,8 @@ VISITORS = "locker_visitors.yaml"
 CROWD_SIDES = ("right", "left", "none")
 #: The walker groups of the study crowd (§6, #93): name, HumanSim agent type, share of every source's walkers
 GROUPS = (("adult", "adult", 0.70), ("wheelchair", "wheelchair_manual", 0.15), ("long_cane", "blind_white_cane", 0.15))
-#: The study crowd's inflow in all (both route ends of study_mix_v2: 0.3 ped/m2 x 4.04 m x 1.0 m/s) [ped/s]
+#: The study crowd's inflow in all without a crowd density in the site config (both route ends of study_mix_v2: 0.3
+#: ped/m2 x 4.04 m x 1.0 m/s) [ped/s]
 CROWD_RATE = 1.2
 #: A point entrance's source and sink: a square this big around it, cut to the floor kept this far from the walls [m]
 ENTRANCE_SQUARE_M, ENTRANCE_WALL_M = 4.0, 0.35
@@ -120,12 +121,34 @@ LOCKER = "locker"
 
 
 @attrs.frozen
+class CrowdDensity:
+    """The crowd's design density and what turns it into an inflow (§9): `density` walkers per m^2 on `area_m2` of floor,
+    so `density x area_m2` walkers present, and `mean_time_s`, the mean time a walker spends on the site from its source
+    to its sink, measured in the site's crowd. By Little's law (walkers present = inflow x mean time) the inflow in all
+    is `density x area_m2 / mean_time_s`."""
+
+    density: float
+    area_m2: float
+    mean_time_s: float
+
+    KEYS = ("density", "area_m2", "mean_time_s")
+
+    def present(self, density: float | None = None) -> float:
+        """The walkers present at `density` (default the design density)."""
+        return (self.density if density is None else float(density)) * self.area_m2
+
+    def rate(self, density: float | None = None) -> float:
+        """The inflow in all [ped/s] that keeps `density` (default the design density) on the area: Little's law."""
+        return self.present(density) / self.mean_time_s
+
+
+@attrs.frozen
 class SiteConfig:
     """A site's facts for the INFRA study and its crowd: `facts` (`place.SiteFacts`: entrances, the courier access
     point, power outlets), the zones no element goes to (`exclude`, `fnmatch` patterns), the crowd scenario every stage
     runs, and `flow_split`, the share of the inflow each group of entrance types gets (split evenly within a group, at
-    the crowd's total rate), for the crowd built from the entrances. No element names: the catalog's rules read the
-    facts (`place.CATALOG`) and the search decides. `path` is the file it came from."""
+    the crowd's total rate), for the crowd built from the entrances, and `crowd_density`, which sets that rate. No element
+    names: the catalog's rules read the facts (`place.CATALOG`) and the search decides. `path` is the file it came from."""
 
     site: str
     scenario: str = SCENARIO
@@ -133,9 +156,10 @@ class SiteConfig:
     facts: place.SiteFacts = attrs.field(factory=place.SiteFacts)
     flow_split: tuple[tuple[tuple[str, ...], float], ...] = ()
     crowd_side: str | None = None
+    crowd_density: CrowdDensity | None = None
     path: Path | None = None
 
-    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side")
+    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side", "crowd_density")
 
     @property
     def placements(self) -> dict[str, Placement]:
@@ -196,8 +220,17 @@ class SiteConfig:
         side = doc.get("crowd_side")
         if side is not None and side not in CROWD_SIDES:
             raise ValueError(f"{where}crowd_side must be one of {', '.join(CROWD_SIDES)}, not {side!r}")
+        density = None
+        if doc.get("crowd_density") is not None:
+            block = doc["crowd_density"]
+            if not isinstance(block, Mapping) or set(block) != set(CrowdDensity.KEYS):
+                raise ValueError(f"{where}crowd_density needs exactly {', '.join(CrowdDensity.KEYS)}, not {block}")
+            values = {k: float(block[k]) for k in CrowdDensity.KEYS}
+            if min(values.values()) <= 0.0:
+                raise ValueError(f"{where}crowd_density: every value must be > 0, not {block}")
+            density = CrowdDensity(**values)
         facts = place.SiteFacts(tuple(entrances), courier, outlets)
-        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, path)
+        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, density, path)
 
     @classmethod
     def load(cls, path: Path) -> SiteConfig:
@@ -218,6 +251,7 @@ class SiteConfig:
             "outlets": [list(q) for q in self.facts.outlets],
             "flow_split": [{"types": list(types), "share": share} for types, share in self.flow_split],
             "crowd_side": self.crowd_side,
+            "crowd_density": None if self.crowd_density is None else attrs.asdict(self.crowd_density),
             "pins": {name: list(p.pin) for name, p in self.placements.items() if p.pin is not None},
         }
 
@@ -697,6 +731,7 @@ __all__ = [
     "EVALUATION_SITE_SUITE",
     "EVALUATION_SUITE",
     "CROWD_RATE",
+    "CrowdDensity",
     "CROWD_SIDES",
     "GROUPS",
     "LAUNCH",

@@ -12,6 +12,11 @@
 #   flow_split:     the share of the crowd's inflow per group of entrance types, split evenly within a group, at the
 #                   crowd's total rate; `flowedit infra crowd` builds the crowd from it
 #   crowd_side:     the side the crowd keeps to (right, left, none), HumanSim's global_planner.lane_side in every suite
+#   crowd_density:  the crowd's design density and what sets its rate by Little's law (walkers present = inflow x mean
+#                   time on the site): density [ped/m2] on area_m2 of floor, and mean_time_s, the mean time a walker
+#                   spends on the site from its source to its sink, measured in the site's crowd; `flowedit infra crowd`
+#                   then sets the inflow in all to density x area_m2 / mean_time_s (`--density` for another density,
+#                   `--rate` to set the inflow directly)
 site: smu_link_full
 # the crowd every stage runs (scenarios/<name> of the site); layout copies also get its locker_visitors.yaml;
 # `flowedit infra crowd --name study_entrances --out <site>/scenarios` builds it from the entrances below
@@ -49,6 +54,12 @@ outlets: []
 # the side walkers keep to: left, as on Singapore's footpaths (LTA Active Mobility code of conduct: keep left on
 # footpaths and shared paths); HumanSim's default is right (Helbing et al. 2001; Moussaid et al. 2009)
 crowd_side: left
+# the design density (study design §9): 0.3 ped/m2 on the floor within 2.5 m of the through-route (1264 m2; the route
+# 313 m at r 0.325), i.e. about 380 walkers present. mean_time_s: walkers present / inflow over 420-800 s (206 s) and the
+# mean time to their sink of the walkers released 420-1100 s (221 s), with the entrance crowd at 1.2 ped/s in HumanSim
+# alone (side left, seed 1); remeasure when the entrances, the crowd model or the site change. 0.3 x 1264 / 215 = 1.76
+# ped/s in all.
+crowd_density: {density: 0.3, area_m2: 1264, mean_time_s: 215}
 # placeholder until the entrances are ranked
 flow_split:
   - {types: [mrt], share: 0.5}

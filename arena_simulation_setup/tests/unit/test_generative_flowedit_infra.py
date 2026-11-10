@@ -280,6 +280,8 @@ FACTS = {"site": "s", "courier_access": [1, 2]}
         ({**FACTS, "flow_split": [{"types": ["kiosk"], "share": 1.0}]}, "each group names"),
         ({"courier_access": [1, 2]}, "no site"),
         ({**FACTS, "zones": {}}, "unknown keys"),
+        ({**FACTS, "crowd_density": {"density": 0.3, "area_m2": 100.0}}, "needs exactly density, area_m2, mean_time_s"),
+        ({**FACTS, "crowd_density": {"density": 0.3, "area_m2": 100.0, "mean_time_s": 0.0}}, "must be > 0"),
     ],
 )
 def test_a_site_config_refuses_what_is_no_site_fact(doc: dict, match: str) -> None:
@@ -469,6 +471,31 @@ def test_write_crowd_writes_the_scenario_directory_once(tmp_path: Path) -> None:
     assert len(infra.keep_out(folder / "scenario.yaml")) == 4 * 3 + 3  # 3 sources and a sink per entrance, and the visitors
     with pytest.raises(FileExistsError):
         infra.write_crowd(tmp_path / "crowd", scenario, visitors_doc, types, "again")
+
+
+def test_the_crowd_density_sets_the_inflow_by_littles_law() -> None:
+    import argparse
+
+    from arena_simulation_setup.generative.flowedit import infra_cli
+
+    config = _entrance_config(crowd_density={"density": 0.3, "area_m2": 1000.0, "mean_time_s": 200.0})
+    cd = config.crowd_density
+    assert (cd.present(), cd.rate(), cd.rate(0.6)) == pytest.approx((300.0, 1.5, 3.0))
+    assert config.record()["crowd_density"] == {"density": 0.3, "area_m2": 1000.0, "mean_time_s": 200.0}
+
+    def rate(config: infra.SiteConfig, rate: float | None = None, density: float | None = None) -> float:
+        return infra_cli._crowd_rate(argparse.Namespace(rate=rate, density=density), config)[0]
+
+    assert rate(config) == pytest.approx(1.5) and rate(config, density=0.45) == pytest.approx(2.25)
+    assert rate(config, rate=0.9) == 0.9  # --rate wins
+    with pytest.raises(ValueError, match="not both"):
+        rate(config, rate=0.9, density=0.3)
+    plain = _entrance_config()
+    assert plain.crowd_density is None and rate(plain) == infra.CROWD_RATE
+    with pytest.raises(ValueError, match="no crowd_density"):
+        rate(plain, density=0.3)
+    twin = infra.site_config("smu_link_full").crowd_density
+    assert twin.density == 0.3 and twin.present() == pytest.approx(379.2)
 
 
 def test_the_crowd_side_goes_from_the_site_config_into_every_suites_launch_block() -> None:
