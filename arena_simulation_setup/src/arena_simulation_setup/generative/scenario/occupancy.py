@@ -33,15 +33,23 @@ def _footprints(view: WorldView, world: World, objects: list[Obstacle]) -> list[
     from arena_simulation_setup.tree import Identifier
     from arena_simulation_setup.tree.World.view import world_assets
 
+    async def one(obj: Obstacle) -> shapely.Polygon | None:
+        import shapely
+
+        footprint = await obj.footprint()
+        # a floor marking (a waiting bay) takes no floor, as the runtime's world manager leaves it out
+        return shapely.Polygon() if footprint is None and await obj.floor_marking() else footprint
+
     async def collect() -> list[shapely.Polygon | None]:
-        return list(await asyncio.gather(*(obj.footprint() for obj in objects)))
+        return list(await asyncio.gather(*(one(obj) for obj in objects)))
 
     with world_assets(view, world):
         return Identifier._run_sync(collect())
 
 
 def world_statics(world_root: str | Path, world: World | None = None) -> list[dict[str, Any]]:
-    """Every object of the level with its footprint `polygon`, a covering `radius` and whether its asset gave the footprint."""
+    """Every object of the level with its footprint `polygon`, a covering `radius` and whether its asset gave the footprint;
+    floor markings (no box in their annotation, such as a waiting bay) are left out, as the runtime leaves them out."""
     import shapely
 
     from arena_simulation_setup.tree.World.view import WorldView
@@ -54,6 +62,8 @@ def world_statics(world_root: str | Path, world: World | None = None) -> list[di
         return []
     out: list[dict[str, Any]] = []
     for obj, footprint in zip(level.objects, _footprints(view, world, level.objects), strict=True):
+        if footprint is not None and footprint.is_empty:
+            continue
         x, y = obj.pose.position.x, obj.pose.position.y
         resolved = footprint is not None
         if footprint is None:

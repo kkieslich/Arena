@@ -262,6 +262,18 @@ class Obstacle(Entity):
             return None
         return [self.pose * Position(x, y, z) for x in view.extent[0] for y in view.extent[1] for z in view.extent[2]]
 
+    async def floor_marking(self) -> bool:
+        """Whether nothing of the object stands on the floor: a HumanSim target without a model (`target_only`), or an
+        asset whose annotation has no box, such as a waiting bay's taped outline. Spawns, the nav map, the simulators
+        and humansim ignore it; an asset that does not resolve or has no annotation is not one."""
+        if self.target_only:
+            return True
+        try:
+            view = await self.model.resolve()
+        except FileNotFoundError:
+            return False
+        return getattr(view, "annotation", None) is not None and getattr(view, "extent", None) is None
+
     async def footprint(self) -> shapely.Polygon | None:
         """Map-frame 2D footprint of the asset's annotated box through the full pose, None when unannotated."""
         import shapely

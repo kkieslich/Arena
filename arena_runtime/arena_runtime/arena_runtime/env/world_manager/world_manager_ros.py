@@ -22,12 +22,13 @@ import numpy as np
 import PIL.Image
 import rclpy.logging
 import rclpy.qos
+import shapely
 import visualization_msgs.msg
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from arena_rclpy_mixins.Async import ClientWrapper, LaunchHandle
 from arena_rclpy_mixins.shared import FrameNamespace
-from arena_simulation_setup.shared import Door, Position, Wall
+from arena_simulation_setup.shared import Door, Obstacle, Position, Wall
 from arena_simulation_setup.tree.World import Level, World, WorldIdentifier, WorldView
 from arena_simulation_setup.tree.World.model import render_door_polygons, render_elevator_polygons
 from arena_simulation_setup.tree.World.view import point_world_assets
@@ -293,7 +294,7 @@ class WorldManagerROS(MapServerHandler, WorldManager):
         self._logger.warn(f'Loading World {world_name}')
 
         point_world_assets(world_view.path, world.sources)
-        static_footprints = await asyncio.gather(*(o.footprint() for o in world.all_static_entities))
+        static_footprints = await asyncio.gather(*(_static_footprint(o) for o in world.all_static_entities))
         self.update_world(world_map=world_map, world_description=world, multi_level_map=multi_level_map, static_footprints=static_footprints)
         self._mechanism_blocked = frozenset()
         self._mechanism_served = frozenset()
@@ -603,3 +604,12 @@ class WorldManagerROS(MapServerHandler, WorldManager):
                 if elapsed >= timeout:
                     return False
         return True
+
+
+async def _static_footprint(obstacle: Obstacle) -> shapely.Polygon | None:
+    """The footprint a static entity takes from the map: its annotated box, an empty polygon for a floor marking (a
+    waiting bay: robots must be able to stand on it), None when unknown (the world manager stamps a box then)."""
+    footprint = await obstacle.footprint()
+    if footprint is None and await obstacle.floor_marking():
+        return shapely.Polygon()
+    return footprint
