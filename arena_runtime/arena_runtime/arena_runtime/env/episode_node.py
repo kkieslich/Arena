@@ -202,6 +202,8 @@ class EpisodeNode(EnvNode):
         self._stimulus_tasks: set[asyncio.Task] = set()
         self._stimuli_fired: dict[str, float] = {}
         self._episode_conditions: list[EpisodeCondition] = []
+        # Entities task modes publish of their own, by kind.
+        self._task_entities: dict[str, dict[str, str]] = {}
 
         self._pub_task_reset = self.create_publisher(
             Int16,
@@ -284,6 +286,7 @@ class EpisodeNode(EnvNode):
                     register_timeline=self.register_timeline,
                     register_conditions=self.register_conditions,
                     register_sound_levels=self.register_sound_levels,
+                    publish_task_entity=self.publish_task_entity,
                 ),
                 interactive=InteractiveContext(markers=self.markers, robot_colors=self.robot_colors, tf_buffer=self.tf_buffer),
             ),
@@ -300,7 +303,7 @@ class EpisodeNode(EnvNode):
             await self._task.tick(ended, assigned)
 
     def _extra_semantic_states(self) -> list[arena_runtime_msgs.msg.SemanticEntityState]:
-        return [self._timeline_semantic_state()]
+        return [self._timeline_semantic_state(), *(self._task_entity_state(kind, fields) for kind, fields in self._task_entities.items())]
 
     def _interaction_displays(self) -> list[AdapterDisplay]:
         return [
@@ -465,6 +468,7 @@ class EpisodeNode(EnvNode):
         self._stimulus_tasks.clear()
         self._stimuli_fired.clear()
         self._episode_conditions = []
+        self._task_entities.clear()
         super().reset_timeline()
 
     def register_conditions(self, conditions: "Sequence[EpisodeCondition]") -> None:
@@ -536,6 +540,22 @@ class EpisodeNode(EnvNode):
         msg.kind = "timeline"
         msg.discrete_names = list(self._stimuli_fired.keys())
         msg.discrete_values = [self._stringify_float(t) for t in self._stimuli_fired.values()]
+        return msg
+
+    def publish_task_entity(self, kind: str, fields: Mapping[str, str]) -> None:
+        """A task mode's own `<kind>` entity, its discrete fields set to `fields` from the next semantics flush on; empty fields drop it. The episode reset drops every one."""
+        if fields:
+            self._task_entities[kind] = dict(fields)
+        else:
+            self._task_entities.pop(kind, None)
+        self._semantics_dirty = True
+
+    def _task_entity_state(self, kind: str, fields: Mapping[str, str]) -> arena_runtime_msgs.msg.SemanticEntityState:
+        msg = arena_runtime_msgs.msg.SemanticEntityState()
+        msg.entity = self._realizer.prefix(kind)
+        msg.kind = kind
+        msg.discrete_names = list(fields.keys())
+        msg.discrete_values = list(fields.values())
         return msg
 
     def _evaluate_timeline(self, now: float) -> None:

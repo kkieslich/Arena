@@ -63,6 +63,23 @@ def test_an_edit_is_saved_and_its_scenario_has_the_people_of_the_base(worlds: Pa
     assert any(t["sequences"].get("seek_thirst", {}).get("steps", {}).get("use", {}).get("duration") == {"mean": 20.0} for t in after.values())
 
 
+TASK = {"start": [10.0, 2.0, 1.5708], "phases": [{"loop": [{"goto": [14.8, 22.9, -0.82]}, {"goto": [10.0, 2.0, -1.5708]}]}]}
+
+
+def test_a_robot_task_gets_its_own_scenario_with_the_people_read_without_it(worlds: Path) -> None:
+    base = open_site(worlds / "hospital_1", "queue")
+    plain = R.prepare(base, base, [], FEW, 4)
+    driven = R.prepare(base, base, [], FEW, 4, robot=TASK)
+    assert driven.scenario == R.scenario_name("queue", FEW, 4, TASK) != plain.scenario
+    assert driven.scenario.startswith(plain.scenario.removesuffix("_s4")) and driven.scenario.endswith("_s4")
+    assert R.scenario_name("queue", FEW, 4, {**TASK, "start": [10.0, 3.0, 1.5708]}) != driven.scenario
+    scenarios = worlds / "hospital_1" / "scenarios"
+    without, with_robot = (yaml.safe_load((scenarios / name / "scenario.yaml").read_text()) for name in (plain.scenario, driven.scenario))
+    assert "robots" not in without and with_robot["robots"][0]["start"] == TASK["start"]
+    assert with_robot["humans"] == without["humans"] and with_robot["objects"] == without["objects"]
+    assert yaml.safe_load((scenarios / driven.scenario / "provenance.yaml").read_text())["robot_task"] == TASK
+
+
 def test_a_dry_run_saves_and_writes_nothing(worlds: Path) -> None:
     base = open_site(worlds / "hospital_1", "queue")
     prepared = R.prepare(base, base, [DWELL], FEW, 0, dry_run=True)

@@ -1,0 +1,45 @@
+# FLOWEDIT Stage 1, hypothesis H2: a function-carrying edit shifts a planner's personal-space intrusion on the same seeds,
+# while geometry-only edits (footprint only) do not. `flowedit suite` writes it as suite and contest flowedit_h2_planners.
+#
+# hospital_1, the pilot's first fountain move (train chain 1) and its two geometry-only controls, on the pilot's base crowd
+# (peds_pilot.yaml: same sources, settings and train seeds, so the same edited worlds and the same people per seed):
+#   hospital_1__move_fountain__6e1d6873               fountain and its demand moved from (11.0, 10.0) to (17.74, 25.46)
+#   hospital_1__insert_fountain_inert__4a32a4fc       an inert copy at the new spot, the demand stays at the old one
+#   hospital_1__move_fountain_leave_demand__66723c25  the model moved, its demand left at the old spot
+# 3 planners x 4 worlds x 5 seeds = 60 episodes of 300 s, scored edit minus base per planner and seed.
+#
+# The robot shuttles between the central hallway south of the old spot and the laboratory's open south part past the new
+# spot, through the laboratory door, so both spots lie on its way in every world. Goal B keeps at least 1.4 m from every
+# seed's starting people; the poses are coordinates, the same in all four worlds.
+format: flowedit-split/1
+sources:
+  hospital_1: {scenario: queue, seed: 0, per_type: 3, steps: 1, controls: true}
+duration: 300
+settings:
+  entrances: {rate: 0}
+seeds: [1, 2, 3, 4, 5]
+partitions:
+  train:
+    - hospital_1
+    - hospital_1__move_fountain__6e1d6873
+    - hospital_1__insert_fountain_inert__4a32a4fc
+    - hospital_1__move_fountain_leave_demand__66723c25
+  held_out_edits: []
+  held_out_worlds: []
+control_worlds:
+  hospital_1__move_fountain__6e1d6873: [hospital_1__insert_fountain_inert__4a32a4fc, hospital_1__move_fountain_leave_demand__66723c25]
+robot_task:
+  start: [10.0, 2.0, 1.5708]
+  phases:
+    - loop:
+        - {goto: [14.8, 22.9, -0.82], tolerance_angle: 3.1416}
+        - {goto: [10.0, 2.0, -1.5708], tolerance_angle: 3.1416}
+# crowd-unaware Nav2 DWB, the same DWB with arena_social_cost_layer, and one learned crowd planner (DRL-VO)
+contest:
+  - name: dwb_blind
+    mobile: {driver: nav2, local_planner: dwb, inter_planner: navigate_to_pose_w_replanning_and_recovery}
+  - name: dwb_social
+    mobile: {driver: nav2, local_planner: dwb, inter_planner: navigate_to_pose_w_replanning_and_recovery, params_overlay: social_cost_layer}
+  - name: drlvo
+    mobile: drl
+    mobile.planner: drlvo
