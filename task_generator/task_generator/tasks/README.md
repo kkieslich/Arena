@@ -77,8 +77,11 @@ same names: `RNG`, `HUMAN`, `SAFE_DIST`, `GOAL_TOLERANCE_RADIUS`, `TIMEOUT` and
 `KG_DERIVE`.
 
 `EpisodeContext` is what a mode may tell the running episode: `compromise`,
-`abort_episode`, `force_reset`, `register_timeline`, `register_conditions` and
-`register_sound_levels`. `InteractiveContext` is the env's rviz side: `markers`, the
+`abort_episode`, `force_reset`, `register_timeline`, `register_conditions`,
+`register_sound_levels` and `publish_task_entity(kind, fields)`, which puts an entity
+`<env>/<kind>` of that kind with `fields` as its discrete fields on the semantics
+snapshot the recorder keeps, until the next episode reset (empty fields drop it; the
+`fleet` mode's task log is one). `InteractiveContext` is the env's rviz side: `markers`, the
 interactive marker hub, `robot_colors` and `tf_buffer`. It is `None` in a
 host that has no rviz side, and the modes that use it assert it where they first need it.
 
