@@ -340,10 +340,34 @@ def test_cage_of_hospital_marks_walls_people_and_the_fountain(queue) -> None:  #
     assert G[: grid.ny, : grid.nx][E[: grid.ny, : grid.nx] == 0].min() < 0.02 and G[int(i), int(j)] < 0.2
 
 
+def test_figure_draws_curve_files_of_one_protocol_together(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit.cli import main
+
+    counts = [0, 1, 2, 4, 8, 16]
+    ours = {"counts": counts, "partitions": {"held_out_edits": {"seeds": [6, 7, 8], "rows": [{"tracks_per_run": 12}], "mean": {"cliff (empty)": [None, 0.7, 0.6, 0.5, 0.45, 0.43]}, "one_seed_floor": 0.41, "stale_outside": 0.35}}}
+    theirs = {"counts": counts, "partitions": {"held_out_edits": {"seeds": [6, 7, 8], "mean": {"forecaster": [0.33, 0.33, 0.33, 0.33, 0.32, None], "one-seed floor": [0.41] * 6}}}}
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(ours))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(theirs))
+    assert main(["forecast", "baseline", "figure", str(tmp_path / "b.yaml"), str(tmp_path / "a.yaml"), "--png", str(tmp_path / "fig.png")]) == 0
+    out = capsys.readouterr().out
+    assert "| forecaster |" in out and "| cliff (empty) |" in out and out.count("one-seed floor") == 1
+    assert (tmp_path / "fig.png").stat().st_size > 0
+    theirs["partitions"]["held_out_edits"]["seeds"] = [6, 7]
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(theirs))
+    with pytest.raises(SystemExit, match="different seeds"):
+        main(["forecast", "baseline", "figure", str(tmp_path / "b.yaml"), str(tmp_path / "a.yaml"), "--png", str(tmp_path / "fig.png")])
+    theirs["counts"] = [0, 1, 2]
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(theirs))
+    with pytest.raises(SystemExit, match="not the same protocol"):
+        main(["forecast", "baseline", "figure", str(tmp_path / "b.yaml"), str(tmp_path / "a.yaml"), "--png", str(tmp_path / "fig.png")])
+
+
 def test_cli_lists_the_baselines(capsys: pytest.CaptureFixture[str]) -> None:
     from arena_simulation_setup.generative.flowedit.cli import main
 
     with pytest.raises(SystemExit):
         main(["forecast", "baseline", "--help"])
     out = capsys.readouterr().out
-    assert all(v in out for v in ("cliff", "controls", "geometry", "deepflow"))
+    assert all(v in out for v in ("cliff", "controls", "geometry", "deepflow", "figure"))

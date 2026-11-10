@@ -17,7 +17,7 @@ from .evaluate import Forecaster, Runs, seed_floor
 FORMAT = "flowedit-forecast-baseline/1"
 PRIORS = ("empty", "pre-edit")
 #: categorical series colours, in fixed order
-SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
+SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300")
 
 
 def _log(message: str) -> None:
@@ -252,13 +252,98 @@ def _score_maps(doc: Mapping[str, Any], runs: Runs, maps: Mapping[str, Any], par
     return out
 
 
+# --- figure ----------------------------------------------------------------------------------------------------------
+
+#: reference lines a curve file may carry per partition, as `baseline cliff` writes them, and their labels
+REFERENCES = {"one_seed_floor": "one-seed floor (the edit's own run)", "stale_at_seen": "stale@s (base run at the seen seed)", "stale_outside": "stale (base runs outside the truth)"}
+
+
+def _curves(path: Path) -> dict[str, Any]:
+    doc = yaml.safe_load(path.read_text()) or {}
+    if "counts" not in doc or not isinstance(doc.get("partitions"), dict):
+        raise SystemExit(f"{path}: not a tracks-seen curve file (needs counts and partitions.<partition>.mean)")
+    return doc
+
+
+def _cmd_figure(args: argparse.Namespace) -> int:
+    docs = [(path, _curves(path)) for path in args.curves]
+    counts = docs[0][1]["counts"]
+    for path, doc in docs[1:]:
+        if doc["counts"] != counts:
+            raise SystemExit(f"{path}: counts {doc['counts']} differ from {docs[0][0]}'s {counts}: not the same protocol")
+    parts = args.partition or list(dict.fromkeys(p for _, d in docs for p in d["partitions"]))
+    for partition in parts:
+        found = [(path, d["partitions"][partition]) for path, d in docs if partition in d["partitions"]]
+        if not found:
+            raise SystemExit(f"no curve file has partition {partition}")
+        seeds = {tuple(part.get("seeds") or []) for _, part in found}
+        if len(seeds) > 1:
+            raise SystemExit(f"{partition}: the curve files score different seeds {sorted(seeds)}: not the same folds")
+        curves: dict[str, list[float | None]] = {}
+        refs: dict[str, float] = {}
+        tracks = 0
+        for path, part in found:
+            tracks = max([tracks, *(r.get("tracks_per_run") or 0 for r in part.get("rows") or [])])
+            for name, values in (part.get("mean") or {}).items():
+                vals = [v for v in values if v is not None]
+                if "floor" in name.lower() and vals and max(vals) - min(vals) < 1e-9:
+                    refs.setdefault(REFERENCES["one_seed_floor"], vals[0])
+                elif name in curves:
+                    raise SystemExit(f"{partition}: curve {name!r} is in more than one file")
+                else:
+                    curves[name] = values
+            for key, label in REFERENCES.items():
+                if part.get(key) is not None:
+                    if label in refs and abs(refs[label] - part[key]) > 5e-4:
+                        raise SystemExit(f"{partition}: {key} {part[key]:.4f} in {path} differs from {refs[label]:.4f}: not the same folds")
+                    refs.setdefault(label, part[key])
+        lines = ["| tracks seen | " + " | ".join(str(k) for k in counts) + " |", "|---|" + "---|" * len(counts)]
+        lines += [f"| {n} | " + " | ".join(_fmt(x) for x in m) + " |" for n, m in curves.items()]
+        print(f"## {partition}\n\n" + "\n".join(lines) + "\n\n" + ", ".join(f"{k} {v:.3f}" for k, v in refs.items()) + "\n")
+        png = args.png if len(parts) == 1 else args.png.with_name(f"{args.png.stem}_{partition}{args.png.suffix}")
+        _plot_figure(png, partition, counts, curves, refs, tracks)
+    return 0
+
+
+def _plot_figure(png: Path, partition: str, counts: Sequence[int], curves: Mapping[str, Sequence[float | None]], refs: Mapping[str, float], max_tracks: int) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    for k, (name, values) in enumerate(curves.items()):
+        # counts beyond a run's tracks repeat its last point: each is plotted at the tracks actually seen
+        pts = {}
+        for c, v in zip(counts, values, strict=True):
+            if v is not None:
+                pts[max(min(c, max_tracks) if max_tracks else c, 0.5)] = v
+        ax.plot(list(pts), list(pts.values()), marker="o", markersize=6, linewidth=1.6, color=SERIES[k % len(SERIES)], label=name)
+    styles = {REFERENCES["one_seed_floor"]: ("#2b2a27", "--"), REFERENCES["stale_at_seen"]: ("#6b6a64", ":"), REFERENCES["stale_outside"]: ("#2b2a27", ":")}
+    for label, value in refs.items():
+        color, style = styles.get(label, ("#6b6a64", "-."))
+        ax.axhline(value, color=color, linewidth=1.2, linestyle=style, label=label)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.set_xscale("log")
+    ax.set_xlabel("post-edit tracks seen (0 plotted at 0.5" + (f"; {max_tracks} tracks per run)" if max_tracks else ")"))
+    ax.set_ylabel("pooled JSD (bits) against the other seeds")
+    ax.set_title(f"{partition}: forecast error vs. tracks seen (leave one seed out)")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(alpha=0.25, linewidth=0.6)
+    png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(png, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    _log(f"wrote {png}")
+
+
 # --- register --------------------------------------------------------------------------------------------------------
 
 
 def register(sub: argparse._SubParsersAction) -> None:
     """Add `baseline` and its verbs to `flowedit forecast`."""
     p = sub.add_parser("baseline", help="the map baselines: online CLiFF-maps, geometry-only simulation and prior, Deep Crowd-Flow", description="the forecaster's map baselines on a split's recorded runs (see the flowedit README, Map baselines)")
-    verbs = p.add_subparsers(dest="baseline_verb", required=True, metavar="{cliff,controls,geometry,deepflow}")
+    verbs = p.add_subparsers(dest="baseline_verb", required=True, metavar="{cliff,controls,geometry,deepflow,figure}")
 
     def common(q: argparse.ArgumentParser) -> None:
         q.add_argument("split", type=Path, help="the split file (see split.py)")
@@ -293,6 +378,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     q.add_argument("--report", type=Path, default=None, help="YAML of the entrances walked and the scores")
     q.add_argument("--plots", type=Path, default=None, help="directory for a PNG per world")
     q.set_defaults(fn=_cmd_geometry)
+
+    q = verbs.add_parser("figure", help="one tracks-seen figure from several curve files", description="the curves of `baseline cliff` and `forecast curve` files in one figure per partition; the files must share the track counts and the scored seeds (the same leave-one-seed-out folds)")
+    q.add_argument("curves", type=Path, nargs="+", help="curve YAML files (`baseline cliff --out`, `forecast curve --out`)")
+    q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to draw; repeatable (default: every partition of the files)")
+    q.add_argument("--png", type=Path, required=True, help="PNG to write (one per partition, suffixed, when there are several)")
+    q.set_defaults(fn=_cmd_figure)
 
     from .deepflow import register as register_deepflow
 
