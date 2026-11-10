@@ -302,6 +302,27 @@ def test_accepted_stimulus_records_the_sim_time_of_its_firing_tick() -> None:
     assert _timeline_fields(stub) == {"stimulus.edge_0.go": "12.5"}
 
 
+def test_a_task_mode_entity_rides_the_snapshot_until_the_reset() -> None:
+    from arena_runtime.env.episode_node import EpisodeNode
+
+    stub, _calls, _warnings = _stimulus_stub({})
+    _reset_stub(stub)
+    fields = {"t0": "100.000", "job.0.released": "12.500"}
+    EpisodeNode.publish_task_entity(stub, "fleet", fields)
+    fields["job.0.robot"] = "r0"
+    assert stub._semantics_dirty is True
+    timeline, fleet = stub._extra_semantic_states()
+    assert timeline.kind == "timeline"
+    assert (fleet.entity, fleet.kind) == ("env_3/fleet", "fleet")
+    # the snapshot keeps the fields as published, not the mode's later edits
+    assert dict(zip(fleet.discrete_names, fleet.discrete_values, strict=True)) == {"t0": "100.000", "job.0.released": "12.500"}
+    EpisodeNode.publish_task_entity(stub, "fleet", {})
+    assert [state.kind for state in stub._extra_semantic_states()] == ["timeline"]
+    EpisodeNode.publish_task_entity(stub, "fleet", fields)
+    EpisodeNode.reset_timeline(stub)
+    assert [state.kind for state in stub._extra_semantic_states()] == ["timeline"]
+
+
 def test_a_stimulus_fired_again_keeps_its_first_firing_time() -> None:
     from arena_simulation_setup.shared.judge import Sample
     from arena_simulation_setup.tree.World.Scenario import TimelineEntry
@@ -426,6 +447,7 @@ def _node_stub() -> object:
     rosparam = {str: SimpleNamespace(get=lambda name, default: {"task_layer": "fake_layer"}.get(name, default))}
     stub = object.__new__(type("Stub", (EpisodeNode,), {"sim_time": None, "rosparam": rosparam}))
     stub._robots_manager = None
+    stub._task_entities = {}
     return stub
 
 

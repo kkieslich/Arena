@@ -17,6 +17,7 @@ try:
     import std_msgs.msg
     from arena_rclpy_mixins.ROSParamServer import ROSParamServer
     from arena_rclpy_mixins.shared import Namespace
+    from arena_rclpy_mixins.Time import Time
     from arena_simulation_setup.shared import Obstacle
     from arena_simulation_setup.shared.judge import Sample, Zones, zone_polygons
     from arena_simulation_setup.tree.World import Level
@@ -104,6 +105,9 @@ def _manager_in_env(env: int, name: str) -> RobotManager:
     manager = RobotManager.__new__(RobotManager)
     manager._namespace = Namespace(f"/arena/env_{env}/arena_env_node")
     manager._robot = SimpleNamespace(name=name)
+    manager._NodeInterface__node = SimpleNamespace(sim_time=Time(sec=0))
+    manager._soc = manager._soc_since = None
+    manager._capacity_wh = 0.0
     return manager
 
 
@@ -200,6 +204,55 @@ def test_a_start_charge_range_with_its_min_above_its_max_fails_the_reset_before_
     assert sent == []
 
 
+def _energy(sec: int, soc: float, nanosec: int = 0) -> arena_robots_msgs.msg.Energy:
+    msg = arena_robots_msgs.msg.Energy(total_energy_consumed_wh=1.0, battery_soc_percent=soc)
+    msg.header.stamp.sec, msg.header.stamp.nanosec = sec, nanosec
+    return msg
+
+
+def test_a_charge_reading_stamped_at_or_before_the_reset_is_ignored() -> None:
+    manager = _manager_in_env(0, "jackal")
+    manager._capacity_pub = manager._soc_pub = SimpleNamespace(publish=lambda msg: None)
+    manager.node.sim_time = Time(sec=50)
+    manager.reset_battery(_rng(3), 22.0, 40.0, 40.0)
+    assert manager.soc == 40.0
+    # the power publisher computed these on the last episode's battery, before the start charge reached it
+    for sec, soc in ((12, 3.0), (50, 4.0)):
+        manager._on_energy(_energy(sec, soc))
+        assert manager.soc == 40.0
+    manager._on_energy(_energy(50, 39.9, nanosec=1))
+    assert manager.soc == pytest.approx(39.9)
+    # an unstamped reading has no order and counts
+    manager._on_energy(_energy(0, 39.5))
+    assert manager.soc == pytest.approx(39.5)
+    # the next reset moves the cut
+    manager.node.sim_time = Time(sec=900)
+    manager.reset_battery(_rng(3), 22.0, 60.0, 60.0)
+    manager._on_energy(_energy(899, 10.0))
+    assert manager.soc == 60.0
+
+
+def test_the_battery_capacity_is_the_episodes_override_else_the_power_profiles() -> None:
+    manager = _manager_in_env(0, "jackal")
+    manager._capacity_pub = SimpleNamespace(publish=lambda msg: None)
+    asked: list[object] = []
+    manager._config = SimpleNamespace(power_profile=lambda parts: asked.append(parts) or {"battery_capacity_wh": 270.0, "static_power_w": 42.2})
+    manager._robot = SimpleNamespace(name="jackal", resolved_request={"lidar": []})
+    assert manager.battery_capacity_wh == 270.0
+    manager.publish_battery_capacity(22.0)
+    assert manager.battery_capacity_wh == 22.0
+    manager.publish_battery_capacity(0.0)
+    assert manager.battery_capacity_wh == 270.0
+    assert manager.power_profile == {"battery_capacity_wh": 270.0, "static_power_w": 42.2}
+    assert asked == [{"lidar": []}]
+
+    unpowered = _manager_in_env(0, "dingo")
+    unpowered._config = SimpleNamespace(power_profile=lambda parts: None)
+    unpowered._robot = SimpleNamespace(name="dingo", resolved_request={})
+    assert unpowered.power_profile is None
+    assert unpowered.battery_capacity_wh is None
+
+
 _roots = itertools.count()
 
 
@@ -210,9 +263,17 @@ def _wired(node: rclpy.node.Node, name: str = "jackal") -> RobotManager:
     manager._robot = SimpleNamespace(name=name)
     manager._NodeInterface__node = node
     manager._charge_power_w = 0.0
-    manager._soc = None
+    manager._soc = manager._soc_since = None
+    manager._capacity_wh = 0.0
     manager._set_up_battery()
     return manager
+
+
+def _runtime_node(name: str) -> rclpy.node.Node:
+    """A plain node standing in for the env node, its sim clock at 0."""
+    node = rclpy.node.Node(name)
+    node.sim_time = Time(sec=0)
+    return node
 
 
 def _spin_until(executor: SingleThreadedExecutor, pred: Callable[[], bool], what: str, timeout: float = 5.0) -> None:
@@ -224,7 +285,7 @@ def _spin_until(executor: SingleThreadedExecutor, pred: Callable[[], bool], what
 
 
 def test_the_charge_reading_follows_the_power_publishers_energy_output_and_starts_at_the_start_charge() -> None:
-    runtime = rclpy.node.Node("test_robot_charging_runtime")
+    runtime = _runtime_node("test_robot_charging_runtime")
     probe = rclpy.node.Node("test_robot_charging_power")
     executor = SingleThreadedExecutor()
     executor.add_node(runtime)
@@ -261,7 +322,7 @@ def test_a_real_power_publisher_runs_on_the_runtimes_capacity_start_charge_and_c
 
     from arena_robots.power_publisher import PowerPublisher
 
-    runtime = rclpy.node.Node("test_robot_charging_runtime")
+    runtime = _runtime_node("test_robot_charging_runtime")
     sim = rclpy.node.Node("test_robot_charging_sim")
     manager = _wired(runtime)
     # a 36 W standby draw like flatsim's jackal, on its 270 Wh power.yaml battery
