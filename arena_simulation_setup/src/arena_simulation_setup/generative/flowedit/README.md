@@ -338,6 +338,16 @@ random_valid(space, 5, seed=0)      # the random control
 occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=1500)  # from the site-as-is runs
 ```
 
+[`infra.py`](infra.py) writes the INFRA Stage 1 suites (the Exposé's mini H1), seed-paired by `flowedit suite`'s stage names `<world>__s<seed>`, both launched with `human.robots.visible: true` and `jackal[4]`:
+
+```bash
+flowedit infra reference                               # suite infra_h1_site: the site as is without robots, seeds 1-5; run it first
+flowedit infra layouts --occupancy <benchmark dir>      # search, save 7 layout copies (with study_mix), write suite infra_h1
+flowedit infra layouts --dry-run                       # the robot-only and random picks without the occupancy, nothing written
+```
+
+`layouts` takes the robot-only pick, the best of the joint top 10 and 5 random valid layouts. It saves each as `<site>__layout_<id>` (assets hardlinked; it refuses a local root on another mount) with the scenario copied in. Each copy gets a stage per seed with the robots in `fleet` mode (homes on the bays and chargers, `loading_point`, `locker_1`) and `references: true`, which adds the layout without robots (`unhindered_peds`). It writes `<suite>.layouts.json` beside the suite and prints the benchmark call, whose contest sets the 22 Wh battery. `--rate` defaults to 75 % of the fleet's capacity in the slowest layout at `--speed` (0.5 m/s, the jackal's planner limit).
+
 ## Files
 
 | File | Purpose |
@@ -350,9 +360,10 @@ occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
 | `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
 | `search.py` | INFRA layout searches: robot-only, joint (occupancy fallback), random valid |
+| `infra.py` | the INFRA Stage 1 suites: the site as is, and the searched layouts with the fleet |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |
 | `splits/` | committed splits, and their test crowds' settings in `splits/crowds/` |
 | `forecast/` | the flow forecaster: `maps.py` (grid, JSD), `scene.py` (a site as the forecaster reads it), `model.py` (layers and params), `evaluate.py` (fit, score, baselines), `plot.py`, `cli.py` (`flowedit forecast`) |
-| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast` |
+| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast`, `flowedit infra` |
