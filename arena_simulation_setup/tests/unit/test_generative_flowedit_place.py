@@ -599,9 +599,9 @@ def test_a_locker_stands_within_walking_distance_of_a_recipient_entrance_not_str
     others = place.SiteFacts((attrs.evolve(RECEPTION, recipients=False),))
     assert {s.verdict[Rule.RECIPIENT_DISTANCE] for s in candidate_spots(hospital, near, facts=others)} == {Verdict.UNKNOWN}
     assert [s.valid for s in candidate_spots(hospital, near, facts=others)] == [s.valid for s in candidate_spots(hospital, near)]
-    # an entrance on another level is not walked to
+    # recipients who come in only on another level walk to no locker on this one: the rule fails, not unknown
     upstairs = place.SiteFacts((attrs.evolve(RECEPTION, level="9"),))
-    assert {s.verdict[Rule.RECIPIENT_DISTANCE] for s in candidate_spots(hospital, near, facts=upstairs)} == {Verdict.UNKNOWN}
+    assert {s.verdict[Rule.RECIPIENT_DISTANCE] for s in candidate_spots(hospital, near, facts=upstairs)} == {Verdict.FAIL}
 
 
 def test_the_courier_handoff_point_stands_at_the_courier_access_point(hospital: Site) -> None:
@@ -631,4 +631,28 @@ def test_chargers_and_lockers_stand_within_cable_run_of_an_outlet_once_the_site_
     # the bay pair has no outlet rule; no outlets leave it unknown
     assert Rule.OUTLET_CABLE not in candidate_spots(hospital, "bay_pair", facts=place.SiteFacts(outlets=(outlet,)))[0].verdict
     assert {s.verdict[Rule.OUTLET_CABLE] for s in candidate_spots(hospital, "charger_pair", facts=place.SiteFacts())} == {Verdict.UNKNOWN}
+
+
+
+
+def test_an_entrance_off_the_walking_floor_gets_a_warning(hospital: Site) -> None:
+    far = place.Entrance("typo", "building", ((-40.0, -40.0),), recipients=True)
+    with pytest.warns(UserWarning, match="entrance 'typo'.*from the walking floor"):
+        candidate_spots(hospital, attrs.evolve(CATALOG["locker"], recipient_distance_m=11.0), facts=place.SiteFacts((far,)))
+
+
+def test_the_walking_grid_keeps_a_one_metre_door(tmp_path: Path) -> None:
+    """Two rooms joined by a 1.0 m door: the walk through it is found and about as long as the straight line."""
+    import numpy as np
+
+    room = [[0.0, 0.0], [12.0, 0.0], [12.0, 6.0], [0.0, 6.0]]
+    world_dir = tmp_path / "worlds" / "door"
+    shutil.copytree(HOSPITAL, world_dir, ignore=shutil.ignore_patterns("scenarios", "kg.yaml"))
+    walls = [{"path": room, "closed": True}, {"path": [[6.0, 0.0], [6.0, 2.5]]}, {"path": [[6.0, 3.5], [6.0, 6.0]]}]
+    doc = {"format": "arena-world/2", "levels": [{"id": "0", "zones": [{"name": "a", "polygon": room}], "walls": walls}]}
+    (world_dir / "world.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+    site = open_site(world_dir)
+    walk = place.walking_paths(site, site.world.levels[next(iter(site.world.levels))].id)
+    d = walk.lengths([(3.0, 3.0)], [(9.0, 3.0)])[0, 0]
+    assert np.isfinite(d) and d == pytest.approx(6.0, abs=0.6)
 

@@ -346,7 +346,9 @@ _CUT_OFF: dict[tuple[Any, ...], tuple[str, ...]] = {}
 _BASES: dict[tuple[Any, ...], Any] = {}
 _WALKS: dict[tuple[Any, ...], Any] = {}
 #: Walking distances run on this grid (8-connected, up to 8 % longer than straight off the grid axes)
-WALK_RESOLUTION_M = 0.25
+WALK_RESOLUTION_M = 0.1
+#: An entrance whose point lies further than this from the walking floor gets a warning (a mistyped position) [m]
+ENTRANCE_SNAP_WARN_M = 0.5
 _SITES: collections.OrderedDict[tuple[Any, ...], None] = collections.OrderedDict()
 
 
@@ -721,6 +723,16 @@ def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], 
     return tuple((rule, out[rule]) for rule in Rule if rule in element.rules)
 
 
+def _warn_off_floor(walk: Any, entrances: Sequence[Entrance], level_id: str) -> None:  # noqa: ANN401 - a RobotPaths
+    """Warn about each entrance whose point lies more than `ENTRANCE_SNAP_WARN_M` from the walking floor of its level."""
+    import warnings
+
+    for e in entrances:
+        off, _ = walk.tree.query(e.anchor)
+        if off > ENTRANCE_SNAP_WARN_M:
+            warnings.warn(f"entrance {e.name!r} at {e.anchor} lies {off:.2f} m from the walking floor of level {level_id!r}: a mistyped position?", stacklevel=3)
+
+
 def _with_facts(site: Site, level_id: str, element: Element, spots: list[Spot], facts: SiteFacts | None) -> list[Spot]:
     """`spots` with the verdicts of the rules that read the site's facts: the courier access point (a spot's goto point
     within `COURIER_ACCESS_M` of it), recipient entrances (walking distance from one, on this level, to a spot's goto
@@ -735,10 +747,16 @@ def _with_facts(site: Site, level_id: str, element: Element, spots: list[Spot], 
     if Rule.COURIER_ACCESS in rules and facts.courier_access is not None:
         ax, ay = facts.courier_access
         verdicts[Rule.COURIER_ACCESS] = [Verdict.PASS if math.hypot(s.objects[0].goto[0] - ax, s.objects[0].goto[1] - ay) <= COURIER_ACCESS_M else Verdict.FAIL for s in spots]
-    entrances = [e.anchor for e in facts.recipient_entrances if e.level in (None, level_id)]
-    if Rule.RECIPIENT_DISTANCE in rules and element.recipient_distance_m is not None and entrances:
-        lengths = walking_paths(site, level_id).lengths(entrances, [s.objects[0].goto for s in spots]).min(axis=0)
-        verdicts[Rule.RECIPIENT_DISTANCE] = [Verdict.PASS if d <= element.recipient_distance_m else Verdict.FAIL for d in lengths.tolist()]
+    here = [e for e in facts.recipient_entrances if e.level in (None, level_id)]
+    if Rule.RECIPIENT_DISTANCE in rules and element.recipient_distance_m is not None and facts.recipient_entrances:
+        if not here:
+            # the site's recipients come in on other levels: nobody walks to a locker on this one
+            verdicts[Rule.RECIPIENT_DISTANCE] = [Verdict.FAIL] * len(spots)
+        else:
+            walk = walking_paths(site, level_id)
+            _warn_off_floor(walk, here, level_id)
+            lengths = walk.lengths([e.anchor for e in here], [s.objects[0].goto for s in spots]).min(axis=0)
+            verdicts[Rule.RECIPIENT_DISTANCE] = [Verdict.PASS if d <= element.recipient_distance_m else Verdict.FAIL for d in lengths.tolist()]
     if Rule.OUTLET_CABLE in rules and facts.outlets:
         centres = [(float(o.footprint.centroid.x), float(o.footprint.centroid.y)) for s in spots for o in s.objects]
         runs = walking_paths(site, level_id).lengths(list(facts.outlets), centres).min(axis=0).reshape(len(spots), -1).max(axis=1)
