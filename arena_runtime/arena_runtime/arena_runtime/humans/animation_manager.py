@@ -550,10 +550,14 @@ class AnimationManager:
         *,
         phase: float | None = None,
         profile: PoseProfile | None = None,
+        angles: bool = True,
     ) -> dict[str, float]:
         """
         Resolves joint angles by advancing playheads and performing dynamic blending.
         ``gesture`` is handed per agent to ``gesture_hook``, ``phase`` and ``profile`` to the gait generator.
+        With ``angles=False`` a synthesized base with no transition and no overlay is not evaluated: everything advances as
+        it would and an empty dict comes back (the caller wanted the state, not the pose). An overlay or a transition
+        needs the base pose, so with one the angles come back as always.
         """
         self.check_animations_cached()
         assert animation_state in self.state_to_animation_map, f"Can not map `animation_state` {animation_state} to any animation"
@@ -573,7 +577,12 @@ class AnimationManager:
             return gait_angles
 
         tilt: Quat | None = None
-        if next_anim.name in self.USE_SYNTHESIS:
+        lazy = not angles and next_anim.name in self.USE_SYNTHESIS and agent_id not in self._transitions
+        if lazy:
+            # the phase step gait() takes; the pose waits for whether an overlay plays
+            self.gait_generator.advance(agent_id, animation_state, speed, dt, phase=phase, profile=profile)
+            base_angles = {}
+        elif next_anim.name in self.USE_SYNTHESIS:
             base_angles = gait()
         else:
             playhead = self._get_playhead(agent_id) + dt
@@ -596,6 +605,9 @@ class AnimationManager:
 
         if self.gesture_hook is not None:
             self.gesture_hook(agent_id, gesture, dt)
+        if lazy and self._ped_blend.get(agent_id):
+            # an overlay blends over the base: the base pose at the phase just stepped to
+            base_angles = self.gait_generator.compute(agent_id, animation_state, speed, dt, phase=self.gait_generator.phase(agent_id), profile=profile)
 
         if tilt is None:
             self._tilt.pop(agent_id, None)

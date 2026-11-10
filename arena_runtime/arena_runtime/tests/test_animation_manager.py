@@ -449,3 +449,28 @@ def test_a_forgotten_agent_loses_its_body_layers(mgr: AnimationManager) -> None:
     mgr.compute(1, 0, 0.0, 0.05)
     mgr.forget(1)
     assert mgr.body_layers(1) == []
+
+
+def _walkers() -> AnimationManager:
+    m = AnimationManager(logger=StubLogger(), fps=FPS, clips=NoClips())
+    m.register_transient("arm", const_frames(1.0, 40), loop=True)
+    return m
+
+
+def test_without_angles_a_walker_advances_alike_and_an_overlay_gets_the_full_pose() -> None:
+    """compute(angles=False) leaves the gait phase, overlays and tilt where compute() does, and with an overlay returns its pose."""
+    full, lazy = _walkers(), _walkers()
+    script = [(1, 1.3, 0.05, None), (1, 1.3, 0.05, 2.0), (0, 0.0, 0.04, None), (1, 0.6, 0.05, None), (2, 3.0, 0.05, 5.0)] * 3
+    for k, (state, speed, dt, phase) in enumerate(script):
+        if k == 6:
+            for m in (full, lazy):
+                m.set_ped_blend(7, "arm", blend_joints=ARMS, fade_in_s=0.2)
+        a = full.compute(7, state, speed, dt, phase=phase)
+        b = lazy.compute(7, state, speed, dt, phase=phase, angles=False)
+        assert lazy.phase(7) == full.phase(7)
+        assert lazy.root_tilt(7) == full.root_tilt(7)
+        assert lazy._overlay_playhead == full._overlay_playhead
+        if k >= 6:
+            assert b == a
+        else:
+            assert b == {} and set(a) == set(JOINT_NAMES)

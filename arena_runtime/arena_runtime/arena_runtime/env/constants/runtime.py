@@ -203,6 +203,7 @@ def Configuration(server: ROSParamServer) -> type:
 
         class Human:
             ROBOTS_VISIBLE = server.ROSParam[bool]('human.robots.visible', True)
+            SKELETON = server.ROSParam[bool]('human.skeleton', True)
 
     return Config
 

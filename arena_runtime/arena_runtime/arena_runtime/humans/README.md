@@ -97,6 +97,16 @@ world, every ped moved into the simulator frame by `Realizer.placement()` when t
 `sim_peds` and `animation_states` are built and sent only while something subscribes to them (under flatsim nothing reads
 `sim_peds`, and a recording that excludes `animation_states` has no reader for it).
 
+With `human.skeleton:=false` the roster goes out without its skeleton: `AnimationManager.compute` still runs for every ped
+(its clip and gesture state advance, resting and tilted peds are placed from the angles as above), then `joint_state` and
+`body` are emptied instead of compiled and `animation_states` is not sent. Poses, names, radii, gestures and the rest of
+each `Pedestrian` are those of the full roster, so the simulator, the robots, the collision trackers and the task layer
+see the same crowd; renderers, rviz skeletons and recordings get none. The arena backend's 50 Hz loop re-renders the
+engine's latest frame between frames only to advance the animation, so without the skeleton it skips a render whose
+inputs (`_render_inputs`: the frame, gestures, names, types, sources, seats, held seats, model paths, stairs, env offset)
+are those of the last one, unless a ped rests, tilts or is possessed; the next frame's render carries the animation clock
+on as before.
+
 Consumers inside the env node take the roster in-process instead of subscribing to `arena_peds`: `on_arena_peds(callback)`
 hands each published message to the callback right after the publish (the base class's own `pedestrian_discs` and
 `pedestrian_clips` state, and every robot's collision tracker through `EnvironmentManager.on_arena_peds`). The callback

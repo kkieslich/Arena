@@ -423,6 +423,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             realizer=realizer,
             acoustics=self._acoustics_simulator,
             robots_visible=self.conf.Human.ROBOTS_VISIBLE.value,
+            skeleton=self.conf.Human.SKELETON.value,
         )
         self._simulator.set_semantics_callback(self._on_semantics_changed)
         self._human_simulator.set_incident_callback(self._compromise)

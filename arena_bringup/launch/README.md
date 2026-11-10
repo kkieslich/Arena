@@ -36,6 +36,7 @@ Old flat names (`tm_robots`, `mobile`, `env_n`, ...) still work with a warning, 
 | `viz` | bool string | `true` | `arena launch` only: run `arena viz --all` after envs are up. Forced `false` when `headless:=true` unless overridden. |
 | `human` | string | `dummy` for `dummy` sim, `arena` (arena_humansim) for `flatsim`/`gazebo`/`isaac`/`mujoco` | Human-simulator backend |
 | `human.robots.visible` | bool string | `true` | `false` = the `arena` human backend does not tell its pedestrians where the robots are, so they walk as if none were there. Possessed pedestrians stay visible to the crowd. Other backends ignore it. |
+| `human.skeleton` | bool string | `true` | `false` = `arena_peds` carries no joint states or body poses and `animation_states` is not published: no pedestrian skeleton for renderers, rviz (`hri_producer` falls back to its own gait) or a recording. The animation still runs, so poses, resting and tilted peds, motion and everything the simulator, the robots and the task layer see stay the same. For headless runs whose recordings keep no skeletons; it removes most of the env node's per-pedestrian cost in big crowds (no body math, a roster a tenth the size, no re-render of an unchanged engine frame). |
 | `complexity` | string | `1` | `1` map+position known; `2` map known AMCL; `3` SLAM |
 | `record.dir` | string | `` (empty) | Directory for data recording; empty disables |
 | `record.auto` | bool string | `true` | `false` = do not auto-start the recorder even when `record.dir` is set (the benchmark runner starts its own) |
