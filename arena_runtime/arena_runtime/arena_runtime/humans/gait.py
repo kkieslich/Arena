@@ -142,6 +142,27 @@ class GaitGenerator:
             self._last[agent_id] = (animation_state, speed, phase, given, dict(out))
         return out
 
+    def advance(
+        self,
+        agent_id: int,
+        animation_state: int,
+        speed: float,
+        dt: float,
+        *,
+        phase: float | None = None,
+        profile: PoseProfile | None = None,
+    ) -> None:
+        """Move the agent's phase the way `compute` with the same arguments does, without evaluating the angles."""
+        if profile is None:
+            profile = default_profile()
+        if animation_state == _WALKING:
+            step = math.copysign(2.0 * math.pi * profile.walk.cadence(abs(speed)) * dt, speed)
+        elif animation_state == _RUNNING:
+            step = math.copysign(2.0 * math.pi * profile.run.cadence(abs(speed)) * dt, speed)
+        else:
+            step = 2.0 * math.pi * 0.25 * dt
+        self._advance(agent_id, step, phase)
+
     def _advance(self, agent_id: int, step: float, phase: float | None) -> float:
         if phase is None:
             phi = self._get_phase(agent_id) + step

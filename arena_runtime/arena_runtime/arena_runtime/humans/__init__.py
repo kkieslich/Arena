@@ -348,13 +348,14 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 moving=ped.animation_state in (Pedestrian.WALKING, Pedestrian.RUNNING),
             )
             phase = float(ped.gait_phase) if ped.gait_phase != 0.0 else None
-            angles = self._gait.compute(ped.id, ped.animation_state, speed, dt, gesture=gesture, phase=phase, profile=self._pose_profile_for(ped.agent_type))
+            # without the skeleton the angles only serve to place a resting or tilted ped (a tilt comes with angles)
+            needs_angles = self._skeleton or support is not None or ped.id in self._rests
+            angles = self._gait.compute(ped.id, ped.animation_state, speed, dt, gesture=gesture, phase=phase, profile=self._pose_profile_for(ped.agent_type), angles=needs_angles)
             generated.add(ped.id)
             ped.gait_phase = self._gait.phase(ped.id)
             if (tilt := self._gait.root_tilt(ped.id)) is not None:
                 tilts[ped.id] = tilt
-            # without the skeleton the angles only serve to place a resting or tilted ped
-            if self._skeleton or support is not None or ped.id in self._rests or tilt is not None:
+            if needs_angles or tilt is not None:
                 state = self._gait.joint_state(angles, stamp=stamp)
                 if state is not None:
                     hands = self._hands(ped.id, now_sec)
@@ -399,7 +400,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             )
         else:
             for ped in out.pedestrians:
-                ped.joint_state = JointState()
+                if ped.joint_state.name:
+                    ped.joint_state = JointState()
                 if ped.body.joints:
                     ped.body = BodyPose()
 
