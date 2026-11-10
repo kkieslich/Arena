@@ -69,14 +69,13 @@ def _cmd_cliff(args: argparse.Namespace) -> int:
     sites = _forecaster(doc, args)
     runs = Runs.load(args.benchmark / "flow_cells.parquet", sites.grid, planner=args.planner)
     tracks = B.Tracks.load(args.benchmark, args.planner)
-    params = CliffParams.load(yaml.safe_load(args.params.read_text()) or {}) if args.params else CliffParams()
+    given_params = CliffParams.load(yaml.safe_load(args.params.read_text()) or {}) if args.params else None
     priors = args.prior or list(PRIORS)
     counts = tuple(args.counts or B.TRACK_COUNTS)
+    shared: dict[tuple[Any, ...], Any] = {}
 
-    def make(prior: str, decay: float) -> B.OnlineCliff:
-        import attrs
-
-        return B.OnlineCliff(sites.grid, tracks, runs, attrs.evolve(params, decay=decay), prior)
+    def make(prior: str, params: CliffParams) -> B.OnlineCliff:
+        return B.OnlineCliff(sites.grid, tracks, runs, params, prior, built=shared)
 
     given: dict[str, float] = {}
     for item in args.decay or []:
@@ -85,20 +84,25 @@ def _cmd_cliff(args: argparse.Namespace) -> int:
             if prior not in PRIORS:
                 raise SystemExit(f"--decay {item}: the prior is one of {', '.join(PRIORS)}")
             given[prior] = float(value)
-    decays: dict[str, float] = {}
-    fits: dict[str, Any] = {}
+    chosen: dict[str, CliffParams] = {}
+    tuning: dict[str, Any] = {}
+    validation: list[str] = []
     for prior in priors:
-        if prior in given:
-            decays[prior] = given[prior]
+        if given_params is not None or prior in given:
+            import attrs
+
+            base = given_params or CliffParams()
+            chosen[prior] = attrs.evolve(base, decay=given[prior]) if prior in given else base
             continue
-        train = [(w, SP.seeds_of(doc, "train")) for w in _edits(doc, "train")]
-        if args.fit_worlds:
-            train = train[: args.fit_worlds]
-        best, scores = B.fit_decay(train, tracks, runs, lambda lam, prior=prior: make(prior, lam), log=_log)
-        decays[prior], fits[prior] = best, scores
-        _log(f"cliff ({prior}): decay {best:g}, fitted on {len(train)} training edits")
-    methods = {f"cliff ({p})": make(p, decays[p]) for p in priors}
-    report: dict[str, Any] = {"format": FORMAT, "baseline": "cliff", "benchmark": str(args.benchmark), "params": params.dump(), "decay": decays, "decay_fit": fits, "counts": list(counts), "orders": args.orders, "partitions": {}}
+        _, validation = B.validation_split(doc)
+        worlds = [(w, SP.seeds_of(doc, "train", w)) for w in validation]
+        _log(f"cliff ({prior}): tuning on {len(validation)} validation worlds of the train partition: {', '.join(validation)}")
+        chosen[prior], table = B.tune_cliff(worlds, tracks, runs, lambda params, prior=prior: make(prior, params), CliffParams(), log=_log)
+        tuning[prior] = {"params": chosen[prior].dump(), "table": table}
+        _log(f"cliff ({prior}): chose decay {chosen[prior].decay:g}, radius {chosen[prior].radius_m:g} m, bandwidth {chosen[prior].bandwidth}")
+    decays = {p: chosen[p].decay for p in priors}
+    methods = {f"cliff ({p})": make(p, chosen[p]) for p in priors}
+    report: dict[str, Any] = {"format": FORMAT, "baseline": "cliff", "benchmark": str(args.benchmark), "params": {p: chosen[p].dump() for p in priors}, "decay": decays, "validation": validation, "tuning": tuning, "counts": list(counts), "orders": args.orders, "partitions": {}}
     for partition in args.partition or ["held_out_edits"]:
         seeds = SP.seeds_of(doc, partition)
         rows = []
@@ -188,26 +192,43 @@ def _cmd_geometry(args: argparse.Namespace) -> int:
     doc = SP.load(args.split)
     sites = _forecaster(doc, args)
     scenario_of = {b: src.get("scenario") for b, src in (doc.get("sources") or {}).items()}
-    maps: dict[str, Any] = {}
-    info: dict[str, Any] = {}
+    cache: dict[str, B.Walks] = {}
+
+    def walks_of(world: str) -> B.Walks:
+        if world not in cache:
+            base = SP.base_of(world)
+            cache[world] = B.geometry_walks(sites.site(world, scenario_of.get(base)), sites.grid(base), sites.settings, sites.duration)
+            what = cache[world].info
+            _log(f"{world}: {what['walks']} walks between {len(what['entrances'])} entrances ({what['kind']})" + (f", {len(what['unreachable'])} pairs unreachable" if what["unreachable"] else ""))
+        return cache[world]
+
+    report: dict[str, Any] = {"format": FORMAT, "baseline": "geometry", "maps": str(args.out)}
+    spreads = {"sigma": B.PRIOR_SIGMA_M, "heading": B.PRIOR_HEADING_RAD}
+    runs = Runs.load(args.cells, sites.grid, planner=args.planner) if args.cells is not None else None
+    if runs is not None:
+        _, validation = B.validation_split(doc)
+        spreads, table = B.tune_geometry(walks_of, runs, validation, SP.seeds_of(doc, "train"))
+        report["tuning"] = {"validation": validation, "chosen": spreads, "table": table}
+        _log(f"geometry: tuned on {len(validation)} validation worlds of the train partition: sigma {spreads['sigma']:g} m, heading {spreads['heading']:g} rad")
+    else:
+        _log(f"geometry: no --cells, so the default spreads (sigma {spreads['sigma']:g} m, heading {spreads['heading']:g} rad), not tuned")
+    report["spreads"] = spreads
     parts = args.partition or [p for p in SP.PARTITIONS if p != "train"]
+    maps: dict[str, Any] = {}
     for world in _with_bases(doc, parts):
         base = SP.base_of(world)
-        site = sites.site(world, scenario_of.get(base))
-        m, what = B.geometry_prior(site, sites.grid(base), sites.settings, sites.duration)
-        maps[world], info[world] = m, what
-        _log(f"{world}: {what['walks']} walks between {len(what['entrances'])} entrances ({what['kind']})" + (f", {len(what['unreachable'])} pairs unreachable" if what["unreachable"] else ""))
+        maps[world] = B.geometry_map(walks_of(world), **spreads)
         if args.plots is not None:
             from .plot import plot_world
             from .scene import scene_of
 
-            scene = scene_of(site, sites.settings, sites.duration, grid=sites.grid(base), people=[])
-            plot_world(args.plots / f"{world}.png", sites.grid(base), None, m, None, scene, title=f"{world}: geometry-only prior ({what['kind']})")
+            scene = scene_of(sites.site(world, scenario_of.get(base)), sites.settings, sites.duration, grid=sites.grid(base), people=[])
+            plot_world(args.plots / f"{world}.png", sites.grid(base), None, maps[world], None, scene, title=f"{world}: geometry-only prior ({walks_of(world).info['kind']})")
     B.write_maps(args.out, maps, sites.grid)
     _log(f"wrote {args.out}")
-    report: dict[str, Any] = {"format": FORMAT, "baseline": "geometry", "maps": str(args.out), "worlds": info}
-    if args.cells is not None:
-        report["partitions"] = _score_maps(doc, Runs.load(args.cells, sites.grid, planner=args.planner), maps, parts, "geometry_prior")
+    report["worlds"] = {w: walks_of(w).info for w in maps}
+    if runs is not None:
+        report["partitions"] = _score_maps(doc, runs, maps, parts, "geometry_prior")
     _write(args.report, report)
     return 0
 
@@ -358,9 +379,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     common(q)
     q.add_argument("--benchmark", type=Path, required=True, help="the split's processed benchmark run dir (flow_cells.parquet, combined_metrics.parquet, the track store)")
     q.add_argument("--prior", action="append", choices=PRIORS, default=None, help="start from an empty map or the pre-edit map; repeatable (default both)")
-    q.add_argument("--decay", action="append", default=None, metavar="[PRIOR=]LAMBDA", help="the decay rate lambda, for every prior or one (e.g. empty=0.99); repeatable (default: fitted on the train partition's curve)")
-    q.add_argument("--fit-worlds", type=int, default=None, help="fit lambda on the first N training edits only")
-    q.add_argument("--params", type=Path, default=None, help="YAML of CliffParams fields to override")
+    q.add_argument("--decay", action="append", default=None, metavar="[PRIOR=]LAMBDA", help="the decay rate lambda, for every prior or one (e.g. empty=0.99); repeatable. A prior without --decay or --params is tuned on the validation split of the train partition")
+    q.add_argument("--params", type=Path, default=None, help="YAML of CliffParams fields, for every prior (no tuning)")
     q.add_argument("--orders", type=int, default=B.ORDERS, help=f"random track orders per fold (default {B.ORDERS})")
     q.add_argument("--counts", type=int, nargs="+", default=None, help=f"track counts to score at (default {' '.join(map(str, B.TRACK_COUNTS))})")
     q.add_argument("--out", type=Path, default=None, help="YAML of every curve")
@@ -376,8 +396,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     q = verbs.add_parser("geometry", help="geometry-only prior: shortest paths between the entrances", description="flow along the shortest paths between every pair of entrances of the edited floor, no demand; writes a map file")
     common(q)
     q.add_argument("--out", type=Path, required=True, help="map file to write (parquet; `forecast score --predicted` reads it)")
-    q.add_argument("--cells", type=Path, default=None, help="flow_cells.parquet to score the maps against, beside the floors")
-    q.add_argument("--report", type=Path, default=None, help="YAML of the entrances walked and the scores")
+    q.add_argument("--cells", type=Path, default=None, help="flow_cells.parquet: tune the spreads on the validation split of the train partition, then score the maps beside the floors (without it, the default spreads)")
+    q.add_argument("--report", type=Path, default=None, help="YAML of the entrances walked, the tuning and the scores")
     q.add_argument("--plots", type=Path, default=None, help="directory for a PNG per world")
     q.set_defaults(fn=_cmd_geometry)
 

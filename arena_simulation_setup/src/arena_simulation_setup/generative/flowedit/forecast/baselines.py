@@ -179,7 +179,8 @@ class OnlineCliff:
     runs: Runs
     params: Any = None
     prior: str = "empty"
-    _built: dict[tuple[str, tuple[int, ...]], Any] = attrs.Factory(dict)
+    #: pre-edit maps by (base, seeds, params but the decay), shareable between instances that differ only in the decay
+    built: dict[tuple[Any, ...], Any] = attrs.Factory(dict)
 
     def __attrs_post_init__(self) -> None:
         from .cliff import CliffParams
@@ -193,21 +194,27 @@ class OnlineCliff:
         """The base world's CLiFF-map from its runs at every seed outside the fold's truth, built once per seed set."""
         from .cliff import from_tracks
 
+        import attrs
+
         base = SP.base_of(world)
         seeds = tuple(outside(self.runs, base, fold.rest))
-        key = (base, seeds)
-        if key not in self._built:
+        # one iteration from empty: the decay rate changes nothing in a pre-edit map
+        key = (base, seeds, attrs.evolve(self.params, decay=1.0))
+        if key not in self.built:
             found = [t for s in seeds if (t := self.tracks_of(base, s)) is not None]
             if not found:
                 raise ValueError(f"{world}: no track store of {base} at seeds {list(seeds)} for a pre-edit map")
-            self._built[key] = from_tracks(self.grid_of(base), found, self.params)
-        return self._built[key]
+            self.built[key] = from_tracks(self.grid_of(base), found, self.params)
+        return self.built[key]
 
     def start(self, world: str, fold: Fold) -> Any:  # noqa: ANN401
         from .cliff import CliffMap
 
         if self.prior == "pre-edit":
-            return self.pre_edit(world, fold).copy()
+            # the cached map may come from an instance with another decay rate: this one's params update it
+            state = self.pre_edit(world, fold).copy()
+            state.params = self.params
+            return state
         return CliffMap.empty(self.grid_of(SP.base_of(world)), self.params)
 
     def feed(self, state: Any, track: pl.DataFrame) -> Any:  # noqa: ANN401
@@ -247,18 +254,99 @@ def curve(world: str, seeds: Sequence[int], tracks_of: Callable[[str, int], pl.D
     return {name: [mean(v) for v in vals] for name, vals in out.items()}
 
 
-def fit_decay(worlds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, make: Callable[[float], Online], grid: Sequence[float] = (0.5, 0.8, 0.9, 0.95, 0.99), counts: Sequence[int] = (1, 4, 16), orders: int = 4, log: Callable[[str], None] = print) -> tuple[float, dict[float, float]]:
-    """The decay rate with the lowest mean curve over `worlds` (training worlds and seeds) at a few track counts."""
-    scores: dict[float, float] = {}
-    for lam in grid:
-        method = make(lam)
-        vals = [v for w, s in worlds for v in curve(w, s, tracks_of, runs, {"m": method}, counts, orders)["m"] if v is not None]
-        if vals:
-            scores[lam] = sum(vals) / len(vals)
-            log(f"cliff: decay {lam:g}: mean JSD {scores[lam]:.4f} over {len(worlds)} training worlds")
-    if not scores:
-        raise ValueError("no training world with tracks to fit the decay rate on")
-    return min(scores, key=scores.get), scores
+# --- tuning ----------------------------------------------------------------------------------------------------------
+
+#: the share of the train partition's edit chains (of the function-carrying ones and of the others) that validate a
+#: baseline's hyperparameters, and the draw's seed
+VALIDATION_SHARE = 0.2
+VALIDATION_SEED = 0
+#: track counts and orders of the tracks-seen curve when it scores a setting on the validation worlds
+TUNE_COUNTS = (1, 4, 16)
+TUNE_ORDERS = 4
+#: the grids, searched one after the other at the values chosen so far (one coordinate pass)
+CLIFF_GRID: Mapping[str, Sequence[Any]] = {
+    "decay": (0.5, 0.8, 0.9, 0.95, 0.99),
+    "radius_m": (0.354, 0.5, 0.75),
+    "bandwidth": ((0.25, 0.15), (0.5, 0.3), (1.0, 0.6)),
+}
+GEOMETRY_GRID: Mapping[str, Sequence[float]] = {"sigma": (0.25, 0.5, 1.0), "heading": (0.15, 0.3, 0.6)}
+
+
+def chains(doc: Mapping[str, Any], partition: str = "train") -> list[list[str]]:
+    """The edit chains of `partition`: each edited world with its geometry-only controls (`control_worlds`), sorted; base worlds left out."""
+    worlds = [w for w in doc["partitions"].get(partition) or [] if not SP.is_base(w)]
+    links = {e: [c for c in cs if c in worlds] for e, cs in (doc.get("control_worlds") or {}).items() if e in worlds}
+    controls = {c for cs in links.values() for c in cs}
+    return sorted([w, *links.get(w, [])] for w in worlds if w not in controls)
+
+
+def validation_split(doc: Mapping[str, Any], share: float = VALIDATION_SHARE, seed: int = VALIDATION_SEED) -> tuple[list[str], list[str]]:
+    """(training worlds, validation worlds) of the train partition. Its edit chains fall in two groups, the
+    function-carrying ones (an edit with geometry-only controls) and the others; of each group a fixed `share` (rounded
+    up, but one chain of the group always stays in training) validates, drawn with `random.Random(seed)`. The base worlds
+    and the other chains train. Nothing of another partition is read."""
+    import math
+
+    found = chains(doc)
+    rng = random.Random(seed)
+    picked: list[list[str]] = []
+    for group in ([c for c in found if len(c) > 1], [c for c in found if len(c) == 1]):
+        k = min(len(group) - 1, math.ceil(share * len(group))) if group else 0
+        picked += [group[i] for i in sorted(rng.sample(range(len(group)), k))]
+    if not picked:
+        raise ValueError(f"the train partition has {len(found)} edit chain(s): too few to hold any out for validation")
+    validation = [w for c in picked for w in c]
+    training = [w for w in doc["partitions"].get("train") or [] if w not in set(validation)]
+    return training, validation
+
+
+def map_score(runs: Runs, worlds: Sequence[str], seeds: Sequence[int], predict: Callable[[str], np.ndarray | None]) -> float | None:
+    """A map baseline's tuning score: the mean pooled JSD of its maps against the worlds' pooled maps at `seeds`."""
+    vals = []
+    for w in worlds:
+        have = runs.seeds(w, seeds)
+        if have and (m := predict(w)) is not None:
+            vals.append(jsd(m, runs.pooled(w, have)))
+    return mean(vals)
+
+
+def tune_cliff(worlds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, make: Callable[[Any], Online], start: Any, grid: Mapping[str, Sequence[Any]] = CLIFF_GRID, log: Callable[[str], None] = print) -> tuple[Any, list[dict[str, Any]]]:
+    """CliffParams by one coordinate pass over `grid` from `start`: per field in order, the value with the lowest mean curve
+    over `worlds` (validation worlds and their seeds) at TUNE_COUNTS, the others at their values so far; ties keep the first."""
+    import attrs
+
+    params = start
+    table = []
+    for field, values in grid.items():
+        scores: dict[Any, float] = {}
+        for v in values:
+            trial = attrs.evolve(params, **{field: v})
+            vals = [x for w, s in worlds for x in curve(w, s, tracks_of, runs, {"m": make(trial)}, TUNE_COUNTS, TUNE_ORDERS)["m"] if x is not None]
+            if vals:
+                scores[v] = sum(vals) / len(vals)
+                table.append({"field": field, "value": list(v) if isinstance(v, tuple) else v, "score": scores[v]})
+                log(f"cliff tuning: {field} {v}: mean JSD {scores[v]:.4f} on {len(worlds)} validation worlds")
+        if not scores:
+            raise ValueError("no validation world with tracks to tune on")
+        params = attrs.evolve(params, **{field: min(scores, key=scores.get)})
+    return params, table
+
+
+def tune_geometry(walks_of: Callable[[str], Walks], runs: Runs, worlds: Sequence[str], seeds: Sequence[int], grid: Mapping[str, Sequence[float]] = GEOMETRY_GRID) -> tuple[dict[str, float], list[dict[str, Any]]]:
+    """The geometry-only prior's spreads with the lowest map_score on the validation `worlds` over the full `grid`; ties keep the first."""
+    import itertools
+
+    table = []
+    best: tuple[float, dict[str, float]] | None = None
+    for combo in itertools.product(*grid.values()):
+        values = dict(zip(grid, combo, strict=True))
+        score = map_score(runs, worlds, seeds, lambda w, values=values: geometry_map(walks_of(w), **values))
+        table.append({**values, "score": score})
+        if score is not None and (best is None or score < best[0]):
+            best = (score, values)
+    if best is None:
+        raise ValueError("no validation world with recorded runs to tune on")
+    return best[1], table
 
 
 # --- geometry-only simulation ----------------------------------------------------------------------------------------
@@ -312,13 +400,24 @@ def entrances(site: Site) -> tuple[list[tuple[str, tuple[float, float]]], str]:
     return [(d, mid(d)) for d in sorted(doors) if d not in locked], "every open door (fewer than two exterior doors)"
 
 
-def geometry_prior(site: Site, grid: FlowGrid, settings: Mapping[str, Any], duration: float, sigma: float = PRIOR_SIGMA_M, heading: float = PRIOR_HEADING_RAD) -> tuple[np.ndarray, dict[str, Any]]:
-    """The geometry-only prior of `site` on its base world's `grid`, and what it walked (entrances, pairs, unreachable)."""
-    import numpy as np
-    import scipy.ndimage
+@attrs.frozen
+class Walks:
+    """The geometry-only prior's walks on a grid before any spread: walking seconds per cell and path heading, and the
+    reachable room cells."""
 
-    from .maps import BINS, HEADINGS
-    from .model import _Paths, heading_table
+    grid: FlowGrid
+    flat: Any
+    heading: Any
+    seconds: Any
+    reach: Any
+    info: dict[str, Any]
+
+
+def geometry_walks(site: Site, grid: FlowGrid, settings: Mapping[str, Any], duration: float) -> Walks:
+    """The walks along the shortest paths between every ordered pair of entrances of `site`, on its base world's `grid`."""
+    import numpy as np
+
+    from .model import _Paths
     from .scene import scene_of
 
     scene = scene_of(site, settings, duration, grid=grid, people=[])
@@ -326,9 +425,7 @@ def geometry_prior(site: Site, grid: FlowGrid, settings: Mapping[str, Any], dura
     found, kind = entrances(site)
     nodes = [(name, paths.node(p)) for name, p in found]
     trees = paths.trees([n for _, n in nodes])
-    size = grid.ny * grid.nx * BINS
-    out = np.zeros(size)
-    table = heading_table(heading)
+    flats, heads, secs = [], [], []
     walked, unreachable = 0, []
     for a, na in nodes:
         dist, pred = trees[na]
@@ -339,19 +436,41 @@ def geometry_prior(site: Site, grid: FlowGrid, settings: Mapping[str, Any], dura
             if route is None:
                 unreachable.append(f"{a}->{b}")
                 continue
-            flat, heads, secs, _, _ = paths.deposit(route, PRIOR_SPEED)
-            out += np.bincount((flat[:, None] + np.arange(HEADINGS)).ravel(), weights=(secs[:, None] * table[heads]).ravel(), minlength=size)[:size]
+            flat, head, sec, _, _ = paths.deposit(route, PRIOR_SPEED)
+            flats.append(flat)
+            heads.append(head)
+            secs.append(sec)
             walked += 1
-    m = out.reshape(grid.ny, grid.nx, BINS)
-    if sigma >= 0.05:
-        s = sigma / grid.cell
-        m = scipy.ndimage.gaussian_filter(m, sigma=(s, s, 0), mode="constant", truncate=3.0)
     reach = np.zeros(grid.ny * grid.nx, bool)
     seen = np.unique(paths.cell[np.concatenate([np.flatnonzero(np.isfinite(trees[n][0])) for _, n in nodes])]) if nodes else np.zeros(0, np.int64)
     reach[seen[seen >= 0]] = True
-    m *= (reach.reshape(grid.ny, grid.nx) & grid.room_cells())[:, :, None]
+    cat = (lambda xs, dtype: np.concatenate(xs) if xs else np.zeros(0, dtype))
     info = {"entrances": [n for n, _ in found], "kind": kind, "walks": walked, "unreachable": unreachable}
-    return m, info
+    return Walks(grid, cat(flats, np.int64), cat(heads, np.int64), cat(secs, float), reach.reshape(grid.ny, grid.nx) & grid.room_cells(), info)
+
+
+def geometry_map(walks: Walks, sigma: float = PRIOR_SIGMA_M, heading: float = PRIOR_HEADING_RAD) -> np.ndarray:
+    """The prior's map: walking time spread by `heading` rad over the bins and blurred by `sigma` m, kept to the reachable rooms."""
+    import numpy as np
+    import scipy.ndimage
+
+    from .maps import BINS, HEADINGS
+    from .model import heading_table
+
+    g = walks.grid
+    size = g.ny * g.nx * BINS
+    out = np.bincount((walks.flat[:, None] + np.arange(HEADINGS)).ravel(), weights=(walks.seconds[:, None] * heading_table(heading)[walks.heading]).ravel(), minlength=size)[:size]
+    m = out.reshape(g.ny, g.nx, BINS)
+    if sigma >= 0.05:
+        s = sigma / g.cell
+        m = scipy.ndimage.gaussian_filter(m, sigma=(s, s, 0), mode="constant", truncate=3.0)
+    return m * walks.reach[:, :, None]
+
+
+def geometry_prior(site: Site, grid: FlowGrid, settings: Mapping[str, Any], duration: float, sigma: float = PRIOR_SIGMA_M, heading: float = PRIOR_HEADING_RAD) -> tuple[np.ndarray, dict[str, Any]]:
+    """The geometry-only prior of `site` on its base world's `grid`, and what it walked (entrances, pairs, unreachable)."""
+    walks = geometry_walks(site, grid, settings, duration)
+    return geometry_map(walks, sigma, heading), walks.info
 
 
 # --- map files -------------------------------------------------------------------------------------------------------
@@ -382,7 +501,14 @@ __all__ = [
     "controls",
     "curve",
     "entrances",
-    "fit_decay",
+    "chains",
+    "map_score",
+    "tune_cliff",
+    "tune_geometry",
+    "validation_split",
+    "Walks",
+    "geometry_map",
+    "geometry_walks",
     "folds",
     "geometry_prior",
     "loso",
