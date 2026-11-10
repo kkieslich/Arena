@@ -1,4 +1,5 @@
-"""Flow cells from several run dirs read as one (`--cells` and `--benchmark`, repeatable): one split recorded on two machines."""
+"""Flow cells from several run dirs read as one (`--cells` and `--benchmark`, repeatable): one split recorded on two machines,
+on one Arena and humansim commit."""
 
 from __future__ import annotations
 
@@ -49,15 +50,21 @@ def _cells(world: str, seed: int, scale: float = 1.0, cell: float = 0.5, heading
     )
 
 
-def _run_dir(root: Path, name: str, frames: list[pl.DataFrame], crowd: str | None = None) -> Path:
-    """A processed run dir: flow_cells.parquet and, with `crowd`, the manifest naming each stage's flowedit scenario file."""
+def _commits(arena: str = "a" * 40, humansim: str = "b" * 40, dirty: bool = False) -> dict:
+    """The `commits` of arena_evaluation's run manifest."""
+    return {"arena": {"path": "/opt/arena_ws/src/Arena", "commit": arena, "dirty": dirty}, "humansim": {"path": "/opt/arena_ws/src/Arena/humansim", "commit": humansim, "dirty": False, "pinned": humansim}, "arena_evaluation": {"path": "/opt/arena_ws/src/Arena/arena_evaluation", "commit": "c" * 40, "dirty": False, "pinned": "c" * 40}}
+
+
+def _run_dir(root: Path, name: str, frames: list[pl.DataFrame], crowd: str | None = None, commits: dict | None = None) -> Path:
+    """A processed run dir: flow_cells.parquet and, with `crowd` or `commits`, the manifest naming each stage's flowedit
+    scenario file and the commits the run ran."""
     run = root / name
     run.mkdir(parents=True)
     cells = pl.concat(frames, how="diagonal")
     cells.write_parquet(run / "flow_cells.parquet")
-    if crowd is not None:
-        stages = [{"name": s, "config": {"scenario": {"file": f"flowedit_demand_{crowd}_s{s.rpartition('__s')[2]}"}}} for s in cells["stage"].unique(maintain_order=True)]
-        (run / "manifest.yaml").write_text(yaml.safe_dump({"suite_name": "flowedit_peds_v2", "suite": {"stages": stages}}))
+    if crowd is not None or commits is not None:
+        stages = [{"name": s, "config": {"scenario": {"file": f"flowedit_demand_{crowd or CROWD}_s{s.rpartition('__s')[2]}"}}} for s in cells["stage"].unique(maintain_order=True)]
+        (run / "manifest.yaml").write_text(yaml.safe_dump({"suite_name": "flowedit_peds_v2", "suite": {"stages": stages}, **({} if commits is None else {"commits": commits})}))
     return run / "flow_cells.parquet"
 
 
@@ -155,6 +162,47 @@ def test_the_track_store_reads_several_run_dirs(tmp_path: Path) -> None:
     assert B.Tracks.load(tmp_path / "institute")("w__e", 6)["x"].to_list() == [6.0]
 
 
+def test_run_dirs_of_other_arena_or_humansim_commits_fail(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = _run_dir(tmp_path, "home", [_cells("hospital_1", 1)], commits=_commits())
+    same = _run_dir(tmp_path, "same", [_cells("hospital_1", 2)], commits=_commits())
+    assert read_cells([home, same]).height == 2 * _cells("hospital_1", 1).height
+    assert "warning" not in capsys.readouterr().err
+    humansim = _run_dir(tmp_path, "humansim", [_cells("hospital_1", 3)], commits=_commits(humansim="d" * 40))
+    with pytest.raises(ValueError, match=f"different humansim commits: .*home {'b' * 12}, .*humansim {'d' * 12}; read only runs of one Arena release together"):
+        read_cells([home, humansim])
+    arena = _run_dir(tmp_path, "arena", [_cells("hospital_1", 3)], commits=_commits(arena="e" * 40))
+    with pytest.raises(ValueError, match="different arena commits"):
+        read_cells([home, arena])
+    # one file is read as before, its commits not looked at
+    assert read_cells(humansim).height == _cells("hospital_1", 3).height
+
+
+def test_run_dirs_without_commits_are_read_with_a_warning(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = _run_dir(tmp_path, "home", [_cells("hospital_1", 1)], commits=_commits())
+    older = _run_dir(tmp_path, "older", [_cells("hospital_1", 2)], CROWD)
+    bare = _run_dir(tmp_path, "bare", [_cells("hospital_1", 3)])
+    unread = _run_dir(tmp_path, "unread", [_cells("hospital_1", 4)], commits={**_commits(), "humansim": {"path": None, "commit": None, "dirty": None, "reason": "module arena_humansim not installed"}})
+    dirty = _run_dir(tmp_path, "dirty", [_cells("hospital_1", 5)], commits=_commits(dirty=True))
+    assert read_cells([home, older, bare, unread, dirty]).height == 5 * _cells("hospital_1", 1).height
+    err = capsys.readouterr().err
+    assert f"warning: {older.parent}: its manifest.yaml records no commits (written before arena_evaluation recorded them), so its Arena and humansim commits are not compared" in err
+    assert f"warning: {bare.parent}: no manifest.yaml" in err
+    assert f"warning: {unread.parent}: no humansim commit recorded (module arena_humansim not installed)" in err
+    assert f"warning: {dirty.parent}: its arena checkout (/opt/arena_ws/src/Arena) was dirty at {'a' * 12}" in err
+    assert f"{home.parent}:" not in err
+
+
+def test_the_track_store_refuses_run_dirs_of_other_commits(tmp_path: Path) -> None:
+    for name, humansim in (("home", "b" * 40), ("institute", "d" * 40)):
+        run = tmp_path / name
+        run.mkdir()
+        pl.DataFrame({"episode": [0], "stage": ["w__e__s1"], "planner": ["peds_only"], "robot": ["env_0_jackal"]}).write_parquet(run / "combined_metrics.parquet")
+        (run / "manifest.yaml").write_text(yaml.safe_dump({"commits": _commits(humansim=humansim)}))
+    with pytest.raises(ValueError, match="different humansim commits"):
+        B.Tracks.load([tmp_path / "home", tmp_path / "institute"])
+    assert B.Tracks.load(tmp_path / "institute").where
+
+
 def _actions(parser: argparse.ArgumentParser, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], argparse.Action]]:
     out = []
     for action in parser._actions:
@@ -192,8 +240,8 @@ def test_fit_and_score_on_two_files_of_one_split_are_those_on_the_combined_file(
     seeds = {s: rows.with_columns((pl.col("ped_seconds") * pl.when(pl.col("x") > median).then(1 + 0.2 * s).otherwise(1.0)).alias("ped_seconds"), pl.lit("peds_only").alias("planner"), pl.lit(f"hospital_1__s{s}").alias("stage"), pl.lit("hospital_1").alias("flow_base"), pl.lit(s).alias("flow_seed")) for s in (1, 2, 3)}
     split = {"format": "flowedit-split/1", "sources": {"hospital_1": {"scenario": "queue", "seed": 0, "per_type": 1, "steps": 1}}, "duration": 60, "seeds": [1, 2, 3], "partitions": {"train": ["hospital_1"], "held_out_edits": [], "held_out_worlds": []}}
     (tmp_path / "split.yaml").write_text(yaml.safe_dump(split))
-    home = _run_dir(tmp_path, "home", [seeds[1], seeds[2]], CROWD)
-    institute = _run_dir(tmp_path, "institute", [seeds[3], seeds[2]], CROWD)
+    home = _run_dir(tmp_path, "home", [seeds[1], seeds[2]], CROWD, _commits())
+    institute = _run_dir(tmp_path, "institute", [seeds[3], seeds[2]], CROWD, _commits())
     combined = _run_dir(tmp_path, "combined", [seeds[1], seeds[2], seeds[3]])
     out = {}
     for name, cells in (("two", [home, institute]), ("one", [combined])):
@@ -209,6 +257,10 @@ def test_fit_and_score_on_two_files_of_one_split_are_those_on_the_combined_file(
     assert score_two["partitions"] == score_one["partitions"] and score_two["partitions"]["train"]["rows"]
     # the third seed's run recorded twice, differently: the fit stops instead of pooling both
     capsys.readouterr()
-    clash = _run_dir(tmp_path, "clash", [seeds[3].with_columns(pl.col("ped_seconds") * 2)], CROWD)
+    clash = _run_dir(tmp_path, "clash", [seeds[3].with_columns(pl.col("ped_seconds") * 2)], CROWD, _commits())
     assert main(["forecast", "fit", str(tmp_path / "split.yaml"), "--cells", str(institute), "--cells", str(clash), "--max-evals", "8"]) == 1
     assert "stage hospital_1__s3 (peds_only)" in capsys.readouterr().err
+    # the other machine on another humansim commit
+    other = _run_dir(tmp_path, "other", [seeds[3]], CROWD, _commits(humansim="d" * 40))
+    assert main(["forecast", "fit", str(tmp_path / "split.yaml"), "--cells", str(home), "--cells", str(other), "--max-evals", "8"]) == 1
+    assert "different humansim commits" in capsys.readouterr().err

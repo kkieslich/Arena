@@ -361,7 +361,7 @@ flowedit forecast curve $S --benchmark home --benchmark institute --net forecast
 
 - The rows are concatenated. A stage (contestant and `<world>__s<seed>`) that two files hold with the same rows is read once.
 - Reading stops when two files hold one stage with different rows (two runs of it), lay different flow grids (cell size, heading bins), or hold different crowds: the manifest of a file's run dir, where it lies beside the file, names each stage's scenario file, which carries the digests of the crowd settings and the robot task. Read a test crowd's or H2's runs on their own.
-- A run dir does not record its humansim commit, so the reader cannot compare it: record every run dir with one Arena release.
+- Reading also stops when the run dirs' manifests name different Arena or humansim commits (`commits`, which arena_evaluation's runner records). A run dir without them (recorded before) or with a commit the runner could not read is not compared, with a warning; a dirty checkout is compared by its commit, with a warning that the commit does not pin the code.
 - With `--benchmark`, a stage's tracks come from the first run dir that holds it.
 - Output files list every input file (`cells`, `benchmark`); with one, they keep its path as before.
 
