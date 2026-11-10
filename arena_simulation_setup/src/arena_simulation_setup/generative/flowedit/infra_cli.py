@@ -82,7 +82,7 @@ def _cmd_reference(args: argparse.Namespace) -> int:
     scenario = _scenario(args, config)
     IN.scenario_dir(site, scenario, args.scenarios_from)
     seeds = args.seeds or list(IN.SELECTION_SEEDS)
-    doc = IN.reference_suite(site.key, seeds, scenario=scenario, duration=args.duration)
+    doc = IN.reference_suite(site.key, seeds, scenario=scenario, duration=args.duration, side=config.crowd_side if config is not None else None)
     name = args.out.stem if args.out else IN.REFERENCE_SUITE
     if args.dry_run:
         from arena_simulation_setup.tree.World.write import to_yaml
@@ -108,6 +108,7 @@ class _Space:
         self.site = open_site(_site_root(args.site))
         self.config = _config(args, self.site.key)
         self.scenario_name = _scenario(args, self.config)
+        self.side = self.config.crowd_side if self.config is not None else None
         self.scenario = IN.scenario_dir(self.site, self.scenario_name, args.scenarios_from)
         placements = dict(self.config.placements) if self.config is not None else {}
         exclude = self.config.exclude if self.config is not None else SE.EXCLUDED_ZONES
@@ -171,7 +172,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
     unique = list({s.layout_id: s for _, s in runs}.values())
     worlds = IN.save_layouts(space.site, [s.layout for s in unique], space.scenario, visitor_rate_per_h=args.visitor_rate)
     fleet = IN.fleet_config(rate, pickup_share=args.pickup_share, charge_below=args.charge_below, charge_until=args.charge_until)
-    doc = IN.layout_suite([worlds[s.layout_id].name for s in unique], fleet, seeds, scenario=space.scenario_name, duration=args.duration)
+    doc = IN.layout_suite([worlds[s.layout_id].name for s in unique], fleet, seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
     contest = IN.contest_literal(IN.contest(args.capacity_wh))
     out = _out(args, name)
     header = [
@@ -222,7 +223,7 @@ def _cmd_premise(args: argparse.Namespace) -> int:
         _log(f"{role:10s} {s.layout_id}: remaining corridor {', '.join(f'{sp.element.name} {sp.corridor_m:.2f} m' for sp in s.layout.spots if sp.element.name in SE.SEARCHED)}")
     if narrow.layout_id == wide.layout_id:
         raise ValueError("the narrowest and the widest layout are the same: the site has one section width")
-    doc = IN.layout_suite([narrow.layout_id, wide.layout_id], IN.fleet_config(rate), seeds, duration=args.duration)
+    doc = IN.layout_suite([narrow.layout_id, wide.layout_id], IN.fleet_config(rate), seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
     _log(f"premise suite: {_summary(doc)}; with the site as is at seeds {', '.join(map(str, seeds))} from {IN.REFERENCE_SUITE}: {IN.episodes(doc) + len(seeds)} episodes (§10: 15)")
     if args.dry_run:
         _log("(dry run - no world or suite written)")
@@ -264,7 +265,7 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
     runs = [("robot_only", robot), *(("joint", s) for s in joint), *(("random", s) for s in random)]
     _print_runs(runs, args.speed, ranking)
     unique = {s.layout_id for _, s in runs}
-    doc = IN.layout_suite(sorted(unique), IN.fleet_config(rate), seeds, duration=args.duration)
+    doc = IN.layout_suite(sorted(unique), IN.fleet_config(rate), seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
     _log(f"selection suite: {len(unique)} layouts, {_summary(doc)}; with the site as is at seeds {', '.join(map(str, seeds))} from {IN.REFERENCE_SUITE}: {IN.episodes(doc) + len(seeds)} episodes")
     if args.dry_run:
         _log("(dry run - no world or suite written)")
@@ -281,6 +282,44 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
         "joint_top": IN.picks_record({"joint": joint}, ranking),
     }
     return _write_layout_suite(args, space, IN.LAYOUT_SUITE, runs, seeds, rate, header, extra)
+
+
+def _cmd_crowd(args: argparse.Namespace) -> int:
+    import shapely
+
+    site = open_site(_site_root(args.site))
+    config = _config(args, site.key)
+    if config is None:
+        raise ValueError(f"{site.key}: the crowd comes from the site config's entrances; there is none")
+    level = next(iter(site.world.levels.values()))
+    floor = shapely.union_all([shapely.Polygon([(p.x, p.y) for p in z.polygon]) for z in level.zones if len(z.polygon) >= 3])
+    robots = []
+    template = IN.scenario_dir(site, config.scenario, args.scenarios_from) / "scenario.yaml"
+    if template.is_file():
+        import yaml
+
+        robots = (yaml.safe_load(template.read_text()) or {}).get("robots") or []
+    scenario, visitors_doc, types = IN.entrance_crowd(config, floor, rate=args.rate, visitor_rate_per_h=args.visitor_rate, robots=robots)
+    shares = IN.entrance_shares(config)
+    lines = [f"{e.name} ({e.type}{', recipients' if e.recipients else ''}): {shares[e.name] * args.rate:.3f} ped/s" for e in config.facts.entrances]
+    header = "\n".join([
+        f"INFRA study crowd from the entrances of {config.path.name if config.path else site.key} (study design §2, §9), written by `flowedit infra crowd`.",
+        f"Every entrance is a PEDS source and sink. Walkers come in at {args.rate:g} ped/s in all, split by entrance type",
+        "(flow_split, evenly within a group; groups without an entrance spread over the others), 70/15/15 adult /",
+        "wheelchair / long cane per entrance, and leave by another entrance in proportion to its share.",
+        f"Parcel recipients ({args.visitor_rate:g}/h in all, locker_visitors.yaml) come in at a recipient entrance and leave by it.",
+        "Robots as in the site config's scenario. Entrances and their inflow:",
+        *[f"  {line}" for line in lines],
+    ])
+    _log(header)
+    if args.dry_run:
+        _log("(dry run - nothing written)")
+        return 0
+    if args.out is None:
+        raise ValueError("--out: the directory to write <name>/ into, e.g. the site's scenarios/")
+    folder = IN.write_crowd(args.out / args.name, scenario, visitors_doc, types, header)
+    _log(f"wrote {folder}")
+    return 0
 
 
 def _cmd_evaluation(args: argparse.Namespace) -> int:
@@ -303,8 +342,9 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     duration = float(manifest["episode_s"])
     fleet = dict(manifest["fleet"])
     names = list(dict.fromkeys(Path(worlds[layout_id]).name for layout_id in chosen.values()))
-    doc = IN.layout_suite(names, fleet, seeds, scenario=scenario, duration=duration)
-    site_doc = IN.reference_suite(manifest["site"], seeds, scenario=scenario, duration=duration)
+    side = (manifest.get("site_config") or {}).get("crowd_side")
+    doc = IN.layout_suite(names, fleet, seeds, scenario=scenario, duration=duration, side=side)
+    site_doc = IN.reference_suite(manifest["site"], seeds, scenario=scenario, duration=duration, side=side)
     total = IN.episodes(doc) + IN.episodes(site_doc)
     _log(f"evaluation: joint pick {chosen['joint']}, robot-only pick {chosen['robot_only']}; {_summary(doc)}, the site as is {_summary(site_doc)}: {total} episodes, {IN.sim_hours(doc) + IN.sim_hours(site_doc):g} sim-hours")
     if chosen["joint"] == chosen["robot_only"]:
@@ -377,6 +417,11 @@ def add_parser(verbs: Any) -> None:
     q.add_argument("--travel-slack", type=float, default=SE.TRAVEL_SLACK, help=f"the travel pre-filter: robot travel per job at most this times the robot-only pick's (default {SE.TRAVEL_SLACK:g})")
     q.add_argument("--seed", type=int, default=0, help="seed of the joint sample and the random draw (default 0)")
     q.set_defaults(fn=_cmd_layouts)
+    q = infra.add_parser("crowd", parents=[common], help="the study crowd from the site config's entrances", description="write a scenario directory <out>/<name>: every entrance of the site config a PEDS source and sink, the inflow split by entrance type (flow_split), through-walkers between entrances and locker visitors from the recipient entrances")
+    q.add_argument("--name", default="study_entrances", help="scenario name (default %(default)s)")
+    q.add_argument("--rate", type=float, default=IN.CROWD_RATE, help="the inflow in all [ped/s] (default %(default)s, study_mix_v2's)")
+    q.add_argument("--visitor-rate", type=float, default=12.0, help="locker visitors per hour in all (default %(default)s)")
+    q.set_defaults(fn=_cmd_crowd)
     q = infra.add_parser("evaluation", parents=[common], help="the evaluation: the two picks and the site as is on fresh seeds", description=f"write suites {IN.EVALUATION_SUITE} (the joint pick and the robot-only pick, each with the fleet and without robots) and {IN.EVALUATION_SITE_SUITE} (the site as is) on seeds {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]}, from the pick `evaluation infra pick` wrote and the selection's manifest")
     q.add_argument("--pick", type=Path, required=True, help="the pick file `evaluation infra pick` writes (joint_pick, robot_only)")
     q.add_argument("--selection", type=Path, default=None, help=f"the selection's manifest (default <imported assets root>/suites/{IN.LAYOUT_SUITE}.layouts.json)")

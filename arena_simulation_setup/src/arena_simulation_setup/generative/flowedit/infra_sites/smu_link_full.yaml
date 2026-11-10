@@ -10,10 +10,12 @@
 #   outlets:        [[x, y], ...], power outlets; none known yet, so the outlet rule stays unknown
 #   exclude:        zones no element goes to besides those NAV@r cuts off at 0.325 m (left out on their own)
 #   flow_split:     the share of the crowd's inflow per group of entrance types, split evenly within a group, at the
-#                   crowd's total rate; for the crowd built from the entrances
+#                   crowd's total rate; `flowedit infra crowd` builds the crowd from it
+#   crowd_side:     the side the crowd keeps to (right, left, none), HumanSim's global_planner.lane_side in every suite
 site: smu_link_full
-# the crowd every stage runs (scenarios/<name> of the site); layout copies also get its locker_visitors.yaml
-scenario: study_mix_v2
+# the crowd every stage runs (scenarios/<name> of the site); layout copies also get its locker_visitors.yaml;
+# `flowedit infra crowd --name study_entrances --out <site>/scenarios` builds it from the entrances below
+scenario: study_entrances
 # the 4 % ramp
 exclude: [ramp]
 # placeholder positions, read off the site zone map against the twin's floor (about +-10 m along the walkway)
@@ -44,6 +46,9 @@ entrances:
 # placeholder: the south end beside bras_basah_2
 courier_access: [152.44, 19.61]
 outlets: []
+# the side walkers keep to: left, as on Singapore's footpaths (LTA Active Mobility code of conduct: keep left on
+# footpaths and shared paths); HumanSim's default is right (Helbing et al. 2001; Moussaid et al. 2009)
+crowd_side: left
 # placeholder until the entrances are ranked
 flow_split:
   - {types: [mrt], share: 0.5}
