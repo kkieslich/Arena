@@ -247,7 +247,8 @@ def curve(
     cache: dict[tuple[str, int], dict[str, np.ndarray]] | None = None,
 ) -> dict[str, list[float | None]]:
     """Per prior (map, strength): the mean JSD against the pooled map of the other seeds after seeing k tracks of one seed's
-    run, for each k of `counts`, averaged over which seed is seen and `orders` random track orders."""
+    run, for each k of `counts`, averaged over which seed is seen and `orders` random track orders. A k beyond a run's
+    tracks is not scored for that run (None when no run has that many)."""
     import numpy as np
 
     mask = grid.room_cells()
@@ -273,7 +274,9 @@ def curve(
             cum = np.zeros(grid.shape)
             taken = 0
             for ci, k in enumerate(counts):
-                while taken < min(k, len(order)):
+                if k > len(order):
+                    break  # the run has fewer tracks: no score at k, rather than repeating the last one
+                while taken < k:
                     cum += per[order[taken]]
                     taken += 1
                 for name, (prior, strength) in priors.items():

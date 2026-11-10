@@ -424,7 +424,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
     device(q)
     q.add_argument("--net", action="append", required=True, metavar="[NAME=]NET", help="a network from `train`; repeatable")
     q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition; repeatable (default held_out_edits)")
-    q.add_argument("--strength", type=float, default=None, help="the prior's weight in pedestrian-seconds (default: fitted per prior on the train partition)")
+    q.add_argument("--strength", type=float, default=None, help="the prior's weight in pedestrian-seconds, the same for every prior (default: fitted per prior on the train partition, where a learned forecaster is in-sample, so its fitted weight leans high)")
     q.add_argument("--out", type=Path, default=None, help="YAML file of the curves")
     q.add_argument("--png", type=Path, default=None, help="PNG of the curves")
     q.set_defaults(fn=_cmd_curve)
