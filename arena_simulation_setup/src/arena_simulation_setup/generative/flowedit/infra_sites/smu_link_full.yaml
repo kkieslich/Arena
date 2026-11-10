@@ -1,0 +1,26 @@
+# INFRA site config of the twin smu_link_full: where each element may go, by its function (study design §3, §4), and
+# the study crowd. `flowedit infra` reads it by the site's name; `--site-config` takes another file.
+#
+# The zones are a placeholder until Duc Anh's site zone map (Kolja, 10 Nov 2026). Replace them here, no code changes:
+# - loading point: pinned at route end A, the south end of lower_concourse, where deliveries load (§8);
+# - parcel locker: where people pick up parcels, the shops and seats of upper_concourse_north;
+# - charger pair and bay pair: anywhere valid.
+#
+# Per element, any of:
+#   zones: world zone names or fnmatch patterns (default: every zone the placement generator allows, less `exclude`)
+#   areas: world-frame polygons [[x, y], ...]; every object of a spot must stand in one (for a zone map that is not
+#          in world.yaml)
+#   pin:   [x, y], snapped to the nearest valid spot's goto point within 0.5 m
+site: smu_link_full
+# the crowd every stage runs (scenarios/<name> of the site); layout copies also get its locker_visitors.yaml
+scenario: study_mix_v2
+# no element anywhere here: the ramp, and the zones NAV@r at 0.325 m cuts off from the main floor (side corridor,
+# stair landing, side room, south arm), until Duc Anh confirms a step-free route to them
+exclude: [ramp, stair_landing, "side_corridor_*", side_room, south_arm]
+elements:
+  loading_point:
+    pin: [152.44, 19.61]
+  locker:
+    zones: [upper_concourse_north]
+  charger_pair: {}
+  bay_pair: {}

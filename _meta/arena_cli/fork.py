@@ -536,6 +536,25 @@ def split_lanes(argv: list[str]) -> tuple[int | None, list[str]]:
     return None, argv
 
 
+#: Asset families whose sources (`<F>_BUCKETS`) a lane takes from the caller. `docker compose exec` starts a lane with the
+#: fork's own environment, whose `source` sets `<F>_BUCKETS` from `ARENA_<F>_BUCKETS` (.env), so without this
+#: `WORLD_BUCKETS=default arena evaluation benchmark --lanes 2` resolves worlds, assets and suites from the buckets .env
+#: names in every lane, and the caller's choice in none.
+LANE_BUCKETS = ("WORLD", "ASSET", "BENCHMARK")
+
+
+def lane_env_args(environ: dict[str, str] | None = None) -> list[str]:
+    """`-e` arguments that give a lane the caller's asset sources: per family the caller's `<F>_BUCKETS` (what it
+    resolves with), else its `ARENA_<F>_BUCKETS`, as both names, so the lane's `source` keeps them."""
+    environ = dict(os.environ) if environ is None else environ
+    args: list[str] = []
+    for family in LANE_BUCKETS:
+        value = environ.get(f"{family}_BUCKETS") or environ.get(f"ARENA_{family}_BUCKETS")
+        if value:
+            args += ["-e", f"ARENA_{family}_BUCKETS={value}", "-e", f"{family}_BUCKETS={value}"]
+    return args
+
+
 def run_shared(n: int, args: list[str]) -> None:
     """Run one `arena evaluation benchmark` across N lanes, one pool fork each, on the dev tree as it is now, as one run dir."""
     _require_dev()
@@ -560,7 +579,7 @@ def run_shared(n: int, args: list[str]) -> None:
 
     print(f"lanes: run {run_id} on {' '.join(pool)}, token {token}", flush=True)
     for fork in pool:
-        compose = ["bash", "-c", 'arena_docker_compose "$@"', "arena_docker_compose", "exec", "-T", "arena", "/entrypoint.sh", "bash", "--norc", "-c", _SOURCED, "bash", cmd]
+        compose = ["bash", "-c", 'arena_docker_compose "$@"', "arena_docker_compose", "exec", "-T", *lane_env_args(), "arena", "/entrypoint.sh", "bash", "--norc", "-c", _SOURCED, "bash", cmd]
         procs[fork] = subprocess.Popen(compose, env=_fork_env(fork), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     pumps = [threading.Thread(target=pump, args=(fork, proc), daemon=True) for fork, proc in procs.items()]
     for th in pumps:
