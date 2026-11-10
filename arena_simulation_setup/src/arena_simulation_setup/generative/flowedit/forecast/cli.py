@@ -269,7 +269,10 @@ def _cmd_curve(args: argparse.Namespace) -> int:
                 xs = [max(k, 0.5) for k, v in zip(V.TRACK_COUNTS, m, strict=True) if v is not None]
                 ax.plot(xs, [v for v in m if v is not None], marker="o", label=n)
             ax.set_xscale("log")
-            ax.set_xlabel("post-edit tracks seen (0 plotted at 0.5)")
+            shown = [k for i, k in enumerate(V.TRACK_COUNTS) if any(m[i] is not None for m in mean.values())]
+            ax.set_xticks([max(k, 0.5) for k in shown], [str(k) for k in shown])
+            ax.minorticks_off()
+            ax.set_xlabel("post-edit tracks seen, all from one held-out seed's run")
             ax.set_ylabel("pooled JSD (bits) against the other seeds")
             ax.set_title(f"{partition}: forecast error vs. tracks seen")
             ax.legend(fontsize=8)
