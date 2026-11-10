@@ -198,7 +198,7 @@ def test_rules_without_site_data_are_unknown_and_filter_nothing(hospital: Site) 
     for name, element in CATALOG.items():
         spots = candidate_spots(hospital, name)
         assert [rule for rule, _ in spots[0].verdicts] == [rule for rule in Rule if rule in element.rules]
-        for rule in (Rule.PEDS_ZONES, Rule.LIFT_DISTANCE, Rule.OUTLET_CABLE, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING):
+        for rule in (Rule.PEDS_ZONES, Rule.LIFT_DISTANCE, Rule.OUTLET_CABLE, Rule.RECIPIENT_DISTANCE, Rule.COURIER_ACCESS, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING):
             assert all(s.verdict.get(rule, Verdict.UNKNOWN) is Verdict.UNKNOWN for s in spots), rule
         assert any(s.valid and Verdict.UNKNOWN in s.verdict.values() for s in spots)
     assert Rule.OUTLET_CABLE in CATALOG["charger_pair"].rules and Rule.OUTLET_CABLE in CATALOG["locker"].rules
@@ -565,3 +565,70 @@ def test_the_locker_dock_starts_beyond_the_door_sweep(hospital: Site) -> None:
         back = min(s.frame.depth(x, y) for x, y in o.footprint.exterior.coords)
         dock_near = min(s.frame.depth(x, y) for x, y in o.dock.exterior.coords)
         assert dock_near - back == pytest.approx(0.84, abs=0.01)
+
+
+# --- site facts --------------------------------------------------------------------------------------------------------
+
+#: A recipient entrance in hospital_1's reception, its south-west room
+RECEPTION = place.Entrance("main", "building", ((2.0, 1.5),), recipients=True)
+
+
+def test_the_catalog_rules_read_the_site_facts_and_only_these_elements_get_them() -> None:
+    assert Rule.RECIPIENT_DISTANCE in CATALOG["locker"].rules and CATALOG["locker"].recipient_distance_m == place.RECIPIENT_DISTANCE_M
+    assert Rule.COURIER_ACCESS in CATALOG["loading_point"].rules and CATALOG["loading_point"].courier_access
+    assert not any(Rule.RECIPIENT_DISTANCE in e.rules or Rule.COURIER_ACCESS in e.rules for n, e in CATALOG.items() if n not in ("locker", "loading_point"))
+    facts = place.SiteFacts((RECEPTION, place.Entrance("side", "shop", ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)))), (9.0, 2.0))
+    assert facts.recipient_entrances == (RECEPTION,) and facts.entrances[1].anchor == pytest.approx((0.5, 0.5))
+    assert facts.pins() == {"loading_point": (9.0, 2.0)} and place.SiteFacts().pins() == {}
+    with pytest.raises(ValueError, match="type 'portal'"):
+        place.Entrance("e", "portal", ((0.0, 0.0),))
+
+
+def test_a_locker_stands_within_walking_distance_of_a_recipient_entrance_not_straight_line_distance(hospital: Site) -> None:
+    near = attrs.evolve(CATALOG["locker"], recipient_distance_m=12.0)
+    facts = place.SiteFacts((RECEPTION,))
+    spots = candidate_spots(hospital, near, facts=facts)
+    walk = place.walking_paths(hospital, spots[0].level).lengths([RECEPTION.anchor], [s.objects[0].goto for s in spots])[0]
+    verdicts = [s.verdict[Rule.RECIPIENT_DISTANCE] for s in spots]
+    assert verdicts == [Verdict.PASS if d <= 12.0 else Verdict.FAIL for d in walk]
+    assert Verdict.PASS in verdicts and Verdict.FAIL in verdicts
+    # some spot is within 12 m as the crow flies but further walked (through a door): the rule walks
+    crow = [math.dist(RECEPTION.anchor, s.objects[0].goto) for s in spots]
+    assert any(c <= 12.0 < w for c, w in zip(crow, walk, strict=True))
+    # without a recipient entrance (or without facts) the rule is unknown and filters nothing
+    others = place.SiteFacts((attrs.evolve(RECEPTION, recipients=False),))
+    assert {s.verdict[Rule.RECIPIENT_DISTANCE] for s in candidate_spots(hospital, near, facts=others)} == {Verdict.UNKNOWN}
+    assert [s.valid for s in candidate_spots(hospital, near, facts=others)] == [s.valid for s in candidate_spots(hospital, near)]
+    # an entrance on another level is not walked to
+    upstairs = place.SiteFacts((attrs.evolve(RECEPTION, level="9"),))
+    assert {s.verdict[Rule.RECIPIENT_DISTANCE] for s in candidate_spots(hospital, near, facts=upstairs)} == {Verdict.UNKNOWN}
+
+
+def test_the_courier_handoff_point_stands_at_the_courier_access_point(hospital: Site) -> None:
+    spots = candidate_spots(hospital, "loading_point")
+    target = next(s for s in spots if s.valid and s.zone == "central_hallway")
+    at = (target.objects[0].goto[0] + 0.3, target.objects[0].goto[1])
+    rated = candidate_spots(hospital, "loading_point", facts=place.SiteFacts(courier_access=at))
+    passing = [s for s in rated if s.verdict[Rule.COURIER_ACCESS] is Verdict.PASS]
+    assert target.id in {s.id for s in passing}
+    assert all(math.dist(s.objects[0].goto, at) <= place.COURIER_ACCESS_M for s in passing)
+    assert all(math.dist(s.objects[0].goto, at) > place.COURIER_ACCESS_M for s in rated if s.verdict[Rule.COURIER_ACCESS] is Verdict.FAIL)
+    assert {s.verdict[Rule.COURIER_ACCESS] for s in spots} == {Verdict.UNKNOWN}
+
+
+def test_chargers_and_lockers_stand_within_cable_run_of_an_outlet_once_the_site_names_outlets(hospital: Site) -> None:
+    spots = candidate_spots(hospital, "charger_pair")
+    first = next(s for s in spots if s.valid)
+    outlet = (float(first.objects[0].footprint.centroid.x), float(first.objects[0].footprint.centroid.y))
+    rated = candidate_spots(hospital, "charger_pair", facts=place.SiteFacts(outlets=(outlet,)))
+    by_id = {s.id: s for s in rated}
+    assert by_id[first.id].verdict[Rule.OUTLET_CABLE] is Verdict.PASS
+    walk = place.walking_paths(hospital, first.level)
+    for s in rated:
+        run = max(walk.lengths([outlet], [(float(o.footprint.centroid.x), float(o.footprint.centroid.y))])[0, 0] for o in s.objects)
+        assert s.verdict[Rule.OUTLET_CABLE] is (Verdict.PASS if run <= place.OUTLET_CABLE_M else Verdict.FAIL)
+    assert any(s.verdict[Rule.OUTLET_CABLE] is Verdict.FAIL for s in rated)
+    # the bay pair has no outlet rule; no outlets leave it unknown
+    assert Rule.OUTLET_CABLE not in candidate_spots(hospital, "bay_pair", facts=place.SiteFacts(outlets=(outlet,)))[0].verdict
+    assert {s.verdict[Rule.OUTLET_CABLE] for s in candidate_spots(hospital, "charger_pair", facts=place.SiteFacts())} == {Verdict.UNKNOWN}
+

@@ -284,6 +284,18 @@ def test_scored_layouts_are_plain_data(space: Search) -> None:
     assert {o["name"] for s in record["spots"] for o in s["objects"]} == {"charger_1", "charger_2", "bay_1", "bay_2", "locker_1", "loading_point"}
 
 
+def test_the_site_facts_filter_the_spots_every_pick_draws_from(hospital: Site, loading: place.Spot, base, space: Search) -> None:  # noqa: ANN001
+    facts = place.SiteFacts((place.Entrance("main", "building", ((2.0, 1.5),), recipients=True),))
+    ruled = Search(hospital, loading=loading, base=base, facts=facts)
+    assert 0 < len(ruled.spots["locker"]) < len(space.spots["locker"])
+    assert all(s.verdict[place.Rule.RECIPIENT_DISTANCE] is place.Verdict.PASS for s in ruled.spots["locker"])
+    assert ruled.dropped["locker"]["invalid"] > space.dropped["locker"]["invalid"]
+    assert [s.id for s in ruled.spots["charger_pair"]] == [s.id for s in space.spots["charger_pair"]]
+    pick = search.robot_only(ruled)
+    locker = next(s for s in pick.layout.spots if s.element.name == "locker")
+    assert locker.id in {s.id for s in ruled.spots["locker"]}
+
+
 def test_placements_keep_each_element_in_its_zones_areas_or_pin(hospital: Site, loading: place.Spot, base, space: Search) -> None:  # noqa: ANN001
     from arena_simulation_setup.generative.flowedit.search import Placement
 

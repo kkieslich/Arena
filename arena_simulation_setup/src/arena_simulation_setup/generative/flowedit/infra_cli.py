@@ -113,7 +113,8 @@ class _Space:
         exclude = self.config.exclude if self.config is not None else SE.EXCLUDED_ZONES
         loading = args.loading if args.loading is not None else (None if SE.LOADING in placements else SE.TWIN_LOADING_XY)
         self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration)
-        self.search = SE.Search(self.site, loading=loading, pins=dict(args.pin or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml"), mix=self.mix)
+        facts = self.config.facts if self.config is not None else None
+        self.search = SE.Search(self.site, loading=loading, pins=dict(args.pin or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml"), mix=self.mix, facts=facts)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
         _log(f"search space: {json.dumps(self.search.counts())}")
         loading_spot = self.search.loading

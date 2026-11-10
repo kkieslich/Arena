@@ -240,44 +240,73 @@ def with_visitors(hospital_copy: Path) -> Path:
     return hospital_copy
 
 
-def test_the_shipped_twin_config_pins_the_loading_point_and_keeps_the_locker_in_upper_concourse_north() -> None:
+def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_point_by_rule() -> None:
     config = infra.site_config("smu_link_full")
     assert config.site == "smu_link_full" and config.scenario == "study_mix_v2"
-    assert config.placements["loading_point"].pin == search.TWIN_LOADING_XY
-    assert config.placements["locker"].zones == ("upper_concourse_north",)
-    assert config.placements["charger_pair"] == config.placements["bay_pair"] == search.Placement()
     assert config.exclude == ("ramp",)
-    assert config.record()["elements"]["locker"] == {"zones": ["upper_concourse_north"], "areas": [], "pin": None}
+    facts = config.facts
+    assert facts.courier_access == search.TWIN_LOADING_XY and facts.outlets == ()
+    assert {e.name for e in facts.recipient_entrances} == {"mrt_bencoolen", "scis1_student", "scis1_staff"}
+    assert {e.name for e in facts.entrances} - {e.name for e in facts.recipient_entrances} == {"bras_basah_2", "escalator_1"}
+    assert all(e.placeholder for e in facts.entrances)
+    # the rules compile to the search's engine: the courier handoff point pinned at the access point, nothing else
+    assert config.placements == {"loading_point": search.Placement(pin=search.TWIN_LOADING_XY)}
+    assert [(types, share) for types, share in config.flow_split] == [(("mrt",), 0.5), (("building", "shop", "escalator", "stairs"), 0.3), (("lift", "other"), 0.2)]
+    record = config.record()
+    assert "elements" not in record and record["pins"] == {"loading_point": list(search.TWIN_LOADING_XY)}
+    assert record["entrances"][2] == {"name": "mrt_bencoolen", "type": "mrt", "points": [[157.5, 241.5]], "recipients": True, "level": None, "placeholder": True}
     with pytest.raises(FileNotFoundError, match="no INFRA site config"):
         infra.site_config("no_such_site")
+
+
+FACTS = {"site": "s", "courier_access": [1, 2]}
 
 
 @pytest.mark.parametrize(
     ("doc", "match"),
     [
-        ({"site": "s", "elements": {"locker": {"zones": ["a"]}}}, "loading point needs a pin"),
-        ({"site": "s", "elements": {"loading_point": {"pin": [1, 2]}, "fountain": {}}}, "element 'fountain'"),
-        ({"site": "s", "elements": {"loading_point": {"pin": [1, 2]}, "locker": {"zone": ["a"]}}}, "unknown keys"),
-        ({"site": "s", "elements": {"loading_point": {"pin": [1, 2]}, "locker": {"zones": "a"}}}, "list of zone names"),
-        ({"site": "s", "elements": {"loading_point": {"pin": [1, 2]}, "locker": {"areas": [[[0, 0], [1, 0]]]}}}, "no valid polygon"),
-        ({"site": "s", "elements": {"loading_point": {"pin": [1]}}}, "pin must be"),
-        ({"elements": {}}, "no site"),
-        ({"site": "s", "zones": {}}, "unknown keys"),
+        ({"site": "s", "courier_access": [1, 2], "elements": {"locker": {"zones": ["a"]}}}, "not elements"),
+        ({"site": "s"}, "no courier_access"),
+        ({**FACTS, "courier_access": [1]}, r"courier_access must be \[x, y\]"),
+        ({**FACTS, "entrances": [{"name": "e", "type": "portal", "at": [0, 0]}]}, "type 'portal'"),
+        ({**FACTS, "entrances": [{"name": "e", "type": "mrt"}]}, "`at`"),
+        ({**FACTS, "entrances": [{"name": "e", "type": "mrt", "at": [0, 0], "polygon": [[0, 0], [1, 0], [1, 1]]}]}, "`at`"),
+        ({**FACTS, "entrances": [{"name": "e", "type": "mrt", "polygon": [[0, 0], [1, 0]]}]}, "a point or a polygon"),
+        ({**FACTS, "entrances": [{"name": "e", "type": "mrt", "at": [0, 0], "users": True}]}, "unknown keys"),
+        ({**FACTS, "entrances": [{"name": "e", "type": "mrt", "at": [0, 0]}, {"name": "e", "type": "shop", "at": [1, 1]}]}, "names repeat"),
+        ({**FACTS, "outlets": [[1, 2, 3]]}, "an outlet must be"),
+        ({**FACTS, "flow_split": [{"types": ["mrt"], "share": 0.6}, {"types": ["other"], "share": 0.3}]}, "add up to 0.9"),
+        ({**FACTS, "flow_split": [{"types": ["mrt"], "share": 0.5}, {"types": ["mrt", "other"], "share": 0.5}]}, "in two groups"),
+        ({**FACTS, "flow_split": [{"types": ["kiosk"], "share": 1.0}]}, "each group names"),
+        ({"courier_access": [1, 2]}, "no site"),
+        ({**FACTS, "zones": {}}, "unknown keys"),
     ],
 )
-def test_a_site_config_refuses_what_it_cannot_place(doc: dict, match: str) -> None:
+def test_a_site_config_refuses_what_is_no_site_fact(doc: dict, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         infra.SiteConfig.parse(doc)
 
 
-def test_a_site_config_reads_zones_areas_and_pins(tmp_path: Path) -> None:
+def test_a_site_config_reads_entrances_outlets_and_the_flow_split(tmp_path: Path) -> None:
     path = tmp_path / "site.yaml"
-    path.write_text(yaml.safe_dump({"site": "s", "scenario": "crowd", "exclude": ["ramp"], "elements": {"loading_point": {"pin": [1, 2]}, "locker": {"zones": ["shops_*"], "areas": [[[0, 0], [4, 0], [4, 4], [0, 4]]]}, "bay_pair": None}}))
+    doc = {
+        "site": "s",
+        "scenario": "crowd",
+        "exclude": ["ramp"],
+        "entrances": [{"name": "main", "type": "building", "polygon": [[0, 0], [2, 0], [2, 2], [0, 2]], "recipients": True}, {"name": "lift_a", "type": "lift", "at": [5, 5], "level": "1"}],
+        "courier_access": [1, 2],
+        "outlets": [[3, 4]],
+        "flow_split": [{"types": ["building"], "share": 0.7}, {"types": ["lift"], "share": 0.3}],
+    }
+    path.write_text(yaml.safe_dump(doc))
     config = infra.SiteConfig.load(path)
     assert (config.scenario, config.exclude, config.path) == ("crowd", ("ramp",), path)
-    assert config.placements["loading_point"].pin == (1.0, 2.0)
-    assert config.placements["locker"].zones == ("shops_*",) and config.placements["locker"].areas[0].area == 16.0
-    assert config.placements["bay_pair"] == search.Placement()
+    main, lift = config.facts.entrances
+    assert (main.recipients, main.anchor, main.level, main.placeholder) == (True, (1.0, 1.0), None, False)
+    assert (lift.recipients, lift.anchor, lift.level) == (False, (5.0, 5.0), "1")
+    assert config.facts.outlets == ((3.0, 4.0),) and config.facts.courier_access == (1.0, 2.0)
+    assert config.placements == {"loading_point": search.Placement(pin=(1.0, 2.0))}
+    assert infra.SiteConfig.parse({**FACTS}).flow_split == ()
 
 
 def test_keep_out_and_the_visitor_sources_read_the_locker_visitors_too(with_visitors: Path) -> None:

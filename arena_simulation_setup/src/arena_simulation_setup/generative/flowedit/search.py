@@ -362,7 +362,9 @@ class Search:
     A spot whose floor (`Spot.keep_clear`) overlaps a `keep_out` polygon is no candidate: the study's PEDS sources and
     sinks, given as polygons where the §3 rule needs zone names. Spots on other levels than the loading point's are left
     out. `mix` is the task mix robot travel is weighed with. `placements` gives an element its zones, areas or pin
-    (`Placement`); `zones` is the default for the others. `loading` and `pins` take precedence over the placements' pins."""
+    (`Placement`); `zones` is the default for the others. `loading` and `pins` take precedence over the placements' pins.
+    `facts` are the site's (`place.SiteFacts`): the catalog's rules that read them filter every element's spots, so the
+    robot-only, joint and random picks draw from the same rule-valid spots."""
 
     def __init__(
         self,
@@ -377,6 +379,7 @@ class Search:
         mix: TaskMix | None = None,
         path_resolution: float = PATH_RESOLUTION_M,
         base: NavrBase | None = None,
+        facts: place.SiteFacts | None = None,
     ) -> None:
         import shapely
 
@@ -389,7 +392,8 @@ class Search:
         if unknown:
             raise ValueError(f"placements name {unknown}, not elements of a layout ({', '.join((*SEARCHED, LOADING))})")
         blocked = shapely.union_all(self.keep_out) if self.keep_out else None
-        found = {name: place.candidate_spots(site, name, zones=self._zones(name, zones), exclude=exclude) for name in (*SEARCHED, LOADING)}
+        self.facts = facts
+        found = {name: place.candidate_spots(site, name, zones=self._zones(name, zones), exclude=exclude, facts=facts) for name in (*SEARCHED, LOADING)}
         if loading is None:
             loading = self.placements.get(LOADING, Placement()).pin
             if loading is None:

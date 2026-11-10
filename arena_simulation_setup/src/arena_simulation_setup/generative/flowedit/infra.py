@@ -113,52 +113,79 @@ LOCKER = "locker"
 
 @attrs.frozen
 class SiteConfig:
-    """Where each element may go on a site, by its function (`search.Placement` per element name), the zones no element
-    goes to (`exclude`, `fnmatch` patterns), and the crowd scenario every stage runs. `path` is the file it came from."""
+    """A site's facts for the INFRA study and its crowd: `facts` (`place.SiteFacts`: entrances, the courier access
+    point, power outlets), the zones no element goes to (`exclude`, `fnmatch` patterns), the crowd scenario every stage
+    runs, and `flow_split`, the share of the inflow each group of entrance types gets (split evenly within a group, at
+    the crowd's total rate), for the crowd built from the entrances. No element names: the catalog's rules read the
+    facts (`place.CATALOG`) and the search decides. `path` is the file it came from."""
 
     site: str
     scenario: str = SCENARIO
     exclude: tuple[str, ...] = place.EXCLUDED_ZONES
-    placements: Mapping[str, Placement] = attrs.field(factory=dict)
+    facts: place.SiteFacts = attrs.field(factory=place.SiteFacts)
+    flow_split: tuple[tuple[tuple[str, ...], float], ...] = ()
     path: Path | None = None
+
+    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split")
+
+    @property
+    def placements(self) -> dict[str, Placement]:
+        """What the facts compile to for the search: the elements a rule pins (the courier handoff point at the courier
+        access point), by name. The other rules filter the spots themselves (`Search(facts=...)`)."""
+        return {name: Placement(pin=at) for name, at in self.facts.pins().items()}
 
     @classmethod
     def parse(cls, doc: Mapping[str, Any], path: Path | None = None) -> SiteConfig:
-        import shapely
-
         where = f"{path}: " if path is not None else ""
-        unknown = sorted(set(doc) - {"site", "scenario", "exclude", "elements"})
+        if "elements" in doc:
+            raise ValueError(f"{where}a site config holds the site's facts (entrances, courier_access, outlets), not elements: the catalog's rules place them")
+        unknown = sorted(set(doc) - set(cls.KEYS))
         if unknown:
-            raise ValueError(f"{where}unknown keys {unknown} (site, scenario, exclude, elements)")
+            raise ValueError(f"{where}unknown keys {unknown} ({', '.join(cls.KEYS)})")
         if not doc.get("site"):
             raise ValueError(f"{where}no site")
-        placements: dict[str, Placement] = {}
-        for name, entry in (doc.get("elements") or {}).items():
-            if name not in (*SEARCHED, LOADING):
-                raise ValueError(f"{where}element {name!r} is not one of {', '.join((*SEARCHED, LOADING))}")
-            entry = entry or {}
-            bad = sorted(set(entry) - {"zones", "areas", "pin"})
+
+        def point(value: Any, what: str) -> tuple[float, float]:  # noqa: ANN401 - yaml
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                raise ValueError(f"{where}{what} must be [x, y]")
+            return (float(value[0]), float(value[1]))
+
+        entrances = []
+        for i, entry in enumerate(doc.get("entrances") or []):
+            name = (entry or {}).get("name") or f"#{i}"
+            bad = sorted(set(entry or {}) - {"name", "type", "at", "polygon", "recipients", "level", "placeholder"})
             if bad:
-                raise ValueError(f"{where}{name}: unknown keys {bad} (zones, areas, pin)")
-            zones = entry.get("zones")
-            if zones is not None and (isinstance(zones, str) or not all(isinstance(z, str) for z in zones)):
-                raise ValueError(f"{where}{name}: zones must be a list of zone names or patterns")
-            areas = []
-            for area in entry.get("areas") or []:
-                points = [(float(x), float(y)) for x, y in area]
-                polygon = shapely.Polygon(points) if len(points) >= 3 else None
-                if polygon is None or not polygon.is_valid or polygon.area <= 0:
-                    raise ValueError(f"{where}{name}: area {area} is no valid polygon")
-                areas.append(polygon)
-            pin = entry.get("pin")
-            if pin is not None:
-                if len(pin) != 2:
-                    raise ValueError(f"{where}{name}: pin must be [x, y]")
-                pin = (float(pin[0]), float(pin[1]))
-            placements[name] = Placement(None if zones is None else tuple(zones), tuple(areas), pin)
-        if LOADING not in placements or placements[LOADING].pin is None:
-            raise ValueError(f"{where}the loading point needs a pin (§8: it is not searched)")
-        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), placements, path)
+                raise ValueError(f"{where}entrance {name}: unknown keys {bad} (name, type, at, polygon, recipients, level, placeholder)")
+            if ("at" in entry) == ("polygon" in entry):
+                raise ValueError(f"{where}entrance {name}: give its position as `at` [x, y] or as a `polygon`")
+            points = (point(entry["at"], f"entrance {name}: at"),) if "at" in entry else tuple(point(q, f"entrance {name}: a polygon corner") for q in entry["polygon"])
+            try:
+                entrances.append(place.Entrance(str(name), str(entry.get("type", "")), points, bool(entry.get("recipients", False)), None if entry.get("level") is None else str(entry["level"]), bool(entry.get("placeholder", False))))
+            except ValueError as e:
+                raise ValueError(f"{where}{e}") from None
+        names = [e.name for e in entrances]
+        if len(set(names)) != len(names):
+            raise ValueError(f"{where}entrance names repeat: {sorted({n for n in names if names.count(n) > 1})}")
+        if doc.get("courier_access") is None:
+            raise ValueError(f"{where}no courier_access: the courier handoff point stands there (§8)")
+        courier = point(doc["courier_access"], "courier_access")
+        outlets = tuple(point(q, "an outlet") for q in doc.get("outlets") or [])
+        split: list[tuple[tuple[str, ...], float]] = []
+        for group in doc.get("flow_split") or []:
+            types = tuple(str(t) for t in (group or {}).get("types") or [])
+            share = float((group or {}).get("share", 0.0))
+            wrong = sorted(set(types) - set(place.ENTRANCE_TYPES))
+            if not types or wrong or share <= 0.0:
+                raise ValueError(f"{where}flow_split: each group names entrance types ({', '.join(place.ENTRANCE_TYPES)}) and a share > 0, not {group}")
+            split.append((types, share))
+        if split:
+            seen = [t for types, _ in split for t in types]
+            if len(set(seen)) != len(seen):
+                raise ValueError(f"{where}flow_split: an entrance type in two groups")
+            if abs(sum(share for _, share in split) - 1.0) > 1e-6:
+                raise ValueError(f"{where}flow_split: the shares add up to {sum(share for _, share in split):g}, not 1")
+        facts = place.SiteFacts(tuple(entrances), courier, outlets)
+        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), path)
 
     @classmethod
     def load(cls, path: Path) -> SiteConfig:
@@ -169,21 +196,16 @@ class SiteConfig:
 
     def record(self) -> dict[str, Any]:
         """The config as plain data, for a manifest."""
-        import shapely
-
         return {
             "site": self.site,
             "path": None if self.path is None else str(self.path),
             "scenario": self.scenario,
             "exclude": list(self.exclude),
-            "elements": {
-                name: {
-                    "zones": None if p.zones is None else list(p.zones),
-                    "areas": [shapely.get_coordinates(a.exterior).tolist() for a in p.areas],
-                    "pin": None if p.pin is None else list(p.pin),
-                }
-                for name, p in self.placements.items()
-            },
+            "entrances": [{"name": e.name, "type": e.type, "points": [list(q) for q in e.points], "recipients": e.recipients, "level": e.level, "placeholder": e.placeholder} for e in self.facts.entrances],
+            "courier_access": None if self.facts.courier_access is None else list(self.facts.courier_access),
+            "outlets": [list(q) for q in self.facts.outlets],
+            "flow_split": [{"types": list(types), "share": share} for types, share in self.flow_split],
+            "pins": {name: list(p.pin) for name, p in self.placements.items() if p.pin is not None},
         }
 
 
