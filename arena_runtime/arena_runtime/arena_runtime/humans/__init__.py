@@ -146,6 +146,10 @@ class TrackedRobot:
         self.stamp = stamp
 
 
+class RegionSetupError(RuntimeError):
+    """The human simulator did not take every region of the episode, or did not drop the last one's: the episode would run with a partial or stale crowd."""
+
+
 class HumanSimulatorOptions(typing.TypedDict):
     node: rclpy.node.Node
     namespace: Namespace
@@ -1184,10 +1188,15 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
         Args:
             regions: Already-resolved Region objects with concrete polygons.
+
+        Raises:
+            RegionSetupError: the human simulator did not add every region (its impl returned False or raised it naming them).
         """
         for region in regions:
             self._known_regions[region.name] = region
-        return await self._add_regions_impl(regions)
+        if not await self._add_regions_impl(regions):
+            raise RegionSetupError(f"the human simulator did not add every one of the {len(regions)} regions")
+        return True
 
     async def configure(self, params: Sequence[ParameterMsg]) -> list[ParameterMsg]:
         """Hand the params under this backend's namespace to it at the episode boundary and return the accepted ones."""
@@ -1202,10 +1211,16 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         return set()
 
     async def remove_all_regions(self) -> bool:
-        """Remove all tracked regions."""
+        """Remove all tracked regions.
+
+        Raises:
+            RegionSetupError: the human simulator did not remove every region (its impl returned False or raised it naming them).
+        """
         regions = tuple(self._known_regions.values())
         self._known_regions.clear()
-        return await self._remove_regions_impl(regions)
+        if not await self._remove_regions_impl(regions):
+            raise RegionSetupError(f"the human simulator did not remove every one of the {len(regions)} regions")
+        return True
 
     async def remove_obstacles(self, purge: ObstacleLayer = ObstacleLayer.UNUSED):
         """Removes obstacles from simulator.

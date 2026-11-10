@@ -118,7 +118,7 @@ from visualization_msgs.msg import MarkerArray
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.rng import stable_int
 from arena_runtime.env.realizer import Realizer
-from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, Segment
+from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, Segment
 from arena_runtime.humans.itinerary import STIMULUS_TELEPORTED, ItineraryDriver, Stop, semantic_atom
 from arena_runtime.humans.support import Support, seat_stand
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
@@ -132,6 +132,9 @@ except ImportError:  # an engine built before start_clock: its crowd starts at i
     StartClock = None
 
 _DEFERRED_ID_BASE = 1 << 24
+
+# a region call is keyed by the region's name (the engine replaces a source or sink of that name), so one that timed out is sent again
+REGION_CALL_ATTEMPTS = 3
 
 _QUEUE_FRONT_OFFSET = 0.7
 TELEPORT_JUMP_M = 2.0
@@ -1237,10 +1240,18 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return cx, cy
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
-        results = await asyncio.gather(
-            *(self._add_region_single(r) for r in regions),
-        )
-        return all(results)
+        """Add the regions one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.
+
+        arena_humansim's services keep the rmw default request queue (KEEP_LAST, depth 10) and one executor: of more requests
+        waiting out a tick it drops the oldest unanswered, so the regions are not sent all at once.
+
+        Raises:
+            RegionSetupError: at the first region arena_humansim did not add.
+        """
+        for added, region in enumerate(regions):
+            if not await self._add_region_single(region):
+                raise RegionSetupError(f"arena_humansim did not add region {region.name!r} ({added} of {len(regions)} added)")
+        return True
 
     async def _add_region_single(self, region: Region) -> bool:
         if region.type == "source":
@@ -1271,18 +1282,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         src_msg.agent = tmpl
 
         request.source = src_msg
-        try:
-            response = await self._add_source_client.call_timeout(request)
-            if response is None:
-                self._logger.error("AddSource timed out")
-                return False
-            if response.success:
-                return True
-            self._logger.error(f"AddSource failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"AddSource call failed: {e}")
-            return False
+        return await self._region_call(self._add_source_client, request, f"AddSource {region.name!r}")
 
     async def _add_sink_region(self, region: Region) -> bool:
         request = AddSink.Request()
@@ -1298,59 +1298,42 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         sink_msg.capacity = cfg.get("capacity", -1)
 
         request.sink = sink_msg
-        try:
-            response = await self._add_sink_client.call_timeout(request)
-            if response is None:
-                self._logger.error("AddSink timed out")
+        return await self._region_call(self._add_sink_client, request, f"AddSink {region.name!r}")
+
+    async def _region_call(self, client: ClientWrapper, request: object, what: str) -> bool:
+        """Whether arena_humansim took one region call, sent again in place up to REGION_CALL_ATTEMPTS times in all while it times out."""
+        for attempt in range(1, REGION_CALL_ATTEMPTS + 1):
+            try:
+                response = await client.call_timeout(request)
+            except Exception as e:
+                self._logger.error(f"{what} call failed: {e}")
                 return False
-            if response.success:
-                return True
-            self._logger.error(f"AddSink failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"AddSink call failed: {e}")
-            return False
+            if response is None:
+                if attempt < REGION_CALL_ATTEMPTS:
+                    self._logger.warning(f"{what} timed out (attempt {attempt} of {REGION_CALL_ATTEMPTS}), sending it again")
+                continue
+            if not response.success:
+                self._logger.error(f"{what} failed: {response.message}")
+                return False
+            return True
+        self._logger.error(f"{what} timed out {REGION_CALL_ATTEMPTS} times")
+        return False
 
     async def _remove_regions_impl(self, regions: Sequence[Region]) -> bool:
-        sources = [r.name for r in regions if r.type == "source"]
-        sinks = [r.name for r in regions if r.type == "sink"]
-        results = await asyncio.gather(
-            *(self._remove_source_by_name(name) for name in sources),
-            *(self._remove_sink_by_name(name) for name in sinks),
-        )
-        return all(results) if results else True
+        """Clear every source and every sink of the engine, one call each (an empty name clears all), when there are regions to remove.
 
-    async def _remove_source_by_name(self, name: str) -> bool:
-        request = RemoveSource.Request()
-        request.name = name
-        try:
-            response = await self._remove_source_client.call_timeout(request)
-            if response is None:
-                self._logger.error("RemoveSource timed out")
-                return False
-            if response.success:
-                return True
-            self._logger.error(f"RemoveSource failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"RemoveSource call failed: {e}")
-            return False
+        The answer comes after the engine cleared them, so a next episode starts from none of the last one's regions.
 
-    async def _remove_sink_by_name(self, name: str) -> bool:
-        request = RemoveSink.Request()
-        request.name = name
-        try:
-            response = await self._remove_sink_client.call_timeout(request)
-            if response is None:
-                self._logger.error("RemoveSink timed out")
-                return False
-            if response.success:
-                return True
-            self._logger.error(f"RemoveSink failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"RemoveSink call failed: {e}")
-            return False
+        Raises:
+            RegionSetupError: arena_humansim did not confirm a clear.
+        """
+        if not regions:
+            return True
+        if not await self._region_call(self._remove_source_client, RemoveSource.Request(name=""), "RemoveSource (all)"):
+            raise RegionSetupError(f"arena_humansim did not clear its sources ({len(regions)} regions to remove)")
+        if not await self._region_call(self._remove_sink_client, RemoveSink.Request(name=""), "RemoveSink (all)"):
+            raise RegionSetupError(f"arena_humansim did not clear its sinks ({len(regions)} regions to remove)")
+        return True
 
     async def _spawn_obstacles_impl(self, obstacles: Sequence[Obstacle]) -> Sequence[Obstacle | None]:
         """Send obstacle configs (pose + bounding box + metadata) to arena_humansim.
