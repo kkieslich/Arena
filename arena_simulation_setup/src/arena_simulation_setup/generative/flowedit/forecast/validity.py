@@ -352,6 +352,12 @@ def seed_folds(seeds: Sequence[int]) -> list[tuple[int, int]]:
     return [(s[i], s[(i + 1) % len(s)]) for i in range(len(s))]
 
 
+def fold_worlds(doc: Mapping[str, Any], partition: str, worlds: Sequence[str], fold: Sequence[int]) -> list[str]:
+    """The worlds of `worlds` the split runs at every seed of `fold` (`world_seeds`): with seeds apart for bases and edits
+    ({bases: 1-5, edits: 1-2}) a fold of other seeds scores the base worlds only."""
+    return [w for w in worlds if set(fold) <= set(world_seeds(doc, partition, w))]
+
+
 def fold_strengths(worlds: Sequence[str], fold: Sequence[int], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, grid_of: Callable[[str], FlowGrid], prior_of: Callable[[str], np.ndarray], strengths: Sequence[float] = STRENGTHS) -> dict[float, float]:
     """Per strength, the mean curve (STRENGTH_COUNTS) over `worlds` with tracks from one seed of `fold` and the truth at the
     other: the fold's score of each strength for a prior that saw neither seed."""
@@ -417,6 +423,7 @@ __all__ = [
     "fit_strength",
     "floor",
     "fold_strengths",
+    "fold_worlds",
     "other_seeds",
     "score",
     "seed_folds",

@@ -330,9 +330,15 @@ def _cmd_strength(args: argparse.Namespace) -> int:
                 cache[world] = predict(model, rasters(world, model.demand))
             return cache[world]
 
-        net = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, prior)
-        uni = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells()))
-        rows.append({"held_out": list(fold), "net": net, "uniform": uni, "train": summary})
+        # a world takes part where the split runs it at both held-out seeds: with seeds apart for bases and edits
+        # ({bases: 1-5, edits: 1-2}) most folds score the base worlds only
+        scored = V.fold_worlds(doc, "train", worlds, fold)
+        edits = sum(not SP.is_base(w) for w in scored)
+        if edits < sum(not SP.is_base(w) for w in worlds):
+            _log(f"strength: fold {k + 1} scores {len(scored)} worlds, {edits} of them edits: the others do not run at both of {list(fold)}")
+        net = V.fold_strengths(scored, fold, tracks, runs, sites.grid, prior)
+        uni = V.fold_strengths(scored, fold, tracks, runs, sites.grid, lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells()))
+        rows.append({"held_out": list(fold), "scored_worlds": len(scored), "scored_edits": edits, "net": net, "uniform": uni, "train": summary})
         _log(f"strength: fold {k + 1}: {label} best {min(net, key=net.__getitem__):g}, uniform best {min(uni, key=uni.__getitem__):g}")
     out: dict[str, Any] = {"format": FORMAT, "split": str(args.split), "benchmark": str(args.benchmark), "prior": label, "demand": args.demand, "steps": args.steps, "counts": list(V.STRENGTH_COUNTS), "folds": rows}
     for key in ("net", "uniform"):
@@ -342,7 +348,7 @@ def _cmd_strength(args: argparse.Namespace) -> int:
     lines = [head, "|---|" + "---|" * len(V.STRENGTHS)]
     for key, name in (("net", label), ("uniform", "uniform (online only)")):
         for r in rows:
-            lines.append(f"| {name}, seeds {r['held_out']} held out | " + " | ".join(f"{r[key][c]:.3f}" if c in r[key] else "" for c in V.STRENGTHS) + " |")
+            lines.append(f"| {name}, seeds {r['held_out']} held out ({r['scored_worlds']} worlds, {r['scored_edits']} edits) | " + " | ".join(f"{r[key][c]:.3f}" if c in r[key] else "" for c in V.STRENGTHS) + " |")
     print(f"## prior strength by leave-two-seeds-out over the train partition (mean JSD over tracks seen {list(V.STRENGTH_COUNTS)})\n\n" + "\n".join(lines) + "\n")
     for key, name in (("net", label), ("uniform", "uniform (online only)")):
         o = out[key]

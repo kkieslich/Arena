@@ -261,3 +261,10 @@ def test_a_prior_that_matches_the_held_out_truth_wants_a_heavy_weight_and_a_unif
     perfect = V.fold_strengths(["w"], (1, 2), lambda w, s: tracks, runs, lambda base: GRID, lambda w: truth, strengths=(10.0, 1000.0))
     flat = V.fold_strengths(["w"], (1, 2), lambda w, s: tracks, runs, lambda base: GRID, lambda w: V.uniform(GRID.room_cells()), strengths=(10.0, 1000.0))
     assert perfect[1000.0] <= perfect[10.0] and flat[10.0] < flat[1000.0]
+
+
+def test_with_seeds_apart_for_bases_and_edits_a_strength_fold_scores_the_worlds_run_at_both_its_seeds() -> None:
+    doc = {"partitions": {"train": ["b", "b__move_f__1"]}, "seeds": {"train": {"bases": [1, 2, 3, 4, 5], "edits": [1, 2]}}}
+    folds = V.seed_folds(sorted({s for w in doc["partitions"]["train"] for s in V.world_seeds(doc, "train", w)}))
+    scored = {fold: V.fold_worlds(doc, "train", doc["partitions"]["train"], fold) for fold in folds}
+    assert scored[(1, 2)] == ["b", "b__move_f__1"] and scored[(3, 4)] == ["b"] and scored[(5, 1)] == ["b"]
