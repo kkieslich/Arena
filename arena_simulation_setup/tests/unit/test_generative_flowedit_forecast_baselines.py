@@ -228,6 +228,98 @@ def test_write_maps_reads_back_as_the_same_map(tmp_path: Path) -> None:
     assert np.allclose(back, m)
 
 
+# --- the tuning rule ----------------------------------------------------------------------------------------------------
+
+SPLIT = {
+    "seeds": {"train": [1, 2, 3], "held_out_edits": [6, 7, 8]},
+    "partitions": {
+        "train": ["w", "w__m1", "w__c1a", "w__c1b", "w__m2", "w__c2", "w__r1", "w__r2", "w__f1", "w__f2"],
+        "held_out_edits": ["w__m9", "w__c9"],
+    },
+    "control_worlds": {"w__m1": ["w__c1a", "w__c1b"], "w__m2": ["w__c2"], "w__m9": ["w__c9"]},
+}
+
+
+def test_validation_split_holds_out_whole_chains_of_the_train_partition_only() -> None:
+    assert B.chains(SPLIT) == [["w__f1"], ["w__f2"], ["w__m1", "w__c1a", "w__c1b"], ["w__m2", "w__c2"], ["w__r1"], ["w__r2"]]
+    training, validation = B.validation_split(SPLIT)
+    assert (training, validation) == B.validation_split(SPLIT)
+    assert "w" in training and not set(training) & set(validation)
+    assert sorted(training + validation) == sorted(SPLIT["partitions"]["train"])
+    # one of the two function-carrying chains and one of the four others (20 % rounded up), each whole
+    held = [c for c in B.chains(SPLIT) if set(c) <= set(validation)]
+    assert sorted(len(c) > 1 for c in held) == [False, True] and sum(len(c) for c in held) == len(validation)
+    assert not {"w__m9", "w__c9"} & set(training + validation)
+    with pytest.raises(ValueError, match="too few"):
+        B.validation_split({"partitions": {"train": ["w", "w__a"]}})  # a group's last chain always trains
+
+
+def test_a_shared_pre_edit_map_updates_at_each_instances_decay() -> None:
+    rng = np.random.default_rng(9)
+    tracks = {(w, s): pl.concat([_track(f"p{k}", (0.5, 1.0 + k), (1.0, 0.0), 10.0, rng) for k in range(3)]) for w in ("w", "w__e") for s in (1, 2, 3)}
+    maps = {k: ROOM.dense(t["x"].to_numpy(), t["y"].to_numpy(), np.arctan2(t["vy"].to_numpy(), t["vx"].to_numpy()), np.full(len(t), 1 / 15)) for k, t in tracks.items()}
+    runs, shared = _runs(maps), {}
+    fold = B.folds(runs, "w__e", [1, 2, 3])[0]
+    slow = B.OnlineCliff(lambda base: ROOM, lambda w, s: tracks[(w, s)], runs, CliffParams(decay=0.5), "pre-edit", built=shared)
+    fast = B.OnlineCliff(lambda base: ROOM, lambda w, s: tracks[(w, s)], runs, CliffParams(decay=0.99), "pre-edit", built=shared)
+    a, b = slow.start("w__e", fold), fast.start("w__e", fold)
+    assert len(shared) == 1 and a.params.decay == 0.5 and b.params.decay == 0.99
+
+
+def test_tune_cliff_keeps_the_history_of_a_steady_flow() -> None:
+    rng = np.random.default_rng(8)
+    tracks = {s: pl.concat([_track(f"p{k}", (0.5, 1.0 + k), (1.0, 0.0), 10.0, rng) for k in range(4)]) for s in (1, 2, 3)}
+    maps = {("w__e", s): ROOM.dense(t["x"].to_numpy(), t["y"].to_numpy(), np.arctan2(t["vy"].to_numpy(), t["vx"].to_numpy()), np.full(len(t), 1 / 15)) for s, t in tracks.items()}
+    runs = _runs(maps)
+
+    def make(params: CliffParams) -> B.OnlineCliff:
+        return B.OnlineCliff(lambda base: ROOM, lambda w, s: tracks[s], runs, params)
+
+    chosen, table = B.tune_cliff([("w__e", [1, 2, 3])], lambda w, s: tracks[s], runs, make, CliffParams(), grid={"decay": (0.3, 1.0), "radius_m": (0.5,)}, log=lambda m: None)
+    assert chosen.decay == 1.0 and chosen.radius_m == 0.5
+    assert [r["field"] for r in table] == ["decay", "decay", "radius_m"] and table[0]["score"] > table[1]["score"]
+
+
+def test_tune_geometry_finds_the_spreads_of_the_recorded_flow() -> None:
+    from arena_simulation_setup.generative.flowedit.forecast.model import HEADING_STEPS
+
+    i, j = 6, np.arange(2, 22)
+    walks = B.Walks(ROOM, (i * ROOM.nx + j) * M.BINS, np.full(len(j), HEADING_STEPS // 2), np.ones(len(j)), ROOM.room_cells(), {})
+    truth = B.geometry_map(walks, sigma=1.0, heading=0.15)
+    runs = _runs({("w__v", 1): truth, ("w__v", 2): truth})
+    chosen, table = B.tune_geometry(lambda w: walks, runs, ["w__v"], [1, 2])
+    assert chosen == {"sigma": 1.0, "heading": 0.15} and len(table) == 9
+
+
+def test_deepflow_tuning_takes_the_lowest_validation_score_and_breaks_ties_short() -> None:
+    from arena_simulation_setup.generative.flowedit.forecast import deepflow as D
+
+    a = {"format": D.TUNE_FORMAT, "optimizer": "adam", "validation": ["w__f1"], "scores": {0.001: {1000: 0.40, 2000: 0.35, 4000: 0.35}}}
+    b = {"format": D.TUNE_FORMAT, "optimizer": "adam", "validation": ["w__f1"], "scores": {0.0001: {1000: 0.50, 2000: 0.35}}}
+    assert D.chosen([a, b]) == (0.0001, 2000, 0.35, "adam")
+    assert D.chosen([a]) == (0.001, 2000, 0.35, "adam")
+    with pytest.raises(ValueError, match="different worlds"):
+        D.chosen([a, {**b, "validation": ["w__r1"]}])
+
+
+def test_deepflow_tune_scores_the_validation_worlds_at_each_checkpoint() -> None:
+    pytest.importorskip("torch")
+    from arena_simulation_setup.generative.flowedit.forecast import deepflow as D
+
+    c = D.Cage(np.zeros((len(D.CHANNELS), D.SIDE, D.SIDE), np.float32), D.Lines(tuple((i,) for i in range(ROOM.ny))), D.Lines(tuple((j,) for j in range(ROOM.nx))), (ROOM.ny, ROOM.nx))
+
+    class Inputs:
+        sites = type("Sites", (), {"grid": staticmethod(lambda base: ROOM)})()
+
+        def __call__(self, world: str) -> D.Cage:
+            return c
+
+    maps = {(w, s): _blob((1.0 + k, 3.0), 0, 10.0) for k, w in enumerate(SPLIT["partitions"]["train"]) for s in (1, 2)}
+    out = D.tune(Inputs(), _runs(maps), SPLIT, lrs=(1e-3,), checkpoints=(1, 2), device="cpu", log=lambda m: None)
+    assert out["format"] == D.TUNE_FORMAT and out["validation"] == B.validation_split(SPLIT)[1]
+    assert set(out["scores"][0.001]) == {1, 2} and all(0.0 <= v <= 1.0 for v in out["scores"][0.001].values())
+
+
 # --- on hospital_1 ----------------------------------------------------------------------------------------------------
 
 
@@ -314,8 +406,9 @@ def test_deepflow_samples_pool_a_worlds_runs_and_train_runs_the_updates() -> Non
     i2, j2, _ = grid.index(6.0, 3.0)
     assert found[0][3][0, int(i1), int(j1)] == pytest.approx(found[0][3][2, int(i2), int(j2)])
     torch.manual_seed(0)
-    model, meta = D.train(found, steps=2, device="cpu", log=lambda m: None)
-    assert meta["steps"] == 2 and meta["optimizer"] == "adam" and meta["validation"] == [] and meta["kept_epoch"] is None
+    seen: list[int] = []
+    model, meta = D.train(found, steps=3, device="cpu", checkpoints=(2,), on_checkpoint=lambda step, m: seen.append(step), log=lambda m: None)
+    assert meta["steps"] == 3 and meta["optimizer"] == "adam" and meta["lr"] == D.ADAM_LR and seen == [2]
     out = D.forecast(model.eval(), meta, c, grid)
     assert out.shape == grid.shape and out.min() >= 0.0
 

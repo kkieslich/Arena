@@ -26,14 +26,18 @@ standing): Y = log(1 + n) / log(1 + max n) of the run's appearances per cell and
 
 **Network and training,** as the paper: SegNet without its 3 outermost encoder and decoder layers (3 x 3 convolutions,
 encoder stages of 2, 3, 3, 3 convolutions with 128, 256, 512, 512 channels, batch norm, max pooling whose indices the
-decoder unpools), a sigmoid instead of the softmax, He initialization, batch size 64, mean absolute error, 10 % of the
-samples held out for validation. Two changes, both for a split's few training worlds:
-- **updates, not epochs:** the paper trains 200 epochs over 12k samples, 37,500 updates; a split has tens of training
-  worlds, so training keeps the paper's number of updates, and the weights of the epoch with the lowest validation error;
-- **Adam (learning rate 1e-3) instead of SGD:** with the paper's SGD (fixed learning rate 0.01, momentum 0.9) the
-  sigmoid saturates near 0 within a few hundred updates on the mostly empty targets and stays there (on the pilot,
-  3,000 updates: outputs about 0.001 everywhere, error no better than predicting 0); the paper reports trying adaptive
-  learning rates. `--optimizer sgd` trains the paper's way.
+decoder unpools), a sigmoid instead of the softmax, He initialization, batch size 64, mean absolute error. Changes, all
+for a split's few training worlds where the paper had 12k scenarios:
+- **Adam instead of SGD:** with the paper's SGD (fixed learning rate 0.01, momentum 0.9) the sigmoid saturates near 0
+  within a few hundred updates on the mostly empty targets and stays there (on the pilot: outputs about 0.001
+  everywhere, error no better than predicting 0); the paper reports trying adaptive learning rates. `--optimizer sgd`
+  trains the paper's way;
+- **the tuning rule picks the learning rate and the training length** (the paper picks its settings on a 10 %
+  validation split): `deepflow tune` trains on the train partition without its validation worlds
+  (`baselines.validation_split`, a fixed 20 % of its edit chains) at each learning rate of TUNE_LRS and scores the
+  validation worlds' forecasts (mean pooled JSD against their pooled runs) at each length of TUNE_STEPS, up to the
+  paper's 37,500 updates (200 epochs over 12k samples); `deepflow train --tuned` takes the lowest score (ties: fewer
+  updates, then the lower rate) and trains on the whole train partition.
 
 **Samples.** The paper's target is a scenario's crowd flow aggregated over its whole simulation. A sample here is one
 training world: its CAGE input and its runs pooled over the partition's seeds (scaled to their mean pedestrian-seconds),
@@ -69,8 +73,7 @@ SIDE = 112
 #: the paper's simulation step (s): appearances per pedestrian-second
 STEP_S = 0.02
 CHANNELS = ("Cx", "Cy", "A", "G", "E")
-EPOCHS = 200
-#: the paper's updates: 200 epochs over 12k training samples at batch 64; a split's ~100 runs keep the updates, not the epochs
+#: the paper's updates: 200 epochs over 12k training samples at batch 64
 STEPS = 200 * 12_000 // 64
 BATCH = 64
 LR = 0.01
@@ -78,7 +81,10 @@ MOMENTUM = 0.9
 #: the learning rate with Adam
 ADAM_LR = 1e-3
 OPTIMIZERS = ("sgd", "adam")
-VALIDATION = 0.1
+TUNE_FORMAT = "flowedit-deepflow-tune/1"
+#: the tuning rule's grid: learning rates (Adam) and training lengths (updates; the last is the paper's)
+TUNE_LRS = (1e-4, 3e-4, 1e-3)
+TUNE_STEPS = (1000, 2000, 4000, 8000, 16000, STEPS)
 
 
 # --- CAGE ------------------------------------------------------------------------------------------------------------
@@ -297,67 +303,65 @@ def samples(inputs: Inputs, runs: Runs, worlds: Sequence[str], seeds: Sequence[i
     return out
 
 
-def train(found: Sequence[tuple[str, tuple[int, ...], np.ndarray, np.ndarray, float]], steps: int | None = STEPS, epochs: int = EPOCHS, batch: int = BATCH, optimizer: str = "adam", seed: int = 0, device: str | None = None, log: Callable[[str], None] = print) -> tuple[Any, dict[str, Any]]:  # noqa: ANN401
-    """The SegNet trained on `found` by SGD on the mean absolute error, 10 % of the samples held out for validation: for
-    `steps` updates (whole epochs, at least the one that reaches it), or `epochs` epochs when `steps` is None."""
+def train(
+    found: Sequence[tuple[str, tuple[int, ...], np.ndarray, np.ndarray, float]],
+    steps: int = STEPS,
+    lr: float | None = None,
+    optimizer: str = "adam",
+    batch: int = BATCH,
+    seed: int = 0,
+    device: str | None = None,
+    checkpoints: Sequence[int] = (),
+    on_checkpoint: Callable[[int, Any], None] | None = None,
+    log: Callable[[str], None] = print,
+) -> tuple[Any, dict[str, Any]]:  # noqa: ANN401
+    """The SegNet trained on every sample of `found` for `steps` updates on the mean absolute error, at learning rate `lr`
+    (default: ADAM_LR with Adam, LR with SGD); `on_checkpoint(step, model)` runs after each update in `checkpoints`."""
     import numpy as np
     import torch
 
     if not found:
         raise ValueError("nothing to train on: no recorded run of the partition")
+    if optimizer not in OPTIMIZERS:
+        raise ValueError(f"optimizer: one of {OPTIMIZERS}, got {optimizer!r}")
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    order = rng.permutation(len(found))
-    n_val = max(1, round(VALIDATION * len(found))) if len(found) >= 10 else 0
-    val, tr = order[:n_val], order[n_val:]
-    X = torch.from_numpy(np.stack([f[2] for f in found]))
-    Y = torch.from_numpy(np.stack([f[3] for f in found]))
+    X = torch.from_numpy(np.stack([f[2] for f in found])).to(dev)
+    Y = torch.from_numpy(np.stack([f[3] for f in found])).to(dev)
     model = segnet().to(dev)
-    if optimizer not in OPTIMIZERS:
-        raise ValueError(f"optimizer: one of {OPTIMIZERS}, got {optimizer!r}")
-    lr = LR if optimizer == "sgd" else ADAM_LR
+    lr = lr if lr is not None else (LR if optimizer == "sgd" else ADAM_LR)
     opt = torch.optim.SGD(model.parameters(), lr=lr, momentum=MOMENTUM) if optimizer == "sgd" else torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.L1Loss()
-    history = []
-    per_epoch = max(1, sum(1 for k in range(0, len(tr), batch) if len(tr[k : k + batch]) >= 2))
-    if steps is not None:
-        epochs = -(-steps // per_epoch)
-    report = max(1, epochs // 10)
-    best: tuple[float, int, dict[str, Any]] | None = None
-    for epoch in range(epochs):
-        model.train()
-        perm = tr[rng.permutation(len(tr))]
-        losses = []
+    marks = set(checkpoints)
+    step, losses, history = 0, [], []
+    report = max(1, steps // 10)
+    model.train()
+    while step < steps:
+        perm = rng.permutation(len(found))
         for k in range(0, len(perm), batch):
-            idx = torch.from_numpy(perm[k : k + batch])
-            if len(idx) < 2:
-                continue
-            out = model(X[idx].to(dev))
-            loss = loss_fn(out, Y[idx].to(dev))
+            idx = torch.from_numpy(perm[k : k + batch]).to(dev)
+            loss = loss_fn(model(X[idx]), Y[idx])
             opt.zero_grad()
             loss.backward()
             opt.step()
+            step += 1
             losses.append(loss.item())
-        vloss = None
-        if len(val):
-            model.eval()
-            with torch.no_grad():
-                vloss = loss_fn(model(X[torch.from_numpy(val)].to(dev)), Y[torch.from_numpy(val)].to(dev)).item()
-        history.append((float(np.mean(losses)) if losses else None, vloss))
-        if vloss is not None and (best is None or vloss < best[0]):
-            best = (vloss, epoch, {k: v.detach().clone() for k, v in model.state_dict().items()})
-        if epoch % report == 0 or epoch == epochs - 1:
-            log(f"deepflow: epoch {epoch + 1}/{epochs}, train MAE {history[-1][0]:.5f}" + (f", validation MAE {vloss:.5f}" if vloss is not None else ""))
-    if best is not None:
-        model.load_state_dict(best[2])
-        log(f"deepflow: kept epoch {best[1] + 1}, the lowest validation MAE {best[0]:.5f}")
+            if step % report == 0 or step == steps:
+                history.append((step, float(np.mean(losses))))
+                log(f"deepflow: update {step}/{steps}, train MAE {history[-1][1]:.5f}")
+                losses = []
+            if step in marks and on_checkpoint is not None:
+                model.eval()
+                on_checkpoint(step, model)
+                model.train()
+            if step >= steps:
+                break
+    model.eval()
     meta = {
         "samples": len(found),
-        "kept_epoch": None if best is None else best[1] + 1,
-        "validation": [found[i][0] for i in val],
-        "epochs": epochs,
-        "steps": epochs * per_epoch,
+        "worlds": [f[0] for f in found],
+        "steps": steps,
         "batch": batch,
         "optimizer": optimizer,
         "lr": lr,
@@ -365,10 +369,54 @@ def train(found: Sequence[tuple[str, tuple[int, ...], np.ndarray, np.ndarray, fl
         "seed": seed,
         "device": dev,
         "log_max": float(np.mean([f[4] for f in found])),
-        "train_mae": [h[0] for h in history],
-        "validation_mae": [h[1] for h in history],
+        "train_mae": [list(h) for h in history],
     }
     return model, meta
+
+
+def tune(inputs: Inputs, runs: Runs, doc: Mapping[str, Any], lrs: Sequence[float] = TUNE_LRS, checkpoints: Sequence[int] = TUNE_STEPS, optimizer: str = "adam", seed: int = 0, device: str | None = None, log: Callable[[str], None] = print) -> dict[str, Any]:
+    """The tuning rule's runs: per learning rate, the network trained on the train partition's training worlds
+    (`baselines.validation_split`), and at each checkpoint the mean pooled JSD of its forecasts of the validation worlds."""
+    from .baselines import map_score, validation_split
+
+    training, validation = validation_split(doc)
+    seeds = SP.seeds_of(doc, "train")
+    found = samples(inputs, runs, training, seeds)
+    scores: dict[float, dict[int, float | None]] = {}
+    for lr in lrs:
+        scores[lr] = {}
+        log_max = float(sum(f[4] for f in found) / len(found))
+
+        def check(step: int, model: Any, lr: float = lr) -> None:  # noqa: ANN401
+            meta = {"log_max": log_max}
+            value = map_score(runs, validation, seeds, lambda w: forecast(model, meta, inputs(w), inputs.sites.grid(SP.base_of(w))))
+            scores[lr][step] = value
+            log(f"deepflow tuning: lr {lr:g}, {step} updates: validation JSD {value:.4f}")
+
+        train(found, steps=max(checkpoints), lr=lr, optimizer=optimizer, seed=seed, device=device, checkpoints=checkpoints, on_checkpoint=check, log=log)
+    return {"format": TUNE_FORMAT, "optimizer": optimizer, "seed": seed, "validation": validation, "training": training, "scores": {float(lr): {int(k): v for k, v in by.items()} for lr, by in scores.items()}}
+
+
+def chosen(tuned: Sequence[Mapping[str, Any]]) -> tuple[float, int, float, str]:
+    """(learning rate, updates, validation JSD, optimizer) with the lowest validation JSD over tuning files; ties take fewer updates, then the lower rate."""
+    best: tuple[float, int, float, str] | None = None
+    validation = None
+    for doc in tuned:
+        if doc.get("format") != TUNE_FORMAT:
+            raise ValueError(f"not a tuning file: format {doc.get('format')!r}, expected {TUNE_FORMAT!r}")
+        if validation is not None and doc["validation"] != validation:
+            raise ValueError("the tuning files validate on different worlds")
+        validation = doc["validation"]
+        for lr, by in doc["scores"].items():
+            for step, value in by.items():
+                if value is None:
+                    continue
+                key = (float(value), int(step), float(lr))
+                if best is None or key < (best[2], best[1], best[0]):
+                    best = (float(lr), int(step), float(value), str(doc["optimizer"]))
+    if best is None:
+        raise ValueError("no validation score in the tuning files")
+    return best
 
 
 def save(path: Path, model: Any, meta: Mapping[str, Any]) -> None:  # noqa: ANN401
@@ -408,18 +456,38 @@ def _log(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-def _cmd_train(args: argparse.Namespace) -> int:
+def _setup(args: argparse.Namespace) -> tuple[dict[str, Any], Any, Inputs]:  # noqa: ANN401
     from .evaluate import Forecaster, Runs
 
     doc = SP.load(args.split)
     sites = Forecaster(SP.crowd(doc, args.settings), SP.duration_of(doc), worlds=args.worlds)
-    runs = Runs.load(args.cells, sites.grid, planner=args.planner)
-    inputs = Inputs.of(doc, sites)
-    part = (args.partition or ["train"])[0]
-    found = samples(inputs, runs, doc["partitions"].get(part) or [], SP.seeds_of(doc, part))
-    _log(f"deepflow: {len(found)} worlds of {part}, each its runs pooled over seeds {SP.seeds_of(doc, part)}; CAGE sides " + ", ".join(sorted({f"{SP.base_of(w)} {inputs(w).rows.size}x{inputs(w).cols.size} of {inputs(w).grid_shape[0]}x{inputs(w).grid_shape[1]}" for w, *_ in found})))
-    model, meta = train(found, steps=None if args.steps == 0 else args.steps, epochs=args.epochs, batch=args.batch, optimizer=args.optimizer, seed=args.seed, device=args.device, log=_log)
-    meta.update({"split": str(args.split), "partition": part, "cells": str(args.cells), "crowd_seeds": list(sites.crowd_seeds)})
+    return doc, Runs.load(args.cells, sites.grid, planner=args.planner), Inputs.of(doc, sites)
+
+
+def _cmd_tune(args: argparse.Namespace) -> int:
+    import yaml
+
+    doc, runs, inputs = _setup(args)
+    out = tune(inputs, runs, doc, lrs=args.lr or TUNE_LRS, optimizer=args.optimizer, seed=args.seed, device=args.device, log=_log)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(yaml.safe_dump(out, sort_keys=False))
+    _log(f"wrote {args.out}")
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    import yaml
+
+    doc, runs, inputs = _setup(args)
+    lr, steps, optimizer, picked = args.lr, args.steps, args.optimizer, None
+    if args.tuned:
+        lr, steps, value, optimizer = chosen([yaml.safe_load(t.read_text()) for t in args.tuned])
+        picked = {"files": [str(t) for t in args.tuned], "lr": lr, "steps": steps, "validation_jsd": value}
+        _log(f"deepflow: the tuning rule chose {optimizer} at learning rate {lr:g} for {steps} updates (validation JSD {value:.4f})")
+    found = samples(inputs, runs, doc["partitions"].get("train") or [], SP.seeds_of(doc, "train"))
+    _log(f"deepflow: {len(found)} worlds of train, each its runs pooled; CAGE sides " + ", ".join(sorted({f"{SP.base_of(w)} {inputs(w).rows.size}x{inputs(w).cols.size} of {inputs(w).grid_shape[0]}x{inputs(w).grid_shape[1]}" for w, *_ in found})))
+    model, meta = train(found, steps=steps, lr=lr, optimizer=optimizer, batch=args.batch, seed=args.seed, device=args.device, log=_log)
+    meta.update({"split": str(args.split), "cells": str(args.cells), "crowd_seeds": list(inputs.sites.crowd_seeds), "tuned": picked})
     save(args.out, model, meta)
     _log(f"wrote {args.out}")
     return 0
@@ -460,16 +528,26 @@ def _cmd_predict(args: argparse.Namespace, score_maps: Callable[..., Any]) -> in
 def register(verbs: argparse._SubParsersAction, common: Callable[[argparse.ArgumentParser], None], score_maps: Callable[..., Any]) -> None:
     """Add `deepflow train|predict` to `flowedit forecast baseline`."""
     p = verbs.add_parser("deepflow", help="Deep Crowd-Flow (CAGE + SegNet): train on the split's runs, forecast its worlds", description="Deep Crowd-Flow retrained on the split's PEDS training runs, goals at the demand objects")
-    sub = p.add_subparsers(dest="deepflow_verb", required=True, metavar="{train,predict}")
-    q = sub.add_parser("train", help="train the network on a partition's runs (default train)")
-    common(q)
-    q.add_argument("--cells", type=Path, required=True, help="arena_evaluation's flow_cells.parquet of the split's benchmark")
-    q.add_argument("--steps", type=int, default=STEPS, help=f"SGD updates (default {STEPS}: the paper's 200 epochs over 12k samples at batch 64); 0 trains --epochs epochs instead")
-    q.add_argument("--epochs", type=int, default=EPOCHS, help=f"epochs when --steps is 0 (default {EPOCHS}, the paper's)")
+    sub = p.add_subparsers(dest="deepflow_verb", required=True, metavar="{tune,train,predict}")
+
+    def training(q: argparse.ArgumentParser) -> None:
+        common(q)
+        q.add_argument("--cells", type=Path, required=True, help="arena_evaluation's flow_cells.parquet of the split's benchmark")
+        q.add_argument("--optimizer", choices=OPTIMIZERS, default="adam", help=f"adam (default, learning rate {ADAM_LR}); sgd: the paper's (learning rate {LR}, momentum {MOMENTUM}), which stays at the all-zero output on a split's few worlds")
+        q.add_argument("--seed", type=int, default=0, help="seed of the initialization and the batches")
+        q.add_argument("--device", default=None, help="torch device (default cuda when available)")
+
+    q = sub.add_parser("tune", help="the tuning rule's runs: validation JSD per learning rate and training length", description=f"train on the train partition's training worlds and score the validation worlds (a fixed 20 %% of its edit chains) at {', '.join(map(str, TUNE_STEPS))} updates")
+    training(q)
+    q.add_argument("--lr", type=float, action="append", default=None, help=f"a learning rate to try; repeatable (default {', '.join(f'{v:g}' for v in TUNE_LRS)}); run one per process to use several GPU claims")
+    q.add_argument("--out", type=Path, required=True, help="tuning file to write (YAML)")
+    q.set_defaults(fn=_cmd_tune)
+    q = sub.add_parser("train", help="train the network on the train partition, at the tuned or the given settings")
+    training(q)
+    q.add_argument("--tuned", type=Path, action="append", default=None, help="tuning files from `deepflow tune`: train at the learning rate and length with the lowest validation JSD; repeatable")
+    q.add_argument("--steps", type=int, default=STEPS, help=f"updates without --tuned (default {STEPS}, the paper's)")
+    q.add_argument("--lr", type=float, default=None, help=f"learning rate without --tuned (default {ADAM_LR} with adam, {LR} with sgd)")
     q.add_argument("--batch", type=int, default=BATCH, help=f"batch size (default {BATCH}, the paper's)")
-    q.add_argument("--optimizer", choices=OPTIMIZERS, default="adam", help=f"adam (default): learning rate {ADAM_LR}; sgd: the paper's (learning rate {LR}, momentum {MOMENTUM}), which stays at the all-zero output on a split's few worlds")
-    q.add_argument("--seed", type=int, default=0, help="seed of the initialization, the validation split and the batches")
-    q.add_argument("--device", default=None, help="torch device (default cuda when available)")
     q.add_argument("--out", type=Path, required=True, help="model file to write")
     q.set_defaults(fn=_cmd_train)
     q = sub.add_parser("predict", help="forecast a split's worlds as a map file")
@@ -483,4 +561,4 @@ def register(verbs: argparse._SubParsersAction, common: Callable[[argparse.Argum
     q.set_defaults(fn=lambda a: _cmd_predict(a, score_maps))
 
 
-__all__ = ["CHANNELS", "FORMAT", "SIDE", "Cage", "Inputs", "Lines", "cage", "decoded", "forecast", "load", "merge_lines", "register", "samples", "save", "segnet", "target", "train"]
+__all__ = ["CHANNELS", "FORMAT", "SIDE", "TUNE_LRS", "TUNE_STEPS", "Cage", "Inputs", "Lines", "cage", "chosen", "decoded", "forecast", "load", "merge_lines", "register", "samples", "save", "segnet", "target", "train", "tune"]
