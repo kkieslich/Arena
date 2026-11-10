@@ -84,12 +84,17 @@ def test_every_job_is_one_stage_and_every_edit_pairs_with_its_base_at_its_seed(s
     assert "hospital_1__s6" in by_name and any(j.reference and j.seed == 6 for j in jobs)
     out = capsys.readouterr().out
     assert "arena evaluation benchmark --suite flowedit_pilot" in out and "--lanes 2" in out
+    # the parked robot of a crowd-only run comes up without a navstack
+    assert "--contest '[{name: peds_only, mobile: none}]'" in out
+    assert yaml.safe_load(SU.CONTEST) == [{"name": "peds_only", "mobile": "none"}]
 
 
 def test_stages_park_an_unseen_robot_and_last_the_split_s_duration(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path) -> None:
     path, _ = split
     suite = _suite(path, worlds, tmp_path / "s.yaml", "--robot", "mpo700")
     assert suite["references"] is False and suite["launch"]["human.robots.visible"] == "false" and suite["launch"]["lockstep"] == "true"
+    # the recorder leaves the skeleton frames out, so hri_producer stays idle
+    assert suite["record"] == {"exclude": ["tf_humans"]}
     for s in suite["stages"]:
         assert s["timeout"] == 120.0 and s["episodes"] == 1 and s["robot"] == "mpo700"
         assert s["modes"] == {"robots": "stationary", "obstacles": "scenario"}
@@ -218,17 +223,19 @@ def test_a_sweep_refuses_a_robot_task(split: tuple[Path, dict[str, Any]], tmp_pa
     assert not (tmp_path / "runs").exists()
 
 
-def test_the_shipped_h2_split_runs_its_planners_on_the_pilot_s_fountain_move_and_controls() -> None:
+def test_the_shipped_h2_split_runs_its_planners_on_data_v2_s_fountain_move_and_controls() -> None:
     splits = Path(SP.__file__).parent / "splits"
-    h2, pilot = SP.load(splits / "h2_planners.yaml"), SP.load(splits / "peds_pilot.yaml")
+    h2, v2 = SP.load(splits / "h2_planners.yaml"), SP.load(splits / "peds_v2.yaml")
     worlds = h2["partitions"]["train"]
     names = [SU.stage_name(j.world, j.seed) for j in SP.jobs(h2)]
     assert len(names) == len(set(names)) == 20 and {SU.parse_stage_name(n)[1] for n in names} == {1, 2, 3, 4, 5}
-    # the pilot's worlds, sources, crowd and train seeds: the same edited worlds and the same people per seed
-    assert set(worlds) <= set(pilot["partitions"]["train"]) and h2["sources"] == {"hospital_1": pilot["sources"]["hospital_1"]}
-    assert SP.crowd(h2) == SP.crowd(pilot) and SP.seeds_of(h2, "train") == SP.seeds_of(pilot, "train")
+    # v2's worlds, sources and base crowd (door entrances on): the same edited worlds and the same people per seed
+    assert set(worlds) <= set(v2["partitions"]["train"]) and h2["sources"] == {"hospital_1": v2["sources"]["hospital_1"]}
+    assert SP.crowd(h2) == SP.crowd(v2) and SP.crowd(h2)["entrances"]["rate"] > 0 and SP.seeds_of(h2, "train") == SP.seeds_of(v2, "train", "hospital_1")
     edit = "hospital_1__move_fountain__6e1d6873"
-    assert h2["control_worlds"] == {edit: pilot["control_worlds"][edit]} and set(worlds) == {"hospital_1", edit, *pilot["control_worlds"][edit]}
+    assert h2["control_worlds"] == {edit: v2["control_worlds"][edit]} and set(worlds) == {"hospital_1", edit, *v2["control_worlds"][edit]}
+    # the robot's end A stays clear of the main entrance's visitor source strip (0.8 to 1.8 m inside the door at y = 0)
+    assert SP.robot_task_of(h2)["start"][1] >= 3.0
     assert SP.robot_task_of(h2) is not None and [c["name"] for c in SP.contest_of(h2) or []] == ["dwb_blind", "dwb_social", "drlvo"]
     assert SP.duration_of(h2) == 300.0
 

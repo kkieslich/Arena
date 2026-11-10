@@ -483,6 +483,9 @@ class WorldManager(NodeInterface):
         footprints = itertools.repeat(None) if static_footprints is None else static_footprints
         placed = ((level_id, obstacle) for level_id, level in self.world.levels.items() for obstacle in level.all_static_entities)
         for (level_id, obstacle), footprint in zip(placed, footprints, strict=static_footprints is not None):
+            if footprint is not None and footprint.is_empty:
+                # a floor marking (a waiting bay): nothing of it takes floor, a robot parks on it
+                continue
             if footprint is None:
                 r = _UNKNOWN_FOOTPRINT_RADIUS
                 x, y = obstacle.pose.position.x, obstacle.pose.position.y

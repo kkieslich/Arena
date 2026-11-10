@@ -111,11 +111,45 @@ def transplant(runs: Runs, seeds: Sequence[int], sites: Any, scenario_of: Mappin
     return method
 
 
-def floor(runs: Runs, base: str, seeds: Sequence[int]) -> float | None:
-    """The base world's pooled map at `seeds` against the one at its other seeds, None without either."""
+@attrs.frozen
+class Floor:
+    """The JSD between two equal-size seed pools of an unchanged world, over the pairs `floor` draws: mean, spread, pool size."""
+
+    mean: float
+    sd: float
+    seeds: int
+    pairs: int
+
+
+#: pool pairs `floor` averages over at most
+FLOOR_PAIRS = 50
+
+
+def floor(runs: Runs, base: str, seeds: Sequence[int], max_pairs: int = FLOOR_PAIRS) -> Floor | None:
+    """Another crowd draw of the unchanged base world: n of its scored `seeds` pooled against n of its other seeds pooled,
+    n the smaller count, over every such pair (at most `max_pairs`, drawn by a fixed seed); None without either side.
+
+    It is the noise between two finite n-seed pools. A smooth expected-flow forecast is scored against one finite pool
+    only, so it can lie below this floor; the floor is a scale, not a bound, and stale at the other seeds stays the main
+    comparison.
+    """
+    import itertools
+
+    import numpy as np
+
+    scored = runs.seeds(base, seeds)
     other = other_seeds(runs, base, seeds)
-    a, b = runs.pooled(base, seeds), runs.pooled(base, other) if other else None
-    return None if a is None or b is None else jsd(a, b)
+    n = min(len(scored), len(other))
+    if n == 0:
+        return None
+    pairs = [(a, b) for a in itertools.combinations(scored, n) for b in itertools.combinations(other, n)]
+    if len(pairs) > max_pairs:
+        pairs = random.Random(0).sample(pairs, max_pairs)
+    values = [jsd(runs.pooled(base, a), runs.pooled(base, b)) for a, b in pairs]
+    values = [float(v) for v in values if v is not None]
+    if not values:
+        return None
+    return Floor(float(np.mean(values)), float(np.std(values)), n, len(values))
 
 
 @attrs.define
@@ -320,4 +354,4 @@ def fit_strength(world_seeds: Sequence[tuple[str, Sequence[int]]], tracks_of: Ca
     return best
 
 
-__all__ = ["ONE_SEED_FLOOR", "PREDICTED_COLUMNS", "TRACK_COUNTS", "Method", "Predicted", "Truth", "changes", "curve", "dirichlet", "fit_strength", "floor", "other_seeds", "score", "stale", "table", "track_maps", "transplant", "truths", "uniform", "world_seeds", "write_predicted"]
+__all__ = ["FLOOR_PAIRS", "ONE_SEED_FLOOR", "PREDICTED_COLUMNS", "TRACK_COUNTS", "Floor", "Method", "Predicted", "Truth", "changes", "curve", "dirichlet", "fit_strength", "floor", "other_seeds", "score", "stale", "table", "track_maps", "transplant", "truths", "uniform", "world_seeds", "write_predicted"]

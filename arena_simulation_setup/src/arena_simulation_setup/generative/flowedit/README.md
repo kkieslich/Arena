@@ -224,9 +224,15 @@ A split's own `settings` are its base crowd, which runs on every partition. `cro
 | `test_hsfm` | 0.5 /s | populate's count | `hsfm` |
 | `test_all` | 1.5 /s | twice populate's count | `orca` |
 
-The reader writes the crowd's planner on every person's agent type, and the pilot runs without entrances, so the planner needs no launch argument.
+The reader writes the crowd's planner on every person's agent type, so the planner needs no launch argument. Entrance visitors are released by HumanSim's sources with their visitor type, which carries the same planner.
 
-Entrance visitors follow their visitor type, but HumanSim despawns a released agent as soon as it stands inside its target sink, whatever it is doing, and the reader's sink strip (0.1 to 0.6 m inside the door) lies right in front of its source strip (0.8 to 1.8 m). A visitor whose way to its first stop runs along the door's wall crosses the sink within a second and is gone. Until the sink only takes people who leave, [`splits/peds_pilot.yaml`](splits/peds_pilot.yaml) runs without entrances (`settings: {entrances: {rate: 0}}`), so only the reader's placed people walk.
+Entrance visitors walk in from the source strip (0.8 to 1.8 m inside the door) past the door's sink strip (0.1 to 0.6 m), and leave by walking into the sink. HumanSim's sink takes a released agent only while it heads for that sink (kkieslich/humansim#2), so a visitor crossing it on the way in stays. The 9 Nov pilot, [`splits/peds_pilot.yaml`](splits/peds_pilot.yaml), ran before that fix without entrances (`settings: {entrances: {rate: 0}}`), so only the reader's placed people walked; [`splits/peds_v2.yaml`](splits/peds_v2.yaml) runs with them.
+
+### Data v2
+
+[`splits/peds_v2.yaml`](splits/peds_v2.yaml) is the Stage 1 dataset (study design §5, decided 10 Nov): train hospital_1 and office_1, base worlds at seeds 1-5 and 8 of 10 chains per edit type with their controls at seeds 1-2 (`seeds.train: {bases, edits}`); held-out edits, the other 2 chains per type and train world drawn by seed among those the pilot never ran, at seeds 6-8; held-out worlds reception and hallway_clinic, each with an authored `demand` scenario, base and chains 1-2 per type at seeds 6-8. Each held-out world's base also runs at seeds 1-5 (`baseline_seeds`), only for the stale and transplanted baselines and the across-seed floor: those runs belong to `held_out_worlds`, outside its seeds, so nothing trains or scores on them. The test crowds run on the first held-out chain of every edit type per train world, with their controls, plus baseline runs of their bases at seeds 1-3. Door entrances are on (the defaults of `entrances`).
+
+hallway_clinic is a generated layout (world generator `hallway`, seed 7, recorded in its `generated_from.yaml`) authored into a clinic: room names and purposes, a front and a back door, furniture and the `demand` scenario. reception got its `demand` scenario and two `has_purpose` facts (its zone names read as transit, so nobody would start there); with one door between its two rooms and none outside, it has no entrances and no access edits.
 
 ## Paired runs
 
@@ -234,9 +240,9 @@ Entrance visitors follow their visitor type, but HumanSim despawns a released ag
 
 ```bash
 flowedit suite splits/peds_pilot.yaml
-arena evaluation benchmark --suite flowedit_peds_pilot --contest '[{name: peds_only}]' --lanes 2
+arena evaluation benchmark --suite flowedit_peds_pilot --contest '[{name: peds_only, mobile: none}]' --lanes 2
 flowedit suite splits/peds_pilot.yaml --crowd test_orca
-arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{name: peds_only}]' --lanes 2
+arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{name: peds_only, mobile: none}]' --lanes 2
 ```
 
 | Stage field | Value |
@@ -247,13 +253,13 @@ arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{n
 | `timeout` | the split's `duration`, sim seconds |
 | `robot`, `modes.robots`, `config.stationary` | the runner needs a robot in every stage: `--robot` (default `jackal`) parked at (1000, 1000) by the `stationary` mode, as the runner parks its `unhindered_peds` reference runs |
 
-The suite's `launch` runs flatsim headless under lockstep with `human.robots.visible: false`, so the people never see the parked robot, and `references: false`, since the split names its own reference runs. The contestant needs no planner: `[{name: peds_only}]` brings the robot up with the sim's default adapter. `--dry-run` prints the suite without writing a scenario or the suite, and a suite file `flowedit suite` did not write is kept unless `--force`.
+The suite's `launch` runs flatsim headless under lockstep with `human.robots.visible: false`, so the people never see the parked robot, and `references: false`, since the split names its own reference runs. Its `record` block (`exclude: [tf_humans]`, arena_evaluation's suite record block) leaves the pedestrians' skeleton frames out of the recording: nothing FLOWEDIT scores reads them, and in a headless run the recorder is the only subscriber of `<env>/humans/tf`, so `hri_producer` then stays idle instead of computing them (about 40 % of a core per lane, measured on hospital_1); an arena_evaluation without the block ignores it. The contestant needs no planner: `[{name: peds_only, mobile: none}]` brings the parked robot up with the no-op mobile adapter, not the sim's default navstack (Nav2 in flatsim, about 12 % of a core and 0.4 GB per lane for a robot that never moves, measured on hospital_1); the runner then expects no planner beats from it. `--dry-run` prints the suite without writing a scenario or the suite, and a suite file `flowedit suite` did not write is kept unless `--force`.
 
 ### Planners through the edit
 
 A split with a `robot_task` (a scenario `robots:` entry: `start` and `phases`) has the robot drive it in every stage. The task is added to the scenario after the crowd is read, so the people are the ones of the robot-free suite at the same seed. The scenario is `flowedit_<scenario>_<settings digest>_r<task digest>_s<seed>`, beside the robot-free one, and the stage runs `modes.robots: scenario` instead of the parking spot, under `human.robots.visible: true`. Every goto of the task must be a pose: a named target (a zone, a door, an object's dock) can resolve differently in an edited world, a pose is the same in all of them. A loop without `until` repeats until the episode's `timeout`, so every stage drives for the split's `duration`. `contest` lists the planners, as arena_evaluation contestants; `flowedit suite` writes them as contest `flowedit_<split name>` into `<imported assets root>/contests/` and prints `--contest flowedit_<split name>`. `flowedit sweep` refuses a split with a robot task, since `flowedit run` records without one.
 
-[`splits/h2_planners.yaml`](splits/h2_planners.yaml) is the Stage 1 test of H2: hospital_1, its first pilot fountain move and the move's two geometry-only controls, at the pilot's train seeds 1-5 on its base crowd, with Nav2 DWB (`dwb_blind`), DWB with `arena_social_cost_layer` (`dwb_social`) and DRL-VO (`drlvo`) shuttling between the central hallway and the laboratory past both fountain spots: 60 episodes of 300 s.
+[`splits/h2_planners.yaml`](splits/h2_planners.yaml) is the Stage 1 test of H2: hospital_1, its first fountain move and the move's two geometry-only controls, at seeds 1-5 on data v2's base crowd (door entrances on, the same people as v2's train runs), with Nav2 DWB (`dwb_blind`), DWB with `arena_social_cost_layer` (`dwb_social`) and DRL-VO (`drlvo`) shuttling between the central hallway and the laboratory past both fountain spots: 60 episodes of 300 s. The H2 test is the contrast edit minus control per seed, for each control and planner (`evaluation edits --split splits/h2_planners.yaml`, paired t-test at n = 5, Holm within the contrasts), with edit minus base and control minus base reported beside it.
 
 ```sh
 flowedit suite splits/h2_planners.yaml
@@ -312,7 +318,7 @@ Two forecasters read the same inputs:
 **Validity** ([`validity.py`](forecast/validity.py)):
 - `score`: each forecaster and the fair baselines per world of a partition, against the across-seed floor.
   - **stale** is the base world's pooled map from its runs at the split's *other* seeds, never the scored crowd draws. **transplanted** is that map with the edited object's surroundings (2 m) moved, copied or dropped with it. A partition whose base world ran at no other seed (the pilot's office_1) has neither.
-  - **floor** is the base world at the scored seeds against itself at the other seeds: what a new crowd draw of an unchanged world costs.
+  - **floor** is another crowd draw of the unchanged base world: its runs at the n scored seeds, pooled, against n of its runs at other seeds, pooled (n the smaller count), averaged over every such pair of pools. It is the noise between two finite n-seed samples of one flow. A smooth expected-flow forecast is scored against one finite pool only, so it can lie below the floor (on the pilot: 0.301 against ~0.31); read the floor as a scale, not a bound. The main comparison is the forecast against stale at the other seeds.
   - `forecaster 1m` is the occupancy JSD on 1 m cells: the coarse scale at which the Bayesian Floor Field transferred to unseen worlds.
   - A second table puts each edit's and control's **recorded change** (against its base at the same seeds) beside each forecaster's **predicted change** (its map of the edit against its map of the base). The inert copy and the object moved without its demand should change little, the function-carrying edit a lot.
 - `curve`: forecast error against post-edit tracks seen.
@@ -378,9 +384,9 @@ Six parameters are fitted on the train partition (`forecast fit`): σ (kernel, m
 
 ## Placement (INFRA)
 
-[`place.py`](place.py) places the INFRA study's elements (study design §3, §4) through these edits. `CATALOG` holds a charger pair (`charger_1`, `charger_2`: `robot_charger`, 1.0 m apart centre to centre, 175 W, 1.2 m approach), a bay pair (`bay_1`, `bay_2`: `waiting_bay` slots, 1.0 m apart), `locker_1` (`parcel_locker`, 1.5 m access zone) and `loading_point` (a `waiting_bay` slot), each object with its jackal dock. The names are the ones the fleet task mode refers to.
+[`place.py`](place.py) places the INFRA study's elements (study design §3, §4) through these edits. `CATALOG` holds a charger pair (`charger_1`, `charger_2`: `robot_charger`, 1.0 m apart centre to centre, 175 W, 1.2 m approach), a bay pair (`bay_1`, `bay_2`: `waiting_bay` slots, 1.0 m apart), `locker_1` (`parcel_locker`, 1.5 m access zone, its dock from 0.84 m, beyond the door sweep) and `loading_point` (a `waiting_bay` slot), each object with its jackal dock. The names are the ones the fleet task mode refers to.
 
-`candidate_spots(site, element)` lists, deterministically and cached, a spot every 1 m along every wall piece (`wall_pieces`) of the allowed zones, less `EXCLUDED_ZONES` (the twin's ramp, stair landing and the zones NAV@r at 0.325 m cuts off). A pair is one spot on one piece. A spot carries its objects' poses (fronts into the room, backs at the wall gap), footprints, docks and dock goto points, the clear zone and turning circle in front, the corridor width it leaves (distance transform of the floor raster), and a verdict per §3 rule: `pass` or `fail` where the site has the data, `unknown` (filtering nothing) for outlets, tactile paths, exit width, dead ends, and doors or lifts on a level without any. An object whose model resolves without a bounding box (a floor marking, the twin's `link_scan`) is no obstacle; its dock is. An element model must resolve and carry a `face`.
+`candidate_spots(site, element)` lists, deterministically and cached, a spot every 1 m along every wall piece (`wall_pieces`) of the allowed zones, less the zones NAV@r cuts off at the wheelchair radius (`cut_off_zones`, on walls and doors alone; `cut_off=False` keeps them) and any `exclude` patterns (the twin's INFRA site config names its ramp). A pair is one spot on one piece. A spot carries its objects' poses (fronts into the room, backs at the wall gap), footprints, docks and dock goto points, the clear zone in front and the 1.5 m turning circle beyond the docks, the corridor width it leaves (the free run in front of it: rays along the normal every 0.25 m across its width, each to the first obstacle on the floor raster or out of its zone, the run more than half of the rays find, so a pillar beside it or before one edge does not fail it), and a verdict per §3 rule: `pass` or `fail` where the site has the data, `unknown` (filtering nothing) for outlets, tactile paths, exit width, dead ends, and doors or lifts on a level without any. An object whose model resolves without a bounding box (a floor marking, the twin's `link_scan`) is no obstacle; its dock is. An element model must resolve and carry a `face`.
 
 ```python
 spots = {name: candidate_spots(site, name) for name in CATALOG}
@@ -401,15 +407,22 @@ random_valid(space, 5, seed=0)      # the random control
 occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=1500)  # from the site-as-is runs
 ```
 
-[`infra.py`](infra.py) writes the INFRA Stage 1 suites (the Exposé's mini H1), seed-paired by `flowedit suite`'s stage names `<world>__s<seed>`, both launched with `human.robots.visible: true` and `jackal[4]`:
+[`infra.py`](infra.py) and [`infra_cli.py`](infra_cli.py) write the INFRA Stage 1 suites, seed-paired by `flowedit suite`'s stage names `<world>__s<seed>`, all launched in flatsim with `human.robots.visible: true` and `jackal[4]`. In run order:
 
 ```bash
-flowedit infra reference                               # suite infra_h1_site: the site as is without robots, seeds 1-5; run it first
-flowedit infra layouts --occupancy <benchmark dir>      # search, save 7 layout copies (with study_mix), write suite infra_h1
-flowedit infra layouts --dry-run                       # the robot-only and random picks without the occupancy, nothing written
+flowedit infra reference                              # infra_h1_site: the site as is without robots, seeds 1-5
+flowedit infra premise                                # infra_h1_premise: narrowest vs widest layout, seeds 1-3, with the fleet and without robots
+flowedit infra layouts --occupancy <site run> --rate R  # infra_h1: robot-only pick, joint top 10, 5 random; seeds 1-5, with and without robots
+flowedit infra evaluation --pick <infra_pick.json>    # infra_h1_eval + infra_h1_eval_site: both picks and the site, seeds 11-20
 ```
 
-`layouts` takes the robot-only pick, the best of the joint top 10 and 5 random valid layouts. It saves each as `<site>__layout_<id>` (assets hardlinked; it refuses a local root on another mount) with the scenario copied in. Each copy gets a stage per seed with the robots in `fleet` mode (homes on the bays and chargers, `loading_point`, `locker_1`) and `references: true`, which adds the layout without robots (`unhindered_peds`). It writes `<suite>.layouts.json` beside the suite and prints the benchmark call, whose contest sets the 22 Wh battery. `--rate` defaults to 75 % of the fleet's capacity in the slowest layout at `--speed` (0.5 m/s, the jackal's planner limit).
+- Where each element may go comes from the site config [`infra_sites/<site>.yaml`](infra_sites/smu_link_full.yaml) (`--site-config` takes another): per element `zones` (names or patterns), `areas` (world-frame polygons) or a `pin`, plus `exclude` and the crowd `scenario`. The twin's is the placeholder until the site zone map: loading point pinned at route end A, locker in `upper_concourse_north`, chargers and bays anywhere valid.
+- The joint search ranks only the layouts within 1.05 x the robot-only pick's travel per job (`search.travel_cap`); the selection runs the robot-only pick, the joint top 10 and 5 random valid layouts. Every manifest row carries its ranking score.
+- Layout copies `<site>__layout_<id>` hardlink the site's assets (the command refuses a local root on another mount) and get the crowd scenario with its `locker_visitors.yaml` merged in, the visitors' target in front of that copy's locker. `keep_out` takes the scenario's and the visitors' sources and sinks; a pinned element there is refused.
+- Layout suites ask only for the runs without robots (`references: [unhindered_peds]`). Every suite carries a `record` block (`infra.RECORD`) that keeps the engine's pedestrian tracks, the robots and the semantics and leaves out `arena_peds`, animation states, the humans' tf topic (so `hri_producer` idles in a headless run) and the pedestrians' skeleton, body, named and numbered frames on /tf: on the twin that is about 7 % of a full recording.
+- The contest scales every battery to 22 Wh and draws the start charge per robot and seed from 40-100 %.
+- Each layout suite writes `<suite>.layouts.json` beside it; `evaluation infra table|premise|pick|compare` (kkieslich/arena-evaluation) reads it with the processed runs.
+- Lanes resolve worlds from the local assets root, the package worlds and the buckets, not from a dev tree's untracked `assets/worlds`: put the site into the local assets root too (`cp -al <site dir> $ARENA_ASSETS_DIR_LOCAL/worlds/`), where the layout copies go, and export the same `ARENA_ASSETS_DIR_LOCAL` in every lane.
 
 ## Files
 
@@ -423,7 +436,8 @@ flowedit infra layouts --dry-run                       # the robot-only and rand
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
 | `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
 | `search.py` | INFRA layout searches: robot-only, joint (occupancy fallback), random valid |
-| `infra.py` | the INFRA Stage 1 suites: the site as is, and the searched layouts with the fleet |
+| `infra.py`, `infra_cli.py` | the INFRA Stage 1 suites (site as is, premise check, selection, evaluation), the site config, locker visitors |
+| `infra_sites/` | INFRA site configs: where each element may go, by its function |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |
