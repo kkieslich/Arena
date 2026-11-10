@@ -9,9 +9,11 @@ its base's `sources` entry, so the file is all a sweep needs:
     duration: 300            # seconds recorded per run
     settings: {entrances: {rate: 0}}  # crowd settings of every run, a sweep's --settings merged over them (optional)
     seeds:                   # crowd seeds: one list for every partition, or a list per partition
-      train: [1, 2, 3, 4, 5]
+      train: [1, 2, 3, 4, 5] # or apart for its base worlds and its edits: {bases: [1, 2, 3, 4, 5], edits: [1, 2]}
       held_out_edits: [6, 7, 8]
       held_out_worlds: [6, 7, 8]
+    baseline_seeds:          # base worlds of a partition also run at these seeds, for baselines only (optional)
+      held_out_worlds: [1, 2, 3, 4, 5]
     partitions:
       train: [hospital_1, hospital_1__move_fountain__6e1d6873, hospital_1__insert_fountain_inert__4a32a4fc, ...]
       held_out_edits: [...]  # other edits of the train worlds
@@ -20,6 +22,8 @@ its base's `sources` entry, so the file is all a sweep needs:
       hospital_1__move_fountain__6e1d6873: [hospital_1__insert_fountain_inert__4a32a4fc, ...]
     crowds:                  # test crowds (optional): a settings file, relative to the split, and the partitions it runs on
       test_orca: {settings: crowds/test_orca.yaml, partitions: [held_out_edits]}
+      # optional: only some worlds of its partitions, and its own baseline seeds
+      test_size: {settings: crowds/test_size.yaml, partitions: [held_out_edits], worlds: [...], baseline_seeds: [1, 2, 3]}
     robot_task:              # the robot's task in every run of `flowedit suite` (optional), a scenario `robots:` entry
       start: [10.0, 2.0, 1.5708]
       phases: [{loop: [{goto: [14.8, 22.9, -0.82]}, {goto: [10.0, 2.0, -1.5708]}]}]
@@ -31,9 +35,20 @@ holds the link, as `flowedit generate --controls` writes it in its manifest; a s
 
 Every edited world is scored against its base world run with the same seed. A partition that lists edits but not their
 base world (held-out edits run at test seeds) gets the base world at its seeds as a reference run, never a training run.
+A partition's seeds may differ for its base worlds and its edits (`{bases, edits}`): a base world then runs at more seeds
+than its edits, and every edit seed still needs a base run at it, its own or a reference.
+
+A baseline that predicts a scored run from recorded runs (stale flow, transplanted flow) must not see the scored run's
+crowd draw, so it is built from base runs at other seeds, and the across-seed floor compares a world's runs across seeds.
+`baseline_seeds` gives a partition's base worlds (its listed ones and the bases of its edits) these runs: each runs once
+more per baseline seed, as a baseline run (`Job.baseline`). A baseline run belongs to its held-out partition, outside
+that partition's own seeds, so code that trains on `train`, or scores a partition at `seeds_of`, never reads one. A base
+world that already runs at a seed (a train world under the base crowd) is not run again. A test crowd's `baseline_seeds`
+do the same for the base worlds it runs.
 
 The split's own `settings` are its base crowd, which runs on every partition. A test crowd's file is merged over them and
 runs only on its partitions, its reference runs included, so an edit still pairs with its base world under one crowd.
+A test crowd's `worlds` keeps it to those worlds of its partitions (each still with its base world's reference runs).
 
 Without `robot_task` the robot parks off the map, unseen, and the runs record the crowd alone. With it, `flowedit suite`
 adds the task to every run's scenario after the crowd is read, so the people are the same as without it, and the people
@@ -61,6 +76,10 @@ SPLIT_FORMAT = "flowedit-split/1"
 PARTITIONS = ("train", "held_out_edits", "held_out_worlds")
 SOURCE_KEYS = ("scenario", "seed", "per_type", "steps", "controls")
 CROWD_KEYS = ("settings", "partitions")
+#: Keys a test crowd may add to CROWD_KEYS: a subset of its partitions' worlds, and seeds of baseline runs of their base worlds
+CROWD_OPTIONAL = ("worlds", "baseline_seeds")
+#: The two seed lists of a partition whose base worlds and edits run at different seeds
+SEED_KINDS = ("bases", "edits")
 #: Top-level keys of a split that `flowedit suite` reads and `flowedit sweep` cannot record
 ROBOT_TASK = "robot_task"
 CONTEST = "contest"
@@ -127,8 +146,8 @@ def _check_crowds(doc: Mapping[str, Any]) -> None:
     for name, entry in table.items():
         if not isinstance(name, str) or not _CROWD_NAME.match(name) or name in (BASE_CROWD, ALL_CROWDS):
             raise ValueError(f"crowds: {name!r} is no crowd name (lower case, digits and _, not {BASE_CROWD!r} or {ALL_CROWDS!r})")
-        if not isinstance(entry, Mapping) or sorted(entry) != sorted(CROWD_KEYS):
-            raise ValueError(f"crowds.{name}: a mapping of exactly {list(CROWD_KEYS)}")
+        if not isinstance(entry, Mapping) or not set(CROWD_KEYS) <= set(entry) or set(entry) - set(CROWD_KEYS) - set(CROWD_OPTIONAL):
+            raise ValueError(f"crowds.{name}: a mapping of {list(CROWD_KEYS)}, optionally {list(CROWD_OPTIONAL)}")
         if not isinstance(entry["settings"], str):
             raise ValueError(f"crowds.{name}.settings is the path of a crowd settings file")
         parts = entry["partitions"]
@@ -136,6 +155,17 @@ def _check_crowds(doc: Mapping[str, Any]) -> None:
             raise ValueError(f"crowds.{name}: names no partition to run on")
         if unknown := sorted(set(parts) - set(PARTITIONS)):
             raise ValueError(f"crowds.{name}: unknown partitions {unknown}, known: {list(PARTITIONS)}")
+        if "worlds" in entry:
+            worlds = entry["worlds"]
+            listed = {w for p in parts for w in (doc.get("partitions") or {}).get(p) or []}
+            if not isinstance(worlds, list) or not worlds:
+                raise ValueError(f"crowds.{name}.worlds: a non-empty list of worlds of its partitions")
+            if stray := sorted(set(worlds) - listed):
+                raise ValueError(f"crowds.{name}.worlds: {stray} are in none of its partitions {parts}")
+        if "baseline_seeds" in entry:
+            _seed_list(f"crowds.{name}.baseline_seeds", entry["baseline_seeds"])
+            if clash := sorted({int(s) for s in entry["baseline_seeds"]} & {s for p in parts for s in seeds_of(doc, p)}):
+                raise ValueError(f"crowds.{name}.baseline_seeds: {clash} are also seeds its partitions are scored at")
 
 
 def check(doc: Mapping[str, Any]) -> None:
@@ -170,8 +200,24 @@ def check(doc: Mapping[str, Any]) -> None:
     else:
         lists = {"every partition": seeds}
     for part, values in lists.items():
-        if not isinstance(values, list) or not values or not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
-            raise ValueError(f"seeds of {part}: a non-empty list of crowd seeds, got {values!r}")
+        if isinstance(values, Mapping):
+            if sorted(values) != sorted(SEED_KINDS):
+                raise ValueError(f"seeds of {part}: a list, or a mapping of exactly {list(SEED_KINDS)}, got {sorted(values)}")
+            for kind in SEED_KINDS:
+                _seed_list(f"seeds of {part} ({kind})", values[kind])
+        else:
+            _seed_list(f"seeds of {part}", values)
+    baseline = doc.get("baseline_seeds") or {}
+    if not isinstance(baseline, Mapping):
+        raise ValueError("baseline_seeds maps a partition to the seeds its base worlds also run at, for baselines only")
+    if unknown := sorted(set(baseline) - set(PARTITIONS)):
+        raise ValueError(f"baseline_seeds of unknown partitions {unknown}, known: {list(PARTITIONS)}")
+    for part, values in baseline.items():
+        _seed_list(f"baseline_seeds of {part}", values)
+        if part == "train":
+            raise ValueError("baseline_seeds of train: a train world's runs are training runs, give it more seeds instead")
+        if clash := sorted({int(v) for v in values} & set(seeds_of(doc, part))):
+            raise ValueError(f"baseline_seeds of {part}: {clash} are also seeds it is scored at")
     if not isinstance(doc.get("settings") or {}, Mapping):
         raise ValueError("settings is a mapping of crowd settings, as a settings file holds them")
     crowd(doc)
@@ -248,10 +294,31 @@ def _check_controls(doc: Mapping[str, Any], partition_of: Mapping[str, str]) -> 
                 raise ValueError(f"control_worlds: {control} is in {partition_of.get(control, 'no partition')}, its edit {edit} in {partition_of[edit]}")
 
 
-def seeds_of(doc: Mapping[str, Any], partition: str) -> list[int]:
-    """The crowd seeds `partition` runs at: its own list when `seeds` is a mapping, else the one list."""
+def _seed_list(where: str, values: object) -> None:
+    if not isinstance(values, list) or not values or not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        raise ValueError(f"{where}: a non-empty list of crowd seeds, got {values!r}")
+
+
+def seeds_of(doc: Mapping[str, Any], partition: str, world: str | None = None) -> list[int]:
+    """The crowd seeds `partition` runs at: its own list when `seeds` is a mapping, else the one list. A partition with
+    seeds apart for its base worlds and its edits gives `world`'s list, and without `world` every seed of either, in order."""
     seeds = doc.get("seeds", [0])
-    return [int(s) for s in (seeds.get(partition) or [] if isinstance(seeds, Mapping) else seeds)]
+    entry = seeds.get(partition) or [] if isinstance(seeds, Mapping) else seeds
+    if isinstance(entry, Mapping):
+        if world is not None:
+            return [int(s) for s in entry["bases" if is_base(world) else "edits"]]
+        return [int(s) for s in dict.fromkeys([*entry["bases"], *entry["edits"]])]
+    return [int(s) for s in entry]
+
+
+def baseline_seeds_of(doc: Mapping[str, Any], partition: str, crowd: str = BASE_CROWD) -> list[int]:
+    """The seeds the base worlds of `partition` also run at under crowd `crowd`, for baselines only."""
+    if crowd == BASE_CROWD:
+        values = (doc.get("baseline_seeds") or {}).get(partition) or []
+    else:
+        entry = _crowd_entry(doc, crowd)
+        values = entry.get("baseline_seeds") or [] if partition in entry["partitions"] else []
+    return [int(s) for s in values]
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -275,11 +342,13 @@ class Job:
     #: a base world run at a partition's seeds only for its edits to be scored against, never trained on
     reference: bool = False
     crowd: str = BASE_CROWD
+    #: a base world run at a baseline seed: only for the baselines and the across-seed floor, never trained on or scored
+    baseline: bool = False
 
     @property
     def label(self) -> str:
         where = self.partition if self.crowd == BASE_CROWD else f"{self.crowd}/{self.partition}"
-        return f"[{where}] {self.world} seed {self.seed}" + (" (reference)" if self.reference else "")
+        return f"[{where}] {self.world} seed {self.seed}" + (" (reference)" if self.reference else "") + (" (baseline only)" if self.baseline else "")
 
     @property
     def log_name(self) -> str:
@@ -293,20 +362,36 @@ class Job:
 
 
 def jobs(doc: Mapping[str, Any], partitions: Iterable[str] = PARTITIONS, crowd: str = BASE_CROWD) -> list[Job]:
-    """Every run of crowd `crowd` on the chosen partitions it runs on: each world once per seed of its partition, in file
-    order. An edited world whose base world runs at none of its seeds gets that base world as a reference run at them,
-    first in the partition."""
-    parts = [p for p in partitions if p in partitions_of(doc, crowd)]
-    listed = [Job(part, world, seed, crowd=crowd) for part in parts for world in (doc["partitions"].get(part) or []) for seed in seeds_of(doc, part)]
-    have = {(j.world, j.seed) for j in listed}
+    """Every run of crowd `crowd` on the chosen partitions it runs on: each world once per seed of its partition (its base
+    worlds' or its edits' seeds when they differ), in file order, a test crowd's `worlds` only. An edited world whose base
+    world runs at none of its seeds among the chosen partitions gets that base world as a reference run at them, first in
+    the partition. Then the partition's base worlds run at its baseline seeds, leaving out every (world, seed) the crowd
+    runs in any partition."""
+    entry = None if crowd == BASE_CROWD else _crowd_entry(doc, crowd)
+    keep = set(entry["worlds"]) if entry is not None and "worlds" in entry else None
+    every = partitions_of(doc, crowd)
+    parts = [p for p in partitions if p in every]
+
+    def listed_in(part: str) -> list[Job]:
+        return [Job(part, world, seed, crowd=crowd) for world in (doc["partitions"].get(part) or []) if keep is None or world in keep for seed in seeds_of(doc, part, world)]
+
+    listed = {part: listed_in(part) for part in every}
+    have = {(j.world, j.seed) for part in parts for j in listed[part]}
+    # a baseline run repeats no run of the crowd, in a chosen partition or not
+    ran = have | {(j.world, j.seed) for part in every for j in listed[part]}
     out: list[Job] = []
     for part in parts:
-        for job in (j for j in listed if j.partition == part):
+        for job in listed[part]:
             base = base_of(job.world)
             if base != job.world and (base, job.seed) not in have:
                 have.add((base, job.seed))
                 out.append(Job(part, base, job.seed, reference=True, crowd=crowd))
-        out.extend(j for j in listed if j.partition == part)
+        out.extend(listed[part])
+        for base in dict.fromkeys(base_of(j.world) for j in listed[part]):
+            for seed in baseline_seeds_of(doc, part, crowd):
+                if (base, seed) not in have | ran:
+                    have.add((base, seed))
+                    out.append(Job(part, base, seed, crowd=crowd, baseline=True))
     return out
 
 
@@ -429,4 +514,4 @@ def sweep(
     return counts
 
 
-__all__ = ["ALL_CROWDS", "BASE_CROWD", "CONTEST", "PARTITIONS", "ROBOT_TASK", "SPLIT_FORMAT", "Job", "base_of", "check", "contest_of", "crowd", "crowd_names", "duration_of", "generate_argv", "is_base", "jobs", "load", "partitions_of", "regenerate_worlds", "robot_task_of", "seeds_of", "sweep", "verify"]
+__all__ = ["ALL_CROWDS", "BASE_CROWD", "CONTEST", "PARTITIONS", "ROBOT_TASK", "SEED_KINDS", "SPLIT_FORMAT", "Job", "base_of", "baseline_seeds_of", "check", "contest_of", "crowd", "crowd_names", "duration_of", "generate_argv", "is_base", "jobs", "load", "partitions_of", "regenerate_worlds", "robot_task_of", "seeds_of", "sweep", "verify"]

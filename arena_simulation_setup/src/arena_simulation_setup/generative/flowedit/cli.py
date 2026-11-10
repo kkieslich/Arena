@@ -1,8 +1,9 @@
-"""`flowedit`: build the FLOWEDIT graph of a world and scenario, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, write a split as a seed-paired benchmark suite, and forecast its flow."""
+"""`flowedit`: build the FLOWEDIT graph of a world and scenario, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, write a split as a seed-paired benchmark suite, forecast its flow, and write the INFRA Stage 1 suites."""
 
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -189,7 +190,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     crowds = _crowds(doc, args.crowd)
     if args.dry_run:
         for job in (j for name in crowds for j in SP.jobs(doc, parts, name)):
-            print(f"{job.crowd}\t{job.partition}\t{job.world}\tseed {job.seed}" + ("\treference" if job.reference else ""))
+            print(f"{job.crowd}\t{job.partition}\t{job.world}\tseed {job.seed}" + ("\treference" if job.reference else "") + ("\tbaseline only" if job.baseline else ""))
         return 0
     counts = SP.sweep(doc, out, partitions=parts, crowds=crowds, settings=args.settings, jobs_at_once=args.jobs, domain_base=args.domain_base, regenerate=not args.no_generate, stagger=args.stagger, log=lambda m: print(m, file=sys.stderr))
     print(f"{out}: {counts['done']} recorded, {counts['skipped']} already there, {counts['failed']} failed")
@@ -211,10 +212,11 @@ def _cmd_suite(args: argparse.Namespace) -> int:
     parts = args.partition or list(SP.PARTITIONS)
     SP.partitions_of(doc, args.crowd)
     crowd = SP.crowd(doc, args.settings, args.crowd)
+    # before any world is generated or read: an empty suite would only show after every world was made
+    if not SP.jobs(doc, parts, args.crowd):
+        raise ValueError(f"crowd {args.crowd} runs on {SP.partitions_of(doc, args.crowd)}, none of {parts} lists a world for it: the suite would be empty")
     suite = SU.build(doc, crowd, parts, worlds=args.worlds, robot=args.robot, crowd_name=args.crowd, regenerate=not args.no_generate, dry_run=args.dry_run, log=lambda m: print(m, file=sys.stderr))
     stages = len(suite["stages"])
-    if not stages:
-        raise ValueError(f"crowd {args.crowd} runs on {SP.partitions_of(doc, args.crowd)}, none of {parts}: the suite would be empty")
     contestants = SP.contest_of(doc)
     if args.dry_run:
         print(to_yaml(suite), end="")
@@ -235,13 +237,20 @@ def _cmd_suite(args: argparse.Namespace) -> int:
     if contestants:
         print(f"wrote {contest}: {len(contestants)} contestants")
     # the contest has the suite's name, which `--contest` resolves as `--suite` does
-    print(SU.benchmark_command(written.stem, args.lanes, *([written.stem] if contestants else [])))
+    command = SU.benchmark_command(written.stem, args.lanes, *([written.stem] if contestants else []))
+    root = SU.imported_for(written)
+    if root is None:
+        print(f"note: `--suite {written.stem}` resolves under {SU.default_out(args.split, args.crowd).parent}, not {written.parent}; write the suite with the default --out, or into a directory named {SU.SUITES}/", file=sys.stderr)
+    elif root != SU.default_out(args.split, args.crowd).parent.parent.resolve():
+        # the runner finds the suite under ARENA_ASSETS_DIR_IMPORTED, so the command names the root the suite was written to
+        command = f"ARENA_ASSETS_DIR_IMPORTED={shlex.quote(str(root))} {command}"
+    print(command)
     return 0
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="flowedit", description="FLOWEDIT graphs: each object's demand on its KG node. `flowedit <verb> --help` lists a verb's options.")
-    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,edit,generate,read,run,sweep,suite,forecast}")
+    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,edit,generate,read,run,sweep,suite,forecast,infra}")
     p = verbs.add_parser("build", help="build the graph of a world and scenario", description="build the graph of a world and scenario, a dry run that prints it without --write")
     p.add_argument("world", help="the world to build from")
     p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
@@ -357,6 +366,10 @@ def _parser() -> argparse.ArgumentParser:
     from .forecast.cli import register
 
     register(verbs)
+
+    from . import infra_cli
+
+    infra_cli.add_parser(verbs)
     return parser
 
 
