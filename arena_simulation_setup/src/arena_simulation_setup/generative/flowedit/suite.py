@@ -22,6 +22,10 @@ ROBOT = "jackal"
 CONTEST = "[{name: peds_only, mobile: none}]"
 #: Launch args of the whole run: lockstep for runs that pair by seed, people blind to the parked robot
 LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "false"}
+#: What the recorder leaves out of every run (arena_evaluation's suite `record` block): the pedestrians' skeleton frames on
+#: `<env>/humans/tf`. Nothing FLOWEDIT scores reads them, and the recorder is the topic's only subscriber in a headless
+#: run, so leaving it out also keeps `hri_producer` from computing them (about 40 % of a core per lane).
+RECORD = {"exclude": ["tf_humans"]}
 #: Launch args of a run whose robot drives the split's robot task: the people see it
 LAUNCH_TASK = {**LAUNCH, "human.robots.visible": "true"}
 #: First line of every suite and contest this writes, so it never replaces one it did not write
@@ -60,7 +64,7 @@ def suite_doc(stages: Sequence[Mapping[str, Any]], launch: Mapping[str, str] | N
     names = [s["name"] for s in stages]
     if dup := sorted({n for n in names if names.count(n) > 1}):
         raise ValueError(f"stages {dup} appear twice")
-    doc = {"references": False, "launch": dict(LAUNCH if launch is None else launch), "stages": [dict(s) for s in stages]}
+    doc = {"references": False, "launch": dict(LAUNCH if launch is None else launch), "record": {k: list(v) for k, v in RECORD.items()}, "stages": [dict(s) for s in stages]}
     pairs(doc)
     return doc
 
@@ -169,4 +173,4 @@ def benchmark_command(name: str, lanes: int | None = None, contest: str = CONTES
     return shlex.join(["arena", "evaluation", "benchmark", "--suite", name, "--contest", contest, *(["--lanes", str(lanes)] if lanes else [])])
 
 
-__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "contest_doc", "contest_out", "default_out", "imported_for", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]
+__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "RECORD", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "contest_doc", "contest_out", "default_out", "imported_for", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]
