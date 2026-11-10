@@ -161,7 +161,11 @@ def _cmd_score(args: argparse.Namespace) -> int:
         change = V.changes(found, runs, forecasters, doc)
         others = {base: V.other_seeds(runs, base, seeds) for base in floors}
         print(f"## {partition} (scored seeds {seeds}; stale and transplanted from base runs at seeds {others})\n\n{V.table(rows, cols)}\n")
-        print("across-seed floor (base world at the scored seeds against its other seeds): " + ", ".join(f"{b} {'n/a (no base run at another seed)' if v is None else f'{v:.3f}'}" for b, v in floors.items()) + "\n")
+        print(
+            "across-seed floor (the base world's scored seeds against as many of its other seeds, each side pooled: the noise between two finite crowd samples, a scale and not a bound for an expected-flow forecast): "
+            + ", ".join(f"{b} {'n/a (no base run at another seed)' if v is None else f'{v.mean:.3f} +- {v.sd:.3f} ({v.seeds}-seed pools, {v.pairs} pairs)'}" for b, v in floors.items())
+            + "\n"
+        )
         if change:
             print(f"### {partition}: change against the base world, recorded (PEDS, same seeds) and predicted\n\n{V.table(change, ['recorded', *forecasters])}\n")
         if args.plots is not None:
@@ -177,7 +181,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
             "seeds": seeds,
             "other_seeds": others,
             "rows": [{k: (round(v, 5) if isinstance(v, float) else v) for k, v in r.items()} for r in rows],
-            "floor": {b: None if v is None else round(v, 5) for b, v in floors.items()},
+            "floor": {b: None if v is None else {"mean": round(v.mean, 5), "sd": round(v.sd, 5), "seeds": v.seeds, "pairs": v.pairs} for b, v in floors.items()},
             "change": [{k: (round(v, 5) if isinstance(v, float) else v) for k, v in r.items()} for r in change],
         }
     if args.out:
