@@ -75,7 +75,11 @@ def test_stale_and_the_floor_use_the_base_worlds_other_seeds_never_the_scored_on
     stale = V.stale(runs, [3])
     assert np.allclose(stale("base__move_x__1"), M.pooled([m[("base", 1)], m[("base", 2)]]))
     assert V.other_seeds(runs, "base", [3]) == [1, 2]
-    assert V.floor(runs, "base", [3]) == pytest.approx(M.jsd(m[("base", 3)], M.pooled([m[("base", 1)], m[("base", 2)]])))
+    # equal pools: the one scored seed against each one other seed
+    f = V.floor(runs, "base", [3])
+    assert (f.seeds, f.pairs) == (1, 2) and f.mean == pytest.approx(np.mean([M.jsd(m[("base", 3)], m[("base", s)]) for s in (1, 2)]))
+    two = V.floor(runs, "base", [2, 3])
+    assert (two.seeds, two.pairs) == (1, 2)  # one other seed: pools of one, the scored side drawn both ways
     only = _runs({("office", 6): m[("base", 1)], ("office__move_x__1", 6): m[("base", 2)]})
     assert V.stale(only, [6])("office__move_x__1") is None and V.floor(only, "office", [6]) is None
 

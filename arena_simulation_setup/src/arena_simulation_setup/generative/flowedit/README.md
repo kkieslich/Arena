@@ -317,7 +317,7 @@ Two forecasters read the same inputs:
 **Validity** ([`validity.py`](forecast/validity.py)):
 - `score`: each forecaster and the fair baselines per world of a partition, against the across-seed floor.
   - **stale** is the base world's pooled map from its runs at the split's *other* seeds, never the scored crowd draws. **transplanted** is that map with the edited object's surroundings (2 m) moved, copied or dropped with it. A partition whose base world ran at no other seed (the pilot's office_1) has neither.
-  - **floor** is the base world at the scored seeds against itself at the other seeds: what a new crowd draw of an unchanged world costs.
+  - **floor** is another crowd draw of the unchanged base world: its runs at the n scored seeds, pooled, against n of its runs at other seeds, pooled (n the smaller count), averaged over every such pair of pools. It is the noise between two finite n-seed samples of one flow. A smooth expected-flow forecast is scored against one finite pool only, so it can lie below the floor (on the pilot: 0.301 against ~0.31); read the floor as a scale, not a bound. The main comparison is the forecast against stale at the other seeds.
   - `forecaster 1m` is the occupancy JSD on 1 m cells: the coarse scale at which the Bayesian Floor Field transferred to unseen worlds.
   - A second table puts each edit's and control's **recorded change** (against its base at the same seeds) beside each forecaster's **predicted change** (its map of the edit against its map of the base). The inert copy and the object moved without its demand should change little, the function-carrying edit a lot.
 - `curve`: forecast error against post-edit tracks seen.
