@@ -90,8 +90,15 @@ class Tracks:
     def __call__(self, world: str, seed: int) -> pl.DataFrame | None:
         import polars as pl
 
+        from .cli import track_file
+
         path = self.where.get((world, seed))
-        return pl.read_parquet(path) if path is not None and path.exists() else None
+        if path is None:
+            return None
+        # the newest track store version that holds the file (arena_evaluation bumps it, see cli.track_file)
+        newest = track_file(path.parent.parent, path.name) if path.parent.name.startswith("ped_tracks.v") else None
+        path = newest or path
+        return pl.read_parquet(path) if path.exists() else None
 
 
 # --- leave one seed out ----------------------------------------------------------------------------------------------

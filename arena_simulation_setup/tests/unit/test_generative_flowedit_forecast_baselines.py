@@ -347,3 +347,14 @@ def test_cli_lists_the_baselines(capsys: pytest.CaptureFixture[str]) -> None:
         main(["forecast", "baseline", "--help"])
     out = capsys.readouterr().out
     assert all(v in out for v in ("cliff", "controls", "geometry", "deepflow"))
+
+
+def test_the_track_reader_takes_the_newest_track_store_version(tmp_path: Path) -> None:
+    pl.DataFrame({"episode": [0], "stage": ["w__e__s6"], "planner": ["peds_only"], "robot": ["env_0_jackal"]}).write_parquet(tmp_path / "combined_metrics.parquet")
+    derived = tmp_path / "episodes" / "episode_000" / "topics" / ".derived"
+    for version, x in ((1, 1.0), (2, 2.0)):
+        (derived / f"ped_tracks.v{version}").mkdir(parents=True)
+        pl.DataFrame({"key": ["a"], "x": [x]}).write_parquet(derived / f"ped_tracks.v{version}" / "env_0.parquet")
+    # arena_evaluation bumped the store (arena-evaluation#17: v2); a cache keeps the version it was written with
+    assert B.Tracks.load(tmp_path)("w__e", 6)["x"].to_list() == [2.0]
+    assert B.Tracks.load(tmp_path)("w__e", 7) is None
