@@ -1,0 +1,62 @@
+format: arena-world/2
+levels:
+- id: '0'
+  zones:
+  - {name: school_corridor, polygon: [[0.0, 14.5], [52.0, 14.5], [52.0, 19.5], [0.0, 19.5]]}
+  - {name: classroom_1, polygon: [[0.025, 19.525], [0.025, 33.375], [18.475, 33.375], [18.475, 19.525]]}
+  - {name: classroom_2, polygon: [[18.525, 19.525], [18.525, 30.675], [34.775, 30.675], [34.775, 19.525]]}
+  - {name: canteen, polygon: [[34.825, 19.525], [34.825, 32.275], [51.875, 32.275], [51.875, 19.525]]}
+  - {name: classroom_3, polygon: [[0.025, 2.125], [0.025, 14.475], [18.675, 14.475], [18.675, 2.125]]}
+  - {name: staff_office, polygon: [[18.725, 3.525], [18.725, 14.475], [35.075, 14.475], [35.075, 3.525]]}
+  - {name: wc_1, polygon: [[35.125, 1.125], [35.125, 14.475], [52.075, 14.475], [52.075, 1.125]]}
+  walls:
+  - {path: [[0.025, 19.5], [0.025, 18.0]]}
+  - {path: [[0.025, 16.0], [0.025, 14.5]]}
+  - {path: [[51.975, 19.5], [51.975, 18.0]]}
+  - {path: [[51.975, 16.0], [51.975, 14.5]]}
+  - {path: [[0.025, 19.525], [0.025, 33.375], [18.475, 33.375], [18.475, 19.525], [11.5, 19.525]]}
+  - {path: [[9.7, 19.525], [0.025, 19.525]]}
+  - {path: [[18.525, 19.525], [18.525, 30.675], [34.775, 30.675], [34.775, 19.525], [23.8, 19.525]]}
+  - {path: [[22.0, 19.525], [18.525, 19.525]]}
+  - {path: [[34.825, 19.525], [34.825, 32.275], [51.875, 32.275], [51.875, 19.525], [41.0, 19.525]]}
+  - {path: [[39.2, 19.525], [34.825, 19.525]]}
+  - {path: [[0.025, 2.125], [0.025, 14.475], [8.2, 14.475]]}
+  - {path: [[10.0, 14.475], [18.675, 14.475], [18.675, 2.125], [0.025, 2.125]]}
+  - {path: [[18.725, 3.525], [18.725, 14.475], [27.1, 14.475]]}
+  - {path: [[28.9, 14.475], [35.075, 14.475], [35.075, 3.525], [18.725, 3.525]]}
+  - {path: [[35.125, 1.125], [35.125, 14.475], [46.7, 14.475]]}
+  - {path: [[48.5, 14.475], [52.075, 14.475], [52.075, 1.125], [35.125, 1.125]]}
+  doors:
+  - {name: classroom_1_door, span: [[9.7, 19.5], [11.5, 19.5]]}
+  - {name: classroom_2_door, span: [[22.0, 19.5], [23.8, 19.5]]}
+  - {name: canteen_door, span: [[39.2, 19.5], [41.0, 19.5]]}
+  - {name: classroom_3_door, span: [[8.2, 14.5], [10.0, 14.5]]}
+  - {name: staff_office_door, span: [[27.1, 14.5], [28.9, 14.5]]}
+  - {name: wc_1_door, span: [[46.7, 14.5], [48.5, 14.5]]}
+  - {name: west_entrance, span: [[0.025, 16.0], [0.025, 18.0]]}
+  - {name: east_entrance, span: [[51.975, 16.0], [51.975, 18.0]]}
+  objects:
+  - {name: classroom_1_table_1, pose: [5.56, 24.37], model: Office/SM_TableD}
+  - {name: classroom_1_table_2, pose: [10.17, 24.37], model: Office/SM_TableD}
+  - {name: classroom_1_table_3, pose: [5.56, 27.84], model: Office/SM_TableD}
+  - {name: classroom_1_table_4, pose: [10.17, 27.84], model: Office/SM_TableD}
+  - {name: classroom_1_teacher_desk, pose: [17.88, 26.45], model: Office/SM_SecretaryDeskA}
+  - {name: classroom_2_table_1, pose: [23.4, 23.43], model: Office/SM_TableD}
+  - {name: classroom_2_table_2, pose: [27.46, 23.43], model: Office/SM_TableD}
+  - {name: classroom_2_table_3, pose: [23.4, 26.21], model: Office/SM_TableD}
+  - {name: classroom_2_table_4, pose: [27.46, 26.21], model: Office/SM_TableD}
+  - {name: classroom_2_teacher_desk, pose: [34.17, 25.1], model: Office/SM_SecretaryDeskA}
+  - {name: classroom_3_table_1, pose: [5.62, 6.45], model: Office/SM_TableD}
+  - {name: classroom_3_table_2, pose: [10.28, 6.45], model: Office/SM_TableD}
+  - {name: classroom_3_table_3, pose: [5.62, 9.54], model: Office/SM_TableD}
+  - {name: classroom_3_table_4, pose: [10.28, 9.54], model: Office/SM_TableD}
+  - {name: classroom_3_teacher_desk, pose: [18.07, 8.3], model: Office/SM_SecretaryDeskA}
+  - {name: canteen_table_1, pose: [40.79, 25.26], model: Office/SM_TableRound_module}
+  - {name: canteen_table_2, pose: [45.91, 25.26], model: Office/SM_TableRound_module}
+  - {name: canteen_table_3, pose: [43.35, 29.09], model: Office/SM_TableRound_module}
+  - {name: canteen_drinks_1, pose: [51.27, 23.35], model: Office/SM_DrinksMachine}
+  - {name: staff_desk_1, pose: [23.63, 4.12, -1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: staff_bookcase_1, pose: [19.33, 10.09, 3.14159], model: Office/SM_BookcaseA}
+  - {name: wc_toilet_1, pose: [41.91, 1.73, -1.5708], model: Office/SM_Toilet}
+  - {name: corridor_plant_1, pose: [13.0, 15.1, -1.5708], model: Office/SM_Plant03}
+  - {name: corridor_plant_2, pose: [39.0, 18.9, 1.5708], model: Office/SM_Plant01}

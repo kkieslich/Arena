@@ -1,0 +1,126 @@
+format: arena-kg/1
+uses: [core@2, space@1]
+entities:
+- {id: 'room:school_corridor', props: {description: school corridor between the two entrances}}
+- {id: 'room:classroom_1', props: {description: classroom 1}}
+- {id: 'room:classroom_2', props: {description: classroom 2}}
+- {id: 'room:canteen', props: {description: canteen}}
+- {id: 'room:classroom_3', props: {description: classroom 3}}
+- {id: 'room:staff_office', props: {description: staff office}}
+- {id: 'room:wc_1', props: {description: wc 1}}
+- {id: 'purpose:break'}
+- {id: 'purpose:transit'}
+- {id: 'purpose:work'}
+- {id: 'floor:0'}
+- {id: 'door:classroom_1_door'}
+- {id: 'door:classroom_2_door'}
+- {id: 'door:canteen_door'}
+- {id: 'door:classroom_3_door'}
+- {id: 'door:staff_office_door'}
+- {id: 'door:wc_1_door'}
+- {id: 'door:west_entrance'}
+- {id: 'door:east_entrance'}
+- {id: 'obj:classroom_1_table_1'}
+- {id: 'obj:classroom_1_table_2'}
+- {id: 'obj:classroom_1_table_3'}
+- {id: 'obj:classroom_1_table_4'}
+- {id: 'obj:classroom_1_teacher_desk'}
+- {id: 'obj:classroom_2_table_1'}
+- {id: 'obj:classroom_2_table_2'}
+- {id: 'obj:classroom_2_table_3'}
+- {id: 'obj:classroom_2_table_4'}
+- {id: 'obj:classroom_2_teacher_desk'}
+- {id: 'obj:classroom_3_table_1'}
+- {id: 'obj:classroom_3_table_2'}
+- {id: 'obj:classroom_3_table_3'}
+- {id: 'obj:classroom_3_table_4'}
+- {id: 'obj:classroom_3_teacher_desk'}
+- {id: 'obj:canteen_table_1'}
+- {id: 'obj:canteen_table_2'}
+- {id: 'obj:canteen_table_3'}
+- {id: 'obj:canteen_drinks_1'}
+- {id: 'obj:staff_desk_1'}
+- {id: 'obj:staff_bookcase_1'}
+- {id: 'obj:wc_toilet_1'}
+- {id: 'obj:corridor_plant_1'}
+- {id: 'obj:corridor_plant_2'}
+facts:
+- {subject: 'room:school_corridor', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'room:classroom_1', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:classroom_2', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:canteen', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:classroom_3', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:staff_office', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:wc_1', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'floor:0', verb: contains, object: 'room:school_corridor', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:classroom_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:classroom_2', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:canteen', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:classroom_3', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:staff_office', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_1', source: derived}
+- {subject: 'room:school_corridor', verb: contains, object: 'door:classroom_1_door', source: derived}
+- {subject: 'room:classroom_1', verb: contains, object: 'door:classroom_1_door', source: derived}
+- subject: room:school_corridor
+  verb: connects
+  object: room:classroom_1
+  params: {door: 'door:classroom_1_door'}
+  source: derived
+- {subject: 'room:school_corridor', verb: contains, object: 'door:classroom_2_door', source: derived}
+- {subject: 'room:classroom_2', verb: contains, object: 'door:classroom_2_door', source: derived}
+- subject: room:school_corridor
+  verb: connects
+  object: room:classroom_2
+  params: {door: 'door:classroom_2_door'}
+  source: derived
+- {subject: 'room:school_corridor', verb: contains, object: 'door:canteen_door', source: derived}
+- {subject: 'room:canteen', verb: contains, object: 'door:canteen_door', source: derived}
+- subject: room:school_corridor
+  verb: connects
+  object: room:canteen
+  params: {door: 'door:canteen_door'}
+  source: derived
+- {subject: 'room:school_corridor', verb: contains, object: 'door:classroom_3_door', source: derived}
+- {subject: 'room:classroom_3', verb: contains, object: 'door:classroom_3_door', source: derived}
+- subject: room:school_corridor
+  verb: connects
+  object: room:classroom_3
+  params: {door: 'door:classroom_3_door'}
+  source: derived
+- {subject: 'room:school_corridor', verb: contains, object: 'door:staff_office_door', source: derived}
+- {subject: 'room:staff_office', verb: contains, object: 'door:staff_office_door', source: derived}
+- subject: room:school_corridor
+  verb: connects
+  object: room:staff_office
+  params: {door: 'door:staff_office_door'}
+  source: derived
+- {subject: 'room:school_corridor', verb: contains, object: 'door:wc_1_door', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'door:wc_1_door', source: derived}
+- {subject: 'room:school_corridor', verb: connects, object: 'room:wc_1', params: {door: 'door:wc_1_door'}, source: derived}
+- {subject: 'room:school_corridor', verb: contains, object: 'door:west_entrance', source: derived}
+- {subject: 'room:school_corridor', verb: contains, object: 'door:east_entrance', source: derived}
+- {subject: 'room:classroom_1', verb: contains, object: 'obj:classroom_1_table_1', source: derived}
+- {subject: 'room:classroom_1', verb: contains, object: 'obj:classroom_1_table_2', source: derived}
+- {subject: 'room:classroom_1', verb: contains, object: 'obj:classroom_1_table_3', source: derived}
+- {subject: 'room:classroom_1', verb: contains, object: 'obj:classroom_1_table_4', source: derived}
+- {subject: 'room:classroom_1', verb: contains, object: 'obj:classroom_1_teacher_desk', source: derived}
+- {subject: 'room:classroom_2', verb: contains, object: 'obj:classroom_2_table_1', source: derived}
+- {subject: 'room:classroom_2', verb: contains, object: 'obj:classroom_2_table_2', source: derived}
+- {subject: 'room:classroom_2', verb: contains, object: 'obj:classroom_2_table_3', source: derived}
+- {subject: 'room:classroom_2', verb: contains, object: 'obj:classroom_2_table_4', source: derived}
+- {subject: 'room:classroom_2', verb: contains, object: 'obj:classroom_2_teacher_desk', source: derived}
+- {subject: 'room:classroom_3', verb: contains, object: 'obj:classroom_3_table_1', source: derived}
+- {subject: 'room:classroom_3', verb: contains, object: 'obj:classroom_3_table_2', source: derived}
+- {subject: 'room:classroom_3', verb: contains, object: 'obj:classroom_3_table_3', source: derived}
+- {subject: 'room:classroom_3', verb: contains, object: 'obj:classroom_3_table_4', source: derived}
+- {subject: 'room:classroom_3', verb: contains, object: 'obj:classroom_3_teacher_desk', source: derived}
+- {subject: 'room:canteen', verb: contains, object: 'obj:canteen_table_1', source: derived}
+- {subject: 'room:canteen', verb: contains, object: 'obj:canteen_table_2', source: derived}
+- {subject: 'room:canteen', verb: contains, object: 'obj:canteen_table_3', source: derived}
+- {subject: 'room:canteen', verb: contains, object: 'obj:canteen_drinks_1', source: derived}
+- {subject: 'room:staff_office', verb: contains, object: 'obj:staff_desk_1', source: derived}
+- {subject: 'room:staff_office', verb: contains, object: 'obj:staff_bookcase_1', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'obj:wc_toilet_1', source: derived}
+- {subject: 'room:school_corridor', verb: contains, object: 'obj:corridor_plant_1', source: derived}
+- {subject: 'room:school_corridor', verb: contains, object: 'obj:corridor_plant_2', source: derived}
+constraints: []

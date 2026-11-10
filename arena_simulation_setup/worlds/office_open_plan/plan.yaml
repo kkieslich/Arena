@@ -1,0 +1,93 @@
+plan: hand-drawn rooms and doors
+rooms:
+  open_office:
+  - 0
+  - 0
+  - 28
+  - 20
+  meeting_room_1:
+  - 28
+  - 0
+  - 40
+  - 7
+  meeting_room_2:
+  - 28
+  - 7
+  - 40
+  - 14
+  kitchen:
+  - 28
+  - 14
+  - 40
+  - 20
+  reception:
+  - 0
+  - 20
+  - 12
+  - 28
+  focus_room:
+  - 12
+  - 20
+  - 20
+  - 28
+  wc_1:
+  - 20
+  - 20
+  - 28
+  - 28
+  storage:
+  - 28
+  - 20
+  - 40
+  - 28
+doors:
+  front_door:
+  - - 5.0
+    - 28
+  - - 7.0
+    - 28
+  back_door:
+  - - 0
+    - 9.25
+  - - 0
+    - 10.75
+  reception_office:
+  - - 5.0
+    - 20
+  - - 7.0
+    - 20
+  focus_door:
+  - - 15.4
+    - 20
+  - - 16.6
+    - 20
+  focus_reception:
+  - - 12
+    - 23.5
+  - - 12
+    - 24.5
+  wc_door:
+  - - 23.4
+    - 20
+  - - 24.6
+    - 20
+  meeting_1_door:
+  - - 28
+    - 2.9
+  - - 28
+    - 4.1
+  meeting_2_door:
+  - - 28
+    - 9.9
+  - - 28
+    - 11.1
+  kitchen_door:
+  - - 28
+    - 16.25
+  - - 28
+    - 17.75
+  storage_door:
+  - - 33.4
+    - 20
+  - - 34.6
+    - 20

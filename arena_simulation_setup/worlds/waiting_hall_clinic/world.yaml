@@ -1,0 +1,75 @@
+format: arena-world/2
+levels:
+- id: '0'
+  zones:
+  - {name: entrance_lobby, polygon: [[27.975, 0.025], [8.025, 0.025], [8.025, 5.975], [27.975, 5.975]]}
+  - {name: waiting_hall, polygon: [[27.975, 6.025], [8.025, 6.025], [8.025, 21.975], [27.975, 21.975]]}
+  - {name: reception, polygon: [[7.975, 6.025], [0.025, 6.025], [0.025, 13.975], [7.975, 13.975]]}
+  - {name: pharmacy, polygon: [[7.975, 14.025], [0.025, 14.025], [0.025, 21.975], [7.975, 21.975]]}
+  - {name: exam_room_1, polygon: [[14.475, 22.025], [8.025, 22.025], [8.025, 27.975], [14.475, 27.975]]}
+  - {name: exam_room_2, polygon: [[21.475, 22.025], [14.525, 22.025], [14.525, 27.975], [21.475, 27.975]]}
+  - {name: exam_room_3, polygon: [[27.975, 22.025], [21.525, 22.025], [21.525, 27.975], [27.975, 27.975]]}
+  - {name: wc_1, polygon: [[33.975, 6.025], [28.025, 6.025], [28.025, 11.975], [33.975, 11.975]]}
+  - {name: staff_room, polygon: [[33.975, 12.025], [28.025, 12.025], [28.025, 21.975], [33.975, 21.975]]}
+  walls:
+  - {path: [[8.0, 14.0], [0.0, 14.0]]}
+  - {path: [[8.0, 22.0], [0.0, 22.0], [0.0, 14.0]]}
+  - {path: [[0.0, 14.0], [0.0, 6.0], [8.0, 6.0]]}
+  - {path: [[12.0, 6.0], [8.0, 6.0]]}
+  - {path: [[8.0, 9.25], [8.0, 6.0]]}
+  - {path: [[8.0, 6.0], [8.0, 0.0], [11.25, 0.0]]}
+  - {path: [[8.0, 14.0], [8.0, 10.75]]}
+  - {path: [[8.0, 17.25], [8.0, 14.0]]}
+  - {path: [[8.0, 22.0], [8.0, 18.75]]}
+  - {path: [[10.65, 22.0], [8.0, 22.0]]}
+  - {path: [[14.5, 28.0], [8.0, 28.0], [8.0, 22.0]]}
+  - {path: [[14.5, 22.0], [11.85, 22.0]]}
+  - {path: [[12.75, 0.0], [23.25, 0.0]]}
+  - {path: [[22.0, 6.0], [14.0, 6.0]]}
+  - {path: [[17.4, 22.0], [14.5, 22.0]]}
+  - {path: [[14.5, 22.0], [14.5, 28.0]]}
+  - {path: [[21.5, 28.0], [14.5, 28.0]]}
+  - {path: [[21.5, 22.0], [18.6, 22.0]]}
+  - {path: [[24.15, 22.0], [21.5, 22.0]]}
+  - {path: [[21.5, 22.0], [21.5, 28.0]]}
+  - {path: [[28.0, 22.0], [28.0, 28.0], [21.5, 28.0]]}
+  - {path: [[28.0, 6.0], [24.0, 6.0]]}
+  - {path: [[24.75, 0.0], [28.0, 0.0], [28.0, 6.0]]}
+  - {path: [[28.0, 22.0], [25.35, 22.0]]}
+  - {path: [[28.0, 6.0], [34.0, 6.0], [34.0, 12.0]]}
+  - {path: [[28.0, 6.0], [28.0, 8.4]]}
+  - {path: [[28.0, 9.6], [28.0, 12.0]]}
+  - {path: [[34.0, 12.0], [28.0, 12.0]]}
+  - {path: [[28.0, 12.0], [28.0, 16.4]]}
+  - {path: [[28.0, 17.6], [28.0, 22.0]]}
+  - {path: [[34.0, 17.6], [34.0, 22.0], [28.0, 22.0]]}
+  - {path: [[34.0, 12.0], [34.0, 16.4]]}
+  doors:
+  - {name: front_door_west, span: [[11.25, 0.0], [12.75, 0.0]]}
+  - {name: front_door_east, span: [[23.25, 0.0], [24.75, 0.0]]}
+  - {name: lobby_hall_1, span: [[12.0, 6.0], [14.0, 6.0]]}
+  - {name: lobby_hall_2, span: [[22.0, 6.0], [24.0, 6.0]]}
+  - {name: reception_door, span: [[8.0, 9.25], [8.0, 10.75]]}
+  - {name: pharmacy_door, span: [[8.0, 17.25], [8.0, 18.75]]}
+  - {name: exam_room_1_door, span: [[10.65, 22.0], [11.85, 22.0]]}
+  - {name: exam_room_2_door, span: [[17.4, 22.0], [18.6, 22.0]]}
+  - {name: exam_room_3_door, span: [[24.15, 22.0], [25.35, 22.0]]}
+  - {name: wc_door, span: [[28.0, 8.4], [28.0, 9.6]]}
+  - {name: staff_door, span: [[28.0, 16.4], [28.0, 17.6]]}
+  - {name: staff_exit, span: [[34.0, 16.4], [34.0, 17.6]]}
+  objects:
+  - {name: hall_bench_1, pose: [14.0, 11.6, 3.14159], model: Hospital/Waiting_Room_Bench}
+  - {name: hall_bench_2, pose: [14.0, 14.8, 3.14159], model: Hospital/Waiting_Room_Bench}
+  - {name: hall_bench_3, pose: [22.0, 11.6, 3.14159], model: Hospital/Waiting_Room_Bench}
+  - {name: hall_bench_4, pose: [22.0, 14.8, 3.14159], model: Hospital/Waiting_Room_Bench}
+  - {name: lobby_plant_1, pose: [18.0, 0.6, -1.5708], model: Office/SM_Plant01}
+  - {name: reception_desk_back, pose: [0.6, 10.0, 3.14159], model: Hospital/SM_Desk_04a}
+  - {name: pharmacy_shelf_1, pose: [0.6, 18.0, 3.14159], model: Hospital/Pharmacy_Shelf}
+  - {name: pharmacy_shelf_2, pose: [3.2, 21.4, 1.5708], model: Hospital/SM_MedShelf_01d}
+  - {name: exam_1_table, pose: [11.25, 27.4, 1.5708], model: Hospital/Exam_Table}
+  - {name: exam_2_table, pose: [18.0, 27.4, 1.5708], model: Hospital/Exam_Table}
+  - {name: exam_3_table, pose: [24.75, 27.4, 1.5708], model: Hospital/Exam_Table}
+  - {name: exam_2_cabinet, pose: [15.1, 24.4, 3.14159], model: Hospital/SM_MedicalCabinet_01a}
+  - {name: wc_toilet_1, pose: [33.4, 9.0], model: Hospital/SM_Toilet}
+  - {name: staff_sofa_1, pose: [31.0, 21.4, 1.5708], model: Office/SM_Sofa}
+  - {name: staff_table_1, pose: [31.0, 16.0], model: Office/SM_TableCoffee}

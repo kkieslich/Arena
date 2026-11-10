@@ -1,0 +1,140 @@
+format: arena-kg/1
+uses: [core@2, space@1]
+entities:
+- {id: 'room:entrance_lobby', props: {description: entrance lobby with two front doors}}
+- {id: 'room:waiting_hall', props: {description: waiting hall in the middle of the clinic}}
+- {id: 'room:reception', props: {description: reception}}
+- {id: 'room:pharmacy', props: {description: pharmacy}}
+- {id: 'room:exam_room_1', props: {description: exam room 1}}
+- {id: 'room:exam_room_2', props: {description: exam room 2}}
+- {id: 'room:exam_room_3', props: {description: exam room 3}}
+- {id: 'room:wc_1', props: {description: wc 1}}
+- {id: 'room:staff_room', props: {description: staff room}}
+- {id: 'purpose:break'}
+- {id: 'purpose:transit'}
+- {id: 'purpose:work'}
+- {id: 'floor:0'}
+- {id: 'door:front_door_west'}
+- {id: 'door:front_door_east'}
+- {id: 'door:lobby_hall_1'}
+- {id: 'door:lobby_hall_2'}
+- {id: 'door:reception_door'}
+- {id: 'door:pharmacy_door'}
+- {id: 'door:exam_room_1_door'}
+- {id: 'door:exam_room_2_door'}
+- {id: 'door:exam_room_3_door'}
+- {id: 'door:wc_door'}
+- {id: 'door:staff_door'}
+- {id: 'door:staff_exit'}
+- {id: 'obj:hall_bench_1'}
+- {id: 'obj:hall_bench_2'}
+- {id: 'obj:hall_bench_3'}
+- {id: 'obj:hall_bench_4'}
+- {id: 'obj:lobby_plant_1'}
+- {id: 'obj:reception_desk_back'}
+- {id: 'obj:pharmacy_shelf_1'}
+- {id: 'obj:pharmacy_shelf_2'}
+- {id: 'obj:exam_1_table'}
+- {id: 'obj:exam_2_table'}
+- {id: 'obj:exam_3_table'}
+- {id: 'obj:exam_2_cabinet'}
+- {id: 'obj:wc_toilet_1'}
+- {id: 'obj:staff_sofa_1'}
+- {id: 'obj:staff_table_1'}
+facts:
+- {subject: 'room:entrance_lobby', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'room:waiting_hall', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:reception', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:pharmacy', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:exam_room_1', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:exam_room_2', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:exam_room_3', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:wc_1', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:staff_room', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'floor:0', verb: contains, object: 'room:entrance_lobby', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:waiting_hall', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:reception', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:pharmacy', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:exam_room_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:exam_room_2', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:exam_room_3', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:staff_room', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:front_door_west', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:front_door_east', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:lobby_hall_1', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:lobby_hall_1', source: derived}
+- subject: room:entrance_lobby
+  verb: connects
+  object: room:waiting_hall
+  params: {door: 'door:lobby_hall_1'}
+  source: derived
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:lobby_hall_2', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:lobby_hall_2', source: derived}
+- subject: room:entrance_lobby
+  verb: connects
+  object: room:waiting_hall
+  params: {door: 'door:lobby_hall_2'}
+  source: derived
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:reception_door', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'door:reception_door', source: derived}
+- subject: room:waiting_hall
+  verb: connects
+  object: room:reception
+  params: {door: 'door:reception_door'}
+  source: derived
+- {subject: 'room:pharmacy', verb: contains, object: 'door:pharmacy_door', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:pharmacy_door', source: derived}
+- subject: room:pharmacy
+  verb: connects
+  object: room:waiting_hall
+  params: {door: 'door:pharmacy_door'}
+  source: derived
+- {subject: 'room:exam_room_1', verb: contains, object: 'door:exam_room_1_door', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:exam_room_1_door', source: derived}
+- subject: room:exam_room_1
+  verb: connects
+  object: room:waiting_hall
+  params: {door: 'door:exam_room_1_door'}
+  source: derived
+- {subject: 'room:exam_room_2', verb: contains, object: 'door:exam_room_2_door', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:exam_room_2_door', source: derived}
+- subject: room:exam_room_2
+  verb: connects
+  object: room:waiting_hall
+  params: {door: 'door:exam_room_2_door'}
+  source: derived
+- {subject: 'room:exam_room_3', verb: contains, object: 'door:exam_room_3_door', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:exam_room_3_door', source: derived}
+- subject: room:exam_room_3
+  verb: connects
+  object: room:waiting_hall
+  params: {door: 'door:exam_room_3_door'}
+  source: derived
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:waiting_hall', verb: connects, object: 'room:wc_1', params: {door: 'door:wc_door'}, source: derived}
+- {subject: 'room:staff_room', verb: contains, object: 'door:staff_door', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'door:staff_door', source: derived}
+- subject: room:staff_room
+  verb: connects
+  object: room:waiting_hall
+  params: {door: 'door:staff_door'}
+  source: derived
+- {subject: 'room:staff_room', verb: contains, object: 'door:staff_exit', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'obj:hall_bench_1', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'obj:hall_bench_2', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'obj:hall_bench_3', source: derived}
+- {subject: 'room:waiting_hall', verb: contains, object: 'obj:hall_bench_4', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'obj:lobby_plant_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_desk_back', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_shelf_1', source: derived}
+- {subject: 'room:pharmacy', verb: contains, object: 'obj:pharmacy_shelf_2', source: derived}
+- {subject: 'room:exam_room_1', verb: contains, object: 'obj:exam_1_table', source: derived}
+- {subject: 'room:exam_room_2', verb: contains, object: 'obj:exam_2_table', source: derived}
+- {subject: 'room:exam_room_3', verb: contains, object: 'obj:exam_3_table', source: derived}
+- {subject: 'room:exam_room_2', verb: contains, object: 'obj:exam_2_cabinet', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'obj:wc_toilet_1', source: derived}
+- {subject: 'room:staff_room', verb: contains, object: 'obj:staff_sofa_1', source: derived}
+- {subject: 'room:staff_room', verb: contains, object: 'obj:staff_table_1', source: derived}
+constraints: []

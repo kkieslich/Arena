@@ -1,0 +1,23 @@
+format: arena-scenario/2
+# Authored FLOWEDIT demand: a water cooler (thirst) in the kitchen, the reception counter, a lounge group, a meeting chair, a workstation.
+objects:
+- name: fountain
+  model: Office/SM_WaterCooler
+  pose: [47.18, 22.5, 0.0]
+  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 0.8}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
+- name: reception_desk
+  model: Office/SM_ReceptionStandA
+  pose: [5.85, 18.02, -1.5708]
+  humansim: {capacity: 3, formation: {params: {base_step: 0.8, front_offset: 0.6}, type: line}, interaction_radius: 1.0, type: desk}
+- name: gathering_area
+  model: Office/SM_Sofa
+  pose: [42.4, 10.5, 0.0]
+  humansim: {capacity: 0, formation: {anchor: {kind: object, ref: gathering_area}, params: {base_radius: 0.8, radius_per_member: 0.12}, type: f_formation}, type: gathering_area}
+- name: meeting_chair_1
+  model: Office/Chair_Office
+  pose: [30.32, 8.5, 3.14159]
+  humansim: {capacity: 1, interaction_radius: 0.8, type: chair}
+- name: workstation_1
+  model: Office/Stand_Table_Work
+  pose: [0.83, 7.25, 3.14159]
+  humansim: {capacity: 1, interaction_radius: 1.2, type: desk}
