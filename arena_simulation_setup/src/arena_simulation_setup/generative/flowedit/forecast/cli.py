@@ -121,13 +121,30 @@ def _cmd_train(args: argparse.Namespace) -> int:
     return 0
 
 
-def _net_methods(nets: list[tuple[str | None, Path]], rasters: Any, device: str | None) -> dict[str, Any]:  # noqa: ANN401
+def _chosen(path: Path | None) -> str | None:
+    """The chosen arm of a `forecast select` output, None without one."""
+    if path is None:
+        return None
+    from .selection import SELECT_FORMAT
+
+    doc = yaml.safe_load(path.read_text()) or {}
+    if doc.get("format") != SELECT_FORMAT:
+        raise SystemExit(f"--select {path}: format: expected {SELECT_FORMAT!r}, got {doc.get('format')!r}")
+    return str(doc["chosen"])
+
+
+def _net_methods(nets: list[tuple[str | None, Path]], rasters: Any, device: str | None, chosen: str | None = None) -> dict[str, Any]:  # noqa: ANN401
+    """A method per network; unnamed ones are called by their arm (`selection.arm_label`): with `chosen` the selected arm is
+    "forecaster" and the other arm goes by its own name."""
     from .learn import forecast, load
+    from .selection import arm_label
 
     methods: dict[str, Any] = {}
     for name, path in nets:
-        model, meta = load(path, device)
-        label = name or ("demand ablation" if not meta.get("demand", True) else "forecaster + demand model" if model.demand_model is not None else "forecaster")
+        model, _ = load(path, device)
+        label = name or arm_label(model, chosen)
+        if label in methods:
+            label = f"{label} ({sum(m.startswith(label) for m in methods) + 1})"
         cache: dict[str, Any] = {}
 
         def method(world: str, model: Any = model, cache: dict[str, Any] = cache) -> Any:  # noqa: ANN401
@@ -148,7 +165,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
     rasters = Rasters.of(doc, settings, args.worlds)
     sites = rasters.sites
     runs = Runs.load(args.cells, sites.grid, planner=args.planner)
-    forecasters = _net_methods(_named(args.net, "--net"), rasters, args.device)
+    forecasters = _net_methods(_named(args.net, "--net"), rasters, args.device, _chosen(args.select))
     if args.params is not None:
         params = load_params(args.params)
         forecasters["demand model"] = lambda world: sites.predict(world, params, rasters.scenario_of.get(SP.base_of(world)))
@@ -255,7 +272,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
     sites = rasters.sites
     runs = Runs.load(args.benchmark / "flow_cells.parquet", sites.grid, planner=args.planner)
     tracks = _tracks_of(args.benchmark, args.planner)
-    nets = _net_methods(_named(args.net, "--net"), rasters, args.device)
+    nets = _net_methods(_named(args.net, "--net"), rasters, args.device, _chosen(args.select))
     train_ws = [(w, V.world_seeds(doc, "train", w)) for w in doc["partitions"].get("train") or []]
     priors_of: dict[str, Any] = dict(nets)
     uniform = "uniform (online only)"
@@ -318,6 +335,44 @@ def _cmd_curve(args: argparse.Namespace) -> int:
     if args.out:
         args.out.write_text(yaml.safe_dump(out, sort_keys=False))
         _log(f"wrote {args.out}")
+    return 0
+
+
+def _cmd_select(args: argparse.Namespace) -> int:
+    from . import selection as SE
+    from .evaluate import Target
+    from .evaluate import fit as fit_demand_model
+    from .learn import Rasters
+    from .validity import world_seeds
+
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    sites = rasters.sites
+    runs = SE.train_runs(Runs.load(args.cells, sites.grid, planner=args.planner), doc)
+
+    def fit_params(worlds: Any, fold_runs: Runs) -> Params:  # noqa: ANN401
+        targets = []
+        for w in worlds:
+            seeds = fold_runs.seeds(w, world_seeds(doc, "train", w))
+            if seeds:
+                targets.append(Target(w, sites.layers(w, rasters.scenario_of.get(SP.base_of(w))), fold_runs.pooled(w, seeds), tuple(seeds)))
+        params, value = fit_demand_model(targets, max_evals=args.max_evals, log=_log)
+        _log(f"select: demand model refitted on {len(targets)} worlds, mean JSD {value:.4f}")
+        return params
+
+    given = None if args.params is None else load_params(args.params)
+    result = SE.select(rasters, runs, doc, params=given, fit_params=fit_params, seeds=args.seeds, steps=args.steps, device=args.device, log=_log)
+    result.update({"split": str(args.split), "cells": str(args.cells), "params": None if args.params is None else str(args.params)})
+    arms = SE.ARMS
+    lines = ["| held-out training world | worlds | " + " | ".join(SE.ARM_LABELS[a] for a in arms) + " |", "|---|---|" + "---|" * len(arms)]
+    for f in result["folds"]:
+        lines.append(f"| {f['held_out']} | {f['worlds']} | " + " | ".join("" if f["arms"][a]["mean"] is None else f"{f['arms'][a]['mean']:.3f}" for a in arms) + " |")
+    lines.append("| mean over folds | | " + " | ".join(f"{result['mean'][a]:.3f}" for a in arms) + " |")
+    print("## leave-one-world-out over the training worlds (pooled JSD, held-out world's base and edits at their train seeds)\n\n" + "\n".join(lines) + "\n")
+    print(f"chosen: {SE.ARM_LABELS[result['chosen']]} ({result['chosen']})" + (f"; note: {result['note']}" if "note" in result else ""))
+    args.out.write_text(yaml.safe_dump(result, sort_keys=False))
+    _log(f"wrote {args.out}")
     return 0
 
 
@@ -463,7 +518,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
 def register(verbs: argparse._SubParsersAction) -> None:
     """Add `forecast` and its verbs to the `flowedit` parser."""
     p = verbs.add_parser("forecast", help="train, run and score the flow forecasters", description="flow forecasters: a world's flow map from its graph and geometry, no PEDS run (see Forecasting flow in the flowedit README)")
-    sub = p.add_subparsers(dest="forecast_verb", required=True, metavar="{train,score,curve,strength,scaling,fit,predict,baseline}")
+    sub = p.add_subparsers(dest="forecast_verb", required=True, metavar="{train,select,score,curve,strength,scaling,fit,predict,baseline}")
 
     def common(q: argparse.ArgumentParser) -> None:
         q.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over the split's (see settings.py)")
@@ -501,6 +556,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
     q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to score; repeatable (default: held_out_edits and held_out_worlds)")
     q.add_argument("--out", type=Path, default=None, help="YAML file of every row")
     q.add_argument("--plots", type=Path, default=None, help="directory for a PNG per world: recorded, the first forecaster, stale and their difference")
+    q.add_argument("--select", type=Path, default=None, metavar="FILE", help="a `forecast select` output: the chosen arm's networks are the forecaster, the other arm's go by their own name")
     q.set_defaults(fn=_cmd_score)
 
     q = sub.add_parser("curve", help="forecast error against post-edit tracks seen", description="the forecast as a Dirichlet prior updated with the tracks of one held-out seed's run, scored against the pooled map of the other seeds, beside the same update from a uniform prior")
@@ -514,7 +570,22 @@ def register(verbs: argparse._SubParsersAction) -> None:
     q.add_argument("--strength-file", action="append", default=None, metavar="NAME=FILE", help="the cross-validated weight of the prior NAME, a `forecast strength` output; repeatable. The uniform prior takes the file's uniform weight (without a file it is fitted on train, as it learns nothing from the runs)")
     q.add_argument("--out", type=Path, default=None, help="YAML file of the curves")
     q.add_argument("--png", type=Path, default=None, help="PNG of the curves")
+    q.add_argument("--select", type=Path, default=None, metavar="FILE", help="a `forecast select` output: the chosen arm's networks are the forecaster, the other arm's go by their own name")
     q.set_defaults(fn=_cmd_curve)
+
+    q = sub.add_parser(
+        "select",
+        help="choose the forecaster's arm by leave-one-world-out on the training worlds",
+        description="for each training world, train the plain network and the one with the demand model's forecast as input on the other training worlds and score both on the held-out world (pooled JSD); the arm with the lower mean over folds is the forecaster. Reads the train partition only.",
+    )
+    recorded(q)
+    device(q)
+    q.add_argument("--out", type=Path, required=True, help="YAML file of the folds, the means and the chosen arm (`score --select`, `curve --select`)")
+    q.add_argument("--params", type=Path, default=None, help="one demand model params file for every fold (default: refit the demand model on each fold's training worlds, so no fold sees its held-out world)")
+    q.add_argument("--max-evals", type=int, default=400, help="forecasts per world each demand model refit may run (default 400)")
+    q.add_argument("--seeds", type=int, nargs="+", default=[0], help="training seeds per arm and fold, averaged (default 0)")
+    q.add_argument("--steps", type=int, default=3000, help="optimizer steps per network (default 3000)")
+    q.set_defaults(fn=_cmd_select)
 
     q = sub.add_parser(
         "strength",
