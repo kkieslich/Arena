@@ -230,15 +230,18 @@ words a goto as walking directions through the world's doors and openings.
 | `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
 | `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
 | `jam_window_s`, `jam_progress_m`, `jam_goal_m` | 60, 0.5, 1 | the jam rule (INFRA §8): a robot on a job leg or a charging trip that moves less than `jam_progress_m` within `jam_window_s`, further than `jam_goal_m` from its target, is jammed; `jam_window_s: 0` turns it off |
-| `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job may take from its assignment, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
+| `approach_m` | 5 | metres from the loading point or locker within which a robot takes that dock, or holds in place before it while another robot has it |
+| `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job leg may drive from its start, its waits before a busy dock apart, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
 
 - Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
   every world. Released jobs queue until a robot is free.
-- **Docks.** A job has two legs, one goto per dock, each `on_failure: stop_task`. A robot holds the loading point or
-  the locker from its dispatch there until it has loaded or unloaded, so two robots never target one dock at once. A
-  job starts only when its first dock is free; queued jobs go oldest first, skipping one whose first dock is held.
-  A loaded robot whose second dock is held waits at its home, and loaded robots get a freed dock before new jobs do,
-  longest waiting first.
+- **Docks.** A job has two legs, one goto per dock, each `on_failure: stop_task`. A robot drives towards its leg's
+  dock without holding it; within `approach_m` of the dock it takes it if no robot has it and none waits for it, and
+  holds it until it has loaded or unloaded there. Otherwise it holds in place where it is and queues for the dock;
+  a freed dock goes to the robot waiting longest. So the loading point and the locker are held only for the final
+  approach and the hold, not for the whole drive, and a robot waiting in the walkway before a busy dock is part of
+  the traffic. A loaded robot drives straight on to its second dock. Queued jobs go to free robots oldest first,
+  whether or not their first dock is busy.
 - **Jobs.** Each tick, queued jobs go to free robots at or above `charge_below`, fullest battery first (a robot whose
   charge is unknown last). Before a robot takes a job the mode estimates its energy: the straight-line distance from
   the robot to the first dock, on to the second and on to the charger nearest the second, times `detour`, at
@@ -249,15 +252,20 @@ words a goto as walking directions through the world's doors and openings.
   standby plus 50 W per m/s and 17 W per rad/s at 0.4 m/s and 0.2 rad/s; `wh_per_m: 0` computes the same from each
   robot's power profile. The default `detour` 1.2 is about the 90th percentile of geodesic over straight-line distance
   on the `smu_link_full` map (mean 1.09, 0.25 m grid, 0.3 m clearance).
-- **Ends.** A leg that ends failed fails its job; a job running past its timeout, or whose robot is assigned a task
-  from outside, is abandoned. The timeout scales with the job: `job_timeout` plus `job_timeout_per_m` times its route
-  estimate (the straight line from the robot to both docks, times `detour`; for a charging trip, to the charger), so
-  a job across the twin's 313 m route gets about 300 + 5 x 1.2 x 313 = 2,180 s and a short one about 360 s. Neither is queued again: the job ends there, its docks are freed and the robot goes
-  home (or runs the outside task, and goes home once that is done).
+- **Ends.** A leg that ends failed fails its job; a leg driving longer than its timeout, or a job whose robot is
+  assigned a task from outside, is abandoned. Each leg's timer starts when the leg does and stops while the robot
+  waits before a busy dock, so queueing never abandons a job (the waits stay in the task time `ended - released`,
+  and `job.<i>.wait_s` sums them). A leg's timeout scales with its route: `job_timeout` plus `job_timeout_per_m`
+  times the straight line from where the leg starts to its dock, times `detour` (for a charging trip, to the
+  charger), so a 313 m leg across the twin gets about 300 + 5 x 1.2 x 313 = 2,180 s and a short one about 360 s.
+  The holder's own timeout frees a dock nobody reaches. A leg that cannot be submitted (its dock has no free cell for
+  the robot) is sent again each tick until it goes out, or abandoned once its timer runs out; it never counts as done. A job that did not complete is not queued again: it ends
+  there, its docks are freed and the robot goes home (or runs the outside task, and goes home once that is done).
 - **Jams.** Each tick the mode keeps the positions of the robots on a job leg or a charging trip. A robot whose
   positions over the last `jam_window_s` all lie within `jam_progress_m` of the first is jammed: its job fails with
   reason `jam` (its charge is abandoned with reason `jam`), its docks are freed and it is teleported to its home,
-  where it parks. Within `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
+  where it parks; a robot jammed on its way to a charger goes back to the bay it had before the trip, and the charger
+  to its holder. Within `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
   Each jam is logged with the distance to the nearest other robot, so robot-robot jams can be told apart.
 - **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
   a charger lowest battery first: a robot parked on its charger home charges there, any other takes a charger whose
@@ -283,7 +291,8 @@ with 3 decimals; battery charges are percent with 2.
 | `job.<i>.released` | release time from the seed's stream |
 | `job.<i>.robot`, `job.<i>.assigned` | robot that took the job, and when |
 | `job.<i>.energy_wh` | the energy estimate it was taken on |
-| `job.<i>.timeout` | seconds it may take from `assigned` before it is abandoned (0: none) |
+| `job.<i>.timeout_0`, `job.<i>.timeout_1` | seconds each leg may drive, waits for its dock apart, before the job is abandoned (0: none) |
+| `job.<i>.wait_s` | seconds the robot held in place before busy docks over the job, written when it ends (part of `ended - released`) |
 | `job.<i>.loaded` | when the robot finished loading |
 | `job.<i>.ended`, `job.<i>.outcome` | when the job ended, as `completed`, `failed` or `abandoned` |
 | `job.<i>.reason` | for `failed`, the failed phase's reason; for `abandoned`, `timeout` or `assigned from outside` |
@@ -299,10 +308,7 @@ with 3 decimals; battery charges are percent with 2.
 | `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
 
 `<i>` is the job's index in the stream, `<n>` and `<k>` count from 0 per episode. A job without `ended` was still
-queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures:
-task time is `ended - released` of completed jobs (filter on `released` for the warm-up), success rate is completed
-jobs over released ones (jobs still open at the episode end apart), charger queue time is `dispatched - queued`, and
-tasks per hour count completed jobs per hour of `ended`. The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
+queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures (kkieslich/arena-evaluation `evaluation infra`, its metrics README): task time T is the restricted mean of `ended - released` up to a horizon fixed per study, from the Kaplan-Meier estimate over the jobs released after the warm-up, a job not completed (open at the episode end, failed or abandoned) censored at its elapsed time, so the slow jobs an episode cuts off still count; success rate is completed jobs over ended ones; charger queue time is `dispatched - queued`; tasks per hour count completed jobs per hour of `ended`. The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
 
 ## Fleet manager
 

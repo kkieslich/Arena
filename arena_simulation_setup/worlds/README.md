@@ -575,7 +575,8 @@ wrapping whichever of the above resolved first. Call `view.load()` to parse
 | `airport` | Airport terminal layout |
 | `hospital_1` | Multi-zone hospital with patient rooms, reception, hallways |
 | `hospital_2` | Hospital variant |
+| `hallway_clinic` | Generated layout (world generator `hallway`, seed 7, see `generated_from.yaml`) authored into a clinic: 8 rooms on a hallway with a front and a back door, furniture, room purposes in `kg.yaml`, and scenario `demand` with authored FLOWEDIT demand (a water dispenser satisfying thirst, a counter, a waiting group, an exam chair, a bed, a workstation). FLOWEDIT data v2's second held-out world |
 | `map_empty` | Single open zone |
 | `office_1` | Office floor plan |
-| `reception` | Reception area |
+| `reception` | Reception area; scenario `demand` carries authored FLOWEDIT demand (a water dispenser satisfying thirst, a check-in desk, a bench, a staff desk and chair) and `kg.yaml` gives its rooms purposes (staff area: work, waiting room: break). FLOWEDIT data v2's held-out world |
 | `stairs_demo` | Two levels joined by a stair, an up escalator on a belt and a down escalator on steps |
