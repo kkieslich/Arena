@@ -131,6 +131,13 @@ def default_out(split: Path, crowd: str = BASE_CROWD) -> Path:
     return imported_root() / SUITES / f"{suite_name(split, crowd)}.yaml"
 
 
+def imported_for(suite: Path) -> Path | None:
+    """The imported asset root under which `--suite <stem>` finds suite file `suite`: the parent of its `suites/`
+    directory, None for a suite elsewhere, which no `--suite` name reaches."""
+    suite = Path(suite).resolve()
+    return suite.parent.parent if suite.parent.name == SUITES else None
+
+
 def contest_out(suite: Path) -> Path:
     """The contest file of suite file `suite`: `<root>/contests/<name>.yaml` for a suite at `<root>/suites/<name>.yaml`,
     where `--contest <name>` finds it as `--suite <name>` finds the suite; else `<name>.contest.yaml` beside the suite."""
@@ -162,4 +169,4 @@ def benchmark_command(name: str, lanes: int | None = None, contest: str = CONTES
     return shlex.join(["arena", "evaluation", "benchmark", "--suite", name, "--contest", contest, *(["--lanes", str(lanes)] if lanes else [])])
 
 
-__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "contest_doc", "contest_out", "default_out", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]
+__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "contest_doc", "contest_out", "default_out", "imported_for", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]

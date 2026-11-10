@@ -83,6 +83,83 @@ def test_seeds_are_a_list_or_a_list_per_partition(doc: dict[str, Any]) -> None:
             SP.check(bad)
 
 
+def _v2(doc: dict[str, Any]) -> dict[str, Any]:
+    """`doc` laid out as the v2 split: train bases at more seeds than train edits, held-out runs at test seeds, the
+    held-out world's base also at baseline seeds."""
+    doc = copy.deepcopy(doc)
+    doc["seeds"] = {"train": {"bases": [1, 2, 3], "edits": [1]}, "held_out_edits": [6, 7], "held_out_worlds": [6]}
+    doc["partitions"]["held_out_worlds"].append("office_1__ee")
+    doc["baseline_seeds"] = {"held_out_worlds": [1, 2], "held_out_edits": [1, 2]}
+    return doc
+
+
+def test_a_partition_may_run_its_base_worlds_at_more_seeds_than_its_edits(doc: dict[str, Any]) -> None:
+    v2 = _v2(doc)
+    SP.check(v2)
+    train = [(j.world, j.seed) for j in SP.jobs(v2) if j.partition == "train"]
+    assert train == [("hospital_1", 1), ("hospital_1", 2), ("hospital_1", 3), ("hospital_1__aa", 1)]
+    assert SP.seeds_of(v2, "train") == [1, 2, 3] and SP.seeds_of(v2, "train", "hospital_1__aa") == [1] and SP.seeds_of(v2, "train", "hospital_1") == [1, 2, 3]
+    # an edit seed its base runs at nowhere in the partition gets the base as a reference run
+    v2["seeds"]["train"] = {"bases": [1], "edits": [1, 4]}
+    assert [(j.world, j.seed) for j in SP.jobs(v2, ["train"]) if j.reference] == [("hospital_1", 4)]
+    for seeds, message in (({"bases": [1]}, r"exactly \['bases', 'edits'\]"), ({"bases": [1], "edits": []}, r"seeds of train \(edits\)"), ({"bases": ["1"], "edits": [1]}, r"seeds of train \(bases\)")):
+        bad = copy.deepcopy(v2)
+        bad["seeds"]["train"] = seeds
+        with pytest.raises(ValueError, match=message):
+            SP.check(bad)
+
+
+def test_baseline_runs_give_held_out_bases_other_seeds_and_are_never_trained_or_scored_on(doc: dict[str, Any]) -> None:
+    v2 = _v2(doc)
+    runs = SP.jobs(v2)
+    baseline = [(j.partition, j.world, j.seed) for j in runs if j.baseline]
+    # office_1 runs at 1 and 2 for baselines only; hospital_1 already runs at 1 and 2 in train, so no second run of it
+    assert baseline == [("held_out_worlds", "office_1", 1), ("held_out_worlds", "office_1", 2)]
+    assert not any(j.reference for j in runs if j.baseline) and all(SP.is_base(j.world) for j in runs if j.baseline)
+    assert not any(j.baseline for j in runs if j.partition == "train")
+    assert SP.seeds_of(v2, "held_out_worlds") == [6] and SP.baseline_seeds_of(v2, "held_out_worlds") == [1, 2]
+    assert [j.label for j in runs if j.baseline][0] == "[held_out_worlds] office_1 seed 1 (baseline only)"
+    # every (world, seed, crowd) runs once, so stage names stay unique
+    assert len({(j.world, j.seed) for j in runs}) == len(runs)
+    # a partition written alone still carries its baseline runs, never the train runs it would repeat
+    assert [(j.world, j.seed) for j in SP.jobs(v2, ["held_out_worlds"]) if j.baseline] == [("office_1", 1), ("office_1", 2)]
+    assert not any(j.baseline for j in SP.jobs(v2, ["held_out_edits"]))
+    for change, message in (
+        (lambda d: d["baseline_seeds"].update(held_out_worlds=[6]), r"baseline_seeds of held_out_worlds: \[6\] are also seeds it is scored at"),
+        (lambda d: d["baseline_seeds"].update(train=[4]), "baseline_seeds of train"),
+        (lambda d: d["baseline_seeds"].update(test=[4]), "baseline_seeds of unknown partitions"),
+        (lambda d: d["baseline_seeds"].update(held_out_worlds=[]), "baseline_seeds of held_out_worlds: a non-empty list"),
+        (lambda d: d.update(baseline_seeds=[1]), "baseline_seeds maps a partition"),
+    ):
+        bad = _v2(doc)
+        change(bad)
+        with pytest.raises(ValueError, match=message):
+            SP.check(bad)
+
+
+def test_a_test_crowd_may_run_some_worlds_of_its_partitions_with_baseline_runs_of_its_own(doc: dict[str, Any], tmp_path: Path) -> None:
+    v2 = _v2(doc)
+    v2["partitions"]["held_out_edits"].append("hospital_1__cc")
+    (tmp_path / "orca.yaml").write_text("local_planner: orca\n")
+    v2["crowds"] = {"test_orca": {"settings": str(tmp_path / "orca.yaml"), "partitions": ["held_out_edits"], "worlds": ["hospital_1__cc"], "baseline_seeds": [1]}}
+    SP.check(v2)
+    runs = SP.jobs(v2, crowd="test_orca")
+    # the chosen edit with its base's reference runs at the test seeds, then the base at the crowd's baseline seed: under
+    # this crowd hospital_1 runs nowhere else, so its baseline run is not left out
+    assert [(j.world, j.seed, j.reference, j.baseline) for j in runs] == [("hospital_1", 6, True, False), ("hospital_1", 7, True, False), ("hospital_1__cc", 6, False, False), ("hospital_1__cc", 7, False, False), ("hospital_1", 1, False, True)]
+    assert SP.baseline_seeds_of(v2, "held_out_edits", "test_orca") == [1] and SP.baseline_seeds_of(v2, "held_out_worlds", "test_orca") == []
+    for change, message in (
+        (lambda c: c.update(worlds=["office_1"]), r"crowds.test_orca.worlds: \['office_1'\] are in none of its partitions"),
+        (lambda c: c.update(worlds=[]), "crowds.test_orca.worlds: a non-empty list"),
+        (lambda c: c.update(baseline_seeds=[6]), r"crowds.test_orca.baseline_seeds: \[6\] are also seeds"),
+        (lambda c: c.update(seeds=[1]), "optionally"),
+    ):
+        bad = copy.deepcopy(v2)
+        change(bad["crowds"]["test_orca"])
+        with pytest.raises(ValueError, match=message):
+            SP.check(bad)
+
+
 def _controlled(doc: dict[str, Any]) -> dict[str, Any]:
     """`doc` with controls on hospital_1: hospital_1__aa (train) controlled by hospital_1__aa_inert."""
     doc = copy.deepcopy(doc)
@@ -253,8 +330,8 @@ def test_a_split_names_its_crowds_well(doc: dict[str, Any]) -> None:
     for crowds, message in (
         ({"orca": {"settings": "o.yaml", "partitions": ["test"]}}, r"crowds.orca: unknown partitions"),
         ({"orca": {"settings": "o.yaml", "partitions": []}}, "names no partition"),
-        ({"orca": {"settings": "o.yaml"}}, "exactly"),
-        ({"orca": {"planner": "orca", "settings": "o.yaml", "partitions": ["train"]}}, "exactly"),
+        ({"orca": {"settings": "o.yaml"}}, "optionally"),
+        ({"orca": {"planner": "orca", "settings": "o.yaml", "partitions": ["train"]}}, "optionally"),
         ({"orca": {"settings": None, "partitions": ["train"]}}, "path of a crowd settings file"),
         ({SP.BASE_CROWD: {"settings": "o.yaml", "partitions": ["train"]}}, "no crowd name"),
         ({"Test Orca": {"settings": "o.yaml", "partitions": ["train"]}}, "no crowd name"),

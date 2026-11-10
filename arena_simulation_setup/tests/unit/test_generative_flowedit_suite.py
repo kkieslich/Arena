@@ -234,3 +234,35 @@ def test_the_shipped_h2_split_runs_its_planners_on_the_pilot_s_fountain_move_and
     assert h2["control_worlds"] == {edit: pilot["control_worlds"][edit]} and set(worlds) == {"hospital_1", edit, *pilot["control_worlds"][edit]}
     assert SP.robot_task_of(h2) is not None and [c["name"] for c in SP.contest_of(h2) or []] == ["dwb_blind", "dwb_social", "drlvo"]
     assert SP.duration_of(h2) == 300.0
+
+
+def test_an_empty_suite_is_refused_before_any_world_is_generated(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    path, doc = split
+    (tmp_path / "orca.yaml").write_text("local_planner: orca\n")
+    path.write_text(yaml.safe_dump({**doc, "crowds": {"orca": {"settings": "orca.yaml", "partitions": ["held_out_edits"]}}}))
+
+    def no_generate(*_: object, **__: object) -> None:
+        raise AssertionError("generated the worlds of an empty suite")
+
+    monkeypatch.setattr(SU, "regenerate_worlds", no_generate)
+    assert main(["suite", str(path), "--worlds", str(worlds), "--out", str(tmp_path / "empty.yaml"), "--crowd", "orca", "--partition", "train"]) == 1
+    assert "the suite would be empty" in capsys.readouterr().err and not (tmp_path / "empty.yaml").exists()
+
+
+def test_the_printed_benchmark_call_finds_the_suite_where_it_was_written(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    path, _ = split
+    imported = tmp_path / "imported"
+    monkeypatch.setenv("ARENA_ASSETS_DIR_IMPORTED", str(imported))
+    # the default root: `--suite <stem>` finds it as it is
+    _suite(path, worlds, imported / "suites" / "flowedit_pilot.yaml")
+    out = capsys.readouterr()
+    assert out.out.splitlines()[-1].startswith("arena evaluation benchmark --suite flowedit_pilot") and "note: `--suite" not in out.err
+    # another suites/ directory: the call names that root
+    other = tmp_path / "node" / "assets"
+    _suite(path, worlds, other / "suites" / "flowedit_pilot.yaml")
+    assert capsys.readouterr().out.splitlines()[-1].startswith(f"ARENA_ASSETS_DIR_IMPORTED={other} arena evaluation benchmark --suite flowedit_pilot")
+    assert SU.imported_for(other / "suites" / "x.yaml") == other.resolve() and SU.imported_for(tmp_path / "x.yaml") is None
+    # no suites/ directory: no `--suite` name reaches it, and the call says so
+    _suite(path, worlds, tmp_path / "loose.yaml")
+    out = capsys.readouterr()
+    assert "note: `--suite loose` resolves under" in out.err and f"not {tmp_path}" in out.err
