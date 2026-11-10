@@ -18,7 +18,7 @@ PARK = 1000.0
 #: The robot every stage spawns, parked and unseen without a robot task. Jackal is the robot of every shipped suite.
 ROBOT = "jackal"
 #: The contestant of a crowd-only run: the parked robot comes up with the no-op mobile adapter (`robot.mobile:=none`),
-#: not the sim's default navstack (Nav2 in flatsim, ~7 % CPU and ~600 MB per lane for a robot that never moves)
+#: not the sim's default navstack (Nav2 in flatsim, ~12 % of a core and ~0.4 GB per lane for a robot that never moves)
 CONTEST = "[{name: peds_only, mobile: none}]"
 #: Launch args of the whole run: lockstep for runs that pair by seed, people blind to the parked robot
 LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "false"}
