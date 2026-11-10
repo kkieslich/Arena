@@ -348,6 +348,62 @@ flowedit infra layouts --dry-run                       # the robot-only and rand
 
 `layouts` takes the robot-only pick, the best of the joint top 10 and 5 random valid layouts. It saves each as `<site>__layout_<id>` (assets hardlinked; it refuses a local root on another mount) with the scenario copied in. Each copy gets a stage per seed with the robots in `fleet` mode (homes on the bays and chargers, `loading_point`, `locker_1`) and `references: true`, which adds the layout without robots (`unhindered_peds`). It writes `<suite>.layouts.json` beside the suite and prints the benchmark call, whose contest sets the 22 Wh battery. `--rate` defaults to 75 % of the fleet's capacity in the slowest layout at `--speed` (0.5 m/s, the jackal's planner limit).
 
+## Map baselines
+
+`flowedit forecast baseline` builds the forecaster's map baselines on a split's recorded runs. Each one predicts the post-edit map on the base world's flow grid and is scored by the same pooled JSD, beside a floor. Stale and transplanted are in `forecast score`; room-purpose crowds are runs of their own.
+
+**Fair seeds.** A baseline built from recorded runs never reads the crowd draws it is scored on. Held-out edits run only at their partition's seeds, so a baseline that reads runs of the edited world or of a control paired with it uses **leave one seed out**:
+- it reads the runs at one seed s, and its truth is the pooled map of the partition's other seeds;
+- a score is the mean over the folds s;
+- its floor is the **one-seed floor**: the edited world's own run at s against the same truth, what a perfect estimate of the flow behind one run still misses;
+- beside it, **stale@s** is the base world's run at s, the same crowd draw as the baseline's run, and **stale (outside)** the base world's pooled map at every seed outside the truth (for the pilot's held-out edits seeds 1–5 and s), the runs the pre-edit CLiFF-map is built from.
+
+| Baseline | Verb | Prediction | Scored |
+|---|---|---|---|
+| online CLiFF-maps | `cliff` | an online CLiFF-map fed the post-edit tracks one at a time, from an empty map or from the pre-edit map | error against tracks seen, leave one seed out |
+| geometry-only prior | `geometry` | flow along the shortest paths between every ordered pair of entrances of the edited floor, no demand | map file for `forecast score`; with `--cells` its pooled JSD beside the across-seed floor, and leave one seed out |
+| geometry-only simulation | `controls` | a geometry-only control's recorded run at seed s as the map of its function-carrying edit | leave one seed out |
+| Deep Crowd-Flow | `deepflow train`, `deepflow predict` | Sohn et al.'s CAGE input and modified SegNet, retrained on the train partition's worlds (their runs pooled), goals at the demand objects | map file for `forecast score`; with `--cells` as `geometry` |
+
+**Online CLiFF-maps** ([`cliff.py`](forecast/cliff.py), Zhu et al., ICRA 2025). Each 0.5 m cell keeps a semi-wrapped Gaussian mixture over direction and speed, fitted to the observations within 0.5 m of its centre that move (at least 0.2 m/s). A track gives 2 observations per second: the paper's 1 Hz on 1 m cells, scaled to the 0.5 m grid. Each track is one iteration of the paper's Algorithm 1:
+- a cell without a model builds one: mean shift (Gaussian kernel 0.5 rad × 0.3 m/s) for the modes, then EM, both to precision 1e-5 within 100 iterations;
+- a cell with a model takes a stochastic EM step of size γ = N_k / N_ind, where N_ind = λ N_ind + N_k is the decayed count of its observations;
+- a batch whose mean mixture density is under η = 0.1 adds a mixture built from the batch alone: the new components weigh γ and the old ones 1 − γ.
+
+Responsibilities run over components and winding numbers, so a flow across the wrap point stays one mode. A cell's map is its decayed observation count:
+- 1 − p of it stands, where p is the motion ratio (the moving share of the count);
+- p of it is spread over the 9 bins by integrating the mixture: a heading bin over its 45° sector at speed at least 0.2 m/s, the standing bin over speed under 0.2 m/s.
+
+The curve follows the learned forecaster's tracks-seen protocol: the same folds, track counts and track orders (`random.Random(0)` per world, the sorted track keys shuffled once per order, 20 orders). λ is fitted on the train partition's curve (grid 0.5 to 0.99) unless `--decay` sets it. The **pre-edit** variant starts from the base world's map, built in one iteration from its runs at every seed outside the fold's truth; for the pilot's held-out edits these are seeds 1–5 and s. At zero tracks the empty map has no forecast. A pilot run holds 12 to 14 pedestrians, so every count from 16 up is all of them. On the pilot, a held-out world's curve takes about 3 minutes (both variants, 20 orders, 4 threads).
+
+**Geometry-only prior** ([`baselines.py`](forecast/baselines.py)). The entrances are the floor's exterior doors (doors only one room contains, the reader's entrances). A floor with fewer than two takes every open door as an entrance: hospital_1 and office_1 have one exterior door each. Paths run on the forecaster's free space of the edited world, with locked doors closed. Walking time goes to each step's heading, spread by 0.3 rad over the bins and blurred by 0.5 m (the demand model's defaults). It is kept to the reachable cells of the rooms, with nothing standing.
+
+**Deep Crowd-Flow** ([`deepflow.py`](forecast/deepflow.py), Sohn et al., ECCV 2020; reimplemented from the paper, because the authors' code has no license). The CAGE channels on the 0.5 m grid (one pedestrian's diameter, as the paper's cell is one agent's) are:
+- E: the cells no one can stand in;
+- A: the density of the base world's expected crowd at the 16 forecaster crowd seeds;
+- G: the normalized path distance to the nearest demand object's front;
+- Cx, Cy: the capacities.
+
+A grid larger than 112 cells per side (office_1 is 120 wide) is compressed by merging whole adjacent rows or columns, identical ones first, a special case of CAGE's region merge.
+
+The network is the paper's modified SegNet with a sigmoid output, trained on the mean absolute error with 10 % of the samples held out for validation. The paper predicts one channel, the normalized log of how often agents appear in a cell. Here it predicts the same quantity per heading bin and standing (9 channels), so the forecast has headings. Three things differ from the paper, all because a split has a few dozen training worlds where the paper had 12k scenarios:
+- **samples:** a sample is one training world with its runs pooled over the partition's seeds, the aggregate flow of a longer simulation. Every seed of a world has the same input, so on single runs the mean absolute error asks for the per-cell median, which is 0 almost everywhere in a sparse 300 s run, and the network learns to predict nothing;
+- **updates, not epochs:** training runs the paper's 37,500 updates (200 epochs over 12k samples at batch 64) and keeps the epoch with the lowest validation error;
+- **Adam (learning rate 1e-3), not SGD:** with the paper's SGD (0.01, momentum 0.9) the sigmoid saturates near 0 on the mostly empty targets and stays there. The paper reports trying adaptive learning rates; `--optimizer sgd` trains its way.
+
+Train it on a GPU: `arena-gpu claim 20 --for 2h -- <command>`.
+
+```bash
+S=splits/peds_pilot.yaml; R=<benchmark dir>
+flowedit forecast baseline cliff $S --benchmark $R --out cliff.yaml --png cliff.png
+flowedit forecast baseline controls $S --cells $R/flow_cells.parquet --out controls.yaml
+flowedit forecast baseline geometry $S --out geometry.parquet --cells $R/flow_cells.parquet --report geometry.yaml --plots geometry/
+flowedit forecast baseline deepflow train $S --cells $R/flow_cells.parquet --out deepflow.pt
+flowedit forecast baseline deepflow predict $S --model deepflow.pt --out deepflow.parquet --cells $R/flow_cells.parquet --report deepflow.yaml
+```
+
+A map file (`geometry`, `deepflow predict`) has one map per world in the columns `flow_world`, `x`, `y`, `heading_rad` (null for standing) and `ped_seconds`, on the world's base grid. It holds each edit's base world too, so `forecast score` can put the predicted change beside the recorded one.
+
 ## Files
 
 | File | Purpose |
@@ -366,4 +422,5 @@ flowedit infra layouts --dry-run                       # the robot-only and rand
 | `suite.py` | a split as a seed-paired benchmark suite |
 | `splits/` | committed splits, and their test crowds' settings in `splits/crowds/` |
 | `forecast/` | the flow forecaster: `maps.py` (grid, JSD), `scene.py` (a site as the forecaster reads it), `model.py` (layers and params), `evaluate.py` (fit, score, baselines), `plot.py`, `cli.py` (`flowedit forecast`) |
+| `forecast/` (baselines) | `cliff.py` (online CLiFF-maps), `baselines.py` (track store, leave one seed out, tracks-seen curve, geometry-only prior and simulation, map files), `deepflow.py` (Deep Crowd-Flow), `baseline_cli.py` (`flowedit forecast baseline`) |
 | `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast`, `flowedit infra` |

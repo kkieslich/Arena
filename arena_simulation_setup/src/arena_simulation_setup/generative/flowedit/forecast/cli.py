@@ -130,7 +130,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
 def register(verbs: argparse._SubParsersAction) -> None:
     """Add `forecast` and its verbs to the `flowedit` parser."""
     p = verbs.add_parser("forecast", help="fit, run and score the flow forecaster", description="the demand-driven flow forecaster: a world's flow map from its graph and geometry, no PEDS run (see forecast/README in the flowedit README)")
-    sub = p.add_subparsers(dest="forecast_verb", required=True, metavar="{fit,predict,score}")
+    sub = p.add_subparsers(dest="forecast_verb", required=True, metavar="{fit,predict,score,baseline}")
 
     def common(q: argparse.ArgumentParser) -> None:
         q.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over the split's (see settings.py)")
@@ -169,6 +169,10 @@ def register(verbs: argparse._SubParsersAction) -> None:
     q.add_argument("--png", type=Path, default=None, help="PNG of the forecast")
     common(q)
     q.set_defaults(fn=_cmd_predict)
+
+    from .baseline_cli import register as register_baselines
+
+    register_baselines(sub)
 
 
 __all__ = ["FORMAT", "load_params", "register"]
