@@ -564,6 +564,74 @@ def test_fleet_job_energy_counts_the_leg_to_the_charger_nearest_the_second_dock(
     assert record.log["job.1.energy_wh"] == f"{pickup:.3f}"
 
 
+def _pose(x: float, y: float) -> object:
+    from arena_runtime.shared import Orientation, Pose, Position
+
+    return Pose(position=Position(x, y), orientation=Orientation.identity())
+
+
+def test_fleet_fails_a_jammed_job_and_resets_the_robot_to_its_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d")
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
+    for name, manager in managers.items():
+        manager.pose = _pose(20.0 + 3 * int(name[1]), 9.0)
+    managers["r0"].pose = _pose(1.0, 1.5)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _job_index(managers["r0"]) == 0
+    # on its first leg from t 20, r0 creeps 0.15 m in 60 s, 3.4 m short of the loading point
+    for t, x in ((20.0, 1.05), (50.0, 1.1), (80.5, 1.2)):
+        managers["r0"].pose = _pose(x, 1.5)
+        _at(node, t)
+        _tick(mode)
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"], record.log["job.0.ended"]) == ("failed", "jam", "80.501")
+    assert (record.log["jam.0.robot"], record.log["jam.0.job"], record.log["jam.0.target"]) == ("r0", "0", "dock_a")
+    assert float(record.log["jam.0.robot_m"]) == pytest.approx(math.dist((1.2, 1.5), (23.0, 9.0)), abs=0.01)
+    # reset to its home, bay_1 (the fake's dispatch pose of a spot), and parked there
+    assert managers["r0"].moved and managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
+    assert _phase_text(managers["r0"]) == "park at bay_1"
+    assert any(level == "warning" and "r0 jammed" in line for level, line in record.lines)
+
+
+def test_fleet_counts_no_jam_for_a_robot_that_moves_or_holds_at_its_dock(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d")
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
+    managers["r0"].pose = _pose(0.5, 2.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # 0.6 m in 60 s is progress
+    for t, x in ((30.0, 0.8), (61.5, 1.1), (90.0, 1.4)):
+        managers["r0"].pose = _pose(x, 2.0)
+        _at(node, t)
+        _tick(mode)
+    # standing 0.5 m from the loading point for 2 minutes is docking, not a jam
+    for t in (100.0, 160.0, 230.0):
+        managers["r0"].pose = _pose(LOADING_XY[0] - 0.5, LOADING_XY[1])
+        _at(node, t)
+        _tick(mode)
+    assert not any(field.startswith("jam.") for field in record.log) and "job.0.ended" not in record.log
+    assert managers["r0"].moved == []
+
+
+def test_fleet_abandons_a_jammed_charging_trip_and_the_rule_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    for window, jams in ((60.0, True), (0.0, False)):
+        mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], jam_window_s=window)
+        asyncio.run(mode.reset())
+        _socs(managers, r0=20.0, r1=90.0, r2=90.0, r3=90.0)
+        managers["r0"].pose = _pose(8.0, 8.0)
+        _at(node, 1.0)
+        _tick(mode)
+        assert _phase_text(managers["r0"]) == "charge at charger_1"
+        for t in (62.0, 123.0):
+            _at(node, t)
+            _tick(mode)
+        assert ("charge.0.reason" in record.log) == jams
+        if jams:
+            assert (record.log["charge.0.outcome"], record.log["charge.0.reason"], record.log["jam.0.charge"]) == ("abandoned", "jam", "0")
+
+
 @pytest.mark.parametrize(
     ("params", "match"),
     [
