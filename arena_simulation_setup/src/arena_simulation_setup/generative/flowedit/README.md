@@ -370,6 +370,8 @@ flowedit infra layouts --dry-run                       # the robot-only and rand
 - a cell with a model takes a stochastic EM step of size γ = N_k / N_ind, where N_ind = λ N_ind + N_k is the decayed count of its observations;
 - a batch whose mean mixture density is under η = 0.1 adds a mixture built from the batch alone: the new components weigh γ and the old ones 1 − γ.
 
+The paper fixes η = 0.1 and the precision and iteration cap. It leaves open the location radius (0.5 m here), the mean-shift kernel (0.5 rad × 0.3 m/s here) and λ. The radius and the kernel are set here, not tuned; λ is fitted on the train partition's curve.
+
 Responsibilities run over components and winding numbers, so a flow across the wrap point stays one mode. A cell's map is its decayed observation count:
 - 1 − p of it stands, where p is the motion ratio (the moving share of the count);
 - p of it is spread over the 9 bins by integrating the mixture: a heading bin over its 45° sector at speed at least 0.2 m/s, the standing bin over speed under 0.2 m/s.
