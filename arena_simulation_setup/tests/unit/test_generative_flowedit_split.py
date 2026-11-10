@@ -372,22 +372,26 @@ def test_every_test_crowd_of_the_pilot_differs_from_its_base_crowd(name: str) ->
 def test_data_v2_holds_out_what_the_design_says_with_entrances_on() -> None:
     v2, pilot = SP.load(SPLITS / "peds_v2.yaml"), SP.load(SPLITS / "peds_pilot.yaml")
     parts = v2["partitions"]
-    assert {SP.base_of(w) for w in parts["train"]} == {"hospital_1", "office_1"}
-    assert {w for w in parts["held_out_worlds"] if SP.is_base(w)} == {"reception", "hallway_clinic"}
+    further = {"food_court", "hallway_lab", "hallway_office", "hallway_school", "office_open_plan", "waiting_hall_clinic"}
+    assert {SP.base_of(w) for w in parts["train"]} == {"hospital_1", "office_1", *further}
+    assert {w for w in parts["held_out_worlds"] if SP.is_base(w)} == {"reception", "hallway_clinic", "library", "station_hall"}
+    assert all(v2["sources"][w]["per_type"] == 5 for w in further) and v2["sources"]["hospital_1"]["per_type"] == 10
     assert SP.seeds_of(v2, "train", "hospital_1") == [1, 2, 3, 4, 5] and SP.seeds_of(v2, "train", "hospital_1__x") == [1, 2]
     assert SP.seeds_of(v2, "held_out_edits") == SP.seeds_of(v2, "held_out_worlds") == [6, 7, 8]
     assert SP.crowd(v2)["entrances"]["rate"] > 0
     # the pilot (the development set) ran the first chains: every one of them is a train edit in v2, none a test edit
     pilot_edits = {w for p in pilot["partitions"].values() for w in p if not SP.is_base(w)}
     assert pilot_edits <= set(parts["train"])
-    # 20 % of each train world's chains held out: 2 of 10 per edit type
-    for base in ("hospital_1", "office_1"):
-        held = [w for w in parts["held_out_edits"] if SP.base_of(w) == base and w not in {c for cs in v2["control_worlds"].values() for c in cs}]
-        assert len(held) == 12
+    # 20 % of each train world's chains held out: 2 of 10 per edit type, 1 of 5 on the further worlds
+    controls = {c for cs in v2["control_worlds"].values() for c in cs}
+    held = {base: [w for w in parts["held_out_edits"] if SP.base_of(w) == base and w not in controls] for base in ("hospital_1", "office_1", *further)}
+    assert len(held["hospital_1"]) == len(held["office_1"]) == 12
+    # one chain per edit type the generator makes there: five, six where the plan has a lockable spare door
+    assert all(len(held[base]) in (5, 6) for base in further)
     runs = SP.jobs(v2)
-    assert len(runs) == 524 and len({(j.world, j.seed) for j in runs}) == 524
+    assert len(runs) == 1243 and len({(j.world, j.seed) for j in runs}) == 1243
     baseline = sorted((j.world, j.seed) for j in runs if j.baseline)
-    assert baseline == [(w, s) for w in ("hallway_clinic", "reception") for s in (1, 2, 3, 4, 5)]
+    assert baseline == [(w, s) for w in ("hallway_clinic", "library", "reception", "station_hall") for s in (1, 2, 3, 4, 5)]
     assert all(j.partition == "held_out_worlds" for j in runs if j.baseline)
     for crowd in ("test_rates", "test_size", "test_orca", "test_hsfm", "test_all"):
         crowd_runs = SP.jobs(v2, crowd=crowd)
