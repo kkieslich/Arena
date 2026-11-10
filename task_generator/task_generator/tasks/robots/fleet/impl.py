@@ -18,6 +18,8 @@ from task_generator.tasks.robots import TM_Robots
 
 #: the semantic entity kind, and name, of the task log
 LOG_KIND = "fleet"
+#: how long a robot holds in place before a busy dock at most; the mode sends it on before, once the dock frees
+WAIT_HOLD_S = 3600.0
 #: mean speed and turn rate assumed while a robot drives, for the energy per metre derived from its power profile (Nav2 caps the jackal at 0.5 m/s and 1.5 rad/s)
 DRIVE_SPEED_MPS = 0.4
 DRIVE_TURN_RADPS = 0.2
@@ -33,23 +35,33 @@ class Job:
 class _State(enum.Enum):
     PARKED = "parked"  # idle, at its home or on the way there
     FREE = "free"  # idle, to be sent home on this tick
-    JOB = "job"  # on a job leg, holding that leg's dock
-    WAIT = "wait"  # loaded, waiting at its home for the dock it unloads at
+    JOB = "job"  # on a job leg, its dock held once it is within approach_m of it
+    DOCK_WAIT = "dock_wait"  # on a job leg, holding in place within approach_m of a dock another robot holds
     CHARGE = "charge"  # on the way to a charger, or charging in it
     OUTSIDE = "outside"  # running a task assigned from outside until it is done
 
 
 @attrs.define
 class _Run:
-    """A job a robot has taken: the docks it loads and unloads at, the leg it is on, when it took the job and, while it waits for its second dock, since when."""
+    """A job a robot has taken: the docks it loads and unloads at, when it took the job, the leg it is on, when that leg
+    started and how long it may drive, whether it holds the leg's dock, and the time it waited for docks: on this leg (a
+    leg's timer stops while it waits) and over the job."""
 
     job: Job
     docks: tuple[str, str]
     assigned_s: float
-    timeout_s: float = 0.0
     leg: int = 0
-    waiting_s: float | None = None
-    sent_home: bool = False
+    leg_started_s: float = 0.0
+    leg_timeout_s: float = 0.0
+    reserved: bool = False
+    waiting_since: float | None = None
+    leg_waited_s: float = 0.0
+    waited_s: float = 0.0
+
+    def driving_s(self, now: float) -> float:
+        """Seconds of the current leg spent other than waiting for its dock."""
+        waiting = 0.0 if self.waiting_since is None else now - self.waiting_since
+        return now - self.leg_started_s - self.leg_waited_s - waiting
 
 
 @attrs.define
@@ -99,6 +111,7 @@ class TM_Fleet(TM_Robots):
     _jam_window_s: ROSParamT[float]
     _jam_progress_m: ROSParamT[float]
     _jam_goal_m: ROSParamT[float]
+    _approach_m: ROSParamT[float]
 
     def __init__(self, **kwargs: typing.Unpack[TaskModeKwargs]) -> None:
         super().__init__(**kwargs)
@@ -120,6 +133,7 @@ class TM_Fleet(TM_Robots):
         self._jam_window_s = self.node.ROSParam[float](self.namespace("jam_window_s"), 60.0)
         self._jam_progress_m = self.node.ROSParam[float](self.namespace("jam_progress_m"), 0.5)
         self._jam_goal_m = self.node.ROSParam[float](self.namespace("jam_goal_m"), 1.0)
+        self._approach_m = self.node.ROSParam[float](self.namespace("approach_m"), 5.0)
 
         self._chargers: list[str] = []
         self._xy: dict[str, tuple[float, float]] = {}
@@ -129,6 +143,7 @@ class TM_Fleet(TM_Robots):
         self._state: dict[str, _State] = {}
         self._run: dict[str, _Run] = {}
         self._docks: dict[str, str] = {}
+        self._dock_queue: dict[str, list[str]] = {}  # dock -> robots holding in place before it, longest waiting first
         self._queue: deque[Job] = deque()
         self._charge_queue: dict[str, tuple[int, float]] = {}  # robot -> its charge's log index, when it joined the queue
         self._charge: dict[str, _Charge] = {}
@@ -174,7 +189,7 @@ class TM_Fleet(TM_Robots):
         self._spot = dict(self._home)
         self._arrived = set(self._home)
         self._state = dict.fromkeys(self._home, _State.PARKED)
-        self._run, self._docks, self._queue = {}, {}, deque()
+        self._run, self._docks, self._dock_queue, self._queue = {}, {}, {}, deque()
         self._charge_queue, self._charge, self._charges = {}, {}, itertools.count()
         self._empty, self._empties = set(), itertools.count()
         self._tracks, self._jams = {}, itertools.count()
@@ -191,7 +206,7 @@ class TM_Fleet(TM_Robots):
         return plan
 
     async def tick(self, ended: Mapping[str, PhaseState], assigned: Collection[str]) -> None:
-        """Release due jobs; follow each robot's leg, charge and timeout; then send loaded robots on to their second dock, give queued jobs to free robots, fullest first, send robots to chargers, lowest first, and the rest home."""
+        """Release due jobs; follow each robot's leg, charge, timeout and jam; let robots that reach a dock's approach take it or hold in place before it, longest waiting first; give queued jobs to free robots, fullest first, send robots to chargers, lowest first, and the rest home."""
         now = self.node.sim_time.to_seconds() - self._t0
         while self._next.release_s <= now:
             job = self._next
@@ -216,18 +231,12 @@ class TM_Fleet(TM_Robots):
                     self._arrived.add(name)
                 elif last is not None:
                     self._state[name] = _State.FREE
-            elif state in (_State.JOB, _State.WAIT):
-                self._follow_job(name, state, last, now)
+            elif state in (_State.JOB, _State.DOCK_WAIT):
+                await self._follow_job(name, state, last, now)
             elif state is _State.CHARGE:
                 self._follow_charge(name, last, now)
         await self._watch_jams(now)
-
-        for name in sorted((name for name, state in self._state.items() if state is _State.WAIT), key=lambda name: typing.cast(float, self._run[name].waiting_s)):
-            run = self._run[name]
-            if await self._start_leg(name):
-                self._logger.info(f"{name} goes on to unload {run.job.kind} {run.job.index} at {run.docks[1]}, {now:.1f} s")
-            elif not run.sent_home and await self._submit(name, [GoToPhase(target=self._home[name], text=f"{run.job.kind} {run.job.index}: wait at {self._home[name]} for {run.docks[1]}")]):
-                run.sent_home = True
+        await self._watch_docks(now)
 
         await self._hand_out_jobs(now)
         await self._send_to_chargers(now)
@@ -259,23 +268,65 @@ class TM_Fleet(TM_Robots):
             return GoToPhase(target=dock, hold_time=self._load_s.value, on_failure="stop_task", text=f"{job.kind} {job.index}: load at {dock}, released {job.release_s:.1f} s")
         return GoToPhase(target=dock, hold_time=self._unload_s.value, on_failure="stop_task", text=f"{job.kind} {job.index}: unload at {dock}")
 
-    async def _start_leg(self, name: str) -> bool:
-        """Send the robot to its run's current dock if no other robot holds that dock, and hold it."""
+    async def _start_leg(self, name: str, now: float) -> bool:
+        """Send the robot on its run's current leg, to the leg's dock, which it holds only once it is within `approach_m`
+        of it (`_watch_docks`); the leg's timer starts, with a timeout from the leg's route estimate."""
         run = self._run[name]
-        dock = run.docks[run.leg]
-        if self._docks.get(dock, name) != name or not await self._submit(name, [self._leg_phase(run)]):
+        start = self._where(name)
+        if not await self._submit(name, [self._leg_phase(run)]):
             return False
-        self._docks[dock] = name
+        dock = run.docks[run.leg]
+        run.leg_started_s, run.leg_waited_s, run.reserved, run.waiting_since = now, 0.0, False, None
+        run.leg_timeout_s = self._timeout(math.dist(start, self._xy[dock]) * self._detour.value)
+        self._note(f"job.{run.job.index}.timeout_{run.leg}", _s(run.leg_timeout_s))
         self._state[name] = _State.JOB
-        run.waiting_s = None
         return True
 
+    async def _watch_docks(self, now: float) -> None:
+        """Give each dock no robot holds to the robot holding in place before it longest, which drives on; then let every
+        robot on a leg that came within `approach_m` of its dock take it if it is free and nobody waits for it, else hold
+        in place and queue for it. A robot in the walkway before a busy dock is part of the traffic the study measures."""
+        for dock, waiting in list(self._dock_queue.items()):
+            while waiting and dock not in self._docks:
+                name = waiting[0]
+                run = self._run.get(name)
+                if run is None or self._state.get(name) is not _State.DOCK_WAIT or run.docks[run.leg] != dock:
+                    waiting.pop(0)
+                    continue
+                if not await self._submit(name, [self._leg_phase(run)]):
+                    break
+                waiting.pop(0)
+                waited = now - typing.cast(float, run.waiting_since)
+                run.leg_waited_s += waited
+                run.waited_s += waited
+                run.waiting_since, run.reserved = None, True
+                self._docks[dock] = name
+                self._state[name] = _State.JOB
+                self._tracks.pop(name, None)
+                self._logger.info(f"{name} takes {dock} after {waited:.1f} s, {now:.1f} s")
+            if not waiting:
+                del self._dock_queue[dock]
+        for name, state in list(self._state.items()):
+            if state is not _State.JOB or self._run[name].reserved:
+                continue
+            run = self._run[name]
+            dock = run.docks[run.leg]
+            if math.dist(self._where(name), self._xy[dock]) > self._approach_m.value:
+                continue
+            if dock not in self._docks and not self._dock_queue.get(dock):
+                self._docks[dock] = name
+                run.reserved = True
+            elif await self._submit(name, [GoToPhase(hold_time=WAIT_HOLD_S, text=f"{run.job.kind} {run.job.index}: wait for {dock}")]):
+                run.waiting_since = now
+                self._dock_queue.setdefault(dock, []).append(name)
+                self._state[name] = _State.DOCK_WAIT
+                self._tracks.pop(name, None)
+                self._logger.info(f"{name} waits for {dock}, held by {self._docks.get(dock, 'a robot before it')}, {now:.1f} s")
+
     async def _hand_out_jobs(self, now: float) -> None:
-        """Give each queued job whose first dock no robot holds, oldest first, to the fullest free robot whose battery the job would leave at `reserve` or more; a fuller robot it would leave below goes to charge first, unless it is charged to `charge_until` already."""
+        """Give each queued job, oldest first, to the fullest free robot whose battery the job would leave at `reserve` or more; a fuller robot it would leave below goes to charge first, unless it is charged to `charge_until` already."""
         for job in list(self._queue):
             docks = self._docks_of(job)
-            if docks[0] in self._docks:
-                continue
             for name in self._takers():
                 energy_wh, left = self._job_energy(name, job, docks)
                 soc = self._soc(name)
@@ -283,9 +334,8 @@ class TM_Fleet(TM_Robots):
                     self._logger.info(f"{name} needs {energy_wh:.2f} Wh for {job.kind} {job.index} and would keep {left:.1f} %, it charges first")
                     self._queue_charge(name, f"job {job.index}", now)
                     continue
-                timeout_s = self._timeout(self._job_route_m(name, docks))
-                self._run[name] = _Run(job=job, docks=docks, assigned_s=now, timeout_s=timeout_s)
-                if not await self._start_leg(name):
+                self._run[name] = _Run(job=job, docks=docks, assigned_s=now)
+                if not await self._start_leg(name, now):
                     del self._run[name]
                     break
                 self._queue.remove(job)
@@ -293,7 +343,6 @@ class TM_Fleet(TM_Robots):
                 self._note(f"job.{job.index}.robot", name)
                 self._note(f"job.{job.index}.assigned", _s(now))
                 self._note(f"job.{job.index}.energy_wh", f"{energy_wh:.3f}")
-                self._note(f"job.{job.index}.timeout", _s(timeout_s))
                 break
 
     def _takers(self) -> list[str]:
@@ -337,7 +386,10 @@ class TM_Fleet(TM_Robots):
         position = self._ctx.environment_manager.ezilear(pose).position
         return (position.x, position.y)
 
-    def _follow_job(self, name: str, state: _State, last: PhaseState | None, now: float) -> None:
+    async def _follow_job(self, name: str, state: _State, last: PhaseState | None, now: float) -> None:
+        """A leg that ended met frees its dock: after loading the robot goes straight on to its second dock, after
+        unloading the job is done; a leg that ended otherwise fails the job; a leg that drove longer than its timeout
+        (its waits for the dock apart) is abandoned. A robot holding in place for a dock ignores its hold's end."""
         run = self._run[name]
         if state is _State.JOB and last is not None:
             if last.outcome != "met":
@@ -348,9 +400,12 @@ class TM_Fleet(TM_Robots):
                 self._end_job(name, "completed", "", now)
                 return
             self._note(f"job.{run.job.index}.loaded", _s(now))
-            run.leg, run.waiting_s, run.sent_home = 1, now, False
-            self._state[name] = _State.WAIT
-        elif self._timed_out(run.assigned_s, run.timeout_s, now):
+            run.leg = 1
+            if not await self._start_leg(name, now):
+                # the next tick's watch sees the robot on no leg: keep the leg's timer from now
+                run.leg_started_s, run.leg_waited_s, run.reserved, run.waiting_since = now, 0.0, False, None
+            return
+        if run.leg_timeout_s > 0.0 and run.driving_s(now) > run.leg_timeout_s:
             self._end_job(name, "abandoned", "timeout", now)
 
     def _end_job(self, name: str, outcome: str, reason: str, now: float) -> None:
@@ -358,7 +413,11 @@ class TM_Fleet(TM_Robots):
         run = self._run.pop(name)
         for dock in run.docks:
             self._release(dock, name)
+            if name in self._dock_queue.get(dock, []):
+                self._dock_queue[dock].remove(name)
         job = run.job
+        waited = run.waited_s + (0.0 if run.waiting_since is None else now - run.waiting_since)
+        self._note(f"job.{job.index}.wait_s", _s(waited))
         self._note(f"job.{job.index}.ended", _s(now))
         self._note(f"job.{job.index}.outcome", outcome)
         if reason:
@@ -461,7 +520,7 @@ class TM_Fleet(TM_Robots):
 
     def _owner_away(self, spot: str) -> bool:
         holder = self._holder(spot)
-        return holder is None or self._state[holder] in (_State.JOB, _State.FREE)
+        return holder is None or self._state[holder] in (_State.JOB, _State.DOCK_WAIT, _State.FREE)
 
     def _soc(self, name: str) -> float | None:
         return self._ctx.robots[name].soc
@@ -542,7 +601,7 @@ class TM_Fleet(TM_Robots):
     def _hand_outside(self, name: str, now: float) -> None:
         """A task assigned from outside replaced whatever the robot did: its job is abandoned, its charge too, and the mode leaves it alone until that task is done."""
         state = self._state[name]
-        if state in (_State.JOB, _State.WAIT):
+        if state in (_State.JOB, _State.DOCK_WAIT):
             self._end_job(name, "abandoned", "assigned from outside", now)
         elif state is _State.CHARGE:
             self._end_charge(name, "abandoned", "assigned from outside", now)
