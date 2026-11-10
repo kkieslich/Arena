@@ -7,6 +7,7 @@ anatomical (sagittal flexion, antiphase baked into the emitted values).
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from .profile import JOINT_NAMES, GaitProfile, PoseProfile, default_profile
@@ -78,6 +79,8 @@ class GaitGenerator:
 
     def __init__(self) -> None:
         self._phase: dict[int, float] = {}
+        # per agent: the inputs and result of its last call that was given its phase (a pure function of them)
+        self._last: dict[int, tuple[int, float, float, PoseProfile | None, dict[str, float]]] = {}
 
     def _get_phase(self, agent_id: int) -> float:
         if agent_id not in self._phase:
@@ -90,6 +93,7 @@ class GaitGenerator:
     def forget(self, agent_id: int) -> None:
         """Drop accumulated phase state for a despawned agent."""
         self._phase.pop(agent_id, None)
+        self._last.pop(agent_id, None)
 
     def phase(self, agent_id: int) -> float:
         """Return the current walk-cycle phase in radians for an agent, initializing it if unseen."""
@@ -107,13 +111,18 @@ class GaitGenerator:
     ) -> dict[str, float]:
         """Return base-joint-name -> angle for all 40 joints, clamped to limits.
 
-        Phase advances by dt each call and is keyed per agent_id, unless `phase` supplies it.
+        Phase advances by dt each call and is keyed per agent_id, unless `phase` supplies it. Given its phase, the angles
+        depend on the state, speed, phase and profile only, so a call repeating the agent's last such inputs gets (a copy
+        of) the last result.
         animation_state: int matching Pedestrian.msg constants (IDLE=0, WALKING=1, RUNNING=2).
         """
+        if phase is not None and (last := self._last.get(agent_id)) is not None and last[0] == animation_state and last[1] == speed and last[2] == phase and last[3] is profile:
+            self._set_phase(agent_id, phase)
+            return dict(last[4])
+        given = profile
         if profile is None:
             profile = default_profile()
-        angles: dict[str, float] = {name: 0.0 for name in self.JOINT_NAMES}
-
+        angles: dict[str, float]
         if animation_state == _WALKING:
             gait: GaitProfile | None = profile.walk
             angles = self._gait_cycle(agent_id, speed, dt, profile.walk, phase)
@@ -127,8 +136,11 @@ class GaitGenerator:
             gait = None
             angles = self._gait_idle(agent_id, dt, phase)
 
-        limits = gait.limits if gait is not None else {}
-        return {name: _clamp(angles.get(name, 0.0), *limits.get(name, LIMITS[i])) for i, name in enumerate(self.JOINT_NAMES)}
+        bounds = _bounds(gait.limits if gait is not None else _NO_LIMITS, self.JOINT_NAMES)
+        out = {name: max(lo, min(hi, angles.get(name, 0.0))) for name, (lo, hi) in zip(self.JOINT_NAMES, bounds, strict=True)}
+        if phase is not None:
+            self._last[agent_id] = (animation_state, speed, phase, given, dict(out))
+        return out
 
     def _advance(self, agent_id: int, step: float, phase: float | None) -> float:
         if phase is None:
@@ -216,3 +228,15 @@ class GaitGenerator:
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+_NO_LIMITS: Mapping[str, tuple[float, float]] = {}
+_BOUNDS: dict[int, tuple[Mapping[str, tuple[float, float]], tuple[str, ...], tuple[tuple[float, float], ...]]] = {}
+
+
+def _bounds(limits: Mapping[str, tuple[float, float]], names: tuple[str, ...]) -> tuple[tuple[float, float], ...]:
+    """(lo, hi) per joint of `names`: a gait's own limit, else LIMITS; built once per limits mapping, which the cache holds."""
+    entry = _BOUNDS.get(id(limits))
+    if entry is None or entry[0] is not limits or entry[1] != names:
+        entry = _BOUNDS[id(limits)] = (limits, names, tuple(limits.get(name, LIMITS[i]) for i, name in enumerate(names)))
+    return entry[2]
