@@ -212,7 +212,8 @@ def jsd(p: np.ndarray, q: np.ndarray) -> float | None:
     m = (a + b) / 2
 
     def kl(x: np.ndarray, y: np.ndarray) -> float:
-        k = x > 0
+        # y > 0 too: a subnormal x halves to y == 0 (and adds nothing); without it the sum turns inf
+        k = (x > 0) & (y > 0)
         return float(np.sum(x[k] * np.log2(x[k] / y[k])))
 
     return max(0.0, (kl(a, m) + kl(b, m)) / 2)

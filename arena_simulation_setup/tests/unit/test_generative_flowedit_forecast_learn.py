@@ -231,3 +231,11 @@ def test_a_split_with_seeds_apart_for_bases_and_edits_scores_each_at_its_own_and
     assert [(t.world, t.seeds) for t in found] == [("o", (6,)), ("o__move_f__3", (6,))]
     assert V.other_seeds(runs, "o", [6]) == [9]
     assert held_out_seeds(doc, "b") == {6, 10}
+
+
+def test_jsd_stays_finite_with_subnormal_entries() -> None:
+    p = np.zeros((2, 2, M.BINS))
+    q = np.zeros((2, 2, M.BINS))
+    p[0, 0, 0], p[1, 1, 1] = 1.0, 5e-324
+    q[0, 0, 0] = 1.0
+    assert M.jsd(p, q) == pytest.approx(0.0, abs=1e-12)
