@@ -1,0 +1,346 @@
+# FLOWEDIT data v2 (Stage 1 dataset, decided 10 Nov 2026): the study design's split (§5) with 10 chains per edit type and
+# door entrances on. The 9 Nov pilot (peds_pilot.yaml, hospital_1 only, no entrances) is the development set.
+# `flowedit suite` writes it (see split.py and the README); every stage `<world>__s<seed>` runs one 300 s episode.
+#
+#   train            hospital_1 and office_1: the base worlds at seeds 1-5, 8 of 10 chains of every edit type and their
+#                    geometry-only controls at seeds 1-2
+#   held_out_edits   the other 2 chains of every edit type on each train world (20 %) and their controls, at seeds 6-8;
+#                    their base worlds run at 6-8 as references
+#   held_out_worlds  reception and hallway_clinic, each with authored demand (scenario `demand`): the base world and
+#                    chains 1-2 of every edit type the generator makes on it, with their controls, at seeds 6-8; the
+#                    base worlds also run at seeds 1-5 for baselines only (stale, transplanted, across-seed floor),
+#                    never trained on or scored
+#
+# Held-out edits are drawn by seed: per train world and edit type, random.Random("flowedit-v2:held-out:<world>:<type>")
+# picks 2 chains among those the pilot never ran (hospital_1 chains 4-10, office_1 chains 2-10), so no test edit was
+# looked at during development. Chains count from 1 in the generator's order (`flowedit generate <base> --scenario
+# <scenario> --seed 0 --per-type 10 --controls`: move, insert, remove, function, access, layout; a function-carrying
+# move or insert is followed by its controls). The first chains are the pilot's edits.
+#
+# reception (2 rooms, 1 door between them, no exterior door) has no door entrances and no access edits; hallway_clinic
+# is a generated layout (world generator `hallway`, seed 7, see its generated_from.yaml) with a front and a back door.
+format: flowedit-split/1
+sources:
+  hospital_1: {scenario: queue, seed: 0, per_type: 10, steps: 1, controls: true}
+  office_1: {scenario: default, seed: 0, per_type: 10, steps: 1, controls: true}
+  reception: {scenario: demand, seed: 0, per_type: 2, steps: 1, controls: true}
+  hallway_clinic: {scenario: demand, seed: 0, per_type: 2, steps: 1, controls: true}
+duration: 300
+# door entrances on: every exterior door gets a source and a sink (the defaults of settings.py written out)
+settings:
+  entrances:
+    rate: 0.05
+    max_concurrent: 4
+    max_total: 15
+    speed: {min: 1.0, max: 1.5}
+    stops: 2
+seeds:
+  train:
+    bases: [1, 2, 3, 4, 5]
+    edits: [1, 2]
+  held_out_edits: [6, 7, 8]
+  held_out_worlds: [6, 7, 8]
+# held-out worlds' bases also run at train seeds, for the stale and transplanted baselines and the across-seed floor only
+baseline_seeds:
+  held_out_worlds: [1, 2, 3, 4, 5]
+partitions:
+  train:
+  - hospital_1
+  - hospital_1__move_fountain__6e1d6873
+  - hospital_1__insert_fountain_inert__4a32a4fc
+  - hospital_1__move_fountain_leave_demand__66723c25
+  - hospital_1__move_fountain__667253ac
+  - hospital_1__insert_fountain_inert__ccddef5c
+  - hospital_1__move_fountain_leave_demand__4c342703
+  - hospital_1__move_fountain__6a2c296b
+  - hospital_1__insert_fountain_inert__f1a0d57b
+  - hospital_1__move_fountain_leave_demand__a137df43
+  - hospital_1__move_fountain__c3de5206
+  - hospital_1__insert_fountain_inert__0010635b
+  - hospital_1__move_fountain_leave_demand__d3346dd0
+  - hospital_1__move_fountain__b1081bc3
+  - hospital_1__insert_fountain_inert__116278b2
+  - hospital_1__move_fountain_leave_demand__09fa9fc1
+  - hospital_1__move_fountain__a87b9d68
+  - hospital_1__insert_fountain_inert__37cbf6a8
+  - hospital_1__move_fountain_leave_demand__fee3ae0a
+  - hospital_1__move_fountain__746a7931
+  - hospital_1__insert_fountain_inert__5f396fbf
+  - hospital_1__move_fountain_leave_demand__84df6435
+  - hospital_1__move_fountain__e0860b4d
+  - hospital_1__insert_fountain_inert__f3ee521e
+  - hospital_1__move_fountain_leave_demand__36a2ec1b
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__ea26097f
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__3505b3ba
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__1e59d925
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__7495585f
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__4d2a96ff
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__2c51f17b
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__8e4df6de
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__cf2fad29
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__9f5971fe
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__37f1cf99
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__16a3729f
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__1a1d21a9
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__268b82b0
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__c1e54435
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__60df21dc
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__d2a77c12
+  - hospital_1__remove_fountain__6ed0b4ea
+  - hospital_1__remove_waiting_sofa_3__920f4b7c
+  - hospital_1__remove_wc_pharmacy_toilet_paper_2__c4bd8e8b
+  - hospital_1__remove_nurse_resting_sidetable_2__4f939b18
+  - hospital_1__remove_waiting_mop_set_2__497085cb
+  - hospital_1__remove_ward_biohazard_container_1__487976bc
+  - hospital_1__remove_waiting_sofa_4__4d926dcd
+  - hospital_1__remove_exam_exam_table_2__497f7009
+  - hospital_1__function_fountain__638f0641
+  - hospital_1__function_fountain__efd48775
+  - hospital_1__function_fountain__daff8b6d
+  - hospital_1__function_fountain__a808d51c
+  - hospital_1__function_fountain__83863eab
+  - hospital_1__function_fountain__bb3e90fc
+  - hospital_1__function_fountain__949f873f
+  - hospital_1__function_fountain__b34c264f
+  - hospital_1__access_patient_ward_door_2__c485e3a4
+  - hospital_1__access_patient_ward_door_1__d24b53b6
+  - hospital_1__access_fire_alarm__8866ca6d
+  - hospital_1__access_fire_alarm__72979acc
+  - hospital_1__access_fire_alarm__8d0b50ce
+  - hospital_1__access_fire_alarm__c133feef
+  - hospital_1__access_fire_alarm__7741cfce
+  - hospital_1__access_fire_alarm__48b1ee22
+  - hospital_1__layout_move_wc_waiting_stall_3_door__54fbb0eb
+  - hospital_1__layout_move_doctors_resting_room_door__5af68761
+  - hospital_1__layout_add_gen_door_1__71e5baec
+  - hospital_1__layout_remove_patient_ward_door_2__50b0a754
+  - hospital_1__layout_move_patient_ward_door_2__789f1a44
+  - hospital_1__layout_add_gen_door_1__cd35ed37
+  - hospital_1__layout_move_or_door__83b667c8
+  - hospital_1__layout_move_doctors_resting_room_door__1a742a53
+  - office_1
+  - office_1__move_fountain__2af43765
+  - office_1__insert_fountain_inert__353ebd40
+  - office_1__move_fountain_leave_demand__9a241d12
+  - office_1__move_fountain__d6cb77a6
+  - office_1__insert_fountain_inert__44c25004
+  - office_1__move_fountain_leave_demand__4fa692b0
+  - office_1__move_fountain__4078bbab
+  - office_1__insert_fountain_inert__783bc25a
+  - office_1__move_fountain_leave_demand__92693290
+  - office_1__move_fountain__cc087790
+  - office_1__insert_fountain_inert__4a07dde1
+  - office_1__move_fountain_leave_demand__1c1bf627
+  - office_1__move_fountain__a8276836
+  - office_1__insert_fountain_inert__20bfa797
+  - office_1__move_fountain_leave_demand__49d7d65c
+  - office_1__move_fountain__1d42ae08
+  - office_1__insert_fountain_inert__4c9b7aa2
+  - office_1__move_fountain_leave_demand__7f3d6fcf
+  - office_1__move_fountain__e7597672
+  - office_1__insert_fountain_inert__0138e699
+  - office_1__move_fountain_leave_demand__002a1dfc
+  - office_1__move_fountain__de239609
+  - office_1__insert_fountain_inert__8b23f200
+  - office_1__move_fountain_leave_demand__df7e7b54
+  - office_1__insert_gen_water_cooler_1__bed8a70e
+  - office_1__insert_gen_water_cooler_1_inert__3f7a030a
+  - office_1__insert_gen_water_cooler_1__1edc54e9
+  - office_1__insert_gen_water_cooler_1_inert__3edb4ee2
+  - office_1__insert_gen_water_cooler_1__a881e898
+  - office_1__insert_gen_water_cooler_1_inert__19602bcb
+  - office_1__insert_gen_water_cooler_1__a025b038
+  - office_1__insert_gen_water_cooler_1_inert__a3b1cff4
+  - office_1__insert_gen_water_cooler_1__e0194f73
+  - office_1__insert_gen_water_cooler_1_inert__4bd8f4c1
+  - office_1__insert_gen_water_cooler_1__d9028756
+  - office_1__insert_gen_water_cooler_1_inert__f9300b0d
+  - office_1__insert_gen_water_cooler_1__f4eb9fbc
+  - office_1__insert_gen_water_cooler_1_inert__cbd50e30
+  - office_1__insert_gen_water_cooler_1__883f74e1
+  - office_1__insert_gen_water_cooler_1_inert__f6449ccd
+  - office_1__remove_fountain__3578b71c
+  - office_1__remove_office_monitor_2_4_b__74d1c7f5
+  - office_1__remove_storage_box_11_1st_4__c6304cc0
+  - office_1__remove_office_file_cabinet_15__95c7972f
+  - office_1__remove_storage_box_23_2nd_2__a0337559
+  - office_1__remove_wc1_toilet_3__7f3717b3
+  - office_1__remove_office_desk_1_6__25560cb3
+  - office_1__remove_wc1_toilet_paper_1__6539a10e
+  - office_1__function_fountain__63b53335
+  - office_1__function_fountain__71738a0f
+  - office_1__function_fountain__791ffe5b
+  - office_1__function_fountain__f437aebb
+  - office_1__function_fountain__adfcba6c
+  - office_1__function_fountain__987144ab
+  - office_1__function_fountain__0ce54931
+  - office_1__function_fountain__d975ff79
+  - office_1__access_reception_to_hallway_2__44c89ba8
+  - office_1__access_cafeteria_to_sub_hallway_2__3d441252
+  - office_1__access_cafeteria_to_hallway__04e25b42
+  - office_1__access_wc_2_to_reception__b7d6fddd
+  - office_1__access_cafeteria_to_sub_hallway_1__d2d6d844
+  - office_1__access_main_office_to_wc1__a9bef280
+  - office_1__access_meeting_big_to_hallway_2__b10aad3b
+  - office_1__access_wc_1_to_hallway__e116f737
+  - office_1__layout_move_meeting_1_to_sub_hallway__05d4edbd
+  - office_1__layout_move_meeting_big_to_hallway_2__9e75fd46
+  - office_1__layout_move_cafeteria_to_hallway__856fab65
+  - office_1__layout_move_cafeteria_to_sub_hallway_2__4afebf73
+  - office_1__layout_move_reception_to_hallway_1__f1770542
+  - office_1__layout_remove_main_office_to_hallway_2__1472e052
+  - office_1__layout_add_gen_door_1__531dc2cc
+  - office_1__layout_remove_reception_to_hallway_1__3be49ac8
+  held_out_edits:
+  - hospital_1__move_fountain__9cd855e4
+  - hospital_1__insert_fountain_inert__b93af4ff
+  - hospital_1__move_fountain_leave_demand__26f70fae
+  - hospital_1__move_fountain__e4b8f0bd
+  - hospital_1__insert_fountain_inert__46889721
+  - hospital_1__move_fountain_leave_demand__c823e512
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__3a8fb04a
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__1da11347
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1__dd5ee215
+  - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__98b45d55
+  - hospital_1__remove_wc_waiting_toilet_paper_1__cfbe659d
+  - hospital_1__remove_wc_waiting_washbasin_1__a551580e
+  - hospital_1__function_fountain__1399644f
+  - hospital_1__function_fountain__65e1aa6a
+  - hospital_1__access_fire_alarm__7775dfa6
+  - hospital_1__access_fire_alarm__0f33e7ec
+  - hospital_1__layout_add_gen_door_1__f83009d3
+  - hospital_1__layout_remove_patient_ward_door_1__47dfe3c0
+  - office_1__move_fountain__43162a8e
+  - office_1__insert_fountain_inert__446b2b73
+  - office_1__move_fountain_leave_demand__57e595c1
+  - office_1__move_fountain__87669020
+  - office_1__insert_fountain_inert__139c20f4
+  - office_1__move_fountain_leave_demand__37535ece
+  - office_1__insert_gen_water_cooler_1__b017d3cd
+  - office_1__insert_gen_water_cooler_1_inert__15c76a1c
+  - office_1__insert_gen_water_cooler_1__d746759b
+  - office_1__insert_gen_water_cooler_1_inert__55e0dd9f
+  - office_1__remove_office_file_cabinet_9__43a6ce44
+  - office_1__remove_office_keyboard_1_4_b__cc9ad11b
+  - office_1__function_fountain__308b5d62
+  - office_1__function_fountain__d9c8a795
+  - office_1__access_wc_2_to_sub_hallway__a5819483
+  - office_1__access_main_office_to_hallway_1__f8424371
+  - office_1__layout_add_gen_door_1__f3c3228e
+  - office_1__layout_add_gen_door_1__73ab420d
+  held_out_worlds:
+  - reception
+  - reception__move_fountain__41e7be35
+  - reception__insert_fountain_inert__932f6e87
+  - reception__move_fountain_leave_demand__aa4eb795
+  - reception__move_fountain__63e5ecb5
+  - reception__insert_fountain_inert__aad910a5
+  - reception__move_fountain_leave_demand__618f9b92
+  - reception__insert_gen_sm_waterdispenser_01a_1__8054be84
+  - reception__insert_gen_sm_waterdispenser_01a_1_inert__0dd9341a
+  - reception__insert_gen_sm_waterdispenser_01a_1__07b4d164
+  - reception__insert_gen_sm_waterdispenser_01a_1_inert__f41cc3f5
+  - reception__remove_fountain__ac2ede1b
+  - reception__remove_gathering_area__11dc2d9b
+  - reception__function_fountain__37da001a
+  - reception__function_fountain__13dfcc88
+  - reception__layout_add_gen_door_1__7ea3bc9c
+  - reception__layout_add_gen_door_1__90f799c8
+  - hallway_clinic
+  - hallway_clinic__move_fountain__4e45661e
+  - hallway_clinic__insert_fountain_inert__b080f3d5
+  - hallway_clinic__move_fountain_leave_demand__ece58ece
+  - hallway_clinic__move_fountain__d4242577
+  - hallway_clinic__insert_fountain_inert__5e2b0cd2
+  - hallway_clinic__move_fountain_leave_demand__8775ef7c
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1__9fe2f5e9
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__6a4fa04a
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1__7972ea45
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__7e188c2e
+  - hallway_clinic__remove_fountain__222390d3
+  - hallway_clinic__remove_reception_desk__387a66bb
+  - hallway_clinic__function_fountain__dac053f0
+  - hallway_clinic__function_fountain__567ee503
+  - hallway_clinic__layout_add_gen_door_1__f044abba
+  - hallway_clinic__layout_move_back_door__73167242
+# edit world: its geometry-only controls, as `flowedit generate --controls` links them in its manifest
+control_worlds:
+  hospital_1__move_fountain__6e1d6873: [hospital_1__insert_fountain_inert__4a32a4fc, hospital_1__move_fountain_leave_demand__66723c25]
+  hospital_1__move_fountain__667253ac: [hospital_1__insert_fountain_inert__ccddef5c, hospital_1__move_fountain_leave_demand__4c342703]
+  hospital_1__move_fountain__6a2c296b: [hospital_1__insert_fountain_inert__f1a0d57b, hospital_1__move_fountain_leave_demand__a137df43]
+  hospital_1__move_fountain__c3de5206: [hospital_1__insert_fountain_inert__0010635b, hospital_1__move_fountain_leave_demand__d3346dd0]
+  hospital_1__move_fountain__b1081bc3: [hospital_1__insert_fountain_inert__116278b2, hospital_1__move_fountain_leave_demand__09fa9fc1]
+  hospital_1__move_fountain__a87b9d68: [hospital_1__insert_fountain_inert__37cbf6a8, hospital_1__move_fountain_leave_demand__fee3ae0a]
+  hospital_1__move_fountain__9cd855e4: [hospital_1__insert_fountain_inert__b93af4ff, hospital_1__move_fountain_leave_demand__26f70fae]
+  hospital_1__move_fountain__e4b8f0bd: [hospital_1__insert_fountain_inert__46889721, hospital_1__move_fountain_leave_demand__c823e512]
+  hospital_1__move_fountain__746a7931: [hospital_1__insert_fountain_inert__5f396fbf, hospital_1__move_fountain_leave_demand__84df6435]
+  hospital_1__move_fountain__e0860b4d: [hospital_1__insert_fountain_inert__f3ee521e, hospital_1__move_fountain_leave_demand__36a2ec1b]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__ea26097f: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__3505b3ba]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__1e59d925: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__7495585f]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__4d2a96ff: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__2c51f17b]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__3a8fb04a: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__1da11347]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__8e4df6de: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__cf2fad29]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__dd5ee215: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__98b45d55]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__9f5971fe: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__37f1cf99]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__16a3729f: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__1a1d21a9]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__268b82b0: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__c1e54435]
+  hospital_1__insert_gen_sm_waterdispenser_01a_1__60df21dc: [hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__d2a77c12]
+  office_1__move_fountain__2af43765: [office_1__insert_fountain_inert__353ebd40, office_1__move_fountain_leave_demand__9a241d12]
+  office_1__move_fountain__d6cb77a6: [office_1__insert_fountain_inert__44c25004, office_1__move_fountain_leave_demand__4fa692b0]
+  office_1__move_fountain__4078bbab: [office_1__insert_fountain_inert__783bc25a, office_1__move_fountain_leave_demand__92693290]
+  office_1__move_fountain__cc087790: [office_1__insert_fountain_inert__4a07dde1, office_1__move_fountain_leave_demand__1c1bf627]
+  office_1__move_fountain__a8276836: [office_1__insert_fountain_inert__20bfa797, office_1__move_fountain_leave_demand__49d7d65c]
+  office_1__move_fountain__1d42ae08: [office_1__insert_fountain_inert__4c9b7aa2, office_1__move_fountain_leave_demand__7f3d6fcf]
+  office_1__move_fountain__43162a8e: [office_1__insert_fountain_inert__446b2b73, office_1__move_fountain_leave_demand__57e595c1]
+  office_1__move_fountain__e7597672: [office_1__insert_fountain_inert__0138e699, office_1__move_fountain_leave_demand__002a1dfc]
+  office_1__move_fountain__87669020: [office_1__insert_fountain_inert__139c20f4, office_1__move_fountain_leave_demand__37535ece]
+  office_1__move_fountain__de239609: [office_1__insert_fountain_inert__8b23f200, office_1__move_fountain_leave_demand__df7e7b54]
+  office_1__insert_gen_water_cooler_1__bed8a70e: [office_1__insert_gen_water_cooler_1_inert__3f7a030a]
+  office_1__insert_gen_water_cooler_1__1edc54e9: [office_1__insert_gen_water_cooler_1_inert__3edb4ee2]
+  office_1__insert_gen_water_cooler_1__a881e898: [office_1__insert_gen_water_cooler_1_inert__19602bcb]
+  office_1__insert_gen_water_cooler_1__b017d3cd: [office_1__insert_gen_water_cooler_1_inert__15c76a1c]
+  office_1__insert_gen_water_cooler_1__a025b038: [office_1__insert_gen_water_cooler_1_inert__a3b1cff4]
+  office_1__insert_gen_water_cooler_1__e0194f73: [office_1__insert_gen_water_cooler_1_inert__4bd8f4c1]
+  office_1__insert_gen_water_cooler_1__d9028756: [office_1__insert_gen_water_cooler_1_inert__f9300b0d]
+  office_1__insert_gen_water_cooler_1__f4eb9fbc: [office_1__insert_gen_water_cooler_1_inert__cbd50e30]
+  office_1__insert_gen_water_cooler_1__d746759b: [office_1__insert_gen_water_cooler_1_inert__55e0dd9f]
+  office_1__insert_gen_water_cooler_1__883f74e1: [office_1__insert_gen_water_cooler_1_inert__f6449ccd]
+  reception__move_fountain__41e7be35: [reception__insert_fountain_inert__932f6e87, reception__move_fountain_leave_demand__aa4eb795]
+  reception__move_fountain__63e5ecb5: [reception__insert_fountain_inert__aad910a5, reception__move_fountain_leave_demand__618f9b92]
+  reception__insert_gen_sm_waterdispenser_01a_1__8054be84: [reception__insert_gen_sm_waterdispenser_01a_1_inert__0dd9341a]
+  reception__insert_gen_sm_waterdispenser_01a_1__07b4d164: [reception__insert_gen_sm_waterdispenser_01a_1_inert__f41cc3f5]
+  hallway_clinic__move_fountain__4e45661e: [hallway_clinic__insert_fountain_inert__b080f3d5, hallway_clinic__move_fountain_leave_demand__ece58ece]
+  hallway_clinic__move_fountain__d4242577: [hallway_clinic__insert_fountain_inert__5e2b0cd2, hallway_clinic__move_fountain_leave_demand__8775ef7c]
+  hallway_clinic__insert_gen_sm_waterdispenser_01a_1__9fe2f5e9: [hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__6a4fa04a]
+  hallway_clinic__insert_gen_sm_waterdispenser_01a_1__7972ea45: [hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__7e188c2e]
+# Test crowds (study design §6), fixed before the test runs: settings merged over `settings` above, each on the first
+# held-out chain of every edit type per train world and its controls, at seeds 6-8 with their bases' reference runs,
+# and the bases at seeds 1-3 under the same crowd for its baselines.
+crowds:
+  test_rates:
+    settings: crowds/test_rates.yaml
+    partitions: [held_out_edits]
+    worlds: &test_edits
+      - hospital_1__move_fountain__9cd855e4
+      - hospital_1__insert_fountain_inert__b93af4ff
+      - hospital_1__move_fountain_leave_demand__26f70fae
+      - hospital_1__insert_gen_sm_waterdispenser_01a_1__3a8fb04a
+      - hospital_1__insert_gen_sm_waterdispenser_01a_1_inert__1da11347
+      - hospital_1__remove_wc_waiting_toilet_paper_1__cfbe659d
+      - hospital_1__function_fountain__1399644f
+      - hospital_1__access_fire_alarm__7775dfa6
+      - hospital_1__layout_add_gen_door_1__f83009d3
+      - office_1__move_fountain__43162a8e
+      - office_1__insert_fountain_inert__446b2b73
+      - office_1__move_fountain_leave_demand__57e595c1
+      - office_1__insert_gen_water_cooler_1__b017d3cd
+      - office_1__insert_gen_water_cooler_1_inert__15c76a1c
+      - office_1__remove_office_file_cabinet_9__43a6ce44
+      - office_1__function_fountain__308b5d62
+      - office_1__access_wc_2_to_sub_hallway__a5819483
+      - office_1__layout_add_gen_door_1__f3c3228e
+    baseline_seeds: [1, 2, 3]
+  test_size: {settings: crowds/test_size.yaml, partitions: [held_out_edits], worlds: *test_edits, baseline_seeds: [1, 2, 3]}
+  test_orca: {settings: crowds/test_orca.yaml, partitions: [held_out_edits], worlds: *test_edits, baseline_seeds: [1, 2, 3]}
+  test_hsfm: {settings: crowds/test_hsfm.yaml, partitions: [held_out_edits], worlds: *test_edits, baseline_seeds: [1, 2, 3]}
+  test_all: {settings: crowds/test_all.yaml, partitions: [held_out_edits], worlds: *test_edits, baseline_seeds: [1, 2, 3]}

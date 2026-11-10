@@ -49,17 +49,19 @@ DOOR_DISTANCE_M = 2.0
 CHARGE_POWER_W = 175.0
 #: The floor raster's cell size, the one NAV@r and the nav map use
 RESOLUTION_M = 0.05
-#: Zones no element goes to, as `fnmatch` patterns: the ramp, the stair landing and the zones NAV@r at 0.325 m cuts
-#: off from the twin's main floor (side corridor, side room, south arm). Other worlds name their own.
-EXCLUDED_ZONES = ("ramp", "stair_landing", "side_corridor_*", "side_room", "south_arm")
+#: Zones no element goes to besides the cut-off ones, as `fnmatch` patterns: none by default. The zones NAV@r cuts off
+#: at the wheelchair radius are left out on every site (`cut_off_zones`); a site names others where it has a reason
+#: NAV@r does not see (the twin's 4 % ramp, in its INFRA site config).
+EXCLUDED_ZONES: tuple[str, ...] = ()
 #: Overlaps below this area (m^2) are shared edges, not overlaps: under a mm along a pair's 1.2 m dock edge, which
 #: poses to 0.1 mm (`POSITION_DECIMALS`, as world.yaml keeps them) can leave between docks that meet
 AREA_EPS = 1e-3
 
 #: The jackal dock, 1.2 m deep and 1.0 m wide, in front of a charger whose origin is its middle (face +x)
 CHARGER_DOCK = ((0.25, -0.5), (1.45, -0.5), (1.45, 0.5), (0.25, 0.5))
-#: The jackal dock in front of a parcel locker whose origin is a back corner (face +x)
-LOCKER_DOCK = ((0.55, 0.02), (1.75, 0.02), (1.75, 1.02), (0.55, 1.02))
+#: The jackal dock in front of a parcel locker whose origin is a back corner (face +x): from 0.84 m, just beyond the
+#: 0.79 m deep box its doors sweep open (the model's swept bounding box), so a docked robot leaves the doors free
+LOCKER_DOCK = ((0.84, 0.02), (2.04, 0.02), (2.04, 1.02), (0.84, 1.02))
 #: A waiting bay's slot around its origin, 1.2 m deep and 1.0 m wide: its footprint and its dock (face +x)
 SLOT = ((-0.6, -0.5), (0.6, -0.5), (0.6, 0.5), (-0.6, 0.5))
 
@@ -267,6 +269,7 @@ class _Context:
 CACHED_SITES = 8
 _CONTEXTS: dict[tuple[Any, ...], _Context] = {}
 _SPOTS: dict[tuple[Any, ...], tuple[Spot, ...]] = {}
+_CUT_OFF: dict[tuple[Any, ...], tuple[str, ...]] = {}
 _SITES: collections.OrderedDict[tuple[Any, ...], None] = collections.OrderedDict()
 
 
@@ -274,6 +277,7 @@ def clear_cache() -> None:
     """Forget the cached site geometry and spots."""
     _CONTEXTS.clear()
     _SPOTS.clear()
+    _CUT_OFF.clear()
     _SITES.clear()
 
 
@@ -284,7 +288,7 @@ def _site_key(site: Site) -> tuple[Any, ...]:
     _SITES.move_to_end(key)
     while len(_SITES) > CACHED_SITES:
         old, _ = _SITES.popitem(last=False)
-        for cache in (_CONTEXTS, _SPOTS):
+        for cache in (_CONTEXTS, _SPOTS, _CUT_OFF):
             for stale in [k for k in cache if k[: len(old)] == old]:
                 del cache[stale]
     return key
@@ -388,6 +392,22 @@ def element_named(element: str | Element) -> Element:
     if element not in CATALOG:
         raise ValueError(f"no element {element!r} (catalog: {', '.join(CATALOG)})")
     return CATALOG[element]
+
+
+def cut_off_zones(site: Site, level_id: str, radius: float | None = None) -> tuple[str, ...]:
+    """The zones of a level NAV@r cuts off from its main floor at `radius` (default the wheelchair's, 0.325 m): zones of
+    at least 2 m^2, traversable on the walls alone, with no cell in the dominant component (`NavrBase.cut_off_zones`),
+    on the walls and doors only, so a room behind a narrow passage or up a stair counts whatever furniture stands in
+    it. Cached per site."""
+    from arena_simulation_setup.metrics.navr_filter import WHEELCHAIR_RADIUS, NavrBase
+
+    radius = WHEELCHAIR_RADIUS if radius is None else float(radius)
+    key = (*_site_key(site), level_id, radius)
+    if key not in _CUT_OFF:
+        level = site.world.levels[level_id]
+        base = NavrBase(level, radii=(radius,), exclude={o.name for o in level.objects})
+        _CUT_OFF[key] = base.cut_off_zones(radius)
+    return _CUT_OFF[key]
 
 
 def candidate_zones(level: Level, zones: Sequence[str] | None = None, exclude: Sequence[str] = EXCLUDED_ZONES) -> list[str]:
@@ -498,14 +518,15 @@ def _members(piece: WallPiece, frame: _Frame, local: shapely.Polygon, front: flo
     return out
 
 
-def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, along: tuple[float, float], front: float, others: shapely.Geometry | None = None) -> float:
+def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, along: tuple[float, float], front: float, others: shapely.Geometry | None = None, zone: shapely.Geometry | None = None) -> float:
     """The clear corridor width left in front of `blocked` (and `others`, painted as obstacles too), up to
-    `CORRIDOR_CAP_M`, to about 1.5 raster cells (where the walls fall on the raster): on rays from `blocked`'s front along the normal, across its width, twice
-    the largest distance to an obstacle (the floor raster's distance transform) a ray meets before it hits one; the
-    narrowest ray's."""
+    `CORRIDOR_CAP_M`, to about a raster cell: the free run in front of it, on rays from `blocked`'s front along the
+    normal every 0.25 m across its width, each running to the first obstacle on the floor raster or out of `zone` (the
+    room or corridor the element stands in, so a ray through a doorway stops at the door); the lower median ray's, a run
+    more than half of the rays find. An obstacle beside the element, or in front of a few of its rays, leaves the
+    passage in front of it as wide as the other rays find it; one across half its width or more narrows it."""
     import numpy as np
     import shapely
-    from scipy import ndimage
 
     grid, (ox, oy) = ctx.grid
     height, width = grid.shape
@@ -518,6 +539,11 @@ def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, alo
     if c1 <= c0 or r1 <= r0:
         return 0.0
     free = grid[r0:r1, c0:c1].copy()
+    if zone is not None:
+        xs = ox + (np.arange(c0, c1) + 0.5) * res
+        ys = oy + (height - 1 - np.arange(r0, r1) + 0.5) * res
+        xx, yy = np.meshgrid(xs, ys)
+        free &= shapely.contains_xy(zone.buffer(res / 2.0), xx, yy)
     paint = blocked if others is None or others.is_empty else shapely.union_all([blocked, others])
     bx0, by0, bx1, by1 = paint.bounds
     pc0, pc1 = max(c0, math.floor((bx0 - ox) / res)), min(c1, math.ceil((bx1 - ox) / res))
@@ -527,10 +553,9 @@ def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, alo
         ys = oy + (height - 1 - np.arange(pr0, pr1) + 0.5) * res
         xx, yy = np.meshgrid(xs, ys)
         free[pr0 - r0 : pr1 - r0, pc0 - c0 : pc1 - c0] &= ~shapely.contains_xy(paint, xx, yy)
-    distance = ndimage.distance_transform_edt(np.pad(free, 1, constant_values=False))[1:-1, 1:-1] * res
     rays = np.linspace(lo + res, hi - res, max(2, math.ceil((hi - lo) / 0.25) + 1))
     depths = np.arange(front + res, front + cap + res, res)
-    best = cap
+    runs = []
     for a in rays:
         px = frame.start[0] + frame.u[0] * a + frame.n[0] * depths
         py = frame.start[1] + frame.u[1] * a + frame.n[1] * depths
@@ -540,10 +565,10 @@ def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, alo
         open_ = np.zeros(len(depths), dtype=bool)
         open_[inside] = free[rows[inside], cols[inside]]
         run = len(depths) if open_.all() else int(np.argmin(open_))
-        # twice the distance between cell centres misses about one cell of the gap between the obstacles' edges
-        across = 0.0 if run == 0 else 2.0 * float(distance[rows[:run], cols[:run]].max()) + res
-        best = min(best, across)
-    return round(min(best, cap), 3)
+        # the first blocked sample's cell starts half a cell before its centre, on average
+        runs.append(cap if run == len(depths) else run * res + res / 2.0)
+    # the lower median: a run more than half of the rays find, never the mean of a short and a long one
+    return round(min(float(np.sort(runs)[(len(runs) - 1) // 2]), cap), 3)
 
 
 def _window(frame: _Frame, along: tuple[float, float], front: float) -> shapely.Polygon:
@@ -618,10 +643,11 @@ def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float,
     clear = frame.rect(lo, hi, fp_front, far) if far > fp_front + 1e-6 else shapely.Polygon()
     turning = None
     if element.turning_circle_m > 0:
+        # beyond the docks: a wheelchair turns where no robot stands in a dock
         radius = element.turning_circle_m / 2.0
-        turning = shapely.Point(frame.at((fp_lo + fp_hi) / 2.0, fp_front + radius)).buffer(radius, quad_segs=16)
+        turning = shapely.Point(frame.at((fp_lo + fp_hi) / 2.0, max(fp_front, dock_front) + radius)).buffer(radius, quad_segs=16)
     blocked = shapely.union_all([footprints, docks, clear])
-    corridor = _corridor_width(ctx, frame, blocked, (lo, hi), max(far, dock_front, fp_front))
+    corridor = _corridor_width(ctx, frame, blocked, (lo, hi), max(far, dock_front, fp_front), zone=ctx.shapes.get(zone))
     verdicts = _verdicts(ctx, element, objects, against, clear, turning, corridor, corridor_min_m, peds)
     return Spot(element, ctx.level_id, zone, index, step, round(centre, 3), round(piece.line.length, 3), frame, tuple(objects), clear, turning, corridor, verdicts)
 
@@ -632,19 +658,21 @@ def candidate_spots(
     *,
     zones: Sequence[str] | None = None,
     exclude: Sequence[str] = EXCLUDED_ZONES,
+    cut_off: bool = True,
     peds_zones: Sequence[str] | None = None,
     step_m: float = STEP_M,
     corridor_min_m: float = CORRIDOR_MIN_M,
 ) -> tuple[Spot, ...]:
     """Every candidate spot of `element` on `site`, the same ones for the same site and arguments (and cached): on each
-    level, in each zone of `candidate_zones(zones, exclude)` by name, along each wall piece in ring order, every
+    level, in each zone of `candidate_zones(zones, exclude)` by name, less the zones NAV@r cuts off at the wheelchair
+    radius (`cut_off_zones`; `cut_off=False` keeps them), along each wall piece in ring order, every
     `step_m` where the element fits on the piece, the steps centred on it. Spots that fail a rule are kept, with their
     verdicts; `Spot.valid` tells them apart. `peds_zones` names the PEDS source and sink zones; until given, that rule
     is unknown. The element's own objects, if the site has them, are no obstacles to it (a move)."""
     from . import generate as gen
 
     element = element_named(element)
-    key = (*_site_key(site), element, None if zones is None else tuple(zones), tuple(exclude), None if peds_zones is None else tuple(peds_zones), step_m, corridor_min_m)
+    key = (*_site_key(site), element, None if zones is None else tuple(zones), tuple(exclude), cut_off, None if peds_zones is None else tuple(peds_zones), step_m, corridor_min_m)
     if key in _SPOTS:
         return _SPOTS[key]
     local = resolve_element(site, element)
@@ -659,6 +687,9 @@ def candidate_spots(
     out: list[Spot] = []
     for level_id, level in site.world.levels.items():
         names = candidate_zones(level, zones, exclude)
+        if names and cut_off:
+            gone = set(cut_off_zones(site, level_id))
+            names = [z for z in names if z not in gone]
         if not names:
             continue
         ctx = _context(site, level_id, ignore)
@@ -718,7 +749,7 @@ def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR
         if not near.intersects(_window(s.frame, (lo, hi), front)):
             continue
         ctx = _context(site, s.level, placed)
-        width = _corridor_width(ctx, s.frame, blocked, (lo, hi), front, near)
+        width = _corridor_width(ctx, s.frame, blocked, (lo, hi), front, near, zone=ctx.shapes.get(s.zone))
         if width < corridor_min_m:
             problems.append(f"{s.element.name}: the other elements leave a {width:.2f} m corridor, under {corridor_min_m} m")
     return problems
@@ -828,6 +859,7 @@ __all__ = [
     "apply_layout",
     "candidate_spots",
     "candidate_zones",
+    "cut_off_zones",
     "check_layout",
     "clear_cache",
     "insert_params",

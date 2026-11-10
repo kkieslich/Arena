@@ -67,9 +67,10 @@ LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robot
 REFERENCES = ["unhindered_peds"]
 #: What the recorder keeps of every INFRA run (kkieslich/arena-evaluation's suite `record` block): the INFRA measures
 #: read the engine's pedestrian tracks (`agent_states`), the robots and the semantics (the fleet's task log), not the
-#: pedestrians' skeletons and bodies on /tf, their named frames, `arena_peds` or their animation states, which grow
-#: with the crowd (about 94 % of a pilot recording at 15-20 people)
-RECORD = {"exclude": ["peds", "animation_states"], "tf_frames": [[r"_agent_\d+$", -1.0], [r"^env_\d+/[^/]+$", -1.0]]}
+#: pedestrians' skeletons and bodies on /tf, their named and numbered frames, `arena_peds`, their animation states or the
+#: humans' tf topic (its only subscriber in a headless run is the recorder, and `hri_producer` idles without one); they
+#: grow with the crowd: 94 % of a pilot recording at 15-20 people, 93 % of a twin smoke at up to ~210 walkers
+RECORD = {"exclude": ["peds", "animation_states", "tf_humans"], "tf_frames": [[r"_agent_\d+$", -1.0], [r"^env_\d+/[^/]+$", -1.0], [r"^\d+$", -1.0]]}
 #: The study battery and charger (Kolja, 9 Nov: 22 Wh, 175 W; the catalog writes the charger power into the world), and
 #: the start charge each robot draws per episode seed (§8: 40-100 %)
 CAPACITY_WH = 22.0
