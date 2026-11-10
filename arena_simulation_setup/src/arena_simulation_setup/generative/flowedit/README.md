@@ -344,15 +344,22 @@ random_valid(space, 5, seed=0)      # the random control
 occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=1500)  # from the site-as-is runs
 ```
 
-[`infra.py`](infra.py) writes the INFRA Stage 1 suites (the Exposé's mini H1), seed-paired by `flowedit suite`'s stage names `<world>__s<seed>`, both launched with `human.robots.visible: true` and `jackal[4]`:
+[`infra.py`](infra.py) and [`infra_cli.py`](infra_cli.py) write the INFRA Stage 1 suites, seed-paired by `flowedit suite`'s stage names `<world>__s<seed>`, all launched in flatsim with `human.robots.visible: true` and `jackal[4]`. In run order:
 
 ```bash
-flowedit infra reference                               # suite infra_h1_site: the site as is without robots, seeds 1-5; run it first
-flowedit infra layouts --occupancy <benchmark dir>      # search, save 7 layout copies (with study_mix), write suite infra_h1
-flowedit infra layouts --dry-run                       # the robot-only and random picks without the occupancy, nothing written
+flowedit infra reference                              # infra_h1_site: the site as is without robots, seeds 1-5
+flowedit infra premise                                # infra_h1_premise: narrowest vs widest layout, seeds 1-3, with the fleet and without robots
+flowedit infra layouts --occupancy <site run> --rate R  # infra_h1: robot-only pick, joint top 10, 5 random; seeds 1-5, with and without robots
+flowedit infra evaluation --pick <infra_pick.json>    # infra_h1_eval + infra_h1_eval_site: both picks and the site, seeds 11-20
 ```
 
-`layouts` takes the robot-only pick, the best of the joint top 10 and 5 random valid layouts. It saves each as `<site>__layout_<id>` (assets hardlinked; it refuses a local root on another mount) with the scenario copied in. Each copy gets a stage per seed with the robots in `fleet` mode (homes on the bays and chargers, `loading_point`, `locker_1`) and `references: true`, which adds the layout without robots (`unhindered_peds`). It writes `<suite>.layouts.json` beside the suite and prints the benchmark call, whose contest sets the 22 Wh battery. `--rate` defaults to 75 % of the fleet's capacity in the slowest layout at `--speed` (0.5 m/s, the jackal's planner limit).
+- Where each element may go comes from the site config [`infra_sites/<site>.yaml`](infra_sites/smu_link_full.yaml) (`--site-config` takes another): per element `zones` (names or patterns), `areas` (world-frame polygons) or a `pin`, plus `exclude` and the crowd `scenario`. The twin's is the placeholder until the site zone map: loading point pinned at route end A, locker in `upper_concourse_north`, chargers and bays anywhere valid.
+- The joint search ranks only the layouts within 1.05 x the robot-only pick's travel per job (`search.travel_cap`); the selection runs the robot-only pick, the joint top 10 and 5 random valid layouts. Every manifest row carries its ranking score.
+- Layout copies `<site>__layout_<id>` hardlink the site's assets (the command refuses a local root on another mount) and get the crowd scenario with its `locker_visitors.yaml` merged in, the visitors' target in front of that copy's locker. `keep_out` takes the scenario's and the visitors' sources and sinks; a pinned element there is refused.
+- Layout suites ask only for the runs without robots (`references: [unhindered_peds]`). Every suite carries a `record` block (`infra.RECORD`) that keeps the engine's pedestrian tracks, the robots and the semantics and leaves out `arena_peds`, animation states, the humans' tf topic (so `hri_producer` idles in a headless run) and the pedestrians' skeleton, body, named and numbered frames on /tf: on the twin that is about 7 % of a full recording.
+- The contest scales every battery to 22 Wh and draws the start charge per robot and seed from 40-100 %.
+- Each layout suite writes `<suite>.layouts.json` beside it; `evaluation infra table|premise|pick|compare` (kkieslich/arena-evaluation) reads it with the processed runs.
+- Lanes resolve worlds from the local assets root, the package worlds and the buckets, not from a dev tree's untracked `assets/worlds`: put the site into the local assets root too (`cp -al <site dir> $ARENA_ASSETS_DIR_LOCAL/worlds/`), where the layout copies go, and export the same `ARENA_ASSETS_DIR_LOCAL` in every lane.
 
 ## Files
 
@@ -366,7 +373,8 @@ flowedit infra layouts --dry-run                       # the robot-only and rand
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
 | `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
 | `search.py` | INFRA layout searches: robot-only, joint (occupancy fallback), random valid |
-| `infra.py` | the INFRA Stage 1 suites: the site as is, and the searched layouts with the fleet |
+| `infra.py`, `infra_cli.py` | the INFRA Stage 1 suites (site as is, premise check, selection, evaluation), the site config, locker visitors |
+| `infra_sites/` | INFRA site configs: where each element may go, by its function |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |
