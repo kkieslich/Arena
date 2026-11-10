@@ -12,7 +12,8 @@ import yaml
 
 from .. import split as SP
 from . import baselines as B
-from .evaluate import Forecaster, Runs, seed_floor
+from .evaluate import Forecaster, Runs
+from .validity import floor as across_seed_floor
 
 FORMAT = "flowedit-forecast-baseline/1"
 PRIORS = ("empty", "pre-edit")
@@ -239,15 +240,16 @@ def _score_maps(doc: Mapping[str, Any], runs: Runs, maps: Mapping[str, Any], par
         floors = {}
         for base in sorted({SP.base_of(r["world"]) for r in rows}):
             other = B.outside(runs, base, seeds)
-            if other and (v := seed_floor(runs, base, seeds, other)) is not None:
-                floors[base] = v
+            # the floor of `forecast score`: equal-size pools of the base world, scored seeds against other seeds
+            if other and (v := across_seed_floor(runs, base, seeds)) is not None:
+                floors[base] = v.mean
         cols = (name, f"{name} occupancy", f"{name} loso", "one_seed_floor")
         lines = ["| World | " + " | ".join(cols) + " |", "|---|" + "---|" * len(cols)] + [f"| {r['world']} | " + " | ".join(_fmt(r[c]) for c in cols) + " |" for r in rows]
         edits = [r for r in rows if not SP.is_base(r["world"])]
         if edits:
             lines.append("| mean over edits | " + " | ".join(_fmt(B.mean(r[c] for r in edits)) for c in cols) + " |")
         print(f"## {partition} (seeds {seeds})\n\n" + "\n".join(lines))
-        print("\nacross-seed floor (base world at these seeds against its other seeds): " + (", ".join(f"{b} {v:.3f}" for b, v in floors.items()) or "none (no run of the base world at another seed)") + "\n")
+        print("\nacross-seed floor (base world at these seeds against as many of its other seeds, each side pooled; a scale, not a bound): " + (", ".join(f"{b} {v:.3f}" for b, v in floors.items()) or "none (no run of the base world at another seed)") + "\n")
         out[partition] = {"seeds": seeds, "rows": rows, "seed_floor": floors}
     return out
 
