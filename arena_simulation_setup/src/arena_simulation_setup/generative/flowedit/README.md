@@ -232,9 +232,9 @@ Entrance visitors follow their visitor type, but HumanSim despawns a released ag
 
 ```bash
 flowedit suite splits/peds_pilot.yaml
-arena evaluation benchmark --suite flowedit_peds_pilot --contest '[{name: peds_only}]' --lanes 2
+arena evaluation benchmark --suite flowedit_peds_pilot --contest '[{name: peds_only, mobile: none}]' --lanes 2
 flowedit suite splits/peds_pilot.yaml --crowd test_orca
-arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{name: peds_only}]' --lanes 2
+arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{name: peds_only, mobile: none}]' --lanes 2
 ```
 
 | Stage field | Value |
@@ -245,7 +245,7 @@ arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{n
 | `timeout` | the split's `duration`, sim seconds |
 | `robot`, `modes.robots`, `config.stationary` | the runner needs a robot in every stage: `--robot` (default `jackal`) parked at (1000, 1000) by the `stationary` mode, as the runner parks its `unhindered_peds` reference runs |
 
-The suite's `launch` runs flatsim headless under lockstep with `human.robots.visible: false`, so the people never see the parked robot, and `references: false`, since the split names its own reference runs. The contestant needs no planner: `[{name: peds_only}]` brings the robot up with the sim's default adapter. `--dry-run` prints the suite without writing a scenario or the suite, and a suite file `flowedit suite` did not write is kept unless `--force`.
+The suite's `launch` runs flatsim headless under lockstep with `human.robots.visible: false`, so the people never see the parked robot, and `references: false`, since the split names its own reference runs. The contestant needs no planner: `[{name: peds_only, mobile: none}]` brings the parked robot up with the no-op mobile adapter, not the sim's default navstack (Nav2 in flatsim, about 7 % CPU and 600 MB per lane for a robot that never moves); the runner then expects no planner beats from it. `--dry-run` prints the suite without writing a scenario or the suite, and a suite file `flowedit suite` did not write is kept unless `--force`.
 
 ### Planners through the edit
 
