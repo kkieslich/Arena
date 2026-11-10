@@ -126,6 +126,10 @@ class PossessionTable[PedestrianT: _PossessableLike]:
             out.append(sub)
         return out
 
+    def __len__(self) -> int:
+        """Entries held, live or past their expiry and not yet released."""
+        return len(self._entries)
+
     def possessed(self, now: float) -> set[str]:
         """Names currently possessed, expiry-checked."""
         return {name for name in self._entries if self._live(name, now)}

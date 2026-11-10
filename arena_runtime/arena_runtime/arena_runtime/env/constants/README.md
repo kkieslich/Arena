@@ -96,6 +96,7 @@ Adapter-specific tunables (planners, RL agent, ...) live in `caps/<cap>.yaml` an
 | Attribute | ROS param | Default | Notes |
 | --- | --- | --- | --- |
 | `ROBOTS_VISIBLE` | `human.robots.visible` | `True` | `False` = the human backend leaves the robots out of what it tells its pedestrians, honored by `ArenaHumanSimulator`, read once when the backend is built |
+| `SKELETON` | `human.skeleton` | `True` | `False` = `publish_arena_peds` sends the roster without joint states or body poses and no `animation_states`, every backend, read once when the backend is built |
 
 ### Node-level runtime params (declared with `ParameterDescriptor`)
 

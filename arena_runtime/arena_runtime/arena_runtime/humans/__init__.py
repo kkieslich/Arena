@@ -19,7 +19,7 @@ import rclpy.time
 import tf2_ros
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
-from arena_people_msgs.msg import AnimationSlot, AnimationState, AnimationStates, Pedestrian, Pedestrians
+from arena_people_msgs.msg import AnimationSlot, AnimationState, AnimationStates, BodyPose, Pedestrian, Pedestrians
 from arena_people_msgs.srv import MovePedestrians
 from arena_rclpy_mixins.lazy import LazyPublisher
 from arena_rclpy_mixins.registry import AsyncFactoryRegistry as Registry
@@ -33,6 +33,7 @@ from geometry_msgs.msg import Point as PointMsg
 from geometry_msgs.msg import Pose as PoseMsg
 from geometry_msgs.msg import Quaternion as QuaternionMsg
 from rcl_interfaces.msg import Parameter as ParameterMsg
+from sensor_msgs.msg import JointState
 from visualization_msgs.msg import MarkerArray
 
 from arena_runtime._node import NodeInterface
@@ -151,6 +152,7 @@ class HumanSimulatorOptions(typing.TypedDict):
     realizer: Realizer
     acoustics: BaseAcousticsSimulator
     robots_visible: typing.NotRequired[bool]
+    skeleton: typing.NotRequired[bool]
 
 
 @attrs.define
@@ -178,7 +180,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
     _known_walls: KnownObstacles[Wall]
     _known_doors: KnownObstacles[Door]
 
-    def __init__(self, *args: object, namespace: Namespace, simulator: BaseSim, realizer: Realizer, acoustics: BaseAcousticsSimulator, robots_visible: bool = True, **kwargs: object) -> None:
+    def __init__(self, *args: object, namespace: Namespace, simulator: BaseSim, realizer: Realizer, acoustics: BaseAcousticsSimulator, robots_visible: bool = True, skeleton: bool = True, **kwargs: object) -> None:
         """
         Initialize human simulator.
 
@@ -188,12 +190,15 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             realizer: per-env Realizer (used to stamp sim_path on runtime-spawned obstacles)
             acoustics: acoustics simulator, the source of pedestrian hearing
             robots_visible: whether the backend tells its pedestrians where the robots are
+            skeleton: whether arena_peds carries each ped's skeleton (joint_state, body) and animation_states is published
         """
         super().__init__(*args, **kwargs)
         self._simulator = simulator
         self._namespace = namespace
         self._realizer = realizer
         self._robots_visible = robots_visible
+        self._skeleton = skeleton
+        self._tilted = False
 
         self._known_obstacles = KnownObstacles[Obstacle]()
         self._known_walls = KnownObstacles[Wall]()
@@ -286,7 +291,11 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         await register_channels(self.node, channels, env=str(self._namespace))
 
     def publish_arena_peds(self, msg: Pedestrians) -> None:
-        """Stamp the header, substitute possessed peds, fill the joint angles of peds missing them, compile them into body poses, then publish."""
+        """Stamp the header, substitute possessed peds, fill the joint angles of peds missing them, compile them into body poses, then publish.
+
+        Without the skeleton (`human.skeleton:=false`) the animation runs and places resting and tilted peds all the same,
+        and the roster goes out without joint states or body poses, no animation_states beside it.
+        """
         now = self.node.get_clock().now()
         now_sec = now.nanoseconds * 1e-9
         stamp = now.to_msg()
@@ -314,7 +323,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             self._driven.forget(stale)
 
         # nobody listening (the recorder excludes it, no Gazebo plugin under flatsim): not built, not sent
-        animation = AnimationStates() if self._animation_states_publisher.get_subscription_count() > 0 else None
+        animation = AnimationStates() if self._skeleton and self._animation_states_publisher.get_subscription_count() > 0 else None
         if animation is not None:
             animation.header = out.header
         tilts: dict[int, tuple[float, float, float, float]] = {}
@@ -340,22 +349,26 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             )
             phase = float(ped.gait_phase) if ped.gait_phase != 0.0 else None
             angles = self._gait.compute(ped.id, ped.animation_state, speed, dt, gesture=gesture, phase=phase, profile=self._pose_profile_for(ped.agent_type))
-            state = self._gait.joint_state(angles, stamp=stamp)
-            if state is not None:
-                hands = self._hands(ped.id, now_sec)
-                state.name = [*state.name, *hands]
-                state.position = [*state.position, *hands.values()]
-            ped.joint_state = state
             generated.add(ped.id)
             ped.gait_phase = self._gait.phase(ped.id)
             if (tilt := self._gait.root_tilt(ped.id)) is not None:
                 tilts[ped.id] = tilt
+            # without the skeleton the angles only serve to place a resting or tilted ped
+            if self._skeleton or support is not None or ped.id in self._rests or tilt is not None:
+                state = self._gait.joint_state(angles, stamp=stamp)
+                if state is not None:
+                    hands = self._hands(ped.id, now_sec)
+                    state.name = [*state.name, *hands]
+                    state.position = [*state.position, *hands.values()]
+                ped.joint_state = state
             if animation is not None:
                 animation.peds.append(self._animation_state(ped))  # pyright: ignore[reportAttributeAccessIssue]
 
         pose_sec = out.header.stamp.sec + out.header.stamp.nanosec * 1e-9
         for ped in out.pedestrians:
             ped.pose.position.z = stair_height(self._known_stairs, ped.pose.position.x, ped.pose.position.y)
+            if not self._skeleton:
+                continue
             drivers = self._drivers_for(ped.model_uri)
             if not drivers.rollers and not drivers.joystick:
                 continue
@@ -368,6 +381,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             ped.joint_state.name, ped.joint_state.position = with_driven(ped.joint_state.name, ped.joint_state.position, angles)
 
         possessed = self._possession.possessed(now_sec)
+        self._tilted = bool(tilts)
         for ped in out.pedestrians:
             if ped.name in possessed:
                 self._rests.pop(ped.id, None)
@@ -376,12 +390,18 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 self._tilt_body(ped, tilts[ped.id])
             self._place_resting(ped, now_sec)
 
-        fill_bodies(
-            out.pedestrians,
-            [self._stance_for(ped.model_uri) for ped in out.pedestrians],
-            [self._gait.body_layers(ped.id) if ped.id in generated else () for ped in out.pedestrians],
-            self._body_cache,
-        )
+        if self._skeleton:
+            fill_bodies(
+                out.pedestrians,
+                [self._stance_for(ped.model_uri) for ped in out.pedestrians],
+                [self._gait.body_layers(ped.id) if ped.id in generated else () for ped in out.pedestrians],
+                self._body_cache,
+            )
+        else:
+            for ped in out.pedestrians:
+                ped.joint_state = JointState()
+                if ped.body.joints:
+                    ped.body = BodyPose()
 
         self._arena_peds_publisher.publish(out)
         for listener in self._arena_peds_listeners:

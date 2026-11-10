@@ -424,6 +424,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self.node.service_namespace("arena_humansim_viz", "set_parameters"),
         )
         self._viz_config: Realizer._Configuration | None = None
+        self._rendered: tuple[tuple[object, ...], tuple[object, ...]] | None = None
         self._viz_config_task: asyncio.Task[None] | None = None
         self._publish_pending = False
         self._notify_stimulus_client: ClientWrapper = self.node.create_client_wrapper(
@@ -672,11 +673,20 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._viz_config = cfg
 
     async def _publish_interpolated(self) -> None:
-        """Interpolate at the current sim time, never before the engine's latest frame, and publish the roster."""
+        """Interpolate at the current sim time, never before the engine's latest frame, and publish the roster.
+
+        Without the skeleton a render of the inputs the last one had is skipped: the roster would come out the same but
+        for the animation, which it does not carry (`_render_inputs`).
+        """
         now = self.node.sim_time
         now_ns = now.sec * int(1e9) + now.nanosec
         if self._engine_stamp_ns is not None:
             now_ns = max(now_ns, self._engine_stamp_ns)
+        if not self._skeleton:
+            inputs = self._render_inputs()
+            last, self._rendered = self._rendered, inputs
+            if inputs is not None and last is not None and all(a is b for a, b in zip(inputs[0], last[0], strict=True)) and inputs[1] == last[1]:
+                return
         states = self._interpolate_agent_states(now_ns)
         if states is None:
             return
@@ -684,6 +694,30 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         async with self._agents_lock:
             self._arena_pedestrians = peds
         self.publish_arena_peds(peds)
+
+    def _render_inputs(self) -> tuple[tuple[object, ...], tuple[object, ...]] | None:
+        """Everything a render reads but the animation clock: the objects it reads that are replaced on change (compared by
+        identity, held so their ids stay theirs) and the values of the ones changed in place; None while a render also moves
+        a ped by that clock.
+
+        The interpolation clamps to the engine's latest frame, so between frames a render differs from the last one only
+        when a frame, the gestures, names, types, sources, seats, held seats, model paths, stairs or the env offset
+        changed, or a ped rests, tilts or is possessed (their poses follow the animation clock).
+        """
+        if self._rests or self._tilted or len(self._possession):
+            return None
+        cfg = self._realizer.get_config()
+        replaced = (self._curr_agent_states, self._prev_agent_states, self._agent_gestures, self._agent_types, self._agent_sources, self._seat_holds, self._known_stairs)
+        in_place = (
+            self._engine_stamp_ns,
+            tuple(self._teleport_stamps.items()),
+            tuple(self._agent_names.items()),
+            tuple(self._agent_type_paths.items()),
+            tuple(self._ped_model_uris.items()),
+            tuple(self._seats.items()),
+            (cfg.x, cfg.y, cfg.prefix),
+        )
+        return replaced, in_place
 
     def _interpolate_agent_states(self, now_ns: int) -> AgentFrameMsg | None:
         """Lerp between prev and curr agent states at the given timestamp, an empty frame at the engine's latest stamp once its agents are removed."""

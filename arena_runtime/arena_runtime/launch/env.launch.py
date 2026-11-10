@@ -141,6 +141,12 @@ def generate_launch_description() -> launch.LaunchDescription:
         default_value="true",
         description="false = pedestrians of the arena human backend are not told where the robots are and walk as if none were there. Possessed pedestrians stay visible to the crowd.",
     )
+    human_skeleton = LaunchArgument(
+        name="human.skeleton",
+        choices=["true", "false"],
+        default_value="true",
+        description="false = arena_peds carries no joint states or body poses and animation_states is not published: no pedestrian skeleton for renderers, rviz or a recording. Poses, motion and everything the simulator, the robots and the task layer see stay the same. For headless runs that keep no skeletons.",
+    )
     acoustics = LaunchArgument(
         name="acoustics",
         choices=["none", "arena"],
@@ -477,6 +483,7 @@ def generate_launch_description() -> launch.LaunchDescription:
                     "sim": arena_sim,
                     "human": human_val,
                     "human.robots.visible": human_robots_visible.param_value(bool),
+                    "human.skeleton": human_skeleton.param_value(bool),
                     "acoustics": acoustics_val,
                     "robot.mobile_adapter": mobile_val,
                     "robot.hearing": hearing_val,

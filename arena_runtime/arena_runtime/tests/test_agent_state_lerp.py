@@ -272,3 +272,45 @@ def test_lerp_snaps_a_jump_its_speed_cannot_explain_and_sweeps_a_fast_walk() -> 
     lerped = _adapter(prev, curr)._interpolate_agent_states(int(0.25e9))
 
     assert list(lerped.x) == pytest.approx([20.0, 1.0])
+
+
+def _render_adapter() -> ArenaHumanSimulator:
+    from arena_runtime.humans.possession import PossessionTable
+
+    adapter = _adapter(_frame(0, agent_id=[1], x=[0.0], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0]), _frame(1, agent_id=[1], x=[0.1], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0]), engine_stamp_ns=int(1e9))
+    adapter._agent_sources = {}
+    adapter._ped_model_uris = {}
+    adapter._known_stairs = ()
+    adapter._rests = {}
+    adapter._tilted = False
+    adapter._possession = PossessionTable()
+    return adapter
+
+
+def _same(a: tuple | None, b: tuple | None) -> bool:
+    return a is not None and b is not None and all(x is y for x, y in zip(a[0], b[0], strict=True)) and a[1] == b[1]
+
+
+def test_render_inputs_repeat_until_something_a_render_reads_changes() -> None:
+    adapter = _render_adapter()
+    first = adapter._render_inputs()
+    assert _same(adapter._render_inputs(), first)
+    adapter._agent_names[1] = "arena/env_0/flow_1"
+    named = adapter._render_inputs()
+    assert not _same(named, first)
+    adapter._agent_gestures = {}
+    assert not _same(adapter._render_inputs(), named)
+    gestured = adapter._render_inputs()
+    adapter._prev_agent_states, adapter._curr_agent_states = adapter._curr_agent_states, _frame(2, agent_id=[1], x=[0.2], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0])
+    adapter._engine_stamp_ns = int(2e9)
+    assert not _same(adapter._render_inputs(), gestured)
+
+
+def test_no_render_inputs_while_a_ped_rests_tilts_or_is_possessed() -> None:
+    adapter = _render_adapter()
+    adapter._rests = {1: object()}
+    assert adapter._render_inputs() is None
+    adapter._rests, adapter._tilted = {}, True
+    assert adapter._render_inputs() is None
+    adapter._tilted = False
+    assert adapter._render_inputs() is not None
