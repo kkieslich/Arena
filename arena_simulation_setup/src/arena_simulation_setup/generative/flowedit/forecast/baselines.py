@@ -63,28 +63,30 @@ MAP_COLUMNS = ("flow_world", "x", "y", "heading_rad", "ped_seconds")
 
 @attrs.define
 class Tracks:
-    """The per-pedestrian track store of a processed benchmark run dir, by (world, seed): each stage's first episode."""
+    """The per-pedestrian track store of processed benchmark run dirs, by (world, seed): each stage's first episode, from
+    the first run dir that holds the stage (several run dirs are one split's runs, `evaluate.read_cells` checks they agree)."""
 
     where: dict[tuple[str, int], Path]
 
     @classmethod
-    def load(cls, benchmark: Path, planner: str | None = None) -> Tracks:
+    def load(cls, benchmarks: Path | Sequence[Path], planner: str | None = None) -> Tracks:
         import polars as pl
 
         from ..suite import parse_stage_name
 
-        metrics = pl.read_parquet(Path(benchmark) / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
-        if planner is not None:
-            metrics = metrics.filter(pl.col("planner") == planner)
         where: dict[tuple[str, int], Path] = {}
-        for episode, stage, _, robot in metrics.sort("episode").iter_rows():
-            try:
-                key = parse_stage_name(str(stage))
-            except ValueError:
-                continue
-            env = str(robot or "env_0").split("_")
-            env_name = "_".join(env[:2]) if len(env) >= 2 and env[0] == "env" else "env_0"
-            where.setdefault(key, Path(benchmark) / "episodes" / f"episode_{int(episode):03d}" / "topics" / ".derived" / "ped_tracks.v1" / f"{env_name}.parquet")
+        for benchmark in [benchmarks] if isinstance(benchmarks, (str, Path)) else benchmarks:
+            metrics = pl.read_parquet(Path(benchmark) / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
+            if planner is not None:
+                metrics = metrics.filter(pl.col("planner") == planner)
+            for episode, stage, _, robot in metrics.sort("episode").iter_rows():
+                try:
+                    key = parse_stage_name(str(stage))
+                except ValueError:
+                    continue
+                env = str(robot or "env_0").split("_")
+                env_name = "_".join(env[:2]) if len(env) >= 2 and env[0] == "env" else "env_0"
+                where.setdefault(key, Path(benchmark) / "episodes" / f"episode_{int(episode):03d}" / "topics" / ".derived" / "ped_tracks.v1" / f"{env_name}.parquet")
         return cls(where)
 
     def __call__(self, world: str, seed: int) -> pl.DataFrame | None:
