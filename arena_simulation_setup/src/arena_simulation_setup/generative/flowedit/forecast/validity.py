@@ -241,6 +241,8 @@ def uniform(mask: np.ndarray) -> np.ndarray:
 
 #: tracks seen at which the curve is scored
 TRACK_COUNTS = (0, 1, 2, 4, 8, 16, 32, 64)
+#: the curve's row of the seen run's own map against the other seeds' pool
+ONE_SEED_FLOOR = "one-seed floor"
 
 
 def curve(
@@ -257,17 +259,21 @@ def curve(
 ) -> dict[str, list[float | None]]:
     """Per prior (map, strength): the mean JSD against the pooled map of the other seeds after seeing k tracks of one seed's
     run, for each k of `counts`, averaged over which seed is seen and `orders` random track orders. A k beyond a run's
-    tracks is not scored for that run (None when no run has that many)."""
+    tracks is not scored for that run (None when no run has that many). Row ONE_SEED_FLOOR: the seen run's own map
+    against the same pool, what all of its tracks reach."""
     import numpy as np
 
     mask = grid.room_cells()
     rng = random.Random(seed)
     out: dict[str, list[list[float]]] = {name: [[] for _ in counts] for name in priors}
+    floors: list[float] = []
     for s in seeds:
         rest = [x for x in seeds if x != s]
         truth = runs.pooled(world, rest) if rest else None
         if truth is None:
             continue
+        if (world, s) in runs.maps:
+            floors.append(float(jsd(runs.maps[(world, s)], truth) or 0.0))
         per = None if cache is None else cache.get((world, s))
         if per is None:
             tracks = tracks_of(world, s)
@@ -290,7 +296,10 @@ def curve(
                     taken += 1
                 for name, (prior, strength) in priors.items():
                     out[name][ci].append(float(jsd(dirichlet(prior, strength, cum, mask), truth) or 0.0))
-    return {name: [float(np.mean(v)) if v else None for v in vals] for name, vals in out.items()}
+    result = {name: [float(np.mean(v)) if v else None for v in vals] for name, vals in out.items()}
+    # what every track of the seen run reaches: its own recorded map against the other seeds' pool
+    result[ONE_SEED_FLOOR] = [float(np.mean(floors)) if floors else None] * len(counts)
+    return result
 
 
 def fit_strength(world_seeds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, grid_of: Callable[[str], FlowGrid], prior_of: Callable[[str], np.ndarray], grid: Sequence[float] = (30.0, 100.0, 300.0, 1000.0, 3000.0, 10000.0)) -> float:
@@ -311,4 +320,4 @@ def fit_strength(world_seeds: Sequence[tuple[str, Sequence[int]]], tracks_of: Ca
     return best
 
 
-__all__ = ["PREDICTED_COLUMNS", "TRACK_COUNTS", "Method", "Predicted", "Truth", "changes", "curve", "dirichlet", "fit_strength", "floor", "other_seeds", "score", "stale", "table", "track_maps", "transplant", "truths", "uniform", "world_seeds", "write_predicted"]
+__all__ = ["ONE_SEED_FLOOR", "PREDICTED_COLUMNS", "TRACK_COUNTS", "Method", "Predicted", "Truth", "changes", "curve", "dirichlet", "fit_strength", "floor", "other_seeds", "score", "stale", "table", "track_maps", "transplant", "truths", "uniform", "world_seeds", "write_predicted"]

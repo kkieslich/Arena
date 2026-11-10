@@ -96,7 +96,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
     worlds = pick(doc, args.partition, args.fraction, args.pick_seed)
     found = samples(runs, worlds, doc, args.partition)
     seeds = sorted({s.seed for s in found})
-    _log(f"train: {len(found)} runs of {len(worlds)} worlds at seeds {seeds} ({args.partition}, {'all' if args.fraction >= 1 else format(args.fraction, '.0%')} of its edit chains), demand {'on' if args.demand else 'off (geometry-only prior)'}")
+    _log(f"train: {len(found)} runs of {len(worlds)} worlds at seeds {seeds} ({args.partition}, {'all' if args.fraction >= 1 else format(args.fraction, '.0%')} of its edit chains), demand {'on' if args.demand else 'off (demand ablation)'}")
     model, summary = train(rasters, found, demand=args.demand, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device, log=_log)
     meta = {
         "split": str(args.split),
@@ -123,7 +123,7 @@ def _net_methods(nets: list[tuple[str | None, Path]], rasters: Any, device: str 
     methods: dict[str, Any] = {}
     for name, path in nets:
         model, meta = load(path, device)
-        label = name or ("forecaster" if meta.get("demand", True) else "geometry-only")
+        label = name or ("forecaster" if meta.get("demand", True) else "demand ablation")
         cache: dict[str, Any] = {}
 
         def method(world: str, model: Any = model, cache: dict[str, Any] = cache) -> Any:  # noqa: ANN401
@@ -245,7 +245,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
     out: dict[str, Any] = {"format": FORMAT, "benchmark": str(args.benchmark), "counts": list(V.TRACK_COUNTS), "strength": strengths, "partitions": {}}
     for partition in args.partition or ["held_out_edits"]:
         seeds = SP.seeds_of(doc, partition)
-        curves: dict[str, list[list[float | None]]] = {n: [] for n in priors_of}
+        curves: dict[str, list[list[float | None]]] = {n: [] for n in [*priors_of, V.ONE_SEED_FLOOR]}
         for world in doc["partitions"].get(partition) or []:
             if SP.is_base(world):
                 continue
@@ -265,11 +265,12 @@ def _cmd_curve(args: argparse.Namespace) -> int:
             import matplotlib.pyplot as plt
 
             fig, ax = plt.subplots(figsize=(6, 4))
+            shown = [k for i, k in enumerate(V.TRACK_COUNTS) if any(m[i] is not None for n, m in mean.items() if n != V.ONE_SEED_FLOOR)]
             for n, m in mean.items():
-                xs = [max(k, 0.5) for k, v in zip(V.TRACK_COUNTS, m, strict=True) if v is not None]
-                ax.plot(xs, [v for v in m if v is not None], marker="o", label=n)
+                pts = [(max(k, 0.5), v) for k, v in zip(V.TRACK_COUNTS, m, strict=True) if v is not None and k in shown]
+                style = {"linestyle": "--", "color": "grey"} if n == V.ONE_SEED_FLOOR else {"marker": "o"}
+                ax.plot([x for x, _ in pts], [v for _, v in pts], label=n, **style)
             ax.set_xscale("log")
-            shown = [k for i, k in enumerate(V.TRACK_COUNTS) if any(m[i] is not None for m in mean.values())]
             ax.set_xticks([max(k, 0.5) for k in shown], [str(k) for k in shown])
             ax.minorticks_off()
             ax.set_xlabel("post-edit tracks seen, all from one held-out seed's run")
@@ -401,7 +402,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
     device(q)
     q.add_argument("--out", type=Path, required=True, help="the network file to write (.pt)")
     q.add_argument("--partition", choices=SP.PARTITIONS, default="train", help="the partition to train on (default train)")
-    q.add_argument("--no-demand", dest="demand", action="store_false", help="leave out the need channels and the demand and need nodes: the geometry-only prior (demand ablation)")
+    q.add_argument("--no-demand", dest="demand", action="store_false", help="leave out the need channels and the demand and need nodes: the demand ablation")
     q.add_argument("--fraction", type=float, default=1.0, help="share of the partition's edit chains to train on, the base world always kept (default 1)")
     q.add_argument("--pick-seed", type=int, default=0, help="seed of the chains `--fraction` keeps (default 0)")
     q.add_argument("--seed", type=int, default=0, help="training seed (default 0)")
@@ -412,7 +413,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
     q = sub.add_parser("score", help="score forecasters and the fair baselines on partitions", description="per world: the pooled JSD of each forecaster and baseline against the recorded pooled map, the across-seed floor, and each edit's recorded and predicted change against its base world")
     recorded(q)
     device(q)
-    q.add_argument("--net", action="append", default=None, metavar="[NAME=]NET", help="a network from `train`; repeatable (default name: forecaster, or geometry-only for a --no-demand net)")
+    q.add_argument("--net", action="append", default=None, metavar="[NAME=]NET", help="a network from `train`; repeatable (default name: forecaster, or demand ablation for a --no-demand net)")
     q.add_argument("--params", type=Path, default=None, help="a params file from `fit`: adds the demand model")
     q.add_argument("--predicted", action="append", default=None, metavar="[NAME=]PARQUET", help="any predicted map on the flow grid (columns flow_world, x, y, heading_rad, ped_seconds; see the README); repeatable")
     q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to score; repeatable (default: held_out_edits and held_out_worlds)")

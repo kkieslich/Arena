@@ -306,7 +306,7 @@ Two forecasters read the same inputs:
 - Augmentation: the eight D4 symmetries (quarter turns, mirror), with the heading bins permuted along.
 - Optimizer: AdamW with a one-cycle schedule, 3000 steps of 8 runs.
 - A forecast is the mean over the eight symmetries.
-- `--no-demand` drops the need channels and the object and need nodes: the **geometry-only prior** of the demand ablation, the same network otherwise.
+- `--no-demand` drops the need channels and the object and need nodes: the **demand ablation**, the same network otherwise.
 
 **Validity** ([`validity.py`](forecast/validity.py)):
 - `score`: each forecaster and the fair baselines per world of a partition, against the across-seed floor.
@@ -368,7 +368,7 @@ Six parameters are fitted on the train partition (`forecast fit`): σ (kernel, m
 
 | Verb | What it does |
 |---|---|
-| `train` | the learned forecaster on a partition's single runs (`--no-demand`: geometry-only prior; `--fraction`: a share of the edit chains) |
+| `train` | the learned forecaster on a partition's single runs (`--no-demand`: the demand ablation; `--fraction`: a share of the edit chains) |
 | `score` | per world of each partition (default the held-out ones): JSD of each `--net`, the demand model (`--params`), each `--predicted` map, stale and transplanted at other seeds; the across-seed floor; recorded vs predicted change; a PNG per world with `--plots` |
 | `curve` | forecast error against post-edit tracks seen, leave-one-seed-out, beside the uniform-prior reference |
 | `scaling` | the learned forecaster on 25/50/100 % of the training edits, scored on the held-out partitions |

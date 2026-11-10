@@ -12,7 +12,8 @@ Nothing in it comes from a recorded run. Per world (`raster`):
   between their anchors, and each node's cells (a room's cells, a door's span, an object's front and queue), where the
   network writes its embedding.
 
-`demand=False` leaves out the need channels and the demand and need nodes: the geometry-only prior of the demand ablation.
+`demand=False` leaves out the need channels and the demand and need nodes: the demand ablation (not the study's geometry-only
+prior, the shortest-path flow baseline).
 """
 
 from __future__ import annotations

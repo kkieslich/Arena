@@ -122,6 +122,7 @@ def test_the_curve_falls_with_tracks_from_a_uniform_prior() -> None:
     res = V.curve("w", [1, 2], lambda w, s: tracks, runs, GRID, {"uniform": (V.uniform(GRID.room_cells()), 10.0), "perfect": (truth, 10.0)}, counts=(0, 2, 8), orders=3)
     assert res["uniform"][0] > res["uniform"][1] > res["uniform"][2]
     assert res["perfect"][0] == pytest.approx(0.0, abs=1e-9)
+    assert res[V.ONE_SEED_FLOOR] == [pytest.approx(0.0, abs=1e-9)] * 3  # the seen run equals the other seeds' pool here
 
 
 # --- on hospital_1: the raster and a few training steps ----------------------------------------------------------------
