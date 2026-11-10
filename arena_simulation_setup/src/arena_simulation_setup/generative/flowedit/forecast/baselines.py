@@ -64,7 +64,8 @@ MAP_COLUMNS = ("flow_world", "x", "y", "heading_rad", "ped_seconds")
 @attrs.define
 class Tracks:
     """The per-pedestrian track store of processed benchmark run dirs, by (world, seed): each stage's first episode, from
-    the first run dir that holds the stage (several run dirs are one split's runs, `evaluate.read_cells` checks they agree)."""
+    the first run dir that holds the stage. Several run dirs are one split's runs: they must have run one Arena and humansim
+    commit (`evaluate.check_commits`), and `evaluate.read_cells` checks their flow cells agree."""
 
     where: dict[tuple[str, int], Path]
 
@@ -74,8 +75,13 @@ class Tracks:
 
         from ..suite import parse_stage_name
 
+        from .evaluate import check_commits
+
+        dirs = [Path(benchmarks)] if isinstance(benchmarks, (str, Path)) else [Path(b) for b in benchmarks]
+        if len(dirs) > 1:
+            check_commits(dirs)
         where: dict[tuple[str, int], Path] = {}
-        for benchmark in [benchmarks] if isinstance(benchmarks, (str, Path)) else benchmarks:
+        for benchmark in dirs:
             metrics = pl.read_parquet(Path(benchmark) / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
             if planner is not None:
                 metrics = metrics.filter(pl.col("planner") == planner)

@@ -13,8 +13,10 @@ the JSD in bits against it, as `process_benchmark` pools them. Scoring against t
 
 from __future__ import annotations
 
+import functools
 import math
 import re
+import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -40,10 +42,12 @@ CELL_COLUMNS = ("planner", "stage", "flow_world", "flow_base", "flow_seed", "x",
 MANIFEST = "manifest.yaml"
 #: a flowedit scenario file (`run.scenario_name`): flowedit_<scenario>_<crowd settings digest>[_r<robot task digest>]_s<seed>
 SCENARIO_FILE = re.compile(r"^flowedit_.+_(?P<settings>[0-9a-f]{8})(?:_r(?P<robot>[0-9a-f]{8}))?_s\d+$")
+#: the checkouts several run dirs read as one must share the commit of (arena_evaluation's run manifest, `commits`)
+SAME_COMMITS = ("arena", "humansim")
 #: the columns that order a stage's rows, to compare two files' rows of one stage
 _ROW_ORDER = ("flow_world", "flow_base", "flow_seed", "x", "y", "cell_m", "heading_rad", "ped_seconds")
 #: help of a repeatable --cells or --benchmark (`read_cells`)
-SEVERAL = "repeatable: one split's runs from several run dirs (e.g. its partitions recorded on two machines) are read as one; they must agree on the flow grid and the crowd, and a stage two of them hold must have the same rows"
+SEVERAL = "repeatable: one split's runs from several run dirs (e.g. its partitions recorded on two machines) are read as one; they must agree on the flow grid, the crowd and the Arena and humansim commits, and a stage two of them hold must have the same rows"
 CELLS_HELP = f"arena_evaluation's flow_cells.parquet of the split's benchmark; {SEVERAL}"
 BENCHMARK_HELP = f"the split's processed benchmark run dir (flow_cells.parquet, combined_metrics.parquet and the track store); {SEVERAL}"
 
@@ -62,8 +66,9 @@ def read_cells(paths: Path | Sequence[Path], planner: str | None = None) -> pl.D
     - lay different flow grids: cell size or heading bins (arena_evaluation's standing speed is not in the file);
     - hold runs of different crowds, where the run dir's manifest lies beside the file: its stages' scenario files carry
       the digests of the crowd settings and the robot task;
-    - hold one stage with different rows: two runs of it.
-    A run dir does not record its humansim commit, so that is not compared."""
+    - hold one stage with different rows: two runs of it;
+    - come from run dirs whose manifests name different Arena or humansim commits (`check_commits`).
+    A run dir that records no commits is read with a warning."""
     import polars as pl
 
     paths = [Path(paths)] if isinstance(paths, (str, Path)) else [Path(p) for p in paths]
@@ -76,6 +81,8 @@ def read_cells(paths: Path | Sequence[Path], planner: str | None = None) -> pl.D
         if missing:
             raise ValueError(f"{path}: not a flow_cells.parquet, no columns {sorted(missing)}")
         frames.append(cells)
+    if len(paths) > 1:
+        check_commits([p.parent for p in paths])
     cells = frames[0] if len(frames) == 1 else _merged(paths, frames)
     planners = sorted(cells["planner"].unique().to_list())
     if planner is None and len(planners) > 1:
@@ -91,15 +98,62 @@ def flow_settings(cells: pl.DataFrame) -> dict[str, Any]:
     return {"cell size": cell_m or None, "heading bins": heading_bins(cells["heading_rad"].drop_nulls().drop_nans().unique().to_numpy())}
 
 
+def run_manifest(run_dir: Path) -> dict[str, Any] | None:
+    """The manifest arena_evaluation's runner wrote into a benchmark run dir, None without one."""
+    path = Path(run_dir) / MANIFEST
+    return _manifest(str(path.resolve()), path.stat().st_mtime_ns) if path.is_file() else None
+
+
+@functools.lru_cache(maxsize=8)
+def _manifest(path: str, mtime_ns: int) -> dict[str, Any]:
+    import yaml
+
+    doc = yaml.load(Path(path).read_text(), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+    return doc if isinstance(doc, dict) else {}
+
+
+_WARNED: set[str] = set()
+
+
+def _warn(message: str) -> None:
+    """A warning on stderr, once per process (the flow cells and the track store of a run dir check it alike)."""
+    if message not in _WARNED:
+        _WARNED.add(message)
+        print(f"warning: {message}", file=sys.stderr)
+
+
+def check_commits(run_dirs: Sequence[Path]) -> None:
+    """Fail when the manifests of `run_dirs` name different commits of a SAME_COMMITS checkout: their runs ran other code.
+
+    A run dir without a manifest, or with one written before arena_evaluation recorded commits, or with a commit it could
+    not read, is not compared, with a warning. A dirty checkout is compared by its commit, with a warning that the commit
+    does not pin the code that ran."""
+    seen: dict[str, dict[Path, str]] = {}
+    for run_dir in run_dirs:
+        doc = run_manifest(run_dir)
+        commits = None if doc is None else doc.get("commits")
+        if not isinstance(commits, Mapping):
+            _warn(f"{run_dir}: " + (f"no {MANIFEST}" if doc is None else f"its {MANIFEST} records no commits (written before arena_evaluation recorded them)") + ", so its Arena and humansim commits are not compared")
+            continue
+        for name in SAME_COMMITS:
+            entry = commits.get(name) if isinstance(commits.get(name), Mapping) else {}
+            if not entry.get("commit"):
+                _warn(f"{run_dir}: no {name} commit recorded ({entry.get('reason') or 'not in the manifest'}), so it is not compared")
+                continue
+            if entry.get("dirty"):
+                _warn(f"{run_dir}: its {name} checkout ({entry.get('path')}) was dirty at {entry['commit'][:12]}, so the commit does not pin the code that ran")
+            seen.setdefault(name, {})[Path(run_dir)] = str(entry["commit"])
+    for name, found in seen.items():
+        if len(set(found.values())) > 1:
+            raise ValueError(f"the run dirs ran different {name} commits: " + ", ".join(f"{d} {c[:12]}" for d, c in found.items()) + "; read only runs of one Arena release together")
+
+
 def crowds_of(path: Path, stages: Iterable[str]) -> set[tuple[str, str | None]]:
     """(crowd settings digest, robot task digest or None) of each of `stages` whose flowedit scenario file the manifest of
     the run dir holding `path` names; empty without a manifest."""
-    import yaml
-
-    manifest = Path(path).parent / MANIFEST
-    if not manifest.is_file():
+    doc = run_manifest(Path(path).parent)
+    if doc is None:
         return set()
-    doc = yaml.load(manifest.read_text(), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     files = {s.get("name"): ((s.get("config") or {}).get("scenario") or {}).get("file") for s in (doc.get("suite") or {}).get("stages") or [] if isinstance(s, Mapping)}
     out = set()
     for stage in stages:
@@ -375,4 +429,4 @@ def label(doc: Mapping[str, Any], world: str) -> str:
     return f"{what} (control)" if world in controls else what
 
 
-__all__ = ["BENCHMARK_HELP", "CELLS_HELP", "SEVERAL", "Forecaster", "Runs", "Target", "anchored", "crowds_of", "fit", "flow_settings", "label", "listed", "objective", "read_cells", "targets", "transplant_moves", "transplanted"]
+__all__ = ["BENCHMARK_HELP", "CELLS_HELP", "SAME_COMMITS", "SEVERAL", "Forecaster", "Runs", "Target", "anchored", "check_commits", "crowds_of", "fit", "flow_settings", "label", "listed", "objective", "read_cells", "run_manifest", "targets", "transplant_moves", "transplanted"]
