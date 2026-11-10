@@ -217,13 +217,26 @@ def _tracks_of(benchmark: Path, planner: str | None) -> Any:  # noqa: ANN401
             continue
         env = str(robot or "env_0").split("_")
         env_name = "_".join(env[:2]) if len(env) >= 2 and env[0] == "env" else "env_0"
-        where.setdefault(key, benchmark / "episodes" / f"episode_{int(episode):03d}" / "topics" / ".derived" / "ped_tracks.v1" / f"{env_name}.parquet")
+        where.setdefault(key, (benchmark / "episodes" / f"episode_{int(episode):03d}" / "topics" / ".derived", f"{env_name}.parquet"))
 
     def tracks(world: str, seed: int) -> Any:  # noqa: ANN401
-        path = where.get((world, seed))
-        return pl.read_parquet(path) if path is not None and path.exists() else None
+        found = where.get((world, seed))
+        path = None if found is None else track_file(*found)
+        return pl.read_parquet(path) if path is not None else None
 
     return tracks
+
+
+def track_file(derived: Path, name: str) -> Path | None:
+    """`name` in the newest `ped_tracks.v<N>` directory under an episode's `topics/.derived` that holds it: arena_evaluation
+    bumps the track store's version (`ped_track_store.TRACKS_VERSION`) when its layout changes, and a cache keeps the
+    version it was written with."""
+    versions = []
+    for d in derived.glob("ped_tracks.v*") if derived.is_dir() else ():
+        tail = d.name.removeprefix("ped_tracks.v")
+        if tail.isdigit() and (d / name).exists():
+            versions.append((int(tail), d / name))
+    return max(versions)[1] if versions else None
 
 
 def _cmd_curve(args: argparse.Namespace) -> int:

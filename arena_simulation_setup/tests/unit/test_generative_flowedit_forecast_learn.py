@@ -261,3 +261,23 @@ def test_a_prior_that_matches_the_held_out_truth_wants_a_heavy_weight_and_a_unif
     perfect = V.fold_strengths(["w"], (1, 2), lambda w, s: tracks, runs, lambda base: GRID, lambda w: truth, strengths=(10.0, 1000.0))
     flat = V.fold_strengths(["w"], (1, 2), lambda w, s: tracks, runs, lambda base: GRID, lambda w: V.uniform(GRID.room_cells()), strengths=(10.0, 1000.0))
     assert perfect[1000.0] <= perfect[10.0] and flat[10.0] < flat[1000.0]
+
+
+def test_tracks_come_from_the_newest_track_store_version_that_holds_them(tmp_path: Path) -> None:
+    from arena_simulation_setup.generative.flowedit.forecast.cli import track_file
+
+    derived = tmp_path / "topics" / ".derived"
+    for version in ("v1", "v2", "v10", "vx"):
+        (derived / f"ped_tracks.{version}").mkdir(parents=True)
+    for version in ("v1", "v2", "vx"):
+        (derived / f"ped_tracks.{version}" / "env_3.parquet").touch()
+    assert track_file(derived, "env_3.parquet") == derived / "ped_tracks.v2" / "env_3.parquet"
+    assert track_file(derived, "env_4.parquet") is None and track_file(tmp_path / "missing", "env_3.parquet") is None
+
+
+def test_a_curve_step_with_an_empty_posterior_is_not_scored() -> None:
+    tracks = _walk("p", (0.3, 0.5), (1.0, 0.0), n=40)
+    truth = M.counts(tracks, GRID)
+    runs = _runs({("w", 1): truth, ("w", 2): truth})
+    res = V.curve("w", [1, 2], lambda w, s: tracks, runs, GRID, {"empty": (np.zeros(GRID.shape), 10.0)}, counts=(0, 1), orders=2)
+    assert res["empty"][0] is None and res["empty"][1] == pytest.approx(0.0, abs=1e-9)
