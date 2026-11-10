@@ -93,6 +93,8 @@ def test_stages_park_an_unseen_robot_and_last_the_split_s_duration(split: tuple[
     path, _ = split
     suite = _suite(path, worlds, tmp_path / "s.yaml", "--robot", "mpo700")
     assert suite["references"] is False and suite["launch"]["human.robots.visible"] == "false" and suite["launch"]["lockstep"] == "true"
+    # the recorder leaves the skeleton frames out, so hri_producer stays idle
+    assert suite["record"] == {"exclude": ["tf_humans"]}
     for s in suite["stages"]:
         assert s["timeout"] == 120.0 and s["episodes"] == 1 and s["robot"] == "mpo700"
         assert s["modes"] == {"robots": "stationary", "obstacles": "scenario"}
