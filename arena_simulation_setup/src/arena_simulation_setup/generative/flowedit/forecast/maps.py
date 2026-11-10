@@ -209,14 +209,14 @@ def jsd(p: np.ndarray, q: np.ndarray) -> float | None:
     if a is None or b is None:
         return None
     a, b = a.ravel(), b.ravel()
-    m = (a + b) / 2
+    total = a + b
 
-    def kl(x: np.ndarray, y: np.ndarray) -> float:
-        # y > 0 too: a subnormal x halves to y == 0 (and adds nothing); without it the sum turns inf
-        k = (x > 0) & (y > 0)
-        return float(np.sum(x[k] * np.log2(x[k] / y[k])))
+    def kl(x: np.ndarray) -> float:
+        # KL(x || (a + b) / 2) as sum x log2(2x / (a + b)): a + b >= x > 0, where halving a denormal x could round to 0
+        k = x > 0
+        return float(np.sum(x[k] * np.log2(2 * x[k] / total[k])))
 
-    return max(0.0, (kl(a, m) + kl(b, m)) / 2)
+    return max(0.0, (kl(a) + kl(b)) / 2)
 
 
 def pooled(maps: Sequence[np.ndarray]) -> np.ndarray | None:
