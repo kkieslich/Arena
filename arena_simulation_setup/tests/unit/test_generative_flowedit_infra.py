@@ -245,7 +245,7 @@ def test_the_shipped_twin_config_pins_the_loading_point_and_keeps_the_locker_in_
     assert config.placements["loading_point"].pin == search.TWIN_LOADING_XY
     assert config.placements["locker"].zones == ("upper_concourse_north",)
     assert config.placements["charger_pair"] == config.placements["bay_pair"] == search.Placement()
-    assert config.exclude == place.EXCLUDED_ZONES
+    assert config.exclude == ("ramp",)
     assert config.record()["elements"]["locker"] == {"zones": ["upper_concourse_north"], "areas": [], "pin": None}
     with pytest.raises(FileNotFoundError, match="no INFRA site config"):
         infra.site_config("no_such_site")
