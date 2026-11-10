@@ -7,6 +7,7 @@ from typing import Any
 import attrs
 import rclpy.qos
 import shapely
+from arena_people_msgs.msg import Pedestrians
 from arena_simulation_setup.shared import Ceiling, Light, Placement, Stairs
 from arena_simulation_setup.shared.navmesh import NavLevel, nav_floors, nav_walls
 from arena_simulation_setup.tree.World import Level, World, entity_lights
@@ -252,6 +253,10 @@ class EnvironmentManager(NodeInterface):
     def nav_levels(self) -> tuple[NavLevel, ...]:
         """Floors, blocking walls, stair halves and doors under their authored names of every level of the spawned world, in the simulator frame."""
         return self._nav_levels
+
+    def on_arena_peds(self, callback: Callable[[Pedestrians], None]) -> Callable[[], None]:
+        """Call back in-process with every roster the env's human simulator publishes on arena_peds (`BaseHumanSimulator.on_arena_peds`); returns the unsubscribe."""
+        return self._human_simulator.on_arena_peds(callback)
 
     @property
     def collision_grid(self) -> CollisionGrid | None:

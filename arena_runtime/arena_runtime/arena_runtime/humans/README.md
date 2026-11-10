@@ -85,7 +85,7 @@ the outgoing message it checks `ped.joint_state.name`:
 - **non-empty**: upstream backend supplied its own joint state (override path: an upstream producer that already computes joint angles).
 - **empty**: `publish_arena_peds` calls `AnimationManager.compute` (`GaitGenerator` for idle/walk/run, clip playback and overlays for everything else) and fills the field with bare semantic joint names (40 DOF, no body suffix).
 
-Last, [`wire.py`](wire.py) compiles the 40 into `ped.body` over the model's stance ([BODY.md](BODY.md)), leaving only driven joints in `joint_state`. `ped.body` feeds the ROS4HRI skeleton in rviz through `hri_producer` and the Isaac, MuJoCo and Gazebo pedestrian rigs.
+Last, [`wire.py`](wire.py) compiles the 40 into `ped.body` over the model's stance ([BODY.md](BODY.md)), leaving only driven joints in `joint_state`. `ped.body` feeds the ROS4HRI skeleton in rviz through `hri_producer` and the Isaac, MuJoCo and Gazebo pedestrian rigs. `fill_bodies` does the body math for the whole roster at once (`semantic_to_body_batch`, one batch per stance) and hands a ped the body pose it built for it last while its stance and angles repeat and no clip body group plays on it: a walker's angles depend on its engine gait phase only, so the second render of an engine frame builds no bodies.
 
 A model whose bundle ships a `.rig` with drivers (wheelchair bundles: `l_wheel`, `r_wheel`) gets those joints
 set on top, whoever filled the field: [`drivers.py`](drivers.py) rolls each wheel over the distance its contact
@@ -94,6 +94,14 @@ joints section of [`JOINTS.md`](JOINTS.md).
 
 The same message goes out again on `<namespace>/sim_peds`, which the Gazebo pedestrian plugin reads: unchanged in a spread
 world, every ped moved into the simulator frame by `Realizer.placement()` when the levels are stacked (`world.levels`).
+`sim_peds` and `animation_states` are built and sent only while something subscribes to them (under flatsim nothing reads
+`sim_peds`, and a recording that excludes `animation_states` has no reader for it).
+
+Consumers inside the env node take the roster in-process instead of subscribing to `arena_peds`: `on_arena_peds(callback)`
+hands each published message to the callback right after the publish (the base class's own `pedestrian_discs` and
+`pedestrian_clips` state, and every robot's collision tracker through `EnvironmentManager.on_arena_peds`). The callback
+sees the message as published, read-only; `wire_radius` rounds `radius` to the float32 the wire carries, so a listener
+reads what a subscriber would.
 
 ## Resting on furniture
 

@@ -51,7 +51,7 @@ from arena_runtime.humans.utils import (
     KnownObstacles,
     ObstacleLayer,
 )
-from arena_runtime.humans.wire import fill_body
+from arena_runtime.humans.wire import BodyCache, fill_bodies
 from arena_runtime.lockstep import register_channels
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
 from arena_runtime.sim import BaseSim
@@ -67,6 +67,11 @@ PED_RADIUS = 0.3  # m, a typical pedestrian, and one whose radius is unknown
 def ped_radius(radius: float) -> float:
     """A pedestrian's collision radius in m, PED_RADIUS where its message says 0 (unknown)."""
     return radius if radius > 0.0 else PED_RADIUS
+
+
+def wire_radius(radius: float) -> float:
+    """`Pedestrian.radius` as arena_peds carries it (float32), for in-process listeners that stand in for a subscription."""
+    return float(np.float32(radius))
 
 
 Segment = tuple[tuple[float, float], tuple[float, float]]
@@ -229,6 +234,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         self._ped_positions_xy: dict[str, tuple[float, float]] = {}
         self._ped_radii: dict[str, float] = {}
         self._held_seats_listeners: list[typing.Callable[[], None]] = []
+        self._arena_peds_listeners: list[typing.Callable[[Pedestrians], None]] = [self._on_arena_peds]
+        self._body_cache: BodyCache = {}
         self._incident_callback: typing.Callable[[str], None] | None = None
         self._ped_orientations: dict[str, QuaternionMsg] = {}
         self._ped_clips: dict[str, frozenset[str]] = {}
@@ -246,12 +253,6 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         self._joystick = JoystickDriver()
         self._gestures = GestureLayer(self._gait, self._logger)
         self._gait.gesture_hook = self._gestures
-        self.node.create_subscription(
-            Pedestrians,
-            self._namespace("arena_peds"),
-            self._on_arena_peds,
-            10,
-        )
 
         self._possession: PossessionTable[Pedestrian] = PossessionTable(phase=self._gait.phase)
         self._stream_gate = False
@@ -307,11 +308,15 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             self._rests.pop(stale, None)
             self._free_poses.pop(stale, None)
             del self._gait_prev_stamp[stale]
+        for stale in self._body_cache.keys() - current_ids:
+            del self._body_cache[stale]
         for stale in sorted(self._driven.known() - current_ids):
             self._driven.forget(stale)
 
-        animation = AnimationStates()
-        animation.header = out.header
+        # nobody listening (the recorder excludes it, no Gazebo plugin under flatsim): not built, not sent
+        animation = AnimationStates() if self._animation_states_publisher.get_subscription_count() > 0 else None
+        if animation is not None:
+            animation.header = out.header
         tilts: dict[int, tuple[float, float, float, float]] = {}
         generated: set[int] = set()
         for ped in out.pedestrians:
@@ -345,7 +350,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             ped.gait_phase = self._gait.phase(ped.id)
             if (tilt := self._gait.root_tilt(ped.id)) is not None:
                 tilts[ped.id] = tilt
-            animation.peds.append(self._animation_state(ped))  # pyright: ignore[reportAttributeAccessIssue]
+            if animation is not None:
+                animation.peds.append(self._animation_state(ped))  # pyright: ignore[reportAttributeAccessIssue]
 
         pose_sec = out.header.stamp.sec + out.header.stamp.nanosec * 1e-9
         for ped in out.pedestrians:
@@ -370,12 +376,33 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 self._tilt_body(ped, tilts[ped.id])
             self._place_resting(ped, now_sec)
 
-        for ped in out.pedestrians:
-            fill_body(ped, self._stance_for(ped.model_uri), self._gait.body_layers(ped.id) if ped.id in generated else ())
+        fill_bodies(
+            out.pedestrians,
+            [self._stance_for(ped.model_uri) for ped in out.pedestrians],
+            [self._gait.body_layers(ped.id) if ped.id in generated else () for ped in out.pedestrians],
+            self._body_cache,
+        )
 
         self._arena_peds_publisher.publish(out)
-        self._sim_peds_publisher.publish(placed_peds(out, self._realizer.placement()))
-        self._animation_states_publisher.publish(animation)
+        for listener in self._arena_peds_listeners:
+            listener(out)
+        if self._sim_peds_publisher.get_subscription_count() > 0:
+            self._sim_peds_publisher.publish(placed_peds(out, self._realizer.placement()))
+        if animation is not None:
+            self._animation_states_publisher.publish(animation)
+
+    def on_arena_peds(self, callback: typing.Callable[[Pedestrians], None]) -> typing.Callable[[], None]:
+        """Call back in-process with every roster published on arena_peds, the message itself, read-only (no DDS round trip, no copy); returns the unsubscribe.
+
+        The wire carries `Pedestrian.radius` as float32, read it through `wire_radius` to see what a subscriber sees.
+        """
+        self._arena_peds_listeners.append(callback)
+
+        def unsubscribe() -> None:
+            if callback in self._arena_peds_listeners:
+                self._arena_peds_listeners.remove(callback)
+
+        return unsubscribe
 
     def _animation_state(self, ped: Pedestrian) -> AnimationState:
         state = AnimationState(id=ped.id, name=ped.name, base_phase=float(ped.gait_phase))
@@ -576,7 +603,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     def _on_arena_peds(self, msg: Pedestrians) -> None:
         self._ped_positions_xy = {p.name: (p.pose.position.x, p.pose.position.y) for p in msg.pedestrians}
-        self._ped_radii = {p.name: ped_radius(p.radius) for p in msg.pedestrians}
+        self._ped_radii = {p.name: ped_radius(wire_radius(p.radius)) for p in msg.pedestrians}
         self._ped_orientations = {p.name: p.pose.orientation for p in msg.pedestrians}
         self._ped_clips = {p.name: frozenset(g.clip for g in p.gestures) for p in msg.pedestrians}
 

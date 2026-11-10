@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import struct
 import typing
 
 import arena_runtime_msgs.msg
@@ -11,6 +12,7 @@ import rclpy.qos
 import rclpy.subscription
 import rosgraph_msgs.msg
 from arena_rclpy_mixins.Time import Time
+from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
 from arena_runtime.lockstep_gates import Channel, ChannelRegistry, ChannelSpec, GateLedger, parse_channel_entry, step_slice
@@ -78,6 +80,34 @@ async def register_channels(
         node.get_logger().warning(f"lockstep channel registration rejected: {response.error_msg}")
         return False
     return True
+
+
+# CDR representation ids whose body starts with a leading Header's stamp as two plain 4-byte ints: CDR and plain CDR2, big and little endian
+_PLAIN_CDR = {b"\x00\x00": ">iI", b"\x00\x01": "<iI", b"\x00\x06": ">iI", b"\x00\x07": "<iI"}
+
+
+def stamp_reader(msg_type: type) -> typing.Callable[[bytes], float]:
+    """The header stamp in seconds of a serialized `msg_type`, read straight off the CDR when the header is its first field, else from the decoded message.
+
+    A gate needs nothing but the stamp, so it does not decode a whole roster per message.
+    """
+
+    def decoded(data: bytes) -> float:
+        msg: _Stamped = deserialize_message(data, msg_type)
+        return Time.from_msg(msg.header.stamp).to_seconds()
+
+    fields = iter(msg_type.get_fields_and_field_types().items())  # pyright: ignore[reportAttributeAccessIssue]
+    if next(fields, None) != ("header", "std_msgs/Header"):
+        return decoded
+
+    def read(data: bytes) -> float:
+        layout = _PLAIN_CDR.get(bytes(data[:2]))
+        if layout is None or len(data) < 12:
+            return decoded(data)
+        sec, nanosec = struct.unpack_from(layout, data, 4)
+        return Time(sec=sec, nanosec=nanosec).to_seconds()
+
+    return read
 
 
 def spec_from_msg(msg: arena_runtime_msgs.msg.LockstepChannel) -> ChannelSpec:
@@ -360,12 +390,14 @@ class LockstepScheduler:
 
     def _subscribe(self, ledger: GateLedger, channel: Channel) -> rclpy.subscription.Subscription:
         loop = self._node.event_loop
+        msg_type = get_message(channel.spec.type_name)
+        stamp = stamp_reader(msg_type)
 
-        def _cb(msg: _Stamped) -> None:
-            ledger.observe(channel, Time.from_msg(msg.header.stamp).to_seconds())
+        def _cb(data: bytes) -> None:
+            ledger.observe(channel, stamp(data))
             loop.call_soon_threadsafe(self._arrived.set)
 
-        return self._node.create_subscription(get_message(channel.spec.type_name), channel.topic, _cb, 10)
+        return self._node.create_subscription(msg_type, channel.topic, _cb, 10, raw=True)
 
     async def _await_hard(self, ledger: GateLedger, hard_due: list[Channel], version: tuple[int, frozenset[str]]) -> None:
         start = self._node.wall_time

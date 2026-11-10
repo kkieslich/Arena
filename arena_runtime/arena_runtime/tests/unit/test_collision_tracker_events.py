@@ -28,11 +28,12 @@ async def _until(pred: typing.Callable[[], bool], what: str, timeout: float = 20
 
 
 class Stage:
-    def __init__(self, node, env, probe) -> None:
+    def __init__(self, node, env, human, probe) -> None:
         import std_msgs.msg
 
         self.node = node
         self.env = env
+        self.human = human
         self.probe = probe
         self.reset_end = probe.create_publisher(std_msgs.msg.Empty, "/reset_end", 1)
         self.reset_start = probe.create_publisher(std_msgs.msg.Empty, "/reset_start", 1)
@@ -93,19 +94,18 @@ class Stage:
         self.armed_ns = tracker._valid_after.nanoseconds
 
     async def peds(self, tracker, *peds: tuple[str, float, float] | tuple[str, float, float, float]) -> None:
+        """Publish a roster the way the env's human simulator does, which hands it to the trackers in-process."""
         from arena_people_msgs.msg import Pedestrian, Pedestrians
 
-        publisher = self.probe.create_publisher(Pedestrians, "/arena_peds", 10)
         msg = Pedestrians()
-        for name, x, y, *radius in peds:
-            ped = Pedestrian(name=name, radius=radius[0] if radius else 0.0)
+        for i, (name, x, y, *radius) in enumerate(peds):
+            ped = Pedestrian(name=name, id=i, radius=radius[0] if radius else 0.0)
             ped.pose.position.x = x
             ped.pose.position.y = y
             ped.pose.orientation.w = 1.0
             msg.pedestrians.append(ped)
-        await _until(lambda: publisher.get_subscription_count() >= len(self.trackers), "the arena_peds subscriptions")
-        publisher.publish(msg)
-        await _until(lambda: tracker._peds_msg is not None and len(tracker._peds_msg.pedestrians) == len(peds), "the pedestrians to arrive")
+        self.human.publish_arena_peds(msg)
+        assert tracker._peds_msg is not None and len(tracker._peds_msg.pedestrians) == len(peds)
 
     async def tick(self, tracker, received: list) -> list:
         seen = len(received)
@@ -168,7 +168,7 @@ def on_stage(world_dir):
                 human = NoopHumanSimulator(node=node, namespace=node._namespace, simulator=sim, realizer=realizer, acoustics=acoustics)
                 env = EnvironmentManager(node=node, simulator=sim, human_simulator=human, realizer=realizer)
                 await env.spawn_world_obstacles(_level(), "", None, _world_map())
-                stage = Stage(node, env, probe)
+                stage = Stage(node, env, human, probe)
                 await body(stage)
             finally:
                 node._heartbeat_stop.set()
