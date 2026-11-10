@@ -1,0 +1,81 @@
+format: arena-world/2
+levels:
+- id: '0'
+  zones:
+  - {name: reading_room, polygon: [[25.975, 8.025], [0.025, 8.025], [0.025, 29.975], [25.975, 29.975]]}
+  - {name: entrance_lobby, polygon: [[13.975, 0.025], [0.025, 0.025], [0.025, 7.975], [13.975, 7.975]]}
+  - {name: cafe, polygon: [[25.975, 0.025], [14.025, 0.025], [14.025, 7.975], [25.975, 7.975]]}
+  - {name: study_corridor, polygon: [[39.975, 18.025], [26.025, 18.025], [26.025, 21.975], [39.975, 21.975]]}
+  - {name: group_study_1, polygon: [[32.975, 22.025], [26.025, 22.025], [26.025, 29.975], [32.975, 29.975]]}
+  - {name: group_study_2, polygon: [[39.975, 22.025], [33.025, 22.025], [33.025, 29.975], [39.975, 29.975]]}
+  - {name: library_office, polygon: [[32.975, 8.025], [26.025, 8.025], [26.025, 17.975], [32.975, 17.975]]}
+  - {name: wc_1, polygon: [[39.975, 12.025], [33.025, 12.025], [33.025, 17.975], [39.975, 17.975]]}
+  - {name: storage, polygon: [[39.975, 8.025], [33.025, 8.025], [33.025, 11.975], [39.975, 11.975]]}
+  walls:
+  - {path: [[0.0, 3.25], [0.0, 0.0], [4.0, 0.0]]}
+  - {path: [[0.0, 8.0], [0.0, 4.75]]}
+  - {path: [[0.0, 8.0], [5.75, 8.0]]}
+  - {path: [[26.0, 30.0], [0.0, 30.0], [0.0, 8.0]]}
+  - {path: [[6.0, 0.0], [14.0, 0.0]]}
+  - {path: [[8.25, 8.0], [14.0, 8.0]]}
+  - {path: [[14.0, 0.0], [19.25, 0.0]]}
+  - {path: [[14.0, 0.0], [14.0, 3.25]]}
+  - {path: [[14.0, 4.75], [14.0, 8.0]]}
+  - {path: [[14.0, 8.0], [19.25, 8.0]]}
+  - {path: [[20.75, 0.0], [26.0, 0.0], [26.0, 8.0]]}
+  - {path: [[20.75, 8.0], [26.0, 8.0]]}
+  - {path: [[26.0, 8.0], [33.0, 8.0]]}
+  - {path: [[26.0, 8.0], [26.0, 12.4]]}
+  - {path: [[26.0, 13.6], [26.0, 18.0]]}
+  - {path: [[26.0, 18.0], [33.0, 18.0]]}
+  - {path: [[26.0, 18.0], [26.0, 19.25]]}
+  - {path: [[26.0, 20.75], [26.0, 22.0]]}
+  - {path: [[28.9, 22.0], [26.0, 22.0]]}
+  - {path: [[26.0, 22.0], [26.0, 30.0]]}
+  - {path: [[33.0, 30.0], [26.0, 30.0]]}
+  - {path: [[33.0, 22.0], [30.1, 22.0]]}
+  - {path: [[33.0, 8.0], [40.0, 8.0], [40.0, 12.0]]}
+  - {path: [[33.0, 8.0], [33.0, 9.5]]}
+  - {path: [[33.0, 10.5], [33.0, 12.0]]}
+  - {path: [[33.0, 12.0], [40.0, 12.0]]}
+  - {path: [[33.0, 12.0], [33.0, 18.0]]}
+  - {path: [[33.0, 18.0], [35.9, 18.0]]}
+  - {path: [[35.9, 22.0], [33.0, 22.0]]}
+  - {path: [[33.0, 22.0], [33.0, 30.0]]}
+  - {path: [[40.0, 22.0], [40.0, 30.0], [33.0, 30.0]]}
+  - {path: [[37.1, 18.0], [40.0, 18.0]]}
+  - {path: [[40.0, 22.0], [37.1, 22.0]]}
+  - {path: [[40.0, 12.0], [40.0, 18.0]]}
+  - {path: [[40.0, 18.0], [40.0, 22.0]]}
+  doors:
+  - {name: front_door, span: [[4.0, 0.0], [6.0, 0.0]]}
+  - {name: side_door, span: [[0.0, 3.25], [0.0, 4.75]]}
+  - {name: cafe_street_door, span: [[19.25, 0.0], [20.75, 0.0]]}
+  - {name: lobby_reading, span: [[5.75, 8.0], [8.25, 8.0]]}
+  - {name: lobby_cafe, span: [[14.0, 3.25], [14.0, 4.75]]}
+  - {name: cafe_reading, span: [[19.25, 8.0], [20.75, 8.0]]}
+  - {name: reading_corridor, span: [[26.0, 19.25], [26.0, 20.75]]}
+  - {name: group_study_1_door, span: [[28.9, 22.0], [30.1, 22.0]]}
+  - {name: group_study_2_door, span: [[35.9, 22.0], [37.1, 22.0]]}
+  - {name: office_door, span: [[26.0, 12.4], [26.0, 13.6]]}
+  - {name: wc_door, span: [[35.9, 18.0], [37.1, 18.0]]}
+  - {name: storage_door, span: [[33.0, 9.5], [33.0, 10.5]]}
+  objects:
+  - {name: stack_1, pose: [3.12, 20.1, 1.5708], model: Office/SM_BookcaseA}
+  - {name: stack_2, pose: [3.12, 24.5, 1.5708], model: Office/SM_BookcaseA}
+  - {name: stack_3, pose: [8.32, 20.1, 1.5708], model: Office/SM_BookcaseA}
+  - {name: stack_4, pose: [8.32, 24.5, 1.5708], model: Office/SM_BookcaseA}
+  - {name: stack_5, pose: [13.52, 20.1, 1.5708], model: Office/SM_BookcaseA}
+  - {name: stack_6, pose: [13.52, 24.5, 1.5708], model: Office/SM_BookcaseA}
+  - {name: reading_table_1, pose: [19.5, 14.6], model: Office/SM_TableD}
+  - {name: reading_table_2, pose: [19.5, 20.1], model: Office/SM_TableD}
+  - {name: reading_table_3, pose: [19.5, 25.6], model: Office/SM_TableD}
+  - {name: reading_table_4, pose: [7.8, 12.4], model: Office/SM_TableD}
+  - {name: lobby_plant_1, pose: [0.6, 5.6, 3.14159], model: Office/SM_Plant01}
+  - {name: cafe_table_1, pose: [18.8, 4.0], model: Office/SM_TableRound_module}
+  - {name: cafe_table_2, pose: [23.0, 4.0], model: Office/SM_TableRound_module}
+  - {name: study_1_table, pose: [29.5, 26.4], model: Office/SM_TableRound_module}
+  - {name: study_2_table, pose: [36.5, 26.4], model: Office/SM_TableRound_module}
+  - {name: office_desk_1, pose: [26.6, 14.0, 3.14159], model: Office/SM_TableWorkingDouble}
+  - {name: wc_toilet_1, pose: [39.4, 15.0], model: Office/SM_Toilet}
+  - {name: storage_rack_1, pose: [39.4, 10.0], model: Office/SM_Rack}

@@ -1,0 +1,108 @@
+format: arena-kg/1
+uses: [core@2, space@1]
+entities:
+- {id: 'room:court', props: {description: food court seating hall}}
+- {id: 'room:kiosk_1', props: {description: kiosk 1}}
+- {id: 'room:kiosk_2', props: {description: kiosk 2}}
+- {id: 'room:kiosk_3', props: {description: kiosk 3}}
+- {id: 'room:kiosk_4', props: {description: kiosk 4}}
+- {id: 'room:wc_1', props: {description: wc 1}}
+- {id: 'room:kitchen', props: {description: kitchen}}
+- {id: 'room:storage', props: {description: storage}}
+- {id: 'room:west_entrance', props: {description: entrance hall from the street}}
+- {id: 'purpose:break'}
+- {id: 'purpose:transit'}
+- {id: 'purpose:work'}
+- {id: 'floor:0'}
+- {id: 'door:west_street_door'}
+- {id: 'door:west_court'}
+- {id: 'door:west_court_2'}
+- {id: 'door:east_door'}
+- {id: 'door:south_door'}
+- {id: 'door:kiosk_1_front'}
+- {id: 'door:kiosk_2_front'}
+- {id: 'door:kiosk_3_front'}
+- {id: 'door:kiosk_4_front'}
+- {id: 'door:wc_door'}
+- {id: 'door:kitchen_door'}
+- {id: 'door:storage_door'}
+- {id: 'obj:court_table_1'}
+- {id: 'obj:court_table_2'}
+- {id: 'obj:court_table_3'}
+- {id: 'obj:court_table_4'}
+- {id: 'obj:court_table_5'}
+- {id: 'obj:court_table_6'}
+- {id: 'obj:court_table_7'}
+- {id: 'obj:kiosk_1_counter'}
+- {id: 'obj:kiosk_2_counter'}
+- {id: 'obj:kiosk_3_counter'}
+- {id: 'obj:kiosk_4_counter'}
+- {id: 'obj:kitchen_bench_1'}
+- {id: 'obj:storage_rack_1'}
+- {id: 'obj:wc_toilet_1'}
+- {id: 'obj:entrance_plant_1'}
+facts:
+- {subject: 'room:court', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:kiosk_1', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:kiosk_2', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:kiosk_3', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:kiosk_4', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:wc_1', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:kitchen', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:storage', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:west_entrance', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'floor:0', verb: contains, object: 'room:court', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:kiosk_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:kiosk_2', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:kiosk_3', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:kiosk_4', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:kitchen', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:storage', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:west_entrance', source: derived}
+- {subject: 'room:west_entrance', verb: contains, object: 'door:west_street_door', source: derived}
+- {subject: 'room:west_entrance', verb: contains, object: 'door:west_court', source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:west_court', source: derived}
+- {subject: 'room:west_entrance', verb: connects, object: 'room:court', params: {door: 'door:west_court'}, source: derived}
+- {subject: 'room:west_entrance', verb: contains, object: 'door:west_court_2', source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:west_court_2', source: derived}
+- {subject: 'room:west_entrance', verb: connects, object: 'room:court', params: {door: 'door:west_court_2'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:east_door', source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:south_door', source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:kiosk_1_front', source: derived}
+- {subject: 'room:kiosk_1', verb: contains, object: 'door:kiosk_1_front', source: derived}
+- {subject: 'room:court', verb: connects, object: 'room:kiosk_1', params: {door: 'door:kiosk_1_front'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:kiosk_2_front', source: derived}
+- {subject: 'room:kiosk_2', verb: contains, object: 'door:kiosk_2_front', source: derived}
+- {subject: 'room:court', verb: connects, object: 'room:kiosk_2', params: {door: 'door:kiosk_2_front'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:kiosk_3_front', source: derived}
+- {subject: 'room:kiosk_3', verb: contains, object: 'door:kiosk_3_front', source: derived}
+- {subject: 'room:court', verb: connects, object: 'room:kiosk_3', params: {door: 'door:kiosk_3_front'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:kiosk_4_front', source: derived}
+- {subject: 'room:kiosk_4', verb: contains, object: 'door:kiosk_4_front', source: derived}
+- {subject: 'room:court', verb: connects, object: 'room:kiosk_4', params: {door: 'door:kiosk_4_front'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:court', verb: connects, object: 'room:wc_1', params: {door: 'door:wc_door'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:kitchen_door', source: derived}
+- {subject: 'room:kitchen', verb: contains, object: 'door:kitchen_door', source: derived}
+- {subject: 'room:court', verb: connects, object: 'room:kitchen', params: {door: 'door:kitchen_door'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'door:storage_door', source: derived}
+- {subject: 'room:storage', verb: contains, object: 'door:storage_door', source: derived}
+- {subject: 'room:court', verb: connects, object: 'room:storage', params: {door: 'door:storage_door'}, source: derived}
+- {subject: 'room:court', verb: contains, object: 'obj:court_table_1', source: derived}
+- {subject: 'room:court', verb: contains, object: 'obj:court_table_2', source: derived}
+- {subject: 'room:court', verb: contains, object: 'obj:court_table_3', source: derived}
+- {subject: 'room:court', verb: contains, object: 'obj:court_table_4', source: derived}
+- {subject: 'room:court', verb: contains, object: 'obj:court_table_5', source: derived}
+- {subject: 'room:court', verb: contains, object: 'obj:court_table_6', source: derived}
+- {subject: 'room:court', verb: contains, object: 'obj:court_table_7', source: derived}
+- {subject: 'room:kiosk_1', verb: contains, object: 'obj:kiosk_1_counter', source: derived}
+- {subject: 'room:kiosk_2', verb: contains, object: 'obj:kiosk_2_counter', source: derived}
+- {subject: 'room:kiosk_3', verb: contains, object: 'obj:kiosk_3_counter', source: derived}
+- {subject: 'room:kiosk_4', verb: contains, object: 'obj:kiosk_4_counter', source: derived}
+- {subject: 'room:kitchen', verb: contains, object: 'obj:kitchen_bench_1', source: derived}
+- {subject: 'room:storage', verb: contains, object: 'obj:storage_rack_1', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'obj:wc_toilet_1', source: derived}
+- {subject: 'room:west_entrance', verb: contains, object: 'obj:entrance_plant_1', source: derived}
+constraints: []

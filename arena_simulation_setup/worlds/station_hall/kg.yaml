@@ -1,0 +1,130 @@
+format: arena-kg/1
+uses: [core@2, space@1]
+entities:
+- {id: 'room:concourse', props: {description: station concourse between the two street doors}}
+- {id: 'room:ticket_office', props: {description: ticket office}}
+- {id: 'room:shop_1', props: {description: shop 1}}
+- {id: 'room:shop_2', props: {description: shop 2}}
+- {id: 'room:waiting_room', props: {description: waiting room}}
+- {id: 'room:wc_1', props: {description: wc 1}}
+- {id: 'room:staff_room', props: {description: staff room}}
+- {id: 'room:platform_access_1', props: {description: stairs to platform 1}}
+- {id: 'room:platform_access_2', props: {description: stairs to platform 2}}
+- {id: 'purpose:break'}
+- {id: 'purpose:transit'}
+- {id: 'purpose:work'}
+- {id: 'floor:0'}
+- {id: 'door:west_door'}
+- {id: 'door:east_door'}
+- {id: 'door:platform_1_stairs'}
+- {id: 'door:platform_2_stairs'}
+- {id: 'door:access_1_gate'}
+- {id: 'door:access_2_gate'}
+- {id: 'door:ticket_door'}
+- {id: 'door:shop_1_door'}
+- {id: 'door:shop_2_door'}
+- {id: 'door:waiting_door_1'}
+- {id: 'door:waiting_door_2'}
+- {id: 'door:wc_door'}
+- {id: 'door:staff_door'}
+- {id: 'obj:concourse_seat_1'}
+- {id: 'obj:concourse_seat_2'}
+- {id: 'obj:concourse_seat_3'}
+- {id: 'obj:concourse_seat_4'}
+- {id: 'obj:concourse_plant_1'}
+- {id: 'obj:concourse_plant_2'}
+- {id: 'obj:concourse_plant_3'}
+- {id: 'obj:waiting_bench_1'}
+- {id: 'obj:waiting_bench_2'}
+- {id: 'obj:waiting_bench_3'}
+- {id: 'obj:shop_1_rack'}
+- {id: 'obj:shop_2_rack'}
+- {id: 'obj:ticket_cabinet'}
+- {id: 'obj:wc_toilet_1'}
+- {id: 'obj:staff_sofa_1'}
+facts:
+- {subject: 'room:concourse', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'room:ticket_office', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:shop_1', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:shop_2', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:waiting_room', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:wc_1', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:staff_room', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:platform_access_1', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'room:platform_access_2', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'floor:0', verb: contains, object: 'room:concourse', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:ticket_office', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:shop_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:shop_2', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:waiting_room', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:staff_room', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:platform_access_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:platform_access_2', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'door:west_door', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'door:east_door', source: derived}
+- {subject: 'room:platform_access_1', verb: contains, object: 'door:platform_1_stairs', source: derived}
+- {subject: 'room:platform_access_2', verb: contains, object: 'door:platform_2_stairs', source: derived}
+- {subject: 'room:platform_access_1', verb: contains, object: 'door:access_1_gate', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'door:access_1_gate', source: derived}
+- subject: room:platform_access_1
+  verb: connects
+  object: room:concourse
+  params: {door: 'door:access_1_gate'}
+  source: derived
+- {subject: 'room:concourse', verb: contains, object: 'door:access_2_gate', source: derived}
+- {subject: 'room:platform_access_2', verb: contains, object: 'door:access_2_gate', source: derived}
+- subject: room:concourse
+  verb: connects
+  object: room:platform_access_2
+  params: {door: 'door:access_2_gate'}
+  source: derived
+- {subject: 'room:ticket_office', verb: contains, object: 'door:ticket_door', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'door:ticket_door', source: derived}
+- subject: room:ticket_office
+  verb: connects
+  object: room:concourse
+  params: {door: 'door:ticket_door'}
+  source: derived
+- {subject: 'room:concourse', verb: contains, object: 'door:shop_1_door', source: derived}
+- {subject: 'room:shop_1', verb: contains, object: 'door:shop_1_door', source: derived}
+- {subject: 'room:concourse', verb: connects, object: 'room:shop_1', params: {door: 'door:shop_1_door'}, source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'door:shop_2_door', source: derived}
+- {subject: 'room:shop_2', verb: contains, object: 'door:shop_2_door', source: derived}
+- {subject: 'room:concourse', verb: connects, object: 'room:shop_2', params: {door: 'door:shop_2_door'}, source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'door:waiting_door_1', source: derived}
+- {subject: 'room:waiting_room', verb: contains, object: 'door:waiting_door_1', source: derived}
+- subject: room:concourse
+  verb: connects
+  object: room:waiting_room
+  params: {door: 'door:waiting_door_1'}
+  source: derived
+- {subject: 'room:concourse', verb: contains, object: 'door:waiting_door_2', source: derived}
+- {subject: 'room:waiting_room', verb: contains, object: 'door:waiting_door_2', source: derived}
+- subject: room:concourse
+  verb: connects
+  object: room:waiting_room
+  params: {door: 'door:waiting_door_2'}
+  source: derived
+- {subject: 'room:concourse', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:concourse', verb: connects, object: 'room:wc_1', params: {door: 'door:wc_door'}, source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'door:staff_door', source: derived}
+- {subject: 'room:staff_room', verb: contains, object: 'door:staff_door', source: derived}
+- {subject: 'room:concourse', verb: connects, object: 'room:staff_room', params: {door: 'door:staff_door'}, source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'obj:concourse_seat_1', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'obj:concourse_seat_2', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'obj:concourse_seat_3', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'obj:concourse_seat_4', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'obj:concourse_plant_1', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'obj:concourse_plant_2', source: derived}
+- {subject: 'room:concourse', verb: contains, object: 'obj:concourse_plant_3', source: derived}
+- {subject: 'room:waiting_room', verb: contains, object: 'obj:waiting_bench_1', source: derived}
+- {subject: 'room:waiting_room', verb: contains, object: 'obj:waiting_bench_2', source: derived}
+- {subject: 'room:waiting_room', verb: contains, object: 'obj:waiting_bench_3', source: derived}
+- {subject: 'room:shop_1', verb: contains, object: 'obj:shop_1_rack', source: derived}
+- {subject: 'room:shop_2', verb: contains, object: 'obj:shop_2_rack', source: derived}
+- {subject: 'room:ticket_office', verb: contains, object: 'obj:ticket_cabinet', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'obj:wc_toilet_1', source: derived}
+- {subject: 'room:staff_room', verb: contains, object: 'obj:staff_sofa_1', source: derived}
+constraints: []

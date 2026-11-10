@@ -1,0 +1,23 @@
+format: arena-scenario/2
+# Authored FLOWEDIT demand: a water dispenser (thirst) in the canteen, the staff office counter, a canteen group, a desk per classroom.
+objects:
+- name: fountain
+  model: Hospital/SM_WaterDispenser_01a
+  pose: [39.94, 31.47, 1.5708]
+  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 0.8}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
+- name: reception_desk
+  model: Hospital/Reception_Counter
+  pose: [26.9, 13.28, 1.5708]
+  humansim: {capacity: 3, formation: {params: {base_step: 0.8, front_offset: 0.6}, type: line}, interaction_radius: 1.0, type: desk}
+- name: gathering_area
+  model: Hospital/Waiting_Room_Bench
+  pose: [47.61, 30.77, 1.5708]
+  humansim: {capacity: 0, formation: {anchor: {kind: object, ref: gathering_area}, params: {base_radius: 0.8, radius_per_member: 0.12}, type: f_formation}, type: gathering_area}
+- name: workstation_1
+  model: Office/Stand_Table_Work
+  pose: [19.32, 25.1, 3.14159]
+  humansim: {capacity: 1, interaction_radius: 1.2, type: desk}
+- name: workstation_2
+  model: Office/Stand_Table_Work
+  pose: [0.83, 8.3, 3.14159]
+  humansim: {capacity: 1, interaction_radius: 1.2, type: desk}

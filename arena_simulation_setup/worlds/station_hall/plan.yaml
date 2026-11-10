@@ -1,0 +1,113 @@
+plan: hand-drawn rooms and doors
+rooms:
+  concourse:
+  - 0
+  - 6
+  - 60
+  - 18
+  ticket_office:
+  - 4
+  - 18
+  - 16
+  - 24
+  shop_1:
+  - 16
+  - 18
+  - 24
+  - 24
+  shop_2:
+  - 24
+  - 18
+  - 32
+  - 24
+  waiting_room:
+  - 32
+  - 18
+  - 46
+  - 24
+  wc_1:
+  - 46
+  - 18
+  - 52
+  - 24
+  staff_room:
+  - 52
+  - 18
+  - 60
+  - 24
+  platform_access_1:
+  - 10
+  - 0
+  - 20
+  - 6
+  platform_access_2:
+  - 40
+  - 0
+  - 50
+  - 6
+doors:
+  west_door:
+  - - 0
+    - 10.5
+  - - 0
+    - 13.5
+  east_door:
+  - - 60
+    - 10.5
+  - - 60
+    - 13.5
+  platform_1_stairs:
+  - - 13.5
+    - 0
+  - - 16.5
+    - 0
+  platform_2_stairs:
+  - - 43.5
+    - 0
+  - - 46.5
+    - 0
+  access_1_gate:
+  - - 13.5
+    - 6
+  - - 16.5
+    - 6
+  access_2_gate:
+  - - 43.5
+    - 6
+  - - 46.5
+    - 6
+  ticket_door:
+  - - 9.0
+    - 18
+  - - 11.0
+    - 18
+  shop_1_door:
+  - - 19.0
+    - 18
+  - - 21.0
+    - 18
+  shop_2_door:
+  - - 27.0
+    - 18
+  - - 29.0
+    - 18
+  waiting_door_1:
+  - - 35.0
+    - 18
+  - - 37.0
+    - 18
+  waiting_door_2:
+  - - 41.0
+    - 18
+  - - 43.0
+    - 18
+  wc_door:
+  - - 48.4
+    - 18
+  - - 49.6
+    - 18
+  staff_door:
+  - - 55.4
+    - 18
+  - - 56.6
+    - 18

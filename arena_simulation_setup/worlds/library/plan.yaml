@@ -1,0 +1,108 @@
+plan: hand-drawn rooms and doors
+rooms:
+  reading_room:
+  - 0
+  - 8
+  - 26
+  - 30
+  entrance_lobby:
+  - 0
+  - 0
+  - 14
+  - 8
+  cafe:
+  - 14
+  - 0
+  - 26
+  - 8
+  study_corridor:
+  - 26
+  - 18
+  - 40
+  - 22
+  group_study_1:
+  - 26
+  - 22
+  - 33
+  - 30
+  group_study_2:
+  - 33
+  - 22
+  - 40
+  - 30
+  library_office:
+  - 26
+  - 8
+  - 33
+  - 18
+  wc_1:
+  - 33
+  - 12
+  - 40
+  - 18
+  storage:
+  - 33
+  - 8
+  - 40
+  - 12
+doors:
+  front_door:
+  - - 4.0
+    - 0
+  - - 6.0
+    - 0
+  side_door:
+  - - 0
+    - 3.25
+  - - 0
+    - 4.75
+  cafe_street_door:
+  - - 19.25
+    - 0
+  - - 20.75
+    - 0
+  lobby_reading:
+  - - 5.75
+    - 8
+  - - 8.25
+    - 8
+  lobby_cafe:
+  - - 14
+    - 3.25
+  - - 14
+    - 4.75
+  cafe_reading:
+  - - 19.25
+    - 8
+  - - 20.75
+    - 8
+  reading_corridor:
+  - - 26
+    - 19.25
+  - - 26
+    - 20.75
+  group_study_1_door:
+  - - 28.9
+    - 22
+  - - 30.1
+    - 22
+  group_study_2_door:
+  - - 35.9
+    - 22
+  - - 37.1
+    - 22
+  office_door:
+  - - 26
+    - 12.4
+  - - 26
+    - 13.6
+  wc_door:
+  - - 35.9
+    - 18
+  - - 37.1
+    - 18
+  storage_door:
+  - - 33
+    - 9.5
+  - - 33
+    - 10.5

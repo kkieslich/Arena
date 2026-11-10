@@ -1,0 +1,81 @@
+format: arena-world/2
+levels:
+- id: '0'
+  zones:
+  - {name: concourse, polygon: [[59.975, 6.025], [0.025, 6.025], [0.025, 17.975], [59.975, 17.975]]}
+  - {name: ticket_office, polygon: [[15.975, 18.025], [4.025, 18.025], [4.025, 23.975], [15.975, 23.975]]}
+  - {name: shop_1, polygon: [[23.975, 18.025], [16.025, 18.025], [16.025, 23.975], [23.975, 23.975]]}
+  - {name: shop_2, polygon: [[31.975, 18.025], [24.025, 18.025], [24.025, 23.975], [31.975, 23.975]]}
+  - {name: waiting_room, polygon: [[45.975, 18.025], [32.025, 18.025], [32.025, 23.975], [45.975, 23.975]]}
+  - {name: wc_1, polygon: [[51.975, 18.025], [46.025, 18.025], [46.025, 23.975], [51.975, 23.975]]}
+  - {name: staff_room, polygon: [[59.975, 18.025], [52.025, 18.025], [52.025, 23.975], [59.975, 23.975]]}
+  - {name: platform_access_1, polygon: [[19.975, 0.025], [10.025, 0.025], [10.025, 5.975], [19.975, 5.975]]}
+  - {name: platform_access_2, polygon: [[49.975, 0.025], [40.025, 0.025], [40.025, 5.975], [49.975, 5.975]]}
+  walls:
+  - {path: [[0.0, 10.5], [0.0, 6.0], [10.0, 6.0]]}
+  - {path: [[4.0, 18.0], [0.0, 18.0], [0.0, 13.5]]}
+  - {path: [[9.0, 18.0], [4.0, 18.0]]}
+  - {path: [[16.0, 24.0], [4.0, 24.0], [4.0, 18.0]]}
+  - {path: [[10.0, 6.0], [13.5, 6.0]]}
+  - {path: [[10.0, 6.0], [10.0, 0.0], [13.5, 0.0]]}
+  - {path: [[16.0, 18.0], [11.0, 18.0]]}
+  - {path: [[19.0, 18.0], [16.0, 18.0]]}
+  - {path: [[16.0, 18.0], [16.0, 24.0]]}
+  - {path: [[24.0, 24.0], [16.0, 24.0]]}
+  - {path: [[16.5, 0.0], [20.0, 0.0], [20.0, 6.0]]}
+  - {path: [[16.5, 6.0], [20.0, 6.0]]}
+  - {path: [[20.0, 6.0], [40.0, 6.0]]}
+  - {path: [[24.0, 18.0], [21.0, 18.0]]}
+  - {path: [[27.0, 18.0], [24.0, 18.0]]}
+  - {path: [[24.0, 18.0], [24.0, 24.0]]}
+  - {path: [[32.0, 24.0], [24.0, 24.0]]}
+  - {path: [[32.0, 18.0], [29.0, 18.0]]}
+  - {path: [[35.0, 18.0], [32.0, 18.0]]}
+  - {path: [[32.0, 18.0], [32.0, 24.0]]}
+  - {path: [[46.0, 24.0], [32.0, 24.0]]}
+  - {path: [[41.0, 18.0], [37.0, 18.0]]}
+  - {path: [[40.0, 6.0], [43.5, 6.0]]}
+  - {path: [[40.0, 6.0], [40.0, 0.0], [43.5, 0.0]]}
+  - {path: [[46.0, 18.0], [43.0, 18.0]]}
+  - {path: [[48.4, 18.0], [46.0, 18.0]]}
+  - {path: [[46.0, 18.0], [46.0, 24.0]]}
+  - {path: [[52.0, 24.0], [46.0, 24.0]]}
+  - {path: [[46.5, 0.0], [50.0, 0.0], [50.0, 6.0]]}
+  - {path: [[46.5, 6.0], [50.0, 6.0]]}
+  - {path: [[52.0, 18.0], [49.6, 18.0]]}
+  - {path: [[50.0, 6.0], [60.0, 6.0], [60.0, 10.5]]}
+  - {path: [[55.4, 18.0], [52.0, 18.0]]}
+  - {path: [[52.0, 18.0], [52.0, 24.0]]}
+  - {path: [[60.0, 18.0], [60.0, 24.0], [52.0, 24.0]]}
+  - {path: [[60.0, 18.0], [56.6, 18.0]]}
+  - {path: [[60.0, 13.5], [60.0, 18.0]]}
+  doors:
+  - {name: west_door, span: [[0.0, 10.5], [0.0, 13.5]]}
+  - {name: east_door, span: [[60.0, 10.5], [60.0, 13.5]]}
+  - {name: platform_1_stairs, span: [[13.5, 0.0], [16.5, 0.0]]}
+  - {name: platform_2_stairs, span: [[43.5, 0.0], [46.5, 0.0]]}
+  - {name: access_1_gate, span: [[13.5, 6.0], [16.5, 6.0]]}
+  - {name: access_2_gate, span: [[43.5, 6.0], [46.5, 6.0]]}
+  - {name: ticket_door, span: [[9.0, 18.0], [11.0, 18.0]]}
+  - {name: shop_1_door, span: [[19.0, 18.0], [21.0, 18.0]]}
+  - {name: shop_2_door, span: [[27.0, 18.0], [29.0, 18.0]]}
+  - {name: waiting_door_1, span: [[35.0, 18.0], [37.0, 18.0]]}
+  - {name: waiting_door_2, span: [[41.0, 18.0], [43.0, 18.0]]}
+  - {name: wc_door, span: [[48.4, 18.0], [49.6, 18.0]]}
+  - {name: staff_door, span: [[55.4, 18.0], [56.6, 18.0]]}
+  objects:
+  - {name: concourse_seat_1, pose: [21.0, 12.0, -1.5708], model: Hospital/SM_Chair_02a}
+  - {name: concourse_seat_2, pose: [22.2, 12.0, -1.5708], model: Hospital/SM_Chair_02a}
+  - {name: concourse_seat_3, pose: [37.2, 12.0, -1.5708], model: Hospital/SM_Chair_02a}
+  - {name: concourse_seat_4, pose: [38.4, 12.0, -1.5708], model: Hospital/SM_Chair_02a}
+  - {name: concourse_plant_1, pose: [3.0, 6.6, -1.5708], model: Office/SM_Plant03}
+  - {name: concourse_plant_2, pose: [30.0, 6.6, -1.5708], model: Office/SM_Plant03}
+  - {name: concourse_plant_3, pose: [57.0, 6.6, -1.5708], model: Office/SM_Plant03}
+  - {name: waiting_bench_1, pose: [35.5, 23.2, 1.5708], model: Hospital/Waiting_Room_Bench}
+  - {name: waiting_bench_2, pose: [39.0, 23.2, 1.5708], model: Hospital/Waiting_Room_Bench}
+  - {name: waiting_bench_3, pose: [42.5, 23.2, 1.5708], model: Hospital/Waiting_Room_Bench}
+  - {name: shop_1_rack, pose: [20.0, 23.4, 1.5708], model: Office/SM_Rack}
+  - {name: shop_2_rack, pose: [28.0, 23.4, 1.5708], model: Office/SM_Rack}
+  - {name: ticket_cabinet, pose: [7.6, 23.4, 1.5708], model: Office/SM_FileCabinet_01}
+  - {name: wc_toilet_1, pose: [49.0, 23.4, 1.5708], model: Office/SM_Toilet}
+  - {name: staff_sofa_1, pose: [56.0, 23.4, 1.5708], model: Office/SM_Sofa}

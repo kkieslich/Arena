@@ -1,0 +1,77 @@
+format: arena-world/2
+levels:
+- id: '0'
+  zones:
+  - {name: main_hallway, polygon: [[0.0, 13.25], [48.0, 13.25], [48.0, 16.75], [0.0, 16.75]]}
+  - {name: reception, polygon: [[0.025, 16.825], [0.025, 27.475], [11.675, 27.475], [11.675, 16.825]]}
+  - {name: office_a, polygon: [[11.725, 16.825], [11.725, 26.175], [20.575, 26.175], [20.575, 16.825]]}
+  - {name: office_b, polygon: [[20.625, 16.825], [20.625, 26.575], [28.475, 26.575], [28.475, 16.825]]}
+  - {name: meeting_room_1, polygon: [[28.525, 16.825], [28.525, 26.275], [35.675, 26.275], [35.675, 16.825]]}
+  - {name: kitchen, polygon: [[35.725, 16.825], [35.725, 28.175], [47.975, 28.175], [47.975, 16.825]]}
+  - {name: open_office, polygon: [[0.025, 1.325], [0.025, 13.175], [11.075, 13.175], [11.075, 1.325]]}
+  - {name: wc_1, polygon: [[11.125, 3.225], [11.125, 13.175], [20.675, 13.175], [20.675, 3.225]]}
+  - {name: office_c, polygon: [[20.725, 4.825], [20.725, 13.275], [29.475, 13.275], [29.475, 4.825]]}
+  - {name: meeting_room_2, polygon: [[29.525, 3.725], [29.525, 13.275], [36.775, 13.275], [36.775, 3.725]]}
+  - {name: lounge, polygon: [[36.825, 3.725], [36.825, 13.275], [47.975, 13.275], [47.975, 3.725]]}
+  walls:
+  - {path: [[0.025, 16.75], [0.025, 15.75]]}
+  - {path: [[0.025, 14.25], [0.025, 13.25]]}
+  - {path: [[47.975, 16.75], [47.975, 15.75]]}
+  - {path: [[47.975, 14.25], [47.975, 13.25]]}
+  - {path: [[0.025, 16.825], [0.025, 27.475], [11.675, 27.475], [11.675, 16.825], [3.3, 16.825]]}
+  - {path: [[2.1, 16.825], [0.025, 16.825]]}
+  - {path: [[11.725, 16.825], [11.725, 26.175], [20.575, 26.175], [20.575, 16.825], [16.1, 16.825]]}
+  - {path: [[14.9, 16.825], [11.725, 16.825]]}
+  - {path: [[20.625, 16.825], [20.625, 26.575], [28.475, 26.575], [28.475, 16.825], [23.5, 16.825]]}
+  - {path: [[22.3, 16.825], [20.625, 16.825]]}
+  - {path: [[28.525, 16.825], [28.525, 26.275], [35.675, 26.275], [35.675, 16.825], [34.8, 16.825]]}
+  - {path: [[33.6, 16.825], [28.525, 16.825]]}
+  - {path: [[35.725, 16.825], [35.725, 28.175], [47.975, 28.175], [47.975, 16.825], [45.0, 16.825]]}
+  - {path: [[43.8, 16.825], [35.725, 16.825]]}
+  - {path: [[0.025, 1.325], [0.025, 13.175], [3.3, 13.175]]}
+  - {path: [[4.5, 13.175], [11.075, 13.175], [11.075, 1.325], [0.025, 1.325]]}
+  - {path: [[11.125, 3.225], [11.125, 13.175], [12.5, 13.175]]}
+  - {path: [[13.7, 13.175], [20.675, 13.175], [20.675, 3.225], [11.125, 3.225]]}
+  - {path: [[20.725, 4.825], [20.725, 13.275], [24.9, 13.275]]}
+  - {path: [[26.1, 13.275], [29.475, 13.275], [29.475, 4.825], [20.725, 4.825]]}
+  - {path: [[29.525, 3.725], [29.525, 13.275], [32.9, 13.275]]}
+  - {path: [[34.1, 13.275], [36.775, 13.275], [36.775, 3.725], [29.525, 3.725]]}
+  - {path: [[36.825, 3.725], [36.825, 13.275], [45.4, 13.275]]}
+  - {path: [[46.6, 13.275], [47.975, 13.275], [47.975, 3.725], [36.825, 3.725]]}
+  doors:
+  - {name: reception_door, span: [[2.1, 16.75], [3.3, 16.75]]}
+  - {name: office_a_door, span: [[14.9, 16.75], [16.1, 16.75]]}
+  - {name: office_b_door, span: [[22.3, 16.75], [23.5, 16.75]]}
+  - {name: meeting_room_1_door, span: [[33.6, 16.75], [34.8, 16.75]]}
+  - {name: kitchen_door, span: [[43.8, 16.75], [45.0, 16.75]]}
+  - {name: open_office_door, span: [[3.3, 13.25], [4.5, 13.25]]}
+  - {name: wc_1_door, span: [[12.5, 13.25], [13.7, 13.25]]}
+  - {name: office_c_door, span: [[24.9, 13.25], [26.1, 13.25]]}
+  - {name: meeting_room_2_door, span: [[32.9, 13.25], [34.1, 13.25]]}
+  - {name: lounge_door, span: [[45.4, 13.25], [46.6, 13.25]]}
+  - {name: west_entrance, span: [[0.025, 14.25], [0.025, 15.75]]}
+  - {name: east_entrance, span: [[47.975, 14.25], [47.975, 15.75]]}
+  objects:
+  - {name: reception_table_1, pose: [5.85, 26.88, 1.5708], model: Office/SM_ReceptionTableStraight}
+  - {name: reception_sofa_1, pose: [0.62, 21.09, 3.14159], model: Office/SM_Sofa}
+  - {name: reception_plant_1, pose: [11.08, 24.28], model: Office/SM_Plant01}
+  - {name: office_a_desk_1, pose: [16.15, 21.97], model: Office/SM_TableWorkingDouble}
+  - {name: office_a_chair_1, pose: [16.15, 23.37, 1.5708], model: Office/SM_ChairOffice}
+  - {name: office_a_cabinet_1, pose: [16.15, 25.57, 1.5708], model: Office/SM_FileCabinet_01}
+  - {name: office_b_desk_1, pose: [24.55, 22.19], model: Office/SM_TableWorkingDouble}
+  - {name: office_b_bookcase_1, pose: [22.98, 25.97, 1.5708], model: Office/SM_BookcaseA}
+  - {name: meeting_1_table_1, pose: [32.1, 22.02], model: Office/SM_TableRound_module}
+  - {name: meeting_1_chair_1, pose: [32.1, 23.91, 1.5708], model: Office/SM_ChairOffice}
+  - {name: meeting_1_chair_2, pose: [32.1, 20.13, -1.5708], model: Office/SM_ChairOffice}
+  - {name: kitchen_table_1, pose: [40.62, 22.5], model: Office/SM_TableRound_module}
+  - {name: kitchen_drinks_1, pose: [39.4, 27.57, 1.5708], model: Office/SM_DrinksMachine}
+  - {name: open_desk_1, pose: [3.34, 6.07], model: Office/SM_TableWorkingDouble}
+  - {name: open_desk_2, pose: [7.76, 6.07], model: Office/SM_TableWorkingDouble}
+  - {name: open_desk_3, pose: [3.34, 9.62], model: Office/SM_TableWorkingDouble}
+  - {name: open_desk_4, pose: [7.76, 9.62], model: Office/SM_TableWorkingDouble}
+  - {name: wc_toilet_1, pose: [15.9, 3.83, -1.5708], model: Office/SM_Toilet}
+  - {name: office_c_desk_1, pose: [25.1, 5.42, -1.5708], model: Office/SM_SecretaryDeskA}
+  - {name: meeting_2_table_1, pose: [33.15, 8.5], model: Office/SM_TableRound_module}
+  - {name: lounge_sofa_1, pose: [41.29, 4.33, -1.5708], model: Office/SM_Sofa}
+  - {name: lounge_table_1, pose: [42.4, 9.46], model: Office/SM_TableCoffee}
+  - {name: hallway_plant_1, pose: [15.84, 16.15, 1.5708], model: Office/SM_Plant02}

@@ -1,0 +1,23 @@
+format: arena-scenario/2
+# Authored FLOWEDIT demand: a water dispenser (thirst) in the waiting hall, the reception counter, a waiting group, an exam chair, a pharmacy desk.
+objects:
+- name: fountain
+  model: Hospital/SM_WaterDispenser_01a
+  pose: [18.0, 21.2, 1.5708]
+  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 0.8}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
+- name: reception_desk
+  model: Hospital/Reception_Counter
+  pose: [6.6, 10.0, 0.0]
+  humansim: {capacity: 3, formation: {params: {base_step: 0.8, front_offset: 0.6}, type: line}, interaction_radius: 1.0, type: desk}
+- name: gathering_area
+  model: Hospital/Waiting_Room_Bench
+  pose: [18.0, 16.5, 0.0]
+  humansim: {capacity: 0, formation: {anchor: {kind: object, ref: gathering_area}, params: {base_radius: 0.8, radius_per_member: 0.12}, type: f_formation}, type: gathering_area}
+- name: exam_chair_1
+  model: Hospital/Patient_Armchair
+  pose: [8.8, 24.4, 3.14159]
+  humansim: {capacity: 1, interaction_radius: 0.8, type: chair}
+- name: workstation_1
+  model: Office/Stand_Table_Work
+  pose: [7.0, 16.4, 0.0]
+  humansim: {capacity: 1, interaction_radius: 1.2, type: desk}
