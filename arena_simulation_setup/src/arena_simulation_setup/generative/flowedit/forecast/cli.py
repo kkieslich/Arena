@@ -241,11 +241,23 @@ def _cmd_curve(args: argparse.Namespace) -> int:
     nets = _net_methods(_named(args.net, "--net"), rasters, args.device)
     train_ws = [(w, V.world_seeds(doc, "train", w)) for w in doc["partitions"].get("train") or []]
     priors_of: dict[str, Any] = dict(nets)
-    priors_of["uniform (online only)"] = lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells())
-    strengths = {}
+    uniform = "uniform (online only)"
+    priors_of[uniform] = lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells())
+    files = {name: yaml.safe_load(path.read_text()) for name, path in _named(args.strength_file, "--strength-file")}
+    strengths: dict[str, float] = {}
+    how: dict[str, str] = {}
     for name, prior in priors_of.items():
-        strengths[name] = args.strength if args.strength is not None else V.fit_strength(train_ws, tracks, runs, sites.grid, prior)
-        _log(f"curve: {name} prior strength {strengths[name]:g} pedestrian-seconds" + (" (fitted on train)" if args.strength is None else ""))
+        if args.strength is not None:
+            strengths[name], how[name] = args.strength, "given"
+        elif name in files:
+            strengths[name], how[name] = float(files[name]["net"]["chosen"]), "cross-validated"
+        elif name == uniform and files:
+            strengths[name], how[name] = float(next(iter(files.values()))["uniform"]["chosen"]), "cross-validated"
+        elif name == uniform:
+            strengths[name], how[name] = V.fit_strength(train_ws, tracks, runs, sites.grid, prior), "fitted on train (it learns nothing from them)"
+        else:
+            raise SystemExit(f"curve: no strength for {name!r}: a learned prior has seen the train runs, so give --strength-file {name}=<forecast strength output> (or --strength)")
+        _log(f"curve: {name} prior strength {strengths[name]:g} pedestrian-seconds ({how[name]})")
     out: dict[str, Any] = {"format": FORMAT, "benchmark": str(args.benchmark), "counts": list(V.TRACK_COUNTS), "strength": strengths, "partitions": {}}
     for partition in args.partition or ["held_out_edits"]:
         seeds = SP.seeds_of(doc, partition)
@@ -289,6 +301,54 @@ def _cmd_curve(args: argparse.Namespace) -> int:
     if args.out:
         args.out.write_text(yaml.safe_dump(out, sort_keys=False))
         _log(f"wrote {args.out}")
+    return 0
+
+
+def _cmd_strength(args: argparse.Namespace) -> int:
+    from . import validity as V
+    from .learn import Rasters, predict, samples, train
+
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    sites = rasters.sites
+    runs = Runs.load(args.benchmark / "flow_cells.parquet", sites.grid, planner=args.planner)
+    tracks = _tracks_of(args.benchmark, args.planner)
+    worlds = list(doc["partitions"].get("train") or [])
+    every = samples(runs, worlds, doc)
+    folds = V.seed_folds(sorted({s.seed for s in every}))[: args.folds]
+    label = "forecaster" if args.demand else "demand ablation"
+    rows = []
+    for k, fold in enumerate(folds):
+        found = [s for s in every if s.seed not in fold]
+        _log(f"strength: fold {k + 1}/{len(folds)}, seeds {list(fold)} held out, {len(found)} training runs")
+        model, summary = train(rasters, found, demand=args.demand, steps=args.steps, seed=args.seed, device=args.device, log=_log)
+        cache: dict[str, Any] = {}
+
+        def prior(world: str, model: Any = model, cache: dict[str, Any] = cache) -> Any:  # noqa: ANN401
+            if world not in cache:
+                cache[world] = predict(model, rasters(world, model.demand))
+            return cache[world]
+
+        net = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, prior)
+        uni = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells()))
+        rows.append({"held_out": list(fold), "net": net, "uniform": uni, "train": summary})
+        _log(f"strength: fold {k + 1}: {label} best {min(net, key=net.__getitem__):g}, uniform best {min(uni, key=uni.__getitem__):g}")
+    out: dict[str, Any] = {"format": FORMAT, "split": str(args.split), "benchmark": str(args.benchmark), "prior": label, "demand": args.demand, "steps": args.steps, "counts": list(V.STRENGTH_COUNTS), "folds": rows}
+    for key in ("net", "uniform"):
+        chosen, spread = V.choose_strength([r[key] for r in rows])
+        out[key] = {"chosen": chosen, **spread}
+    head = "| strength (ped-s) | " + " | ".join(f"{c:g}" for c in V.STRENGTHS) + " |"
+    lines = [head, "|---|" + "---|" * len(V.STRENGTHS)]
+    for key, name in (("net", label), ("uniform", "uniform (online only)")):
+        for r in rows:
+            lines.append(f"| {name}, seeds {r['held_out']} held out | " + " | ".join(f"{r[key][c]:.3f}" if c in r[key] else "" for c in V.STRENGTHS) + " |")
+    print(f"## prior strength by leave-two-seeds-out over the train partition (mean JSD over tracks seen {list(V.STRENGTH_COUNTS)})\n\n" + "\n".join(lines) + "\n")
+    for key, name in (("net", label), ("uniform", "uniform (online only)")):
+        o = out[key]
+        print(f"{name}: chosen {o['chosen']:g} ped-s (fold bests {', '.join(f'{c:g}' for c in o['fold_best'])}; score at the choice {o['score_at_chosen']['mean']:.3f} +- {o['score_at_chosen']['sd']:.3f})")
+    args.out.write_text(yaml.safe_dump(out, sort_keys=False))
+    _log(f"wrote {args.out}")
     return 0
 
 
@@ -386,7 +446,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
 def register(verbs: argparse._SubParsersAction) -> None:
     """Add `forecast` and its verbs to the `flowedit` parser."""
     p = verbs.add_parser("forecast", help="train, run and score the flow forecasters", description="flow forecasters: a world's flow map from its graph and geometry, no PEDS run (see Forecasting flow in the flowedit README)")
-    sub = p.add_subparsers(dest="forecast_verb", required=True, metavar="{train,score,curve,scaling,fit,predict}")
+    sub = p.add_subparsers(dest="forecast_verb", required=True, metavar="{train,score,curve,strength,scaling,fit,predict}")
 
     def common(q: argparse.ArgumentParser) -> None:
         q.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over the split's (see settings.py)")
@@ -432,10 +492,27 @@ def register(verbs: argparse._SubParsersAction) -> None:
     device(q)
     q.add_argument("--net", action="append", required=True, metavar="[NAME=]NET", help="a network from `train`; repeatable")
     q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition; repeatable (default held_out_edits)")
-    q.add_argument("--strength", type=float, default=None, help="the prior's weight in pedestrian-seconds, the same for every prior (default: fitted per prior on the train partition, where a learned forecaster is in-sample, so its fitted weight leans high)")
+    q.add_argument("--strength", type=float, default=None, help="one prior weight in pedestrian-seconds for every prior")
+    q.add_argument("--strength-file", action="append", default=None, metavar="NAME=FILE", help="the cross-validated weight of the prior NAME, a `forecast strength` output; repeatable. The uniform prior takes the file's uniform weight (without a file it is fitted on train, as it learns nothing from the runs)")
     q.add_argument("--out", type=Path, default=None, help="YAML file of the curves")
     q.add_argument("--png", type=Path, default=None, help="PNG of the curves")
     q.set_defaults(fn=_cmd_curve)
+
+    q = sub.add_parser(
+        "strength",
+        help="the tracks-seen prior weight by cross-validation over the train partition",
+        description="leave-two-seeds-out over the train partition: per fold, train the network without the two seeds, then score each prior weight on the curve with tracks from one held-out seed and the truth at the other; the weight with the lowest mean over folds, with the fold spread",
+    )
+    q.add_argument("split", type=Path, help="the split file (see split.py)")
+    q.add_argument("--benchmark", type=Path, required=True, help="the split's processed benchmark run dir (flow_cells.parquet, combined_metrics.parquet and the track store)")
+    common(q)
+    device(q)
+    q.add_argument("--out", type=Path, required=True, help="YAML file of the folds and the chosen weights (`curve --strength-file NAME=FILE`)")
+    q.add_argument("--no-demand", dest="demand", action="store_false", help="the demand ablation's network")
+    q.add_argument("--folds", type=int, default=None, help="the first FOLDS folds only (default every one: as many as training seeds)")
+    q.add_argument("--steps", type=int, default=3000, help="optimizer steps per fold network (default 3000)")
+    q.add_argument("--seed", type=int, default=0, help="training seed (default 0)")
+    q.set_defaults(fn=_cmd_strength)
 
     q = sub.add_parser("scaling", help="the learned forecaster trained on shares of the training edits", description="train on each share of the train partition's edit chains (repeats draw other chains and seeds) and score the held-out partitions")
     recorded(q)

@@ -243,3 +243,21 @@ def test_jsd_stays_finite_with_subnormal_entries() -> None:
     p[0, 0, 0], p[1, 1, 1] = 1.0, 5e-324
     q[0, 0, 0] = 1.0
     assert M.jsd(p, q) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_strength_folds_hold_out_two_seeds_and_the_choice_reports_the_spread() -> None:
+    assert V.seed_folds([3, 1, 2]) == [(1, 2), (2, 3), (3, 1)]
+    with pytest.raises(ValueError, match="at least 3"):
+        V.seed_folds([1, 2])
+    chosen, spread = V.choose_strength([{10.0: 0.3, 100.0: 0.2}, {10.0: 0.25, 100.0: 0.26}])
+    assert chosen == 100.0 and spread["fold_best"] == [100.0, 10.0] and spread["score_at_chosen"]["max"] == 0.26
+
+
+def test_a_prior_that_matches_the_held_out_truth_wants_a_heavy_weight_and_a_uniform_one_a_light_one() -> None:
+    walks = [_walk(f"p{i}", (0.3, 0.4 + 0.2 * i), (1.0, 0.0), n=50) for i in range(8)]
+    tracks = pl.concat(walks)
+    truth = M.counts(tracks, GRID)
+    runs = _runs({("w", 1): truth, ("w", 2): truth})
+    perfect = V.fold_strengths(["w"], (1, 2), lambda w, s: tracks, runs, lambda base: GRID, lambda w: truth, strengths=(10.0, 1000.0))
+    flat = V.fold_strengths(["w"], (1, 2), lambda w, s: tracks, runs, lambda base: GRID, lambda w: V.uniform(GRID.room_cells()), strengths=(10.0, 1000.0))
+    assert perfect[1000.0] <= perfect[10.0] and flat[10.0] < flat[1000.0]
