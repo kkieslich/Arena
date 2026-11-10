@@ -60,8 +60,10 @@ EPISODE_S = 1500.0
 WARMUP_S = 420.0
 #: The fleet: one jackal per home (§8: 4 jackals)
 ROBOT = f"jackal[{len(HOMES)}]"
-#: Launch args of every suite: lockstep for seed pairing, people see the robots (§8: PEDS robot visibility on)
-LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "true"}
+#: Launch args of every suite: lockstep for seed pairing, people see the robots (§8: PEDS robot visibility on), and no
+#: pedestrian skeletons on `arena_peds` (`human.skeleton`: no INFRA measure reads them, the crowd and what the robots see
+#: stay the same, and it takes most of the env node's per-pedestrian cost off a run at the study density)
+LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "true", "human.skeleton": "false"}
 #: The reference runs the layout suites ask the runner for: each stage without robots (the traffic part's reference,
 #: §6); the fleet without pedestrians is never read
 REFERENCES = ["unhindered_peds"]
