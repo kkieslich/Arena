@@ -372,3 +372,22 @@ def test_an_object_with_an_empty_model_is_target_only() -> None:
     target = Obstacle.parse({"name": "fountain_demand", "model": "", "pose": [0.0, 0.0, 0.0], "humansim": {"type": "fountain"}})
     assert target.target_only
     assert not Obstacle.parse({"name": "fountain", "model": "Hospital/SM_WaterDispenser_01a", "pose": [0.0, 0.0, 0.0]}).target_only
+
+
+def test_a_floor_marking_is_an_annotated_asset_without_a_box_or_a_target_without_a_model(bench_assets):
+    import asyncio
+
+    bay = bench_assets / "Common" / "Object" / "TestBay"
+    bay.mkdir(parents=True)
+    (bay / "annotation.yaml").write_text("name: TestBay\nface: +x\ntags: [mount::floor]\n")
+    bare = bench_assets / "Common" / "Object" / "TestBare"
+    bare.mkdir(parents=True)
+
+    def marking(model: str) -> bool:
+        return asyncio.run(Obstacle.parse({"name": "o", "model": model, "pose": [0.0, 0.0, 0.0]}).floor_marking())
+
+    assert marking("Common/TestBay")
+    assert not marking("Hospital/TestBench")  # it has a box
+    assert not marking("Hospital/TestMissingSeat")  # it does not resolve: unknown, not a marking
+    assert not marking("Common/TestBare")  # no annotation: unknown
+    assert asyncio.run(Obstacle.parse({"name": "visit", "model": "", "pose": [0.0, 0.0, 0.0]}).floor_marking())
