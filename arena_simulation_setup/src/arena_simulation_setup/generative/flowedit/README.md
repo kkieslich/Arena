@@ -224,9 +224,15 @@ A split's own `settings` are its base crowd, which runs on every partition. `cro
 | `test_hsfm` | 0.5 /s | populate's count | `hsfm` |
 | `test_all` | 1.5 /s | twice populate's count | `orca` |
 
-The reader writes the crowd's planner on every person's agent type, and the pilot runs without entrances, so the planner needs no launch argument.
+The reader writes the crowd's planner on every person's agent type, so the planner needs no launch argument. Entrance visitors are released by HumanSim's sources with their visitor type, which carries the same planner.
 
-Entrance visitors follow their visitor type, but HumanSim despawns a released agent as soon as it stands inside its target sink, whatever it is doing, and the reader's sink strip (0.1 to 0.6 m inside the door) lies right in front of its source strip (0.8 to 1.8 m). A visitor whose way to its first stop runs along the door's wall crosses the sink within a second and is gone. Until the sink only takes people who leave, [`splits/peds_pilot.yaml`](splits/peds_pilot.yaml) runs without entrances (`settings: {entrances: {rate: 0}}`), so only the reader's placed people walk.
+Entrance visitors walk in from the source strip (0.8 to 1.8 m inside the door) past the door's sink strip (0.1 to 0.6 m), and leave by walking into the sink. HumanSim's sink takes a released agent only while it heads for that sink (kkieslich/humansim#2), so a visitor crossing it on the way in stays. The 9 Nov pilot, [`splits/peds_pilot.yaml`](splits/peds_pilot.yaml), ran before that fix without entrances (`settings: {entrances: {rate: 0}}`), so only the reader's placed people walked; [`splits/peds_v2.yaml`](splits/peds_v2.yaml) runs with them.
+
+### Data v2
+
+[`splits/peds_v2.yaml`](splits/peds_v2.yaml) is the Stage 1 dataset (study design §5, decided 10 Nov): train hospital_1 and office_1, base worlds at seeds 1-5 and 8 of 10 chains per edit type with their controls at seeds 1-2 (`seeds.train: {bases, edits}`); held-out edits, the other 2 chains per type and train world drawn by seed among those the pilot never ran, at seeds 6-8; held-out worlds reception and hallway_clinic, each with an authored `demand` scenario, base and chains 1-2 per type at seeds 6-8. Each held-out world's base also runs at seeds 1-5 (`baseline_seeds`), only for the stale and transplanted baselines and the across-seed floor: those runs belong to `held_out_worlds`, outside its seeds, so nothing trains or scores on them. The test crowds run on the first held-out chain of every edit type per train world, with their controls, plus baseline runs of their bases at seeds 1-3. Door entrances are on (the defaults of `entrances`).
+
+hallway_clinic is a generated layout (world generator `hallway`, seed 7, recorded in its `generated_from.yaml`) authored into a clinic: room names and purposes, a front and a back door, furniture and the `demand` scenario. reception got its `demand` scenario and two `has_purpose` facts (its zone names read as transit, so nobody would start there); with one door between its two rooms and none outside, it has no entrances and no access edits.
 
 ## Paired runs
 

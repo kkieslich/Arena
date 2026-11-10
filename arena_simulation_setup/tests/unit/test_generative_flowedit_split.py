@@ -367,3 +367,29 @@ def test_every_test_crowd_of_the_pilot_differs_from_its_base_crowd(name: str) ->
         # the test draws start above where nearly every base draw ends (mean + 3 std)
         base_rate = S.need(base, "thirst")["decay_rate"]
         assert S.need(test, "thirst")["decay_rate"]["clip_low"] > base_rate["mean"] + base_rate["std"]
+
+
+def test_data_v2_holds_out_what_the_design_says_with_entrances_on() -> None:
+    v2, pilot = SP.load(SPLITS / "peds_v2.yaml"), SP.load(SPLITS / "peds_pilot.yaml")
+    parts = v2["partitions"]
+    assert {SP.base_of(w) for w in parts["train"]} == {"hospital_1", "office_1"}
+    assert {w for w in parts["held_out_worlds"] if SP.is_base(w)} == {"reception", "hallway_clinic"}
+    assert SP.seeds_of(v2, "train", "hospital_1") == [1, 2, 3, 4, 5] and SP.seeds_of(v2, "train", "hospital_1__x") == [1, 2]
+    assert SP.seeds_of(v2, "held_out_edits") == SP.seeds_of(v2, "held_out_worlds") == [6, 7, 8]
+    assert SP.crowd(v2)["entrances"]["rate"] > 0
+    # the pilot (the development set) ran the first chains: every one of them is a train edit in v2, none a test edit
+    pilot_edits = {w for p in pilot["partitions"].values() for w in p if not SP.is_base(w)}
+    assert pilot_edits <= set(parts["train"])
+    # 20 % of each train world's chains held out: 2 of 10 per edit type
+    for base in ("hospital_1", "office_1"):
+        held = [w for w in parts["held_out_edits"] if SP.base_of(w) == base and w not in {c for cs in v2["control_worlds"].values() for c in cs}]
+        assert len(held) == 12
+    runs = SP.jobs(v2)
+    assert len(runs) == 524 and len({(j.world, j.seed) for j in runs}) == 524
+    baseline = sorted((j.world, j.seed) for j in runs if j.baseline)
+    assert baseline == [(w, s) for w in ("hallway_clinic", "reception") for s in (1, 2, 3, 4, 5)]
+    assert all(j.partition == "held_out_worlds" for j in runs if j.baseline)
+    for crowd in ("test_rates", "test_size", "test_orca", "test_hsfm", "test_all"):
+        crowd_runs = SP.jobs(v2, crowd=crowd)
+        assert len(crowd_runs) == 66 and {j.seed for j in crowd_runs if not j.baseline} == {6, 7, 8}
+        assert sorted({j.world for j in crowd_runs if j.baseline}) == ["hospital_1", "office_1"]
