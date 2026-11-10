@@ -258,12 +258,14 @@ words a goto as walking directions through the world's doors and openings.
   and `job.<i>.wait_s` sums them). A leg's timeout scales with its route: `job_timeout` plus `job_timeout_per_m`
   times the straight line from where the leg starts to its dock, times `detour` (for a charging trip, to the
   charger), so a 313 m leg across the twin gets about 300 + 5 x 1.2 x 313 = 2,180 s and a short one about 360 s.
-  The holder's own timeout frees a dock nobody reaches. A job that did not complete is not queued again: it ends
+  The holder's own timeout frees a dock nobody reaches. A leg that cannot be submitted (its dock has no free cell for
+  the robot) is sent again each tick until it goes out, or abandoned once its timer runs out; it never counts as done. A job that did not complete is not queued again: it ends
   there, its docks are freed and the robot goes home (or runs the outside task, and goes home once that is done).
 - **Jams.** Each tick the mode keeps the positions of the robots on a job leg or a charging trip. A robot whose
   positions over the last `jam_window_s` all lie within `jam_progress_m` of the first is jammed: its job fails with
   reason `jam` (its charge is abandoned with reason `jam`), its docks are freed and it is teleported to its home,
-  where it parks. Within `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
+  where it parks; a robot jammed on its way to a charger goes back to the bay it had before the trip, and the charger
+  to its holder. Within `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
   Each jam is logged with the distance to the nearest other robot, so robot-robot jams can be told apart.
 - **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
   a charger lowest battery first: a robot parked on its charger home charges there, any other takes a charger whose

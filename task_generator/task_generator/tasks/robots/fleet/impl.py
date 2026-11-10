@@ -53,6 +53,7 @@ class _Run:
     leg: int = 0
     leg_started_s: float = 0.0
     leg_timeout_s: float = 0.0
+    dispatched: bool = False
     reserved: bool = False
     waiting_since: float | None = None
     leg_waited_s: float = 0.0
@@ -73,6 +74,8 @@ class _Charge:
     dispatched_s: float
     timeout_s: float = 0.0
     started_s: float | None = None
+    home_before: str | None = None  # the robot's home before the trip took the charger as its home
+    swapped_with: str | None = None  # the charger's holder, who got that home
 
 
 def releases(rng: np.random.Generator, rate_per_h: float, pickup_share: float) -> Iterator[Job]:
@@ -268,15 +271,19 @@ class TM_Fleet(TM_Robots):
             return GoToPhase(target=dock, hold_time=self._load_s.value, on_failure="stop_task", text=f"{job.kind} {job.index}: load at {dock}, released {job.release_s:.1f} s")
         return GoToPhase(target=dock, hold_time=self._unload_s.value, on_failure="stop_task", text=f"{job.kind} {job.index}: unload at {dock}")
 
-    async def _start_leg(self, name: str, now: float) -> bool:
+    async def _start_leg(self, name: str, now: float, *, retry: bool = False) -> bool:
         """Send the robot on its run's current leg, to the leg's dock, which it holds only once it is within `approach_m`
-        of it (`_watch_docks`); the leg's timer starts, with a timeout from the leg's route estimate."""
+        of it (`_watch_docks`); the leg's timer starts (a retry keeps the timer of its first attempt), with a timeout from
+        the leg's route estimate. False when the leg could not be submitted: the run is then not dispatched."""
         run = self._run[name]
         start = self._where(name)
         if not await self._submit(name, [self._leg_phase(run)]):
+            run.dispatched = False
             return False
         dock = run.docks[run.leg]
-        run.leg_started_s, run.leg_waited_s, run.reserved, run.waiting_since = now, 0.0, False, None
+        if not retry:
+            run.leg_started_s, run.leg_waited_s = now, 0.0
+        run.dispatched, run.reserved, run.waiting_since = True, False, None
         run.leg_timeout_s = self._timeout(math.dist(start, self._xy[dock]) * self._detour.value)
         self._note(f"job.{run.job.index}.timeout_{run.leg}", _s(run.leg_timeout_s))
         self._state[name] = _State.JOB
@@ -307,7 +314,7 @@ class TM_Fleet(TM_Robots):
             if not waiting:
                 del self._dock_queue[dock]
         for name, state in list(self._state.items()):
-            if state is not _State.JOB or self._run[name].reserved:
+            if state is not _State.JOB or self._run[name].reserved or not self._run[name].dispatched:
                 continue
             run = self._run[name]
             dock = run.docks[run.leg]
@@ -391,6 +398,12 @@ class TM_Fleet(TM_Robots):
         unloading the job is done; a leg that ended otherwise fails the job; a leg that drove longer than its timeout
         (its waits for the dock apart) is abandoned. A robot holding in place for a dock ignores its hold's end."""
         run = self._run[name]
+        if state is _State.JOB and not run.dispatched:
+            # the leg could not be submitted: the robot's last phase is the previous leg's, so its end is no news; send
+            # the leg again until it goes out or its timer runs out
+            if not await self._start_leg(name, now, retry=True) and run.leg_timeout_s > 0.0 and run.driving_s(now) > run.leg_timeout_s:
+                self._end_job(name, "abandoned", "timeout", now)
+            return
         if state is _State.JOB and last is not None:
             if last.outcome != "met":
                 self._end_job(name, "failed", str(last.reason) or last.outcome, now)
@@ -402,8 +415,9 @@ class TM_Fleet(TM_Robots):
             self._note(f"job.{run.job.index}.loaded", _s(now))
             run.leg = 1
             if not await self._start_leg(name, now):
-                # the next tick's watch sees the robot on no leg: keep the leg's timer from now
+                # not dispatched: the next ticks send the leg again (above), its timer running from now
                 run.leg_started_s, run.leg_waited_s, run.reserved, run.waiting_since = now, 0.0, False, None
+                run.leg_timeout_s = self._timeout(math.dist(self._where(name), self._xy[run.docks[1]]) * self._detour.value)
             return
         if run.leg_timeout_s > 0.0 and run.driving_s(now) > run.leg_timeout_s:
             self._end_job(name, "abandoned", "timeout", now)
@@ -474,6 +488,7 @@ class TM_Fleet(TM_Robots):
                     self._home[owner] = home
                 self._home[name] = charger
                 self._start_charge(name, charger, now, trip_m)
+                self._charge[name].home_before, self._charge[name].swapped_with = home, owner if owner != name else None
             self._logger.info(f"{name} charges at {self._home[name]} from {self._soc(name):.1f} %, {now:.1f} s")
 
     def _start_charge(self, name: str, charger: str, now: float, trip_m: float = 0.0) -> None:
@@ -570,7 +585,7 @@ class TM_Fleet(TM_Robots):
         """Where the robot is headed on a job leg or a charging trip, None otherwise."""
         if state is _State.JOB:
             run = self._run[name]
-            return run.docks[run.leg]
+            return run.docks[run.leg] if run.dispatched else None
         if state is _State.CHARGE and self._charge[name].started_s is None:
             return self._charge[name].charger
         return None
@@ -587,7 +602,13 @@ class TM_Fleet(TM_Robots):
             self._note(f"jam.{index}.job", str(self._run[name].job.index))
             self._end_job(name, "failed", "jam", now)
         else:
-            self._note(f"jam.{index}.charge", str(self._charge[name].index))
+            charge = self._charge[name]
+            self._note(f"jam.{index}.charge", str(charge.index))
+            # §8: reset to its bay, the home it had before the trip; the charger goes back to its holder
+            if charge.home_before is not None and self._home[name] == charge.charger:
+                if charge.swapped_with is not None and self._home.get(charge.swapped_with) == charge.home_before:
+                    self._home[charge.swapped_with] = charge.charger
+                self._home[name] = charge.home_before
             self._end_charge(name, "abandoned", "jam", now)
         self._tracks.pop(name, None)
         robot = self._ctx.robots[name]

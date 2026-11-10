@@ -689,6 +689,69 @@ def test_fleet_abandons_a_jammed_charging_trip_and_the_rule_can_be_turned_off(mo
         assert ("charge.0.reason" in record.log) == jams
         if jams:
             assert (record.log["charge.0.outcome"], record.log["charge.0.reason"], record.log["jam.0.charge"]) == ("abandoned", "jam", "0")
+            # reset to the bay it had before the trip, not to the charger it was headed for
+            assert managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
+            # still under charge_below, it queues for a charger again from there
+            assert record.log["charge.1.robot"] == "r0"
+
+
+def test_fleet_sends_a_second_leg_again_that_could_not_be_submitted_and_never_completes_the_job_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0, job_timeout_per_m=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    r0 = managers["r0"]
+    real = r0.submit_task
+    blocked = {"locker_1"}
+
+    async def no_locker(request: object) -> None:
+        if getattr(request.phases[0], "target", None) in blocked:
+            raise ValueError("robot 'r0': goto target 'locker_1' has no free cell with 0.50 m clearance")
+        await real(request)
+
+    r0.submit_task = no_locker
+    # the load leg ends met but the leg to the locker cannot be submitted: r0's task is done, its last phase the load leg
+    _at(node, 30.0)
+    _tick(mode, {"r0": _met()})
+    r0.done = True
+    _at(node, 31.0)
+    _tick(mode)
+    assert "job.0.ended" not in record.log and "job.0.loaded" in record.log
+    # once the locker takes the robot again, the leg goes out on the next tick and the job ends only after it
+    blocked.clear()
+    _at(node, 32.0)
+    _tick(mode)
+    assert _phase_text(r0) == "delivery 0: unload at locker_1"
+    _tick(mode, {"r0": _met()})
+    assert record.log["job.0.outcome"] == "completed"
+
+
+def test_fleet_abandons_a_second_leg_that_never_goes_out_once_its_timer_runs_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0, job_timeout_per_m=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    r0 = managers["r0"]
+    real = r0.submit_task
+
+    async def no_locker(request: object) -> None:
+        if getattr(request.phases[0], "target", None) == "locker_1":
+            raise ValueError("no free cell")
+        await real(request)
+
+    r0.submit_task = no_locker
+    _at(node, 30.0)
+    _tick(mode, {"r0": _met()})
+    r0.done = True
+    for t in (31.0, 100.0, 129.0):
+        _at(node, t)
+        _tick(mode)
+    assert "job.0.ended" not in record.log
+    _at(node, 131.0)
+    _tick(mode)
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"]) == ("abandoned", "timeout")
 
 
 @pytest.mark.parametrize(
