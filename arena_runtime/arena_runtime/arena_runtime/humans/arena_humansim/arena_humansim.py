@@ -97,11 +97,8 @@ from arena_simulation_setup.utils.face import front_angle
 from geometry_msgs.msg import (
     Point,
     Point32,
-    Quaternion,
-    Twist,
     Vector3,
 )
-from geometry_msgs.msg import Pose as PoseMsg
 from geometry_msgs.msg import (
     Pose2D as Pose2DMsg,
 )
@@ -1128,14 +1125,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             if override is not None:
                 x, y = override.at.x, override.at.y
 
-            ped.pose = PoseMsg(
-                position=Point(x=x, y=y, z=0.0),
-                orientation=Quaternion(
-                    z=math.sin(yaw / 2.0),
-                    w=math.cos(yaw / 2.0),
-                ),
-            )
-            ped.twist = Twist(linear=Vector3(x=vx, y=vy, z=0.0))
+            # into the message's own (default) pose and twist: the same values, five fewer messages per ped and render
+            position, orientation, linear = ped.pose.position, ped.pose.orientation, ped.twist.linear
+            position.x, position.y = x, y
+            orientation.z, orientation.w = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+            linear.x, linear.y = vx, vy
 
             ped.animation_state = animation_state
             ped.gestures = gestures
