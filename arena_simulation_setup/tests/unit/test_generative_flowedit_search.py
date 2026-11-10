@@ -282,3 +282,79 @@ def test_scored_layouts_are_plain_data(space: Search) -> None:
     assert json.loads(json.dumps(record)) == record
     assert [s["element"] for s in record["spots"]] == list(place.CATALOG)
     assert {o["name"] for s in record["spots"] for o in s["objects"]} == {"charger_1", "charger_2", "bay_1", "bay_2", "locker_1", "loading_point"}
+
+
+def test_placements_keep_each_element_in_its_zones_areas_or_pin(hospital: Site, loading: place.Spot, base, space: Search) -> None:  # noqa: ANN001
+    from arena_simulation_setup.generative.flowedit.search import Placement
+
+    zones = {s.zone for s in space.spots["locker"]}
+    assert len(zones) > 1
+    zone = sorted(zones)[0]
+    inside = Search(hospital, loading=loading, base=base, placements={"locker": Placement(zones=(zone,))})
+    assert inside.spots["locker"] and {s.zone for s in inside.spots["locker"]} == {zone}
+    assert inside.spots["charger_pair"] == space.spots["charger_pair"]
+    # a pattern matches zone names
+    pattern = Search(hospital, loading=loading, base=base, placements={"locker": Placement(zones=(zone[:3] + "*",))})
+    assert {s.zone for s in pattern.spots["locker"]} == {z for z in zones if z.startswith(zone[:3])}
+    # an area keeps the spots whose every object stands in it
+    first = space.spots["bay_pair"][0]
+    box = shapely.box(*shapely.union_all([o.footprint for o in first.objects]).buffer(0.5).bounds)
+    area = Search(hospital, loading=loading, base=base, placements={"bay_pair": Placement(areas=(box,))})
+    assert first in area.spots["bay_pair"] and all(all(box.covers(shapely.Point(o.x, o.y)) for o in s.objects) for s in area.spots["bay_pair"])
+    assert 0 < len(area.spots["bay_pair"]) < len(space.spots["bay_pair"]) and area.dropped["bay_pair"]["outside_areas"] > 0
+    # the loading point and a searched element pinned by their placements
+    locker = space.spots["locker"][3]
+    pinned = Search(hospital, base=base, placements={"loading_point": Placement(pin=loading.objects[0].goto), "locker": Placement(pin=locker.objects[0].goto)})
+    assert pinned.loading.id == loading.id and pinned.spots["locker"] == (locker,)
+    with pytest.raises(ValueError, match="no zone of hospital_1 matches"):
+        Search(hospital, loading=loading, base=base, placements={"locker": Placement(zones=("no_such_zone*",))})
+    with pytest.raises(ValueError, match="no loading point"):
+        Search(hospital, base=base)
+    with pytest.raises(ValueError, match="not elements of a layout"):
+        Search(hospital, loading=loading, base=base, placements={"fountain": Placement()})
+
+
+def test_the_joint_search_ranks_only_layouts_the_travel_prefilter_keeps(space: Search) -> None:
+    robot = search.robot_only(space)
+    cap = search.travel_cap(robot)
+    assert cap == pytest.approx(search.TRAVEL_SLACK * robot.travel_m)
+    within = space.within_travel(cap)
+    travel = space.travel()
+    assert len(within) and np.array_equal(within, np.flatnonzero(travel <= cap))
+    occupancy = Occupancy(0.0, 0.0, 1.0, np.full((40, 40), 0.1))
+    ranked = search.joint(space, occupancy, n=50, top=5, seed=3, max_travel_m=cap)
+    kept = set(within.tolist())
+    assert ranked and all(s.travel_m <= cap + 1e-9 and s.index in kept for s in ranked)
+    assert [s.score for s in ranked] == sorted(s.score for s in ranked)
+    assert all(s.score == pytest.approx(search.ranking_score(space, occupancy, s.index)) for s in ranked)
+    # without the cap the sample reaches layouts the cap drops
+    loose = search.joint(space, occupancy, n=200, top=200, seed=3)
+    assert max(s.travel_m for s in loose) > cap
+    # sampling among a set draws only from it, in a seeded order
+    assert set(space.sample(10, 1, among=within[:30])) <= set(within[:30].tolist())
+    assert space.sample(10, 1, among=within[:30]) == space.sample(10, 1, among=within[:30])
+
+
+def test_the_premise_pair_puts_every_element_at_the_narrowest_and_at_the_widest_section(space: Search) -> None:
+    narrow, wide = search.premise_pair(space)
+    assert narrow.layout_id != wide.layout_id
+    assert space.valid(narrow.index) and space.valid(wide.index)
+    narrowest, widest = space.corridor()
+    travel = space.travel()
+    # every candidate sorted before a pick is invalid: none has a narrower widest corridor (or a wider narrowest one)
+    for index in np.flatnonzero(widest < widest[narrow.index] - 1e-9)[:300]:
+        assert not (math.isfinite(travel[index]) and space.valid(int(index)))
+    for index in np.flatnonzero(narrowest > narrowest[wide.index] + 1e-9)[:300]:
+        assert not (math.isfinite(travel[index]) and space.valid(int(index)))
+    assert widest[narrow.index] <= narrowest[wide.index]
+    spots = {s.element.name: s for s in narrow.layout.spots}
+    assert widest[narrow.index] == pytest.approx(max(spots[name].corridor_m for name in SEARCHED))
+
+
+def test_a_pinned_element_in_the_keep_out_is_refused(hospital: Site, loading: place.Spot, base, space: Search) -> None:  # noqa: ANN001
+    over_loading = shapely.Point(loading.objects[0].goto).buffer(0.3)
+    with pytest.raises(ValueError, match="the pinned loading_point .* overlaps a PEDS source or sink"):
+        Search(hospital, loading=loading, base=base, keep_out=[over_loading])
+    locker = space.spots["locker"][2]
+    with pytest.raises(ValueError, match="the pinned locker"):
+        Search(hospital, loading=loading, base=base, pins={"locker": locker}, keep_out=[shapely.Point(locker.objects[0].goto).buffer(0.3)])

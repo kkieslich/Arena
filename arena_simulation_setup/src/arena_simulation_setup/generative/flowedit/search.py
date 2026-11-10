@@ -4,15 +4,22 @@ search's fallback ranking (pedestrian occupancy under each element's footprint a
 reference runs, plus the NAV@r floor loss) and random valid layouts.
 
 A layout places the charger pair, the bay pair and the locker on valid candidate spots (`place.candidate_spots`), with
-the loading point pinned to one spot (route end A on the twin, §8). `Search` holds one site's search space:
+the loading point pinned to one spot (route end A on the twin, §8). Each element may go where its function puts it
+(`Placement`: world zones, world-frame areas or a pinned point; the INFRA site config gives them, see `infra.SiteConfig`).
+`Search` holds one site's search space:
 
-- the valid spots of each element, less those that touch a keep-out polygon (a PEDS source or sink) or clash with the
-  loading point;
+- the valid spots of each element in its placement, less those that touch a keep-out polygon (a PEDS source or sink)
+  or clash with the loading point;
 - which spot pairs `place.check_layout` passes. Its checks look at most a corridor window away from a spot, so a pair
   further apart always passes. A layout of pairwise compatible spots is a candidate; picks get the full check;
 - a NAV@r base of the site without the elements (`metrics.navr_filter.NavrBase`). A layout is valid when
   `check_layout` passes and `navr_check` accepts it;
 - robot path lengths between the dock goto points on the jackal's floor at r 0.267 m (`RobotPaths`).
+
+The joint search (§5) ranks only layouts whose expected robot travel per job is within `TRAVEL_SLACK` of the robot-only
+pick's (`travel_cap`), so its top layouts can meet the equal-service constraint (§6: T within 5 % of the robot-only
+pick's). The premise check (§10) runs the two most different layouts, all elements at the narrowest and at the widest
+section (`premise_pair`).
 
 Layouts keep `Layout.layout_id`, a hash of their spots, so the same layout has the same id in every search and run.
 The searches are deterministic: the same site, arguments and seed give the same layouts."""
@@ -58,8 +65,30 @@ JOINT_TOP = 10
 RANDOM_LAYOUTS = 5
 #: Pairwise compatible layouts a search holds at most (index arrays of 12 bytes each)
 MAX_CANDIDATES = 50_000_000
+#: The joint search's travel pre-filter: a layout's expected robot travel per job at most this times the robot-only
+#: pick's, the modelled side of the equal-service constraint (§6: T <= 1.05 T(robot-only))
+TRAVEL_SLACK = 1.05
 #: Seed streams, so the joint sample and the random control are independent draws for the same seed
 _JOINT, _RANDOM = 1, 2
+
+
+@attrs.frozen
+class Placement:
+    """Where one element may go, by its function (study design §3, §4; the INFRA site config): `zones` of the world (names
+    or `fnmatch` patterns; None: every zone the generator allows, less the excluded ones), `areas` (world-frame polygons
+    every object of a spot must stand in; none: no limit), or a `pin` (a level point the element snaps to, `PIN_SNAP_M`)."""
+
+    zones: tuple[str, ...] | None = None
+    areas: tuple[Any, ...] = ()
+    pin: Point | None = None
+
+    def holds(self, spot: Spot) -> bool:
+        """Whether every object of `spot` stands in one of `areas` (True without areas)."""
+        if not self.areas:
+            return True
+        import shapely
+
+        return all(any(area.covers(shapely.Point(o.x, o.y)) for area in self.areas) for o in spot.objects)
 
 
 @attrs.frozen
@@ -332,16 +361,18 @@ class Search:
     as `candidate_spots` does.
     A spot whose floor (`Spot.keep_clear`) overlaps a `keep_out` polygon is no candidate: the study's PEDS sources and
     sinks, given as polygons where the §3 rule needs zone names. Spots on other levels than the loading point's are left
-    out. `mix` is the task mix robot travel is weighed with."""
+    out. `mix` is the task mix robot travel is weighed with. `placements` gives an element its zones, areas or pin
+    (`Placement`); `zones` is the default for the others. `loading` and `pins` take precedence over the placements' pins."""
 
     def __init__(
         self,
         site: Site,
         *,
-        loading: Spot | Point,
+        loading: Spot | Point | None = None,
         pins: Mapping[str, Spot | Point] | None = None,
         zones: Sequence[str] | None = None,
         exclude: Sequence[str] = EXCLUDED_ZONES,
+        placements: Mapping[str, Placement] | None = None,
         keep_out: Iterable[shapely.Geometry] = (),
         mix: TaskMix | None = None,
         path_resolution: float = PATH_RESOLUTION_M,
@@ -353,13 +384,26 @@ class Search:
         self.mix = TaskMix() if mix is None else mix
         self.path_resolution = path_resolution
         self.keep_out = tuple(keep_out)
+        self.placements: dict[str, Placement] = dict(placements or {})
+        unknown = sorted(set(self.placements) - {*SEARCHED, LOADING})
+        if unknown:
+            raise ValueError(f"placements name {unknown}, not elements of a layout ({', '.join((*SEARCHED, LOADING))})")
         blocked = shapely.union_all(self.keep_out) if self.keep_out else None
-        found = {name: place.candidate_spots(site, name, zones=zones, exclude=exclude) for name in (*SEARCHED, LOADING)}
+        found = {name: place.candidate_spots(site, name, zones=self._zones(name, zones), exclude=exclude) for name in (*SEARCHED, LOADING)}
+        if loading is None:
+            loading = self.placements.get(LOADING, Placement()).pin
+            if loading is None:
+                raise ValueError("no loading point: pass `loading` or a placement with a pin for it")
         self.loading = loading if isinstance(loading, Spot) else self._snap(found[LOADING], loading)
-        unknown = sorted(set(pins or {}) - set(SEARCHED))
+        pins = {**{name: p.pin for name, p in self.placements.items() if name in SEARCHED and p.pin is not None}, **dict(pins or {})}
+        unknown = sorted(set(pins) - set(SEARCHED))
         if unknown:
             raise ValueError(f"pins name {unknown}, not elements the search places ({', '.join(SEARCHED)})")
-        self.pins = {name: at if isinstance(at, Spot) else self._snap(found[name], at) for name, at in (pins or {}).items()}
+        self.pins = {name: at if isinstance(at, Spot) else self._snap(found[name], at) for name, at in pins.items()}
+        # §3: no element in a PEDS source or sink, the pinned ones included: say so rather than search an empty space
+        for name, spot in [(LOADING, self.loading), *self.pins.items()]:
+            if blocked is not None and _overlaps(spot.keep_clear, blocked):
+                raise ValueError(f"the pinned {name} ({spot.zone} piece {spot.piece} step {spot.step}, goto {spot.objects[0].goto}) overlaps a PEDS source or sink of the keep-out")
         level = self.loading.level
         self.pair_checks = 0
         self.dropped: dict[str, dict[str, int]] = {}
@@ -367,11 +411,12 @@ class Search:
         for name in SEARCHED:
             pool = [self.pins[name]] if name in self.pins else found[name]
             valid = [s for s in pool if s.valid]
-            here = [s for s in valid if s.level == level]
+            within = [s for s in valid if name in self.pins or self.placements.get(name, Placement()).holds(s)]
+            here = [s for s in within if s.level == level]
             free = [s for s in here if blocked is None or not _overlaps(s.keep_clear, blocked)]
             ok = [s for s in free if self._compatible(s, self.loading)]
             spots[name] = tuple(ok)
-            self.dropped[name] = {"spots": len(pool), "invalid": len(pool) - len(valid), "other_level": len(valid) - len(here), "keep_out": len(here) - len(free), "loading_point": len(free) - len(ok)}
+            self.dropped[name] = {"spots": len(pool), "invalid": len(pool) - len(valid), "outside_areas": len(valid) - len(within), "other_level": len(within) - len(here), "keep_out": len(here) - len(free), "loading_point": len(free) - len(ok)}
         self.spots: Mapping[str, tuple[Spot, ...]] = spots
         self._pairs = {(a, b): self._pair_matrix(a, b) for i, a in enumerate(SEARCHED) for b in SEARCHED[i + 1 :]}
         self._base = base
@@ -382,6 +427,25 @@ class Search:
         self._people: dict[Occupancy, tuple[dict[str, list[float]], float]] = {}
 
     # --- spots and candidates --------------------------------------------------------------------------------------
+
+    def _zones(self, name: str, default: Sequence[str] | None) -> list[str] | None:
+        """The world zones element `name` may go to: its placement's zones (patterns matched against every level's zone
+        names), else `default`. ValueError for a pattern no zone matches."""
+        import fnmatch
+
+        placement = self.placements.get(name)
+        if placement is None or placement.zones is None:
+            return None if default is None else list(default)
+        names = sorted({z.name for level in self.site.world.levels.values() for z in level.zones})
+        out, missing = [], []
+        for pattern in placement.zones:
+            hits = [z for z in names if fnmatch.fnmatchcase(z, pattern)]
+            if not hits:
+                missing.append(pattern)
+            out += [z for z in hits if z not in out]
+        if missing:
+            raise ValueError(f"{name}: no zone of {self.site.key} matches {missing}")
+        return out
 
     @staticmethod
     def _snap(spots: Sequence[Spot], at: Point) -> Spot:
@@ -468,21 +532,28 @@ class Search:
     def valid(self, index: int) -> bool:
         return self.check(index).valid
 
-    def sample(self, n: int, seed: int, stream: int = 0, exclude: Iterable[str] = ()) -> list[int]:
+    def sample(self, n: int, seed: int, stream: int = 0, exclude: Iterable[str] = (), among: np.ndarray | None = None) -> list[int]:
         """Up to `n` valid candidates drawn uniformly without replacement, as candidate indices in draw order: the
-        candidates in a random order from (`seed`, `stream`), the first `n` valid ones whose layout id is not in
-        `exclude`. Fewer when the site has fewer."""
+        candidates (or those in `among`, candidate indices) in a random order from (`seed`, `stream`), the first `n`
+        valid ones whose layout id is not in `exclude`. Fewer when the site has fewer."""
         import numpy as np
 
         skip = set(exclude)
+        pool = np.arange(len(self.candidates)) if among is None else np.asarray(among, dtype=np.int64)
         out: list[int] = []
-        for index in np.random.default_rng([int(seed), int(stream)]).permutation(len(self.candidates)):
+        for index in pool[np.random.default_rng([int(seed), int(stream)]).permutation(len(pool))]:
             if len(out) >= n:
                 break
             index = int(index)
             if self.valid(index) and self.layout(index).layout_id not in skip:
                 out.append(index)
         return out
+
+    def within_travel(self, cap_m: float) -> np.ndarray:
+        """The candidate indices whose expected robot travel per job is at most `cap_m`, in index order."""
+        import numpy as np
+
+        return np.flatnonzero(self.travel() <= cap_m)
 
     # --- robot travel ----------------------------------------------------------------------------------------------
 
@@ -543,6 +614,14 @@ class Search:
         """The search space's size: spots per element (and why others dropped), pair checks run, candidates."""
         return {"spots": {name: len(s) for name, s in self.spots.items()}, "dropped": self.dropped, "pair_checks": self.pair_checks, "candidates": len(self.candidates)}
 
+    def corridor(self) -> tuple[np.ndarray, np.ndarray]:
+        """Per candidate, the narrowest and the widest remaining corridor (`Spot.corridor_m`) at its searched elements."""
+        import numpy as np
+
+        rows = self.candidates
+        widths = np.column_stack([np.array([s.corridor_m for s in self.spots[name]], dtype=float)[rows[:, i]] if len(rows) else np.zeros(0) for i, name in enumerate(SEARCHED)])
+        return widths.min(axis=1), widths.max(axis=1)
+
 
 def _search(site: Site | Search, kwargs: Mapping[str, Any]) -> Search:
     if isinstance(site, Search):
@@ -569,15 +648,51 @@ def robot_only(site: Site | Search, **kwargs: Any) -> Scored:
     raise ValueError("no valid layout with a finite robot travel")
 
 
-def joint(site: Site | Search, occupancy: Occupancy, *, n: int = JOINT_SAMPLES, top: int = JOINT_TOP, seed: int = 0, floor_weight: float | None = None, **kwargs: Any) -> list[Scored]:
-    """The joint search's ranking with the fallback (§5): `n` valid layouts drawn at random (`Search.sample`), each
-    scored by the pedestrians under its elements' footprints, docks and approach zones (`occupancy`, from the site-as-is
-    reference runs) plus its NAV@r floor loss times `floor_weight` (default the occupancy's mean density on walked floor,
-    so both count pedestrians); the `top` lowest, best first, ties by layout id."""
+def travel_cap(robot: Scored, slack: float = TRAVEL_SLACK) -> float:
+    """The joint search's travel pre-filter (§5, §6): at most `slack` times the robot-only pick's travel per job."""
+    return slack * robot.travel_m
+
+
+def joint(site: Site | Search, occupancy: Occupancy, *, n: int = JOINT_SAMPLES, top: int = JOINT_TOP, seed: int = 0, floor_weight: float | None = None, max_travel_m: float | None = None, **kwargs: Any) -> list[Scored]:
+    """The joint search's ranking with the fallback (§5): `n` valid layouts drawn at random (`Search.sample`) among
+    those whose expected robot travel per job is at most `max_travel_m` (the travel pre-filter, `travel_cap`; None: all),
+    each scored by the pedestrians under its elements' footprints, docks and approach zones (`occupancy`, from the
+    site-as-is reference runs) plus its NAV@r floor loss times `floor_weight` (default the occupancy's mean density on
+    walked floor, so both count pedestrians); the `top` lowest, best first, ties by layout id."""
     search = _search(site, kwargs)
     weight = occupancy.mean_density if floor_weight is None else floor_weight
-    ranked = [search.scored(i, search.occupancy(occupancy, i) + weight * search.check(i).navr.floor_loss_m2, occupancy) for i in search.sample(n, seed, _JOINT)]
+    among = None if max_travel_m is None else search.within_travel(max_travel_m)
+    ranked = [search.scored(i, ranking_score(search, occupancy, i, weight), occupancy) for i in search.sample(n, seed, _JOINT, among=among)]
     return sorted(ranked, key=lambda s: (s.score, s.layout_id))[:top]
+
+
+def ranking_score(search: Search, occupancy: Occupancy, index: int, floor_weight: float | None = None) -> float:
+    """The fallback ranking's score of candidate `index` (§5, lower is better): pedestrians under its elements plus its
+    NAV@r floor loss times `floor_weight` (default the occupancy's mean density on walked floor)."""
+    weight = occupancy.mean_density if floor_weight is None else floor_weight
+    return search.occupancy(occupancy, index) + weight * search.check(index).navr.floor_loss_m2
+
+
+def premise_pair(site: Site | Search, **kwargs: Any) -> tuple[Scored, Scored]:
+    """The premise check's two most different layouts (§10): the valid layout with every searched element at the
+    narrowest section (the smallest widest remaining corridor over its elements) and the one with every element at the
+    widest (the largest narrowest corridor); ties go to the shorter robot travel, then the layout id. Scored by travel.
+    ValueError without a valid layout."""
+    import numpy as np
+
+    search = _search(site, kwargs)
+    narrowest, widest = search.corridor()
+    travel = search.travel()
+    def first(order: np.ndarray) -> Scored:
+        for index in order:
+            index = int(index)
+            if math.isfinite(travel[index]) and search.valid(index):
+                return search.scored(index, float(travel[index]))
+        raise ValueError("no valid layout with a finite robot travel")
+
+    narrow = first(np.lexsort((travel, widest)))
+    wide = first(np.lexsort((travel, -narrowest)))
+    return narrow, wide
 
 
 def random_valid(site: Site | Search, k: int = RANDOM_LAYOUTS, seed: int = 0, *, exclude: Iterable[str] = (), occupancy: Occupancy | None = None, **kwargs: Any) -> list[Scored]:
@@ -594,15 +709,20 @@ __all__ = [
     "PATH_RESOLUTION_M",
     "RANDOM_LAYOUTS",
     "SEARCHED",
+    "TRAVEL_SLACK",
     "TWIN_LOADING_XY",
     "Checked",
     "Occupancy",
+    "Placement",
     "RobotPaths",
     "Scored",
     "Search",
     "TaskMix",
     "approach_area",
     "joint",
+    "premise_pair",
     "random_valid",
+    "ranking_score",
     "robot_only",
+    "travel_cap",
 ]
