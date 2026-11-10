@@ -65,6 +65,7 @@ def test_keep_out_reads_the_sources_and_sinks_of_a_scenario(hospital_copy: Path)
 def test_the_reference_suite_runs_the_site_without_robots_at_each_seed() -> None:
     doc = infra.reference_suite("site", [1, 2, 3])
     assert doc["references"] is False and doc["launch"] == infra.LAUNCH and doc["launch"]["human.robots.visible"] == "true"
+    assert doc["launch"]["human.skeleton"] == "false"
     # the recorder keeps the tracks, robots and semantics, not the pedestrians' skeletons, named frames or arena_peds
     assert doc["record"] == infra.RECORD and doc["record"]["exclude"] == ["peds", "animation_states", "tf_humans"]
     import re
