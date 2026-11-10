@@ -57,6 +57,7 @@ from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orie
 from arena_runtime.sim import BaseSim
 
 if typing.TYPE_CHECKING:
+    from arena_rclpy_mixins.Time import Time
     from arena_simulation_setup.tree.World.Scenario import TimelineEntry
 
     from arena_runtime.acoustics import BaseAcousticsSimulator, PedestrianHearing
@@ -1348,6 +1349,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
     async def notify_stimulus(self, agent: int | str, stimulus: str, intensity: float) -> bool:
         """True when the engine took the stimulus for `agent`, an engine agent id or a spawned agent's name or ``sim_path``."""
         return False
+
+    async def start_clock(self, epoch: Time) -> None:
+        """The episode starts at `epoch` (sim time, the reset still holding the sim): a backend whose crowd runs on its own tick
+        clock starts it there, so the same world and seed give the same crowd at the same times after the start. No-op by default."""
 
     def stimuli_taken(self, obstacle: DynamicObstacle) -> tuple[str, frozenset[str]] | None:
         """The agent type of `obstacle` and the stimulus names it acts on, None when the backend cannot tell."""
