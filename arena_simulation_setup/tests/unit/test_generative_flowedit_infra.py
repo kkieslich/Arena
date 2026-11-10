@@ -66,11 +66,11 @@ def test_the_reference_suite_runs_the_site_without_robots_at_each_seed() -> None
     doc = infra.reference_suite("site", [1, 2, 3])
     assert doc["references"] is False and doc["launch"] == infra.LAUNCH and doc["launch"]["human.robots.visible"] == "true"
     # the recorder keeps the tracks, robots and semantics, not the pedestrians' skeletons, named frames or arena_peds
-    assert doc["record"] == infra.RECORD and doc["record"]["exclude"] == ["peds", "animation_states"]
+    assert doc["record"] == infra.RECORD and doc["record"]["exclude"] == ["peds", "animation_states", "tf_humans"]
     import re
 
     dropped = [re.compile(pattern) for pattern, ms in doc["record"]["tf_frames"] if ms < 0]
-    for frame in ("body_env_0_agent_2", "l_p_collar_env_0_agent_2", "root_x_env_0_agent_6", "env_0/flow_1", "env_0/south_adult#12"):
+    for frame in ("body_env_0_agent_2", "l_p_collar_env_0_agent_2", "root_x_env_0_agent_6", "env_0/flow_1", "env_0/south_adult#12", "10", "107"):
         assert any(p.search(frame) for p in dropped), frame
     for frame in ("env_0/jackal_0/base_link", "env_0/jackal_0/odom", "env_0/jackal/front_left_wheel_link", "map", "odom"):
         assert not any(p.search(frame) for p in dropped), frame
@@ -245,7 +245,7 @@ def test_the_shipped_twin_config_pins_the_loading_point_and_keeps_the_locker_in_
     assert config.placements["loading_point"].pin == search.TWIN_LOADING_XY
     assert config.placements["locker"].zones == ("upper_concourse_north",)
     assert config.placements["charger_pair"] == config.placements["bay_pair"] == search.Placement()
-    assert config.exclude == place.EXCLUDED_ZONES
+    assert config.exclude == ("ramp",)
     assert config.record()["elements"]["locker"] == {"zones": ["upper_concourse_north"], "areas": [], "pin": None}
     with pytest.raises(FileNotFoundError, match="no INFRA site config"):
         infra.site_config("no_such_site")

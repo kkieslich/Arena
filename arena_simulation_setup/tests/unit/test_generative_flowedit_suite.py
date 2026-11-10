@@ -84,12 +84,17 @@ def test_every_job_is_one_stage_and_every_edit_pairs_with_its_base_at_its_seed(s
     assert "hospital_1__s6" in by_name and any(j.reference and j.seed == 6 for j in jobs)
     out = capsys.readouterr().out
     assert "arena evaluation benchmark --suite flowedit_pilot" in out and "--lanes 2" in out
+    # the parked robot of a crowd-only run comes up without a navstack
+    assert "--contest '[{name: peds_only, mobile: none}]'" in out
+    assert yaml.safe_load(SU.CONTEST) == [{"name": "peds_only", "mobile": "none"}]
 
 
 def test_stages_park_an_unseen_robot_and_last_the_split_s_duration(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path) -> None:
     path, _ = split
     suite = _suite(path, worlds, tmp_path / "s.yaml", "--robot", "mpo700")
     assert suite["references"] is False and suite["launch"]["human.robots.visible"] == "false" and suite["launch"]["lockstep"] == "true"
+    # the recorder leaves the skeleton frames out, so hri_producer stays idle
+    assert suite["record"] == {"exclude": ["tf_humans"]}
     for s in suite["stages"]:
         assert s["timeout"] == 120.0 and s["episodes"] == 1 and s["robot"] == "mpo700"
         assert s["modes"] == {"robots": "stationary", "obstacles": "scenario"}

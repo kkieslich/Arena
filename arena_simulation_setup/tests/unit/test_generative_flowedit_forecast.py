@@ -279,7 +279,7 @@ def test_cli_predicts_fits_and_scores(queue, tmp_path: Path, monkeypatch: pytest
     fitted = yaml.safe_load(params.read_text())
     assert fitted["format"] == "flowedit-forecast/1" and fitted["fit"]["mean_jsd"] <= fitted["fit"]["init_mean_jsd"] < 0.02
     capsys.readouterr()
-    assert main(["forecast", "score", str(tmp_path / "split.yaml"), "--cells", str(tmp_path / "flow_cells.parquet"), "--partition", "train", "--out", str(tmp_path / "score.yaml")]) == 0
+    assert main(["forecast", "score", str(tmp_path / "split.yaml"), "--cells", str(tmp_path / "flow_cells.parquet"), "--params", str(params), "--predicted", f"recorded={out}", "--partition", "train", "--out", str(tmp_path / "score.yaml")]) == 0
     assert "| hospital_1 | base |" in capsys.readouterr().out
     (row,) = yaml.safe_load((tmp_path / "score.yaml").read_text())["partitions"]["train"]["rows"]
-    assert row["forecast"] < 0.02
+    assert row["demand model"] < 0.02 and row["recorded"] == 0.0 and row["stale"] is None
