@@ -70,6 +70,7 @@ class EpisodeContext:
     register_timeline: Callable[[Sequence[TimelineEntry], int], None]
     register_conditions: Callable[[Sequence[EpisodeCondition]], None]
     register_sound_levels: Callable[[dict[str, float]], None]
+    publish_task_entity: Callable[[str, Mapping[str, str]], None]
 
 
 @attrs.define

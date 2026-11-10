@@ -219,24 +219,81 @@ words a goto as walking directions through the world's doors and openings.
 
 `fleet` ([`fleet/impl.py`](fleet/impl.py)) hands a stream of jobs to a fleet, configured under `task.fleet`:
 
-| Parameter | Meaning |
-| --- | --- |
-| `homes` | zone or docked object each robot starts and parks at, one per robot in robot order |
-| `loading`, `locker` | zone where a delivery loads, docked object where it unloads, a pickup the other way round |
-| `rate`, `pickup_share` | jobs released per hour of sim time, share of pickups |
-| `load_s`, `unload_s` | seconds held where a job loads and unloads |
-| `charge_below`, `charge_until` | battery percent that sends a free robot to a charger, and that frees it again |
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `homes` | | zone or docked object each robot starts and parks at, one per robot in robot order, no spot twice |
+| `loading`, `locker` | | zone or docked object where a delivery loads, docked object where it unloads, a pickup the other way round; one robot at a time each |
+| `rate`, `pickup_share` | 12, 0.3 | jobs released per hour of sim time, share of pickups |
+| `load_s`, `unload_s` | 15, 10 | seconds held where a job loads and unloads |
+| `charge_below`, `charge_until` | 30, 100 | battery percent that sends a free robot to a charger, and that frees it again; `charge_below <= charge_until` |
+| `reserve` | 10 | battery percent a job must leave by its energy estimate, else the robot charges first |
+| `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
+| `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
+| `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job may take from its assignment, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
 
 - Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
   every world. Released jobs queue until a robot is free.
-- Each tick, free robots under `charge_below` go to a charger, lowest battery first, the others take queued jobs,
-  fullest battery first, and the rest park at their home. Chargers are the world's objects with `charge_power_w`. A
-  robot whose home is a charger charges there, any other takes a charger whose owner is away and swaps homes with it.
-- The battery is the robot's `power_publisher/energy`. A robot counts as full until it reports.
+- **Docks.** A job has two legs, one goto per dock, each `on_failure: stop_task`. A robot holds the loading point or
+  the locker from its dispatch there until it has loaded or unloaded, so two robots never target one dock at once. A
+  job starts only when its first dock is free; queued jobs go oldest first, skipping one whose first dock is held.
+  A loaded robot whose second dock is held waits at its home, and loaded robots get a freed dock before new jobs do,
+  longest waiting first.
+- **Jobs.** Each tick, queued jobs go to free robots at or above `charge_below`, fullest battery first (a robot whose
+  charge is unknown last). Before a robot takes a job the mode estimates its energy: the straight-line distance from
+  the robot to the first dock, on to the second and on to the charger nearest the second, times `detour`, at
+  `wh_per_m` (so the reserve is what is left once the robot could be at a charger), plus the robot's standby power
+  (the power profile's `static_power_w`) over `load_s + unload_s`. When that would leave less than `reserve` percent
+  of the robot's battery capacity (`task.episode.battery.capacity_wh`, else its power.yaml), the robot joins the
+  charger queue instead, unless it is at `charge_until` already. The default 0.046 Wh/m is the jackal's 42.2 W
+  standby plus 50 W per m/s and 17 W per rad/s at 0.4 m/s and 0.2 rad/s; `wh_per_m: 0` computes the same from each
+  robot's power profile. The default `detour` 1.2 is about the 90th percentile of geodesic over straight-line distance
+  on the `smu_link_full` map (mean 1.09, 0.25 m grid, 0.3 m clearance).
+- **Ends.** A leg that ends failed fails its job; a job running past its timeout, or whose robot is assigned a task
+  from outside, is abandoned. The timeout scales with the job: `job_timeout` plus `job_timeout_per_m` times its route
+  estimate (the straight line from the robot to both docks, times `detour`; for a charging trip, to the charger), so
+  a job across the twin's 313 m route gets about 300 + 5 x 1.2 x 313 = 2,180 s and a short one about 360 s. Neither is queued again: the job ends there, its docks are freed and the robot goes
+  home (or runs the outside task, and goes home once that is done).
+- **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
+  a charger lowest battery first: a robot parked on its charger home charges there, any other takes a charger whose
+  holder is away (on a job, or freed) and swaps homes with it. Chargers are the world's objects with
+  `charge_power_w`. A robot is free again at `charge_until`.
+- **Battery.** The charge is `RobotManager.soc`; the mode makes no charging decision on a robot whose charge is
+  unknown. A robot whose battery reaches 0 % is logged and counted (it keeps driving: the power publisher clamps at 0).
 - No zone is forbidden at the homes, since a forbidden zone stays in the map for the whole episode. The reset fails
-  when a name is no goto target of the world. `done` is always `False`.
-- At info level the mode logs each release, each finished job with its release and finish time, each charging trip
-  and each full charge.
+  when a name is no goto target of the world, a home repeats or is a dock, or `charge_below > charge_until`. `done`
+  is always `False`.
+
+### Fleet task log
+
+The mode publishes its log as a semantic entity `<env>/fleet` of kind `fleet` on the env's `state/semantics`
+snapshot, which the recorder keeps (`semantic_snapshot`, one row per field). Every field is a discrete string,
+written once and never changed, so the episode's last snapshot holds the whole log. Times are seconds since `t0`,
+with 3 decimals; battery charges are percent with 2.
+
+| Field | Value |
+| --- | --- |
+| `t0` | sim time in s the episode's job clock starts at (the reset) |
+| `job.<i>.kind` | `delivery` or `pickup` |
+| `job.<i>.released` | release time from the seed's stream |
+| `job.<i>.robot`, `job.<i>.assigned` | robot that took the job, and when |
+| `job.<i>.energy_wh` | the energy estimate it was taken on |
+| `job.<i>.timeout` | seconds it may take from `assigned` before it is abandoned (0: none) |
+| `job.<i>.loaded` | when the robot finished loading |
+| `job.<i>.ended`, `job.<i>.outcome` | when the job ended, as `completed`, `failed` or `abandoned` |
+| `job.<i>.reason` | for `failed`, the failed phase's reason; for `abandoned`, `timeout` or `assigned from outside` |
+| `charge.<n>.robot`, `charge.<n>.trigger` | robot, and why it joined the charger queue: `charge_below`, or `job <i>` for a job its battery would not last |
+| `charge.<n>.queued` | when it joined the charger queue |
+| `charge.<n>.charger`, `charge.<n>.dispatched` | charger it was sent to (or charges at, at home), and when |
+| `charge.<n>.started`, `charge.<n>.soc_start` | when it arrived at the charger, and its charge then |
+| `charge.<n>.ended`, `charge.<n>.outcome`, `charge.<n>.soc_end` | when the charge ended, as `charged` (reached `charge_until`) or `abandoned`, and the charge then |
+| `charge.<n>.reason` | for `abandoned`: the failed trip's reason, `timeout` or `assigned from outside` |
+| `empty.<k>.robot`, `empty.<k>.at` | a robot whose battery reached 0 %, and when |
+
+`<i>` is the job's index in the stream, `<n>` and `<k>` count from 0 per episode. A job without `ended` was still
+queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures:
+task time is `ended - released` of completed jobs (filter on `released` for the warm-up), success rate is completed
+jobs over released ones (jobs still open at the episode end apart), charger queue time is `dispatched - queued`, and
+tasks per hour count completed jobs per hour of `ended`. The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
 
 ## Fleet manager
 
