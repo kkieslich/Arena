@@ -315,6 +315,14 @@ Two forecasters read the same inputs:
 - `--no-demand` drops the need channels and the object and need nodes: the **demand ablation**, the same network otherwise.
 - `--demand-model-input PARAMS` is a variant to compare, not the default: the demand model's forecast of each world (with the params from `fit`) becomes 9 more input layers, in units of the crowd's pedestrian-seconds per room cell. The network file keeps the params, so `score`, `curve` and `predict` rebuild the layer. It cannot combine with `--no-demand`.
 
+**Which network is the forecaster** ([`selection.py`](forecast/selection.py), `forecast select`): the plain network or the one with the demand model's forecast as input (`--demand-model-input`), chosen by leave-one-world-out on the training worlds before any test partition is scored.
+- A training world is a base world of the train partition with its edits there.
+- For each training world, both arms train on the other training worlds' runs and are scored on the held-out world's base and edits (pooled JSD at their train seeds, averaged over `--seeds`).
+- The arm with the lower mean over folds is chosen; a tie keeps the plain network.
+- The demand model is refitted on each fold's training worlds (`--max-evals`), so no fold sees its held-out world through its six parameters. `--params` reuses one file for every fold, and the output says so.
+- It reads only the train partition's worlds at their train seeds. It needs at least two training worlds.
+- `score --select select.yaml` and `curve --select select.yaml` call the chosen arm's networks "forecaster" and the other arm's "plain network" or "network + demand model input". Train the final networks of both arms with `train` and `train --demand-model-input params.yaml` and pass both, so the paper reports both arms.
+
 **Validity** ([`validity.py`](forecast/validity.py)):
 - `score`: each forecaster and the fair baselines per world of a partition, against the across-seed floor.
   - **stale** is the base world's pooled map from its runs at the split's *other* seeds, never the scored crowd draws. **transplanted** is that map with the edited object's surroundings (2 m) moved, copied or dropped with it. A partition whose base world ran at no other seed (the pilot's office_1) has neither.
@@ -331,9 +339,11 @@ Two forecasters read the same inputs:
 ```bash
 S=splits/peds_pilot.yaml; C=<benchmark dir>/flow_cells.parquet
 flowedit forecast train $S --cells $C --out net.pt
-flowedit forecast train $S --cells $C --no-demand --out geometry.pt
+flowedit forecast train $S --cells $C --no-demand --out ablation.pt
 flowedit forecast fit $S --cells $C --out params.yaml
-flowedit forecast score $S --cells $C --net net.pt --net geometry.pt --params params.yaml --predicted cliff=cliff.parquet --plots plots/ --out score.yaml
+flowedit forecast select $S --cells $C --out select.yaml                        # before any test partition is scored
+flowedit forecast train $S --cells $C --demand-model-input params.yaml --out net_dm.pt
+flowedit forecast score $S --cells $C --select select.yaml --net net.pt --net net_dm.pt --net ablation.pt --params params.yaml --predicted cliff=cliff.parquet --plots plots/ --out score.yaml
 flowedit forecast strength $S --benchmark <benchmark dir> --out strength.yaml
 flowedit forecast curve $S --benchmark <benchmark dir> --net forecaster=net.pt --strength-file forecaster=strength.yaml --png curve.png --out curve.yaml
 flowedit forecast scaling $S --cells $C --out-dir scaling/
@@ -377,6 +387,7 @@ Six parameters are fitted on the train partition (`forecast fit`): σ (kernel, m
 
 | Verb | What it does |
 |---|---|
+| `select` | the forecaster's arm (plain or with the demand model's forecast as input) by leave-one-world-out on the training worlds |
 | `train` | the learned forecaster on a partition's single runs (`--no-demand`: the demand ablation; `--fraction`: a share of the edit chains) |
 | `score` | per world of each partition (default the held-out ones): JSD of each `--net`, the demand model (`--params`), each `--predicted` map, stale and transplanted at other seeds; the across-seed floor; recorded vs predicted change; a PNG per world with `--plots` |
 | `curve` | forecast error against post-edit tracks seen, leave-one-seed-out, beside the uniform-prior reference |
@@ -523,6 +534,6 @@ A map file (`geometry`, `deepflow predict`) has one map per world in the columns
 | `split.py` | split files and the sweep over them |
 | `suite.py` | a split as a seed-paired benchmark suite |
 | `splits/` | committed splits, and their test crowds' settings in `splits/crowds/` |
-| `forecast/` | the flow forecasters: `maps.py` (grid, track binning, JSD), `scene.py` (a site as the forecasters read it), `raster.py` (graph and geometry on the grid), `net.py` (GNN and U-Net), `learn.py` (training, forecasts), `model.py` (the demand model), `evaluate.py` (its fit, recorded maps, transplanting), `validity.py` (scores, baselines, floor, change, tracks seen), `plot.py`, `cli.py` (`flowedit forecast`) |
+| `forecast/` | the flow forecasters: `maps.py` (grid, track binning, JSD), `scene.py` (a site as the forecasters read it), `raster.py` (graph and geometry on the grid), `net.py` (GNN and U-Net), `learn.py` (training, forecasts), `selection.py` (which network is the forecaster), `model.py` (the demand model), `evaluate.py` (its fit, recorded maps, transplanting), `validity.py` (scores, baselines, floor, change, tracks seen), `plot.py`, `cli.py` (`flowedit forecast`) |
 | `forecast/` (baselines) | `cliff.py` (online CLiFF-maps), `baselines.py` (track store, leave one seed out, tracks-seen curve, geometry-only prior and simulation, map files), `deepflow.py` (Deep Crowd-Flow), `baseline_cli.py` (`flowedit forecast baseline`) |
 | `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast`, `flowedit infra` |

@@ -337,3 +337,47 @@ def test_a_curve_step_with_an_empty_posterior_is_not_scored() -> None:
     runs = _runs({("w", 1): truth, ("w", 2): truth})
     res = V.curve("w", [1, 2], lambda w, s: tracks, runs, GRID, {"empty": (np.zeros(GRID.shape), 10.0)}, counts=(0, 1), orders=2)
     assert res["empty"][0] is None and res["empty"][1] == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.usefixtures("local_root")
+def test_select_holds_out_each_training_world_for_both_arms_and_never_reads_the_test_partitions(queue) -> None:  # noqa: ANN001
+    pytest.importorskip("torch")
+    import attrs
+
+    from arena_simulation_setup.generative.flowedit.forecast import selection as SE
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    r, scene = _raster(queue, queue)
+    with_input = attrs.evolve(r, extra=np.zeros((M.BINS, r.grid.ny, r.grid.nx), np.float32))
+    asked: list[str] = []
+
+    class Fixed:
+        def __call__(self, world: str, demand: bool = True, demand_model=None):  # noqa: ANN001, ANN204
+            asked.append(world)
+            return with_input if demand_model is not None else r
+
+    rng = np.random.default_rng(7)
+    m = lambda: rng.random((r.grid.ny, r.grid.nx, M.BINS))  # noqa: E731
+    doc = {
+        "partitions": {"train": ["a", "a__move_f__1", "b"], "held_out_edits": ["a__move_f__2"], "held_out_worlds": ["c"]},
+        "seeds": {"train": [1, 2], "held_out_edits": [6], "held_out_worlds": [6]},
+    }
+    runs = _runs({("a", 1): m(), ("a", 2): m(), ("a", 6): m(), ("a__move_f__1", 1): m(), ("b", 1): m(), ("b", 2): m(), ("a__move_f__2", 6): m(), ("c", 6): m()})
+    assert sorted(SE.train_runs(runs, doc).maps) == [("a", 1), ("a", 2), ("a__move_f__1", 1), ("b", 1), ("b", 2)]
+    out = SE.select(Fixed(), runs, doc, params=Params(), steps=30, device="cpu", log=lambda _: None)
+    assert [f["held_out"] for f in out["folds"]] == ["a", "b"] and out["folds"][0]["worlds"] == 2
+    assert out["chosen"] in SE.ARMS and set(out["mean"]) == set(SE.ARMS) and "note" in out
+    assert set(asked) <= {"a", "a__move_f__1", "b"}
+    with pytest.raises(ValueError, match="at least 2 training worlds"):
+        SE.select(Fixed(), runs, {**doc, "partitions": {**doc["partitions"], "train": ["a", "a__move_f__1"]}}, params=Params(), steps=30, device="cpu")
+
+
+def test_the_chosen_arm_is_the_forecaster_and_the_other_goes_by_its_own_name() -> None:
+    from types import SimpleNamespace
+
+    from arena_simulation_setup.generative.flowedit.forecast.selection import DEMAND_MODEL_INPUT, PLAIN, arm_label
+
+    plain, variant, ablation = SimpleNamespace(demand=True, demand_model=None), SimpleNamespace(demand=True, demand_model=object()), SimpleNamespace(demand=False, demand_model=None)
+    assert (arm_label(plain, None), arm_label(variant, None), arm_label(ablation, None)) == ("forecaster", "forecaster + demand model", "demand ablation")
+    assert (arm_label(plain, DEMAND_MODEL_INPUT), arm_label(variant, DEMAND_MODEL_INPUT)) == ("plain network", "forecaster")
+    assert (arm_label(plain, PLAIN), arm_label(variant, PLAIN), arm_label(ablation, PLAIN)) == ("forecaster", "network + demand model input", "demand ablation")
