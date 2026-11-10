@@ -388,3 +388,42 @@ def test_run_shared_refuses_explicit_shared_and_a_bare_resume(ws: pathlib.Path) 
         fork.run_shared(2, ["--shared", "tok"])
     with pytest.raises(CLIError, match="--resume needs a value"):
         fork.run_shared(2, ["--resume"])
+
+
+def test_a_lane_resolves_assets_from_the_callers_buckets() -> None:
+    # the caller's effective sources win over its .env names; a family it leaves unset is not passed
+    env = {"WORLD_BUCKETS": "default", "ARENA_WORLD_BUCKETS": "default,arena-internal", "ARENA_ASSET_BUCKETS": "default,arena-internal", "PATH": "/bin"}
+    args = fork.lane_env_args(env)
+    assert args == ["-e", "ARENA_WORLD_BUCKETS=default", "-e", "WORLD_BUCKETS=default", "-e", "ARENA_ASSET_BUCKETS=default,arena-internal", "-e", "ASSET_BUCKETS=default,arena-internal"]
+    assert fork.lane_env_args({}) == [] and fork.lane_env_args({"BENCHMARK_BUCKETS": ""}) == []
+
+
+def test_run_shared_starts_every_lane_with_the_callers_buckets(ws: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[list[str]] = []
+
+    class Done:
+        stdout: list[str] = []
+        returncode = 0
+        # run_shared annotates with subprocess.Popen[str], evaluated at its def while the stand-in is patched in
+        __class_getitem__ = classmethod(lambda cls, _: cls)
+
+        def __init__(self, argv: list[str], **_: object) -> None:
+            started.append(argv)
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setenv("WORLD_BUCKETS", "default")
+    monkeypatch.setattr(fork, "_require_dev", lambda: None)
+    monkeypatch.setattr(fork, "_pool", lambda n: [f"p{i + 1}" for i in range(n)])
+    monkeypatch.setattr(fork, "_fork_env", lambda f, *a, **k: {})
+    monkeypatch.setattr(fork.subprocess, "Popen", Done)
+    monkeypatch.setattr(fork.subprocess, "run", lambda *a, **k: None)
+    try:
+        fork.run_shared(2, ["--suite", "s", "--run-id", "r"])
+    except SystemExit:
+        pass
+    assert len(started) == 2
+    for argv in started:
+        exec_at = argv.index("exec")
+        assert argv[exec_at : exec_at + 6] == ["exec", "-T", "-e", "ARENA_WORLD_BUCKETS=default", "-e", "WORLD_BUCKETS=default"]

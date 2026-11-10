@@ -1,0 +1,74 @@
+format: arena-world/2
+levels:
+- id: '0'
+  zones:
+  - {name: main_hallway, polygon: [[0.0, 12.0], [40.0, 12.0], [40.0, 16.0], [0.0, 16.0]]}
+  - {name: waiting_area, polygon: [[0.025, 16.025], [0.025, 25.275], [12.075, 25.275], [12.075, 16.025]]}
+  - {name: exam_room_1, polygon: [[12.125, 16.025], [12.125, 24.075], [20.475, 24.075], [20.475, 16.025]]}
+  - {name: exam_room_2, polygon: [[20.525, 16.025], [20.525, 24.675], [28.675, 24.675], [28.675, 16.025]]}
+  - {name: cafeteria, polygon: [[28.725, 16.025], [28.725, 25.975], [39.975, 25.975], [39.975, 16.025]]}
+  - {name: reception, polygon: [[0.025, 1.325], [0.025, 11.975], [12.075, 11.975], [12.075, 1.325]]}
+  - {name: wc_1, polygon: [[12.125, 3.625], [12.125, 11.975], [19.275, 11.975], [19.275, 3.625]]}
+  - {name: staff_office, polygon: [[19.325, 2.125], [19.325, 11.975], [27.475, 11.975], [27.475, 2.125]]}
+  - {name: meeting_room, polygon: [[27.525, 2.225], [27.525, 11.975], [40.075, 11.975], [40.075, 2.225]]}
+  walls:
+  - {path: [[0.025, 16.0], [0.025, 14.75]]}
+  - {path: [[0.025, 13.25], [0.025, 12.0]]}
+  - {path: [[39.975, 16.0], [39.975, 14.75]]}
+  - {path: [[39.975, 13.25], [39.975, 12.0]]}
+  - {path: [[0.025, 16.025], [0.025, 25.275], [12.075, 25.275], [12.075, 16.025], [3.3, 16.025]]}
+  - {path: [[1.8, 16.025], [0.025, 16.025]]}
+  - {path: [[12.125, 16.025], [12.125, 24.075], [20.475, 24.075], [20.475, 16.025], [17.4, 16.025]]}
+  - {path: [[15.9, 16.025], [12.125, 16.025]]}
+  - {path: [[20.525, 16.025], [20.525, 24.675], [28.675, 24.675], [28.675, 16.025], [23.9, 16.025]]}
+  - {path: [[22.4, 16.025], [20.525, 16.025]]}
+  - {path: [[28.725, 16.025], [28.725, 25.975], [39.975, 25.975], [39.975, 16.025], [32.5, 16.025]]}
+  - {path: [[31.0, 16.025], [28.725, 16.025]]}
+  - {path: [[0.025, 1.325], [0.025, 11.975], [10.4, 11.975]]}
+  - {path: [[11.9, 11.975], [12.075, 11.975], [12.075, 1.325], [0.025, 1.325]]}
+  - {path: [[12.125, 3.625], [12.125, 11.975], [13.8, 11.975]]}
+  - {path: [[15.3, 11.975], [19.275, 11.975], [19.275, 3.625], [12.125, 3.625]]}
+  - {path: [[19.325, 2.125], [19.325, 11.975], [25.3, 11.975]]}
+  - {path: [[26.8, 11.975], [27.475, 11.975], [27.475, 2.125], [19.325, 2.125]]}
+  - {path: [[27.525, 2.225], [27.525, 11.975], [31.8, 11.975]]}
+  - {path: [[33.3, 11.975], [40.075, 11.975], [40.075, 2.225], [27.525, 2.225]]}
+  doors:
+  - {name: waiting_area_door, span: [[1.8, 16.0], [3.3, 16.0]]}
+  - {name: exam_room_1_door, span: [[15.9, 16.0], [17.4, 16.0]]}
+  - {name: exam_room_2_door, span: [[22.4, 16.0], [23.9, 16.0]]}
+  - {name: cafeteria_door, span: [[31.0, 16.0], [32.5, 16.0]]}
+  - {name: reception_door, span: [[10.4, 12.0], [11.9, 12.0]]}
+  - {name: wc_1_door, span: [[13.8, 12.0], [15.3, 12.0]]}
+  - {name: staff_office_door, span: [[25.3, 12.0], [26.8, 12.0]]}
+  - {name: meeting_room_door, span: [[31.8, 12.0], [33.3, 12.0]]}
+  - {name: front_door, span: [[0.025, 13.25], [0.025, 14.75]]}
+  - {name: back_door, span: [[39.975, 13.25], [39.975, 14.75]]}
+  objects:
+  - {name: waiting_bench_1, pose: [0.6, 20.0, 3.14159], model: Hospital/Waiting_Room_Bench}
+  - {name: waiting_bench_2, pose: [6.0, 24.7, 1.5708], model: Hospital/Waiting_Room_Bench}
+  - {name: waiting_chair_1, pose: [11.5, 19.5], model: Hospital/SM_Chair_02a}
+  - {name: waiting_chair_2, pose: [11.5, 21.0], model: Hospital/SM_Chair_02a}
+  - {name: waiting_plant_1, pose: [0.6, 24.7], model: Office/SM_Plant01}
+  - {name: exam_1_bed_1, pose: [16.5, 23.3, 1.5708], model: Hospital/SM_HospitalBed_02d}
+  - {name: exam_1_cabinet_1, pose: [19.9, 20.0], model: Hospital/SM_MedicalCabinet_01a}
+  - {name: exam_1_washbasin_1, pose: [12.7, 20.0, 3.14159], model: Hospital/SM_Washbasin}
+  - {name: exam_2_bed_1, pose: [24.5, 23.9, 1.5708], model: Hospital/SM_HospitalBed_02d}
+  - {name: exam_2_cabinet_1, pose: [28.1, 20.0], model: Hospital/SM_MedicalCabinet_01a}
+  - {name: exam_2_washbasin_1, pose: [21.1, 20.0, 3.14159], model: Hospital/SM_Washbasin}
+  - {name: cafeteria_table_1, pose: [33.0, 20.0], model: Office/SM_TableRound_module}
+  - {name: cafeteria_table_2, pose: [36.5, 22.5], model: Office/SM_TableRound_module}
+  - {name: cafeteria_chair_1, pose: [33.0, 21.0, 1.5708], model: Office/SM_Chair}
+  - {name: cafeteria_chair_2, pose: [36.5, 23.5, 1.5708], model: Office/SM_Chair}
+  - {name: cafeteria_drinks_1, pose: [39.4, 19.0], model: Hospital/SM_DrinksMachine}
+  - {name: reception_counter_1, pose: [9.5, 3.5], model: Hospital/SM_ReceptionDesk_01a}
+  - {name: reception_chair_1, pose: [6.0, 3.0, -1.5708], model: Hospital/SM_Chair_02a}
+  - {name: reception_cabinet_1, pose: [0.6, 6.0, 3.14159], model: Hospital/SM_MedicalCabinet_01a}
+  - {name: wc_toilet_1, pose: [15.7, 4.2, -1.5708], model: Hospital/SM_Toilet}
+  - {name: wc_washbasin_1, pose: [18.7, 8.0], model: Hospital/SM_Washbasin}
+  - {name: staff_desk_1, pose: [23.4, 5.0], model: Office/SM_TableWorkingDouble}
+  - {name: staff_chair_1, pose: [23.4, 6.2, 1.5708], model: Office/SM_ChairOffice}
+  - {name: staff_chair_2, pose: [23.4, 3.8, -1.5708], model: Office/SM_ChairOffice}
+  - {name: meeting_table_1, pose: [33.5, 7.0], model: Office/SM_TableRound_module}
+  - {name: meeting_chair_1, pose: [33.5, 8.0, 1.5708], model: Office/SM_ChairOffice}
+  - {name: meeting_chair_2, pose: [33.5, 6.0, -1.5708], model: Office/SM_ChairOffice}
+  - {name: hallway_plant_1, pose: [20.0, 15.4], model: Office/SM_Plant01}

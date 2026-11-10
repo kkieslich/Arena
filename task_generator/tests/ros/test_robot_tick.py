@@ -340,37 +340,44 @@ def test_fleet_charges_low_robots_once_a_charger_is_empty_and_gives_jobs_to_the_
 
     _at(node, releases[2])
     _tick(mode)
-    # r1 holds the loading point for job 0, so jobs 1 and 2 wait and r2 stays parked; r3 charges on its charger home, r0 waits at its home
+    # r1 and r2 take jobs 0 and 1, the two free robots over charge_below; job 2 waits. r2 holds charger_1 and is away,
+    # so r0 takes charger_1 and r2 gets bay_1; r3 charges on its charger home
     assert _phase_text(managers["r1"]) == f"delivery 0: load at dock_a, released {releases[0]:.1f} s"
     assert _phase(managers["r1"]).on_failure == "stop_task"
-    assert all(managers[name].submitted == [] for name in ("r0", "r2", "r3"))
+    assert _phase_text(managers["r2"]) == f"delivery 1: load at dock_a, released {releases[1]:.1f} s"
+    assert _phase_text(managers["r0"]) == "charge at charger_1"
+    assert managers["r3"].submitted == []
     assert [record.log[f"job.{index}.released"] for index in range(3)] == [f"{release:.3f}" for release in releases]
     assert (record.log["job.0.robot"], record.log["job.0.assigned"]) == ("r1", f"{releases[2] + 0.001:.3f}")
-    assert (record.log["charge.0.robot"], record.log["charge.0.trigger"]) == ("r0", "charge_below")
-    assert "charge.0.dispatched" not in record.log
+    assert "job.2.robot" not in record.log
+    assert (record.log["charge.0.robot"], record.log["charge.0.trigger"], record.log["charge.0.charger"]) == ("r0", "charge_below", "charger_1")
     assert (record.log["charge.1.robot"], record.log["charge.1.charger"], record.log["charge.1.soc_start"]) == ("r3", "charger_2", "25.00")
     assert record.log["charge.1.queued"] == record.log["charge.1.dispatched"] == record.log["charge.1.started"]
 
-    # r1 loaded: it goes on to the locker and job 1 takes the loading point; r2, charger_1's holder, is away now, so r0 takes charger_1 and r2 gets bay_1
+    # both reach the loading point's approach: r1 takes it, r2 holds in place before it
+    _tick(mode)
+    assert _phase_text(managers["r1"]).startswith("delivery 0: load at dock_a")
+    assert _phase_text(managers["r2"]) == "delivery 1: wait for dock_a"
+    assert _phase(managers["r2"]).hold and _phase(managers["r2"]).hold_time > 0
+
+    # r1 loaded: it goes straight on to the locker and takes it, and r2 gets the loading point it freed
     _tick(mode, {"r1": _met()})
     assert _phase_text(managers["r1"]) == "delivery 0: unload at locker_1"
-    assert _job_index(managers["r2"]) == 1
-    assert _phase_text(managers["r0"]) == "charge at charger_1"
-    assert "job.0.loaded" in record.log
+    assert _phase_text(managers["r2"]).startswith("delivery 1: load at dock_a")
+    assert "job.0.loaded" in record.log and "job.0.timeout_1" in record.log
 
-    # r1 unloaded on a tick the mode did not see: its task is done, so its last phase counts
+    # r1 unloaded on a tick the mode did not see: its task is done, so its last phase counts, and it takes job 2
     managers["r1"].done = True
     _tick(mode)
-    assert (record.log["job.0.outcome"], record.log["job.0.ended"]) == ("completed", f"{releases[2] + 0.001:.3f}")
+    assert (record.log["job.0.outcome"], record.log["job.0.ended"], record.log["job.0.wait_s"]) == ("completed", f"{releases[2] + 0.001:.3f}", "0.000")
     assert "job.0.reason" not in record.log
-    assert _phase_text(managers["r1"]) == "park at bay_2"
+    assert _job_index(managers["r1"]) == 2
 
     _socs(managers, r0=100.0, r3=100.0)
     _tick(mode, {"r0": _met(), "r2": _met()})
     assert [record.log[f"charge.{index}.outcome"] for index in range(2)] == ["charged", "charged"]
     assert record.log["charge.0.soc_end"] == "100.00"
     assert _phase_text(managers["r2"]) == "delivery 1: unload at locker_1"
-    assert _job_index(managers["r0"]) == 2
 
     _tick(mode, {"r2": _met()})
     assert _phase_text(managers["r2"]) == "park at bay_1"
@@ -390,30 +397,80 @@ def test_fleet_reads_the_charge_from_the_robot_manager_and_decides_no_charge_on_
     assert not any(field.startswith("charge.") for field in record.log)
 
 
-def test_fleet_queues_a_loaded_robot_for_a_held_dock_at_its_home_before_new_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fleet_robots_queue_before_a_held_dock_longest_waiting_first_and_a_loaded_one_drives_straight_on(monkeypatch: pytest.MonkeyPatch) -> None:
     mode, managers, node, record = _fleet(monkeypatch, jobs="dpp")
     asyncio.run(mode.reset())
     _socs(managers, r0=90.0, r1=80.0, r2=70.0, r3=60.0)
     _at(node, 1.0)
     _tick(mode)
+    # no job waits for its first dock: every one is handed out at once
     assert _phase_text(managers["r0"]).startswith("delivery 0: load at dock_a")
     assert _phase_text(managers["r1"]).startswith("pickup 1: load at locker_1")
+    assert _phase_text(managers["r2"]).startswith("pickup 2: load at locker_1")
+    _tick(mode)
+    assert _phase_text(managers["r2"]) == "pickup 2: wait for locker_1"
 
-    # r0 loaded, but r1 holds the locker: r0 waits at its home, job 2 waits for the locker too
+    # r0 loaded: it drives on to the locker and, r1 holding it, waits before it behind r2
     _at(node, 2.0)
     _tick(mode, {"r0": _met()})
-    assert _phase_text(managers["r0"]) == "delivery 0: wait at bay_1 for locker_1"
+    assert _phase_text(managers["r0"]) == "delivery 0: wait for locker_1"
 
-    # r1 loaded and frees the locker: r0, waiting longest, gets it ahead of job 2, and r1 the loading point r0 freed
+    # r1 loaded and frees the locker: r2, waiting longest, gets it; r1 takes the loading point r0 freed
     _at(node, 3.0)
     _tick(mode, {"r1": _met()})
-    assert _phase_text(managers["r0"]) == "delivery 0: unload at locker_1"
+    assert _phase_text(managers["r2"]).startswith("pickup 2: load at locker_1")
+    assert _phase_text(managers["r0"]) == "delivery 0: wait for locker_1"
     assert _phase_text(managers["r1"]) == "pickup 1: unload at dock_a"
 
+    # r2 loaded: r0 gets the locker after 2 s of waiting, r2 waits before the loading point r1 holds
+    _at(node, 4.0)
+    _tick(mode, {"r2": _met()})
+    assert _phase_text(managers["r0"]) == "delivery 0: unload at locker_1"
+    assert _phase_text(managers["r2"]) == "pickup 2: wait for dock_a"
     _tick(mode, {"r0": _met()})
-    assert record.log["job.0.outcome"] == "completed"
-    assert _phase_text(managers["r0"]).startswith("pickup 2: load at locker_1")
-    assert managers["r2"].submitted == managers["r3"].submitted == []
+    assert (record.log["job.0.outcome"], record.log["job.0.wait_s"]) == ("completed", "2.000")
+    assert managers["r3"].submitted == []
+
+
+def test_fleet_takes_a_dock_only_within_approach_m_and_drives_on_while_it_is_further(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="pp")
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=80.0, r2=10.0, r3=10.0)
+    managers["r0"].pose, managers["r1"].pose = _pose(*LOCKER_XY), _pose(LOCKER_XY[0], LOCKER_XY[1] + 9.0)
+    _at(node, 1.0)
+    _tick(mode)
+    _tick(mode)
+    # r0 at the locker holds it; r1, 9 m off, keeps driving
+    assert _phase_text(managers["r1"]).startswith("pickup 1: load at locker_1")
+    managers["r1"].pose = _pose(LOCKER_XY[0], LOCKER_XY[1] + 3.5)
+    _tick(mode)
+    assert _phase_text(managers["r1"]) == "pickup 1: wait for locker_1"
+    _tick(mode, {"r0": _met()})
+    assert _phase_text(managers["r1"]).startswith("pickup 1: load at locker_1")
+
+
+def test_fleet_times_each_leg_from_its_start_without_its_waits_for_a_dock(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="pp", job_timeout=100.0, job_timeout_per_m=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=80.0, r2=10.0, r3=10.0)
+    _at(node, 1.0)
+    _tick(mode)
+    _tick(mode)
+    assert record.log["job.1.timeout_0"] == "100.000"
+    assert _phase_text(managers["r1"]) == "pickup 1: wait for locker_1"
+    # r0 holds the locker 159 s without arriving: its leg times out and frees it; r1, waiting all along, is not timed out
+    _at(node, 160.0)
+    _tick(mode)
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"]) == ("abandoned", "timeout")
+    assert "job.1.ended" not in record.log
+    assert _phase_text(managers["r1"]).startswith("pickup 1: load at locker_1")
+    # r1's own leg has 100 s of driving from there
+    _at(node, 259.5)
+    _tick(mode)
+    assert "job.1.ended" not in record.log
+    _at(node, 261.0)
+    _tick(mode)
+    assert (record.log["job.1.outcome"], record.log["job.1.reason"], record.log["job.1.wait_s"]) == ("abandoned", "timeout", "159.000")
 
 
 def test_fleet_sends_a_robot_to_charge_before_a_job_that_would_leave_it_under_the_reserve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -468,19 +525,21 @@ def test_fleet_logs_a_failed_job_as_failed_frees_its_dock_and_does_not_queue_it_
     _at(node, 1.0)
     _tick(mode)
     assert _job_index(managers["r0"]) == 0
-    assert managers["r1"].submitted == []
+    assert _job_index(managers["r1"]) == 1
+    _tick(mode)
+    assert _phase_text(managers["r1"]) == "delivery 1: wait for dock_a"
 
     _tick(mode, {"r0": SimpleNamespace(outcome="failed", reason="no path to dock_a")})
     assert (record.log["job.0.outcome"], record.log["job.0.reason"]) == ("failed", "no path to dock_a")
     assert "job.0.loaded" not in record.log
-    # the loading point is free again, and the next job, not job 0, goes to the fullest free robot
-    assert _job_index(managers["r0"]) == 1
-    assert record.log["job.1.robot"] == "r0"
+    # the loading point is free again and goes to r1, waiting for it; job 0 is not queued again
+    assert _phase_text(managers["r1"]).startswith("delivery 1: load at dock_a")
+    assert _phase_text(managers["r0"]) == "park at bay_1"
     assert not any("finished" in line for _, line in record.lines)
     assert any(level == "warning" and "failed delivery 0" in line for level, line in record.lines)
     for _ in range(3):
         _tick(mode)
-    assert all(_job_index(manager) != 0 for manager in managers.values() if manager.submitted)
+    assert not any(_phase_text(manager).startswith("delivery 0") for manager in managers.values() if manager.submitted)
 
 
 def test_fleet_abandons_a_job_past_its_timeout_and_sends_the_robot_home(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -515,16 +574,16 @@ def test_fleet_abandons_a_trip_to_a_charger_past_the_timeout(monkeypatch: pytest
     assert (record.log["charge.1.robot"], record.log["charge.1.dispatched"]) == ("r0", "102.001")
 
 
-def test_fleet_job_timeout_grows_with_the_route_estimate(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fleet_leg_timeout_grows_with_the_route_estimate(monkeypatch: pytest.MonkeyPatch) -> None:
     mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0, job_timeout_per_m=10.0)
     asyncio.run(mode.reset())
     _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
     _at(node, 1.0)
     _tick(mode)
     assert _job_index(managers["r0"]) == 0
-    # r0 on bay_1: 1.2 x (bay_1 to the loading point to the locker), the leg to a charger after it not counted
-    timeout = 100.0 + 10.0 * 1.2 * (math.dist((0.5, 0.5), LOADING_XY) + math.dist(LOADING_XY, LOCKER_XY))
-    assert record.log["job.0.timeout"] == f"{timeout:.3f}"
+    # r0 on bay_1: its first leg, 1.2 x bay_1 to the loading point
+    timeout = 100.0 + 10.0 * 1.2 * math.dist((0.5, 0.5), LOADING_XY)
+    assert record.log["job.0.timeout_0"] == f"{timeout:.3f}"
     _at(node, 1.0 + timeout - 1.0)
     _tick(mode)
     assert "job.0.ended" not in record.log
@@ -630,6 +689,69 @@ def test_fleet_abandons_a_jammed_charging_trip_and_the_rule_can_be_turned_off(mo
         assert ("charge.0.reason" in record.log) == jams
         if jams:
             assert (record.log["charge.0.outcome"], record.log["charge.0.reason"], record.log["jam.0.charge"]) == ("abandoned", "jam", "0")
+            # reset to the bay it had before the trip, not to the charger it was headed for
+            assert managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
+            # still under charge_below, it queues for a charger again from there
+            assert record.log["charge.1.robot"] == "r0"
+
+
+def test_fleet_sends_a_second_leg_again_that_could_not_be_submitted_and_never_completes_the_job_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0, job_timeout_per_m=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    r0 = managers["r0"]
+    real = r0.submit_task
+    blocked = {"locker_1"}
+
+    async def no_locker(request: object) -> None:
+        if getattr(request.phases[0], "target", None) in blocked:
+            raise ValueError("robot 'r0': goto target 'locker_1' has no free cell with 0.50 m clearance")
+        await real(request)
+
+    r0.submit_task = no_locker
+    # the load leg ends met but the leg to the locker cannot be submitted: r0's task is done, its last phase the load leg
+    _at(node, 30.0)
+    _tick(mode, {"r0": _met()})
+    r0.done = True
+    _at(node, 31.0)
+    _tick(mode)
+    assert "job.0.ended" not in record.log and "job.0.loaded" in record.log
+    # once the locker takes the robot again, the leg goes out on the next tick and the job ends only after it
+    blocked.clear()
+    _at(node, 32.0)
+    _tick(mode)
+    assert _phase_text(r0) == "delivery 0: unload at locker_1"
+    _tick(mode, {"r0": _met()})
+    assert record.log["job.0.outcome"] == "completed"
+
+
+def test_fleet_abandons_a_second_leg_that_never_goes_out_once_its_timer_runs_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="d", job_timeout=100.0, job_timeout_per_m=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=50.0, r2=50.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    r0 = managers["r0"]
+    real = r0.submit_task
+
+    async def no_locker(request: object) -> None:
+        if getattr(request.phases[0], "target", None) == "locker_1":
+            raise ValueError("no free cell")
+        await real(request)
+
+    r0.submit_task = no_locker
+    _at(node, 30.0)
+    _tick(mode, {"r0": _met()})
+    r0.done = True
+    for t in (31.0, 100.0, 129.0):
+        _at(node, t)
+        _tick(mode)
+    assert "job.0.ended" not in record.log
+    _at(node, 131.0)
+    _tick(mode)
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"]) == ("abandoned", "timeout")
 
 
 @pytest.mark.parametrize(

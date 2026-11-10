@@ -1,0 +1,20 @@
+generator: hallway
+seed: 7
+config:
+  width: 40.0
+  height: 28.0
+  hallway_height: 4.0
+  rooms_per_side: 4
+  big_width:
+  - 11.0
+  - 14.0
+  big_height:
+  - 9.0
+  - 11.0
+  small_width:
+  - 7.0
+  - 9.0
+  small_height:
+  - 8.0
+  - 10.0
+  door_width: 1.5

@@ -261,8 +261,22 @@ def test_an_object_in_front_fails_the_approach_the_turning_circle_and_the_docks(
     kiosk = {"name": "kiosk", "model": CHARGER.model, "pose": [x, y, 0.0, 0.0, 0.0, spot.objects[0].yaw]}
     blocked = next(s for s in candidate_spots(_world(tmp_path / "worlds" / "kiosk", [kiosk]), "charger_pair") if s.id == spot.id)
     assert blocked.verdict[Rule.NO_OVERLAP] is Verdict.PASS  # 0.33 m from the chargers' front
-    assert {blocked.verdict[r] for r in (Rule.CLEAR_ZONE, Rule.TURNING_CIRCLE, Rule.DOCKS_ON_FLOOR)} == {Verdict.FAIL}
+    assert {blocked.verdict[r] for r in (Rule.CLEAR_ZONE, Rule.DOCKS_ON_FLOOR)} == {Verdict.FAIL}
+    # the turning circle lies beyond the docks, clear of a kiosk inside them
+    assert blocked.verdict[Rule.TURNING_CIRCLE] is Verdict.PASS
     assert not blocked.valid
+    # one just beyond the docks fails the turning circle
+    _, _, _, dock_front = spot.frame.extent(shapely_union([o.dock for o in spot.objects]))
+    x, y = spot.frame.at(spot.along_m, dock_front + 0.5)
+    beyond = {"name": "kiosk", "model": CHARGER.model, "pose": [float(x), float(y), 0.0, 0.0, 0.0, spot.objects[0].yaw]}
+    turned = next(s for s in candidate_spots(_world(tmp_path / "worlds" / "beyond", [beyond]), "charger_pair") if s.id == spot.id)
+    assert turned.verdict[Rule.TURNING_CIRCLE] is Verdict.FAIL and not turned.valid
+
+
+def shapely_union(geometries: list[Any]) -> Any:  # noqa: ANN401 - a shapely geometry
+    import shapely
+
+    return shapely.union_all(geometries)
 
 
 def test_excluded_zones_and_the_zone_list_limit_the_spots(hospital: Site) -> None:
@@ -275,7 +289,9 @@ def test_excluded_zones_and_the_zone_list_limit_the_spots(hospital: Site) -> Non
     assert {s.zone for s in candidate_spots(hospital, "loading_point", zones=["sub_hallway"])} == {"sub_hallway"}
     names = ["upper_concourse_north", "ramp", "stair_landing", "side_corridor_east", "side_corridor_west_north", "side_room", "south_arm", "lift_lobby"]
     level = Level(id="0", zones=[Zone(name=n, polygon=[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]) for n in names])
-    assert place.candidate_zones(level) == ["upper_concourse_north"]
+    # no hand list by default: the generator still leaves out lifts and stairs
+    assert place.candidate_zones(level) == sorted(n for n in names if n not in ("lift_lobby", "stair_landing"))
+    assert place.candidate_zones(level, exclude=("ramp", "side_*", "south_arm")) == ["upper_concourse_north"]
     with pytest.raises(ValueError, match="no zones"):
         place.candidate_zones(level, zones=["nowhere"])
 
@@ -333,16 +349,23 @@ def test_a_layout_whose_elements_share_floor_is_refused(hospital: Site) -> None:
         place.apply_layout(hospital, Layout.of([chargers, clash]))
 
 
-def test_elements_facing_each_other_across_the_hallway_leave_too_narrow_a_corridor(hospital: Site) -> None:
+def test_elements_facing_each_other_across_the_hallway_take_the_turning_circle_and_narrow_the_corridor(hospital: Site) -> None:
     chargers = next(s for s in _across(candidate_spots(hospital, "charger_pair"), "central_hallway", 0) if s.valid)
     cx, cy = _centre(chargers.taken)
-    facing = [s for s in _across(candidate_spots(hospital, "locker"), "central_hallway", 0) if s.frame.n[0] * chargers.frame.n[0] < 0]
-    opposite = min(facing, key=lambda s: abs(_centre(s.taken)[1] - cy))
-    assert abs(_centre(opposite.taken)[1] - cy) < 0.6 and abs(_centre(opposite.taken)[0] - cx) > 2.0
     assert chargers.corridor_m >= place.CORRIDOR_MIN_M
+    facing = sorted((s for s in _across(candidate_spots(hospital, "locker"), "central_hallway", 0) if s.frame.n[0] * chargers.frame.n[0] < 0), key=lambda s: abs(_centre(s.taken)[1] - cy))
+    # straight across the 4 m hallway the locker's dock reaches into the chargers' turning circle and narrows their
+    # corridor below 1.8 m
+    opposite = facing[0]
+    assert abs(_centre(opposite.taken)[1] - cy) < 0.6 and abs(_centre(opposite.taken)[0] - cx) > 1.5
+    assert chargers.turning is not None and opposite.taken.intersection(chargers.turning).area > 0.1
     problems = place.check_layout(hospital, Layout.of([chargers, opposite]))
-    assert "charger_pair and locker overlap" not in problems
+    assert "charger_pair and locker overlap" in problems
     assert any(p.startswith("charger_pair: the other elements leave a") for p in problems), problems
+    # a wall spot further along it stands beside the chargers' front, not in front of it: no overlap, no corridor
+    beside = next(s for s in facing if 1.5 < abs(_centre(s.taken)[1] - cy) < 2.5)
+    problems = place.check_layout(hospital, Layout.of([chargers, beside]))
+    assert "charger_pair and locker overlap" not in problems and not [p for p in problems if "corridor, under" in p], problems
 
 
 def test_apply_layout_inserts_every_object_with_its_dock_and_charge_power(hospital: Site) -> None:
@@ -473,3 +496,72 @@ def test_the_caches_keep_the_last_sites_only(tmp_path: Path, monkeypatch: pytest
     candidate_spots(sites[2], "locker")  # drops sites[1]
     assert {key[3] for key in place._SPOTS} == {1, 3} and {key[3] for key in place._CONTEXTS} == {1, 3}
     assert len(place._SITES) == 2
+
+
+def _pharmacy_walled_off(tmp_path: Path) -> Site:
+    """hospital_1 with the pharmacy's only door replaced by a wall: a room no wheelchair reaches."""
+    world = yaml.safe_load((HOSPITAL / "world.yaml").read_text())
+    level = world["levels"][0]
+    doors = [d for d in level["doors"] if d["name"] != "pharmacy_door"]
+    walls = [*level["walls"], {"path": [[8.0, 26.8], [8.0, 28.5]], "material": "Plaster_Wall"}]
+    return _world(tmp_path / "worlds" / "walled", doors=doors, walls=walls)
+
+
+def test_zones_nav_at_r_cuts_off_are_left_out_unless_asked_for(tmp_path: Path, hospital: Site) -> None:
+    assert place.cut_off_zones(hospital, "0") == ()
+    walled = _pharmacy_walled_off(tmp_path)
+    assert "pharmacy" in place.cut_off_zones(walled, "0")
+    assert "central_hallway" not in place.cut_off_zones(walled, "0")
+    assert "pharmacy" in {s.zone for s in candidate_spots(hospital, "bay_pair")}
+    assert "pharmacy" not in {s.zone for s in candidate_spots(walled, "bay_pair")}
+    assert "pharmacy" in {s.zone for s in candidate_spots(walled, "bay_pair", cut_off=False)}
+
+
+def _pillar(local_root: Path) -> str:
+    _asset(local_root, "Common/Object/test_pillar", {"bounding_box": [[-0.15, 0.15], [-0.15, 0.15], [0.0, 2.5]], "face": "+x"})
+    return "Common/Object/test_pillar"
+
+
+def test_the_corridor_is_the_free_run_in_front_so_a_pillar_beside_or_before_one_edge_leaves_it(tmp_path: Path, local_root: Path, hospital: Site) -> None:
+    import shapely
+
+    hall = [s for s in _facing_the_nurse_room(candidate_spots(hospital, "charger_pair")) if s.valid]
+    spot = max(hall, key=lambda s: s.corridor_m)
+    lo, hi, _, _ = spot.frame.extent(spot.taken)
+    front = spot.frame.extent(shapely.union_all([spot.taken, spot.clear]))[3]
+    model = _pillar(local_root)
+    beside = {"name": "pillar_beside", "model": model, "pose": [*map(float, spot.frame.at(hi + 0.35, front - 0.5)), 0.0]}
+    edge = {"name": "pillar_edge", "model": model, "pose": [*map(float, spot.frame.at(hi - 0.2, front + 0.5)), 0.0]}
+    for name, pillar in (("beside", beside), ("edge", edge)):
+        world = _world(tmp_path / "worlds" / name, [pillar])
+        moved = next(s for s in candidate_spots(world, "charger_pair") if s.id == spot.id)
+        assert moved.corridor_m == pytest.approx(spot.corridor_m, abs=RASTER_M), name
+        assert moved.verdict[Rule.CORRIDOR_WIDTH] is Verdict.PASS, name
+    # a bench across the whole front, 0.6 m beyond the clear zone, leaves 0.6 m
+    _asset(local_root, "Common/Object/test_bench", {"bounding_box": [[-0.2, 0.2], [-1.6, 1.6], [0.0, 0.5]], "face": "+x"})
+    yaw = float(math.atan2(spot.frame.n[1], spot.frame.n[0]))
+    bench = {"name": "bench", "model": "Common/Object/test_bench", "pose": [*map(float, spot.frame.at((lo + hi) / 2.0, front + 0.8)), 0.0, 0.0, 0.0, yaw]}
+    narrowed = next(s for s in candidate_spots(_world(tmp_path / "worlds" / "bench", [bench]), "charger_pair") if s.id == spot.id)
+    assert narrowed.corridor_m == pytest.approx(0.6, abs=RASTER_M)
+    assert narrowed.verdict[Rule.CORRIDOR_WIDTH] is Verdict.FAIL
+
+
+@pytest.mark.parametrize("element", list(CATALOG))
+def test_the_turning_circle_lies_beyond_the_docks(hospital: Site, element: str) -> None:
+    import shapely
+
+    for s in candidate_spots(hospital, element)[:20]:
+        docks = shapely.union_all([o.dock for o in s.objects])
+        assert s.turning is not None
+        assert s.frame.extent(s.turning)[2] >= s.frame.extent(docks)[3] - 1e-6
+        assert s.turning.intersection(docks).area < place.AREA_EPS
+
+
+def test_the_locker_dock_starts_beyond_the_door_sweep(hospital: Site) -> None:
+    assert place.LOCKER_DOCK[0] == (0.84, 0.02)
+    for s in candidate_spots(hospital, "locker")[:20]:
+        (o,) = s.objects
+        # 0.84 m from the locker's back: the 0.79 m its doors sweep plus 5 cm
+        back = min(s.frame.depth(x, y) for x, y in o.footprint.exterior.coords)
+        dock_near = min(s.frame.depth(x, y) for x, y in o.dock.exterior.coords)
+        assert dock_near - back == pytest.approx(0.84, abs=0.01)

@@ -17,10 +17,15 @@ _STAGE_RE = re.compile(rf"^(?P<world>.+){re.escape(STAGE_SEP)}(?P<seed>\d+)$")
 PARK = 1000.0
 #: The robot every stage spawns, parked and unseen without a robot task. Jackal is the robot of every shipped suite.
 ROBOT = "jackal"
-#: A contestant without a planner block: the robot comes up with the sim's default adapter and never moves
-CONTEST = "[{name: peds_only}]"
+#: The contestant of a crowd-only run: the parked robot comes up with the no-op mobile adapter (`robot.mobile:=none`),
+#: not the sim's default navstack (Nav2 in flatsim, ~12 % of a core and ~0.4 GB per lane for a robot that never moves)
+CONTEST = "[{name: peds_only, mobile: none}]"
 #: Launch args of the whole run: lockstep for runs that pair by seed, people blind to the parked robot
 LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "false"}
+#: What the recorder leaves out of every run (arena_evaluation's suite `record` block): the pedestrians' skeleton frames on
+#: `<env>/humans/tf`. Nothing FLOWEDIT scores reads them, and the recorder is the topic's only subscriber in a headless
+#: run, so leaving it out also keeps `hri_producer` from computing them (about 40 % of a core per lane).
+RECORD = {"exclude": ["tf_humans"]}
 #: Launch args of a run whose robot drives the split's robot task: the people see it
 LAUNCH_TASK = {**LAUNCH, "human.robots.visible": "true"}
 #: First line of every suite and contest this writes, so it never replaces one it did not write
@@ -59,7 +64,7 @@ def suite_doc(stages: Sequence[Mapping[str, Any]], launch: Mapping[str, str] | N
     names = [s["name"] for s in stages]
     if dup := sorted({n for n in names if names.count(n) > 1}):
         raise ValueError(f"stages {dup} appear twice")
-    doc = {"references": False, "launch": dict(LAUNCH if launch is None else launch), "stages": [dict(s) for s in stages]}
+    doc = {"references": False, "launch": dict(LAUNCH if launch is None else launch), "record": {k: list(v) for k, v in RECORD.items()}, "stages": [dict(s) for s in stages]}
     pairs(doc)
     return doc
 
@@ -130,6 +135,13 @@ def default_out(split: Path, crowd: str = BASE_CROWD) -> Path:
     return imported_root() / SUITES / f"{suite_name(split, crowd)}.yaml"
 
 
+def imported_for(suite: Path) -> Path | None:
+    """The imported asset root under which `--suite <stem>` finds suite file `suite`: the parent of its `suites/`
+    directory, None for a suite elsewhere, which no `--suite` name reaches."""
+    suite = Path(suite).resolve()
+    return suite.parent.parent if suite.parent.name == SUITES else None
+
+
 def contest_out(suite: Path) -> Path:
     """The contest file of suite file `suite`: `<root>/contests/<name>.yaml` for a suite at `<root>/suites/<name>.yaml`,
     where `--contest <name>` finds it as `--suite <name>` finds the suite; else `<name>.contest.yaml` beside the suite."""
@@ -161,4 +173,4 @@ def benchmark_command(name: str, lanes: int | None = None, contest: str = CONTES
     return shlex.join(["arena", "evaluation", "benchmark", "--suite", name, "--contest", contest, *(["--lanes", str(lanes)] if lanes else [])])
 
 
-__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "contest_doc", "contest_out", "default_out", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]
+__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "RECORD", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "contest_doc", "contest_out", "default_out", "imported_for", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]
