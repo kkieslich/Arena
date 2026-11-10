@@ -1,4 +1,4 @@
-"""`flowedit`: build the FLOWEDIT graph of a world and scenario, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, write a split as a seed-paired benchmark suite, and write the INFRA Stage 1 suites."""
+"""`flowedit`: build the FLOWEDIT graph of a world and scenario, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, write a split as a seed-paired benchmark suite, forecast its flow, and write the INFRA Stage 1 suites."""
 
 from __future__ import annotations
 
@@ -215,18 +215,27 @@ def _cmd_suite(args: argparse.Namespace) -> int:
     stages = len(suite["stages"])
     if not stages:
         raise ValueError(f"crowd {args.crowd} runs on {SP.partitions_of(doc, args.crowd)}, none of {parts}: the suite would be empty")
+    contestants = SP.contest_of(doc)
     if args.dry_run:
         print(to_yaml(suite), end="")
+        if contestants:
+            print(f"(contest: {', '.join(c['name'] for c in contestants)})", file=sys.stderr)
         print(f"(dry run - no scenario or suite written, {stages} stages)", file=sys.stderr)
         return 0
     header = [f"split {args.split.name}, partitions {', '.join(parts)}, crowd {args.crowd}, settings {S.digest(crowd)}", f"{stages} stages, each one episode at the seed its name ends in; an edit stage pairs with its base world's stage at that seed"]
+    out = Path(args.out or SU.default_out(args.split, args.crowd))
     try:
-        written = SU.write(suite, args.out or SU.default_out(args.split, args.crowd), header, force=args.force)
+        if contestants:
+            contest = SU.write(SU.contest_doc(out.stem, contestants), SU.contest_out(out), [f"split {args.split.name}: the planners of suite {out.stem}"], force=args.force)
+        written = SU.write(suite, out, header, force=args.force)
     except ValueError as exc:
         print(f"flowedit: {exc}", file=sys.stderr)
         return 1
     print(f"wrote {written}: {stages} stages")
-    print(SU.benchmark_command(written.stem, args.lanes))
+    if contestants:
+        print(f"wrote {contest}: {len(contestants)} contestants")
+    # the contest has the suite's name, which `--contest` resolves as `--suite` does
+    print(SU.benchmark_command(written.stem, args.lanes, *([written.stem] if contestants else [])))
     return 0
 
 
@@ -367,7 +376,7 @@ def _cmd_infra_layouts(args: argparse.Namespace) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="flowedit", description="FLOWEDIT graphs: each object's demand on its KG node. `flowedit <verb> --help` lists a verb's options.")
-    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,edit,generate,read,run,sweep,suite,infra}")
+    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,edit,generate,read,run,sweep,suite,forecast,infra}")
     p = verbs.add_parser("build", help="build the graph of a world and scenario", description="build the graph of a world and scenario, a dry run that prints it without --write")
     p.add_argument("world", help="the world to build from")
     p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
@@ -465,20 +474,24 @@ def _parser() -> argparse.ArgumentParser:
     p = verbs.add_parser(
         "suite",
         help="write a split as a seed-paired benchmark suite",
-        description="generate the split's edited worlds again, read the crowd into every world at every seed of its partition, and write an arena_evaluation benchmark suite of one stage per world and seed, the stage's episode seed the reader's seed, so an edit stage pairs with its base world's stage at that seed; prints the `arena evaluation benchmark` call",
+        description="generate the split's edited worlds again, read the crowd into every world at every seed of its partition, and write an arena_evaluation benchmark suite of one stage per world and seed, the stage's episode seed the reader's seed, so an edit stage pairs with its base world's stage at that seed; with the split's robot_task the robot drives it in every stage, seen by the people, and the split's contest is written next to the suite; prints the `arena evaluation benchmark` call",
     )
     p.add_argument("split", type=Path, help="the split file (see split.py)")
     p.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to write; repeatable (default: all)")
     p.add_argument("--crowd", default=SP.BASE_CROWD, help=f"the crowd to write, `{SP.BASE_CROWD}` (the split's own settings, default) or one of its `crowds`; each crowd is its own suite")
     p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over the crowd's settings")
     p.add_argument("--out", type=Path, default=None, help="suite file (default: <imported assets root>/suites/flowedit_<split name>[__<crowd>].yaml, where `--suite` finds it by that name)")
-    p.add_argument("--robot", default=SU.ROBOT, help=f"robot of every stage, parked off the map and unseen (default {SU.ROBOT}, the robot of the shipped suites)")
+    p.add_argument("--robot", default=SU.ROBOT, help=f"robot of every stage (default {SU.ROBOT}, the robot of the shipped suites), parked off the map and unseen unless the split has a robot_task")
     p.add_argument("--lanes", type=int, default=2, help="lanes in the printed benchmark call (default 2)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds, then the resolvers)")
     p.add_argument("--no-generate", action="store_true", help="skip generating the edited worlds again")
     p.add_argument("--force", action="store_true", help="replace a suite file flowedit did not write")
     p.add_argument("--dry-run", action="store_true", help="print the suite without writing scenarios or the suite")
     p.set_defaults(fn=_cmd_suite)
+
+    from .forecast.cli import register
+
+    register(verbs)
 
     from . import infra as IN
     from . import search as SE

@@ -10,7 +10,6 @@ unknown and filter nothing. NAV@r is not a rule here: `placed_elements` hands a 
 from __future__ import annotations
 
 import collections
-import dataclasses
 import enum
 import fnmatch
 import hashlib
@@ -21,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import attrs
+
+from arena_simulation_setup.metrics.navr_filter import PlacedElement
 
 from .edit import SEPARATOR, EditType, Site, apply, save, world_object
 
@@ -133,17 +134,6 @@ CATALOG: Mapping[str, Element] = {
 }
 
 
-@dataclasses.dataclass(frozen=True)
-class PlacedElement:
-    """What the NAV@r filter needs of one placed object: its level-frame `footprint`, the `dock_point` a robot goes to,
-    and whether the object itself `blocks_floor` (a waiting bay does not; the filter parks a jackal on it)."""
-
-    name: str
-    footprint: shapely.Polygon
-    dock_point: Point
-    blocks_floor: bool
-
-
 @attrs.frozen(eq=False)
 class PlacedObject:
     """One object of a spot: its pose, level-frame footprint and dock, and the dock's goto point (the deepest point of
@@ -238,7 +228,7 @@ class Layout:
 
 
 def placed_elements(layout: Layout) -> list[PlacedElement]:
-    """The objects of `layout` as the NAV@r filter takes them, in layout order."""
+    """The objects of `layout` as the NAV@r filter takes them (`metrics.navr_filter.PlacedElement`), in layout order."""
     return [PlacedElement(o.name, o.footprint, o.goto, s.element.blocks_floor) for s in layout.spots for o in s.objects]
 
 

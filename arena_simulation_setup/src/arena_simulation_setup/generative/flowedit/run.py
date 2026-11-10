@@ -78,9 +78,10 @@ class Prepared:
         return f"{self.site.name}__{self.scenario}"
 
 
-def scenario_name(scenario: str | None, settings: Mapping[str, Any], seed: int) -> str:
-    """The generated scenario's name: one per settings and seed, so runs under other settings never overwrite it."""
-    return f"flowedit_{scenario or 'world'}_{S.digest(settings)[:8]}_s{seed}"
+def scenario_name(scenario: str | None, settings: Mapping[str, Any], seed: int, robot: Mapping[str, Any] | None = None) -> str:
+    """The generated scenario's name: one per settings, robot task and seed, so runs under other settings never overwrite it."""
+    task = "" if robot is None else f"_r{S.digest(robot)[:8]}"
+    return f"flowedit_{scenario or 'world'}_{S.digest(settings)[:8]}{task}_s{seed}"
 
 
 def base_site(worlds: Path | None, site: Site) -> Site:
@@ -107,10 +108,21 @@ def check_writable(worlds: Path | None, world: str, root: Path) -> None:
             raise ValueError(f"{root} is not where `flowedit edit` saves {root.name}, so it is not written")
 
 
-def prepare(site: Site, base: Site, edits: Sequence[Edit], settings: Mapping[str, Any], seed: int, notes: list[str] | None = None, *, dry_run: bool = False) -> Prepared:
+def prepare(
+    site: Site,
+    base: Site,
+    edits: Sequence[Edit],
+    settings: Mapping[str, Any],
+    seed: int,
+    notes: list[str] | None = None,
+    *,
+    robot: Mapping[str, Any] | None = None,
+    dry_run: bool = False,
+) -> Prepared:
     """Apply `edits` to `site` and save the edited world, then read the crowd into it. `base` is the unedited world the people come from.
 
-    A dry run applies the edits and reads the scenario without writing either."""
+    `robot`, a scenario `robots:` entry, is added after the crowd is read, so the people are the ones read without it; the
+    scenario then has its own name. A dry run applies the edits and reads the scenario without writing either."""
     notes = notes if notes is not None else []
     for edit in edits:
         site = apply(site, edit.type, edit.target, dict(edit.params))
@@ -118,7 +130,12 @@ def prepare(site: Site, base: Site, edits: Sequence[Edit], settings: Mapping[str
         # reopened from where it was saved, so the scenario is written into the saved world
         site = open_site(save(site), None, None, notes)
     result = read(site, settings, seed, notes, base=base)
-    name = scenario_name(site.scenario, settings, seed)
+    if robot is not None:
+        if result.doc.get("robots"):
+            raise ValueError("the crowd settings already give a robot (settings.robot), pass one robot only")
+        result.doc["robots"] = [dict(robot)]
+        result.provenance["robot_task"] = dict(robot)
+    name = scenario_name(site.scenario, settings, seed, robot)
     if not dry_run:
         write_scenario(result, name)
     return Prepared(site, name, dict(settings), seed, result.provenance, notes)
