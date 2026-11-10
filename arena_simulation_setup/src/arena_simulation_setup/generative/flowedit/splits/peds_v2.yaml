@@ -8,7 +8,7 @@
 #   held_out_edits   the other chains of every edit type on each train world (20 %: 2 of 10, 1 of 5) and their
 #                    controls, at seeds 6-8; their base worlds run at 6-8 as references
 #   held_out_worlds  reception, hallway_clinic, library and station_hall, each with authored demand (scenario
-#                    `demand`): the base world and chains 1-2 of every edit type the generator makes on it, with their
+#                    `demand`): the base world and chains 1-5 of every edit type the generator makes on it, with their
 #                    controls, at seeds 6-8; the base worlds also run at seeds 1-5 for baselines only (stale,
 #                    transplanted, across-seed floor), never trained on or scored
 #
@@ -34,10 +34,10 @@ sources:
   hallway_school: {scenario: demand, seed: 0, per_type: 5, steps: 1, controls: true}
   office_open_plan: {scenario: demand, seed: 0, per_type: 5, steps: 1, controls: true}
   waiting_hall_clinic: {scenario: demand, seed: 0, per_type: 5, steps: 1, controls: true}
-  reception: {scenario: demand, seed: 0, per_type: 2, steps: 1, controls: true}
-  hallway_clinic: {scenario: demand, seed: 0, per_type: 2, steps: 1, controls: true}
-  library: {scenario: demand, seed: 0, per_type: 2, steps: 1, controls: true}
-  station_hall: {scenario: demand, seed: 0, per_type: 2, steps: 1, controls: true}
+  reception: {scenario: demand, seed: 0, per_type: 5, steps: 1, controls: true}
+  hallway_clinic: {scenario: demand, seed: 0, per_type: 5, steps: 1, controls: true}
+  library: {scenario: demand, seed: 0, per_type: 5, steps: 1, controls: true}
+  station_hall: {scenario: demand, seed: 0, per_type: 5, steps: 1, controls: true}
 duration: 300
 # door entrances on: every exterior door gets a source and a sink (the defaults of settings.py written out)
 settings:
@@ -503,16 +503,40 @@ partitions:
   - reception__move_fountain__63e5ecb5
   - reception__insert_fountain_inert__aad910a5
   - reception__move_fountain_leave_demand__618f9b92
+  - reception__move_fountain__7c37c0dc
+  - reception__insert_fountain_inert__219e82a8
+  - reception__move_fountain_leave_demand__74062359
+  - reception__move_fountain__00eea728
+  - reception__insert_fountain_inert__04a4949a
+  - reception__move_fountain_leave_demand__e086fd8c
+  - reception__move_fountain__2b2f2ecf
+  - reception__insert_fountain_inert__48834e8b
+  - reception__move_fountain_leave_demand__6dc807de
   - reception__insert_gen_sm_waterdispenser_01a_1__8054be84
   - reception__insert_gen_sm_waterdispenser_01a_1_inert__0dd9341a
   - reception__insert_gen_sm_waterdispenser_01a_1__07b4d164
   - reception__insert_gen_sm_waterdispenser_01a_1_inert__f41cc3f5
+  - reception__insert_gen_sm_waterdispenser_01a_1__0d97b0c9
+  - reception__insert_gen_sm_waterdispenser_01a_1_inert__0dd22824
+  - reception__insert_gen_sm_waterdispenser_01a_1__490f8b65
+  - reception__insert_gen_sm_waterdispenser_01a_1_inert__dbaef63b
+  - reception__insert_gen_sm_waterdispenser_01a_1__df9d2f8c
+  - reception__insert_gen_sm_waterdispenser_01a_1_inert__77d13c07
   - reception__remove_fountain__ac2ede1b
   - reception__remove_gathering_area__11dc2d9b
+  - reception__remove_chair3__0ea0a8a1
+  - reception__remove_chair4__5467dd17
+  - reception__remove_vending_machine__9cbcd657
   - reception__function_fountain__37da001a
   - reception__function_fountain__13dfcc88
+  - reception__function_fountain__7a95246e
+  - reception__function_fountain__bf5401e5
+  - reception__function_fountain__b89e246c
   - reception__layout_add_gen_door_1__7ea3bc9c
   - reception__layout_add_gen_door_1__90f799c8
+  - reception__layout_move_door__618a45cf
+  - reception__layout_add_gen_door_1__7f46e7d6
+  - reception__layout_add_gen_door_1__c7f70142
   - hallway_clinic
   - hallway_clinic__move_fountain__4e45661e
   - hallway_clinic__insert_fountain_inert__b080f3d5
@@ -520,16 +544,40 @@ partitions:
   - hallway_clinic__move_fountain__d4242577
   - hallway_clinic__insert_fountain_inert__5e2b0cd2
   - hallway_clinic__move_fountain_leave_demand__8775ef7c
+  - hallway_clinic__move_fountain__0ebe70c9
+  - hallway_clinic__insert_fountain_inert__ef720a17
+  - hallway_clinic__move_fountain_leave_demand__ba750bf2
+  - hallway_clinic__move_fountain__de3a0f23
+  - hallway_clinic__insert_fountain_inert__eb970a23
+  - hallway_clinic__move_fountain_leave_demand__737ddb28
+  - hallway_clinic__move_fountain__628b1787
+  - hallway_clinic__insert_fountain_inert__e3a76369
+  - hallway_clinic__move_fountain_leave_demand__f273ac9b
   - hallway_clinic__insert_gen_sm_waterdispenser_01a_1__9fe2f5e9
   - hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__6a4fa04a
   - hallway_clinic__insert_gen_sm_waterdispenser_01a_1__7972ea45
   - hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__7e188c2e
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1__aaf3c124
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__72965d01
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1__220d5664
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__97f6f2a7
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1__38ab697e
+  - hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__3f905033
   - hallway_clinic__remove_fountain__222390d3
   - hallway_clinic__remove_reception_desk__387a66bb
+  - hallway_clinic__remove_reception_cabinet_1__ef94726d
+  - hallway_clinic__remove_wc_toilet_1__4ff2275c
+  - hallway_clinic__remove_exam_2_cabinet_1__77e83345
   - hallway_clinic__function_fountain__dac053f0
   - hallway_clinic__function_fountain__567ee503
+  - hallway_clinic__function_fountain__e76a9cc8
+  - hallway_clinic__function_fountain__a3562a1c
+  - hallway_clinic__function_fountain__0e059ff3
   - hallway_clinic__layout_add_gen_door_1__f044abba
   - hallway_clinic__layout_move_back_door__73167242
+  - hallway_clinic__layout_move_cafeteria_door__754bfef8
+  - hallway_clinic__layout_move_staff_office_door__786fbcc5
+  - hallway_clinic__layout_add_gen_door_1__dadd8af9
   - library
   - library__move_fountain__b1d68f48
   - library__insert_fountain_inert__c42eb2f4
@@ -537,18 +585,45 @@ partitions:
   - library__move_fountain__2c620ac6
   - library__insert_fountain_inert__3801350b
   - library__move_fountain_leave_demand__e123d185
+  - library__move_fountain__16afefcb
+  - library__insert_fountain_inert__bf41fb9b
+  - library__move_fountain_leave_demand__608573a0
+  - library__move_fountain__3bffa9b0
+  - library__insert_fountain_inert__5bc0bd18
+  - library__move_fountain_leave_demand__57ec37dc
+  - library__move_fountain__ca36095e
+  - library__insert_fountain_inert__c27f0261
+  - library__move_fountain_leave_demand__95a4f3c3
   - library__insert_gen_sm_drinksmachine_1__becd0782
   - library__insert_gen_sm_drinksmachine_1_inert__e678bfe0
   - library__insert_gen_sm_drinksmachine_1__67cd242e
   - library__insert_gen_sm_drinksmachine_1_inert__9e36591d
+  - library__insert_gen_sm_drinksmachine_1__160ffb3b
+  - library__insert_gen_sm_drinksmachine_1_inert__10445397
+  - library__insert_gen_sm_drinksmachine_1__f9fea709
+  - library__insert_gen_sm_drinksmachine_1_inert__cb51d0a6
+  - library__insert_gen_sm_drinksmachine_1__4b73518f
+  - library__insert_gen_sm_drinksmachine_1_inert__83d86cdc
   - library__remove_fountain__b7859388
   - library__remove_stack_2__9308d668
+  - library__remove_storage_rack_1__5a6f408a
+  - library__remove_reception_desk__a2a65e88
+  - library__remove_workstation_1__2574f189
   - library__function_fountain__2302210a
   - library__function_fountain__d7da7994
+  - library__function_fountain__0f8d3526
+  - library__function_fountain__5bc3655f
+  - library__function_fountain__dd2020f5
   - library__access_reading_corridor__b94ca030
   - library__access_cafe_reading__1ad1f2d3
+  - library__access_office_door__0777e90f
+  - library__access_lobby_cafe__9424cba9
+  - library__access_lobby_reading__7043ab1e
   - library__layout_add_gen_door_1__aaf9740e
   - library__layout_remove_lobby_reading__ec2d5aee
+  - library__layout_add_gen_door_1__ec97b350
+  - library__layout_add_gen_door_1__bcb2816b
+  - library__layout_move_group_study_2_door__c2b6a7e8
   - station_hall
   - station_hall__move_fountain__60acfaed
   - station_hall__insert_fountain_inert__fc603e3a
@@ -556,18 +631,42 @@ partitions:
   - station_hall__move_fountain__1cd7ac7f
   - station_hall__insert_fountain_inert__96a67f41
   - station_hall__move_fountain_leave_demand__094b7b15
+  - station_hall__move_fountain__13be770c
+  - station_hall__insert_fountain_inert__1e811129
+  - station_hall__move_fountain_leave_demand__35c2bb89
+  - station_hall__move_fountain_2__48639f47
+  - station_hall__insert_fountain_2_inert__16d85c36
+  - station_hall__move_fountain_2_leave_demand__0186f89e
+  - station_hall__move_fountain__ec86eb14
+  - station_hall__insert_fountain_inert__fbceaf49
+  - station_hall__move_fountain_leave_demand__a69a8d41
   - station_hall__insert_gen_sm_drinksmachine_1__341bef15
   - station_hall__insert_gen_sm_drinksmachine_1_inert__36f6aad3
   - station_hall__insert_gen_sm_waterdispenser_01a_1__66652e00
   - station_hall__insert_gen_sm_waterdispenser_01a_1_inert__6b008f3f
+  - station_hall__insert_gen_sm_drinksmachine_1__b08afcc4
+  - station_hall__insert_gen_sm_drinksmachine_1_inert__0dff5c66
+  - station_hall__insert_gen_sm_drinksmachine_1__4cdfc977
+  - station_hall__insert_gen_sm_drinksmachine_1_inert__ac6c3567
+  - station_hall__insert_gen_sm_drinksmachine_1__1418ae60
+  - station_hall__insert_gen_sm_drinksmachine_1_inert__bb74856e
   - station_hall__remove_fountain__760e662f
   - station_hall__remove_fountain_2__11322b6d
+  - station_hall__remove_waiting_bench_3__6fe6dd6b
+  - station_hall__remove_ticket_cabinet__b9a20878
+  - station_hall__remove_staff_sofa_1__219fafa7
   - station_hall__function_fountain_2__0e2a170b
   - station_hall__function_fountain__06089810
+  - station_hall__function_fountain_2__543ac61f
+  - station_hall__function_fountain__4a028660
+  - station_hall__function_fountain_2__649ca512
   - station_hall__access_waiting_door_1__86f01db4
   - station_hall__access_waiting_door_2__11ff76c8
   - station_hall__layout_move_waiting_door_1__4f956e9a
   - station_hall__layout_move_waiting_door_2__b5053728
+  - station_hall__layout_move_platform_1_stairs__ed117418
+  - station_hall__layout_move_east_door__521a44dd
+  - station_hall__layout_remove_waiting_door_1__1f343a6e
 # edit world: its geometry-only controls, as `flowedit generate --controls` links them in its manifest
 control_worlds:
   hospital_1__move_fountain__6e1d6873: [hospital_1__insert_fountain_inert__4a32a4fc, hospital_1__move_fountain_leave_demand__66723c25]
@@ -672,20 +771,44 @@ control_worlds:
   waiting_hall_clinic__insert_gen_sm_waterdispenser_01a_1__5b8ef93a: [waiting_hall_clinic__insert_gen_sm_waterdispenser_01a_1_inert__e4b68131]
   reception__move_fountain__41e7be35: [reception__insert_fountain_inert__932f6e87, reception__move_fountain_leave_demand__aa4eb795]
   reception__move_fountain__63e5ecb5: [reception__insert_fountain_inert__aad910a5, reception__move_fountain_leave_demand__618f9b92]
+  reception__move_fountain__7c37c0dc: [reception__insert_fountain_inert__219e82a8, reception__move_fountain_leave_demand__74062359]
+  reception__move_fountain__00eea728: [reception__insert_fountain_inert__04a4949a, reception__move_fountain_leave_demand__e086fd8c]
+  reception__move_fountain__2b2f2ecf: [reception__insert_fountain_inert__48834e8b, reception__move_fountain_leave_demand__6dc807de]
   reception__insert_gen_sm_waterdispenser_01a_1__8054be84: [reception__insert_gen_sm_waterdispenser_01a_1_inert__0dd9341a]
   reception__insert_gen_sm_waterdispenser_01a_1__07b4d164: [reception__insert_gen_sm_waterdispenser_01a_1_inert__f41cc3f5]
+  reception__insert_gen_sm_waterdispenser_01a_1__0d97b0c9: [reception__insert_gen_sm_waterdispenser_01a_1_inert__0dd22824]
+  reception__insert_gen_sm_waterdispenser_01a_1__490f8b65: [reception__insert_gen_sm_waterdispenser_01a_1_inert__dbaef63b]
+  reception__insert_gen_sm_waterdispenser_01a_1__df9d2f8c: [reception__insert_gen_sm_waterdispenser_01a_1_inert__77d13c07]
   hallway_clinic__move_fountain__4e45661e: [hallway_clinic__insert_fountain_inert__b080f3d5, hallway_clinic__move_fountain_leave_demand__ece58ece]
   hallway_clinic__move_fountain__d4242577: [hallway_clinic__insert_fountain_inert__5e2b0cd2, hallway_clinic__move_fountain_leave_demand__8775ef7c]
+  hallway_clinic__move_fountain__0ebe70c9: [hallway_clinic__insert_fountain_inert__ef720a17, hallway_clinic__move_fountain_leave_demand__ba750bf2]
+  hallway_clinic__move_fountain__de3a0f23: [hallway_clinic__insert_fountain_inert__eb970a23, hallway_clinic__move_fountain_leave_demand__737ddb28]
+  hallway_clinic__move_fountain__628b1787: [hallway_clinic__insert_fountain_inert__e3a76369, hallway_clinic__move_fountain_leave_demand__f273ac9b]
   hallway_clinic__insert_gen_sm_waterdispenser_01a_1__9fe2f5e9: [hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__6a4fa04a]
   hallway_clinic__insert_gen_sm_waterdispenser_01a_1__7972ea45: [hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__7e188c2e]
+  hallway_clinic__insert_gen_sm_waterdispenser_01a_1__aaf3c124: [hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__72965d01]
+  hallway_clinic__insert_gen_sm_waterdispenser_01a_1__220d5664: [hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__97f6f2a7]
+  hallway_clinic__insert_gen_sm_waterdispenser_01a_1__38ab697e: [hallway_clinic__insert_gen_sm_waterdispenser_01a_1_inert__3f905033]
   library__move_fountain__b1d68f48: [library__insert_fountain_inert__c42eb2f4, library__move_fountain_leave_demand__9d914e77]
   library__move_fountain__2c620ac6: [library__insert_fountain_inert__3801350b, library__move_fountain_leave_demand__e123d185]
+  library__move_fountain__16afefcb: [library__insert_fountain_inert__bf41fb9b, library__move_fountain_leave_demand__608573a0]
+  library__move_fountain__3bffa9b0: [library__insert_fountain_inert__5bc0bd18, library__move_fountain_leave_demand__57ec37dc]
+  library__move_fountain__ca36095e: [library__insert_fountain_inert__c27f0261, library__move_fountain_leave_demand__95a4f3c3]
   library__insert_gen_sm_drinksmachine_1__becd0782: [library__insert_gen_sm_drinksmachine_1_inert__e678bfe0]
   library__insert_gen_sm_drinksmachine_1__67cd242e: [library__insert_gen_sm_drinksmachine_1_inert__9e36591d]
+  library__insert_gen_sm_drinksmachine_1__160ffb3b: [library__insert_gen_sm_drinksmachine_1_inert__10445397]
+  library__insert_gen_sm_drinksmachine_1__f9fea709: [library__insert_gen_sm_drinksmachine_1_inert__cb51d0a6]
+  library__insert_gen_sm_drinksmachine_1__4b73518f: [library__insert_gen_sm_drinksmachine_1_inert__83d86cdc]
   station_hall__move_fountain__60acfaed: [station_hall__insert_fountain_inert__fc603e3a, station_hall__move_fountain_leave_demand__6386036b]
   station_hall__move_fountain__1cd7ac7f: [station_hall__insert_fountain_inert__96a67f41, station_hall__move_fountain_leave_demand__094b7b15]
+  station_hall__move_fountain__13be770c: [station_hall__insert_fountain_inert__1e811129, station_hall__move_fountain_leave_demand__35c2bb89]
+  station_hall__move_fountain_2__48639f47: [station_hall__insert_fountain_2_inert__16d85c36, station_hall__move_fountain_2_leave_demand__0186f89e]
+  station_hall__move_fountain__ec86eb14: [station_hall__insert_fountain_inert__fbceaf49, station_hall__move_fountain_leave_demand__a69a8d41]
   station_hall__insert_gen_sm_drinksmachine_1__341bef15: [station_hall__insert_gen_sm_drinksmachine_1_inert__36f6aad3]
   station_hall__insert_gen_sm_waterdispenser_01a_1__66652e00: [station_hall__insert_gen_sm_waterdispenser_01a_1_inert__6b008f3f]
+  station_hall__insert_gen_sm_drinksmachine_1__b08afcc4: [station_hall__insert_gen_sm_drinksmachine_1_inert__0dff5c66]
+  station_hall__insert_gen_sm_drinksmachine_1__4cdfc977: [station_hall__insert_gen_sm_drinksmachine_1_inert__ac6c3567]
+  station_hall__insert_gen_sm_drinksmachine_1__1418ae60: [station_hall__insert_gen_sm_drinksmachine_1_inert__bb74856e]
 # Test crowds (study design §6), fixed before the test runs: settings merged over `settings` above, each on the first
 # held-out chain of every edit type per train world and its controls, at seeds 6-8 with their bases' reference runs,
 # and the bases at seeds 1-3 under the same crowd for its baselines.

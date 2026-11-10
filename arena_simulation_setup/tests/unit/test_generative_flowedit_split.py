@@ -389,7 +389,9 @@ def test_data_v2_holds_out_what_the_design_says_with_entrances_on() -> None:
     # one chain per edit type the generator makes there: five, six where the plan has a lockable spare door
     assert all(len(held[base]) in (5, 6) for base in further)
     runs = SP.jobs(v2)
-    assert len(runs) == 1243 and len({(j.world, j.seed) for j in runs}) == 1243
+    assert len(runs) == 1540 and len({(j.world, j.seed) for j in runs}) == 1540
+    # every held-out world runs chains 1-5 of each edit type it has
+    assert all(v2["sources"][w]["per_type"] == 5 for w in ("reception", "hallway_clinic", "library", "station_hall"))
     baseline = sorted((j.world, j.seed) for j in runs if j.baseline)
     assert baseline == [(w, s) for w in ("hallway_clinic", "library", "reception", "station_hall") for s in (1, 2, 3, 4, 5)]
     assert all(j.partition == "held_out_worlds" for j in runs if j.baseline)
