@@ -308,10 +308,7 @@ with 3 decimals; battery charges are percent with 2.
 | `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
 
 `<i>` is the job's index in the stream, `<n>` and `<k>` count from 0 per episode. A job without `ended` was still
-queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures:
-task time is `ended - released` of completed jobs (filter on `released` for the warm-up), success rate is completed
-jobs over released ones (jobs still open at the episode end apart), charger queue time is `dispatched - queued`, and
-tasks per hour count completed jobs per hour of `ended`. The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
+queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures (kkieslich/arena-evaluation `evaluation infra`, its metrics README): task time T is the restricted mean of `ended - released` up to a horizon fixed per study, from the Kaplan-Meier estimate over the jobs released after the warm-up, a job not completed (open at the episode end, failed or abandoned) censored at its elapsed time, so the slow jobs an episode cuts off still count; success rate is completed jobs over ended ones; charger queue time is `dispatched - queued`; tasks per hour count completed jobs per hour of `ended`. The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
 
 ## Fleet manager
 
