@@ -478,6 +478,8 @@ def _cmd_tune(args: argparse.Namespace) -> int:
 def _cmd_train(args: argparse.Namespace) -> int:
     import yaml
 
+    from .evaluate import listed
+
     doc, runs, inputs = _setup(args)
     lr, steps, optimizer, picked = args.lr, args.steps, args.optimizer, None
     if args.tuned:
@@ -487,7 +489,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
     found = samples(inputs, runs, doc["partitions"].get("train") or [], SP.seeds_of(doc, "train"))
     _log(f"deepflow: {len(found)} worlds of train, each its runs pooled; CAGE sides " + ", ".join(sorted({f"{SP.base_of(w)} {inputs(w).rows.size}x{inputs(w).cols.size} of {inputs(w).grid_shape[0]}x{inputs(w).grid_shape[1]}" for w, *_ in found})))
     model, meta = train(found, steps=steps, lr=lr, optimizer=optimizer, batch=args.batch, seed=args.seed, device=args.device, log=_log)
-    meta.update({"split": str(args.split), "cells": str(args.cells), "crowd_seeds": list(inputs.sites.crowd_seeds), "tuned": picked})
+    meta.update({"split": str(args.split), "cells": listed(args.cells), "crowd_seeds": list(inputs.sites.crowd_seeds), "tuned": picked})
     save(args.out, model, meta)
     _log(f"wrote {args.out}")
     return 0
@@ -527,12 +529,14 @@ def _cmd_predict(args: argparse.Namespace, score_maps: Callable[..., Any]) -> in
 
 def register(verbs: argparse._SubParsersAction, common: Callable[[argparse.ArgumentParser], None], score_maps: Callable[..., Any]) -> None:
     """Add `deepflow train|predict` to `flowedit forecast baseline`."""
+    from .evaluate import CELLS_HELP, SEVERAL
+
     p = verbs.add_parser("deepflow", help="Deep Crowd-Flow (CAGE + SegNet): train on the split's runs, forecast its worlds", description="Deep Crowd-Flow retrained on the split's PEDS training runs, goals at the demand objects")
     sub = p.add_subparsers(dest="deepflow_verb", required=True, metavar="{tune,train,predict}")
 
     def training(q: argparse.ArgumentParser) -> None:
         common(q)
-        q.add_argument("--cells", type=Path, required=True, help="arena_evaluation's flow_cells.parquet of the split's benchmark")
+        q.add_argument("--cells", type=Path, action="append", required=True, help=CELLS_HELP)
         q.add_argument("--optimizer", choices=OPTIMIZERS, default="adam", help=f"adam (default, learning rate {ADAM_LR}); sgd: the paper's (learning rate {LR}, momentum {MOMENTUM}), which stays at the all-zero output on a split's few worlds")
         q.add_argument("--seed", type=int, default=0, help="seed of the initialization and the batches")
         q.add_argument("--device", default=None, help="torch device (default cuda when available)")
@@ -555,7 +559,7 @@ def register(verbs: argparse._SubParsersAction, common: Callable[[argparse.Argum
     q.add_argument("--model", type=Path, required=True, help="model file from `deepflow train`")
     q.add_argument("--device", default=None, help="torch device (default cuda when available)")
     q.add_argument("--out", type=Path, required=True, help="map file to write (parquet; `forecast score --predicted` reads it)")
-    q.add_argument("--cells", type=Path, default=None, help="flow_cells.parquet to score the maps against, beside the floors")
+    q.add_argument("--cells", type=Path, action="append", default=None, help=f"flow_cells.parquet to score the maps against, beside the floors; {SEVERAL}")
     q.add_argument("--report", type=Path, default=None, help="YAML of the scores")
     q.add_argument("--plots", type=Path, default=None, help="directory for a PNG per world")
     q.set_defaults(fn=lambda a: _cmd_predict(a, score_maps))

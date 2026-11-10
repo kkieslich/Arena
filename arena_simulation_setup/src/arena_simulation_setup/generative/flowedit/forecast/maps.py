@@ -53,6 +53,21 @@ def bin_centre(b: int) -> float:
     return -math.pi + (b + 0.5) * 2 * math.pi / HEADINGS
 
 
+def heading_bins(centres: Any) -> int | None:  # noqa: ANN401 - floats or an array
+    """The fewest heading bins n whose centres, -pi + (b + 0.5) * 2 pi / n, hold every one of `centres` (a flow map's
+    `heading_rad` values): the bins it was binned on. None without a centre; ValueError when no n up to 360 fits."""
+    import numpy as np
+
+    theta = np.unique(np.asarray(centres, dtype=float))
+    if theta.size == 0:
+        return None
+    for n in range(1, 361):
+        k = (theta + math.pi) * n / (2 * math.pi) - 0.5
+        if np.allclose(k, np.round(k), rtol=0.0, atol=1e-6):
+            return n
+    raise ValueError(f"headings {theta.tolist()[:4]}... are not the centres of up to 360 heading bins")
+
+
 @attrs.frozen
 class FlowGrid:
     """Square cells from (x0, y0), row i covering y0 + i * cell, each with HEADINGS heading bins and a standing bin."""
@@ -227,4 +242,4 @@ def pooled(maps: Sequence[np.ndarray]) -> np.ndarray | None:
     return None if not shares else np.mean(shares, axis=0)
 
 
-__all__ = ["BINS", "CELL_M", "HEADINGS", "STANDING", "FlowGrid", "bin_centre", "counts", "heading_bin", "jsd", "normalized", "occupancy", "pooled", "zone_polygons"]
+__all__ = ["BINS", "CELL_M", "HEADINGS", "STANDING", "FlowGrid", "bin_centre", "counts", "heading_bin", "heading_bins", "jsd", "normalized", "occupancy", "pooled", "zone_polygons"]

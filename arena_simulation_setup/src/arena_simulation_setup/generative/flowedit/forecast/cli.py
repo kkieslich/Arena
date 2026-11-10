@@ -11,7 +11,7 @@ import yaml
 
 from .. import settings as S
 from .. import split as SP
-from .evaluate import Forecaster, Runs, fit, targets
+from .evaluate import BENCHMARK_HELP, CELLS_HELP, Forecaster, Runs, fit, listed, targets
 from .maps import jsd
 from .model import Params, predict
 from .scene import CROWD_SEEDS
@@ -60,7 +60,7 @@ def _cmd_fit(args: argparse.Namespace) -> int:
             "crowd": args.crowd if args.crowd == "runs" else {"expected": list(CROWD_SEEDS)},
             "settings": S.digest(forecaster.settings),
             "duration": forecaster.duration,
-            "cells": str(args.cells),
+            "cells": listed(args.cells),
             "worlds": len(found),
             "mean_jsd": round(value, 5),
             "init_mean_jsd": round(float(sum(jsd(predict(t.layers, init), t.truth) for t in found) / len(found)), 5),
@@ -104,7 +104,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
     meta = {
         "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input),
         "split": str(args.split),
-        "cells": str(args.cells),
+        "cells": listed(args.cells),
         "partition": args.partition,
         "seeds": seeds,
         "fraction": args.fraction,
@@ -171,7 +171,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
         forecasters["demand model"] = lambda world: sites.predict(world, params, rasters.scenario_of.get(SP.base_of(world)))
     for name, path in _named(args.predicted, "--predicted"):
         forecasters[name or path.stem] = V.Predicted.load(path, sites.grid)
-    report: dict[str, Any] = {"format": FORMAT, "cells": str(args.cells), "nets": [str(p) for _, p in _named(args.net, "--net")], "params": str(args.params) if args.params else None, "partitions": {}}
+    report: dict[str, Any] = {"format": FORMAT, "cells": listed(args.cells), "nets": [str(p) for _, p in _named(args.net, "--net")], "params": str(args.params) if args.params else None, "partitions": {}}
     for partition in args.partition or [p for p in SP.PARTITIONS if p != "train"]:
         seeds = SP.seeds_of(doc, partition)
         found = V.truths(runs, doc, partition, _log)
@@ -221,31 +221,11 @@ def _scene(rasters: Any, world: str) -> Any:  # noqa: ANN401
     return scene_of(site, s.settings, s.duration, grid=s.grid(site.base), people=people)
 
 
-def _tracks_of(benchmark: Path, planner: str | None) -> Any:  # noqa: ANN401
-    """(world, seed) -> the track table of that stage's first episode in a processed benchmark run dir, None without."""
-    import polars as pl
+def _recorded(benchmarks: list[Path], grid_of: Any, planner: str | None) -> tuple[Runs, Any]:  # noqa: ANN401
+    """The flow maps and the track store of one or more processed benchmark run dirs (`--benchmark`, repeatable)."""
+    from .baselines import Tracks
 
-    from ..suite import parse_stage_name
-
-    metrics = pl.read_parquet(benchmark / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
-    if planner is not None:
-        metrics = metrics.filter(pl.col("planner") == planner)
-    where: dict[tuple[str, int], Path] = {}
-    for episode, stage, _, robot in metrics.iter_rows():
-        try:
-            key = parse_stage_name(str(stage))
-        except ValueError:
-            continue
-        env = str(robot or "env_0").split("_")
-        env_name = "_".join(env[:2]) if len(env) >= 2 and env[0] == "env" else "env_0"
-        where.setdefault(key, (benchmark / "episodes" / f"episode_{int(episode):03d}" / "topics" / ".derived", f"{env_name}.parquet"))
-
-    def tracks(world: str, seed: int) -> Any:  # noqa: ANN401
-        found = where.get((world, seed))
-        path = None if found is None else track_file(*found)
-        return pl.read_parquet(path) if path is not None else None
-
-    return tracks
+    return Runs.load([b / "flow_cells.parquet" for b in benchmarks], grid_of, planner=planner), Tracks.load(benchmarks, planner)
 
 
 def track_file(derived: Path, name: str) -> Path | None:
@@ -270,8 +250,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
     sites = rasters.sites
-    runs = Runs.load(args.benchmark / "flow_cells.parquet", sites.grid, planner=args.planner)
-    tracks = _tracks_of(args.benchmark, args.planner)
+    runs, tracks = _recorded(args.benchmark, sites.grid, args.planner)
     nets = _net_methods(_named(args.net, "--net"), rasters, args.device, _chosen(args.select))
     train_ws = [(w, V.world_seeds(doc, "train", w)) for w in doc["partitions"].get("train") or []]
     priors_of: dict[str, Any] = dict(nets)
@@ -292,7 +271,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
         else:
             raise SystemExit(f"curve: no strength for {name!r}: a learned prior has seen the train runs, so give --strength-file {name}=<forecast strength output> (or --strength)")
         _log(f"curve: {name} prior strength {strengths[name]:g} pedestrian-seconds ({how[name]})")
-    out: dict[str, Any] = {"format": FORMAT, "benchmark": str(args.benchmark), "counts": list(V.TRACK_COUNTS), "strength": strengths, "partitions": {}}
+    out: dict[str, Any] = {"format": FORMAT, "benchmark": listed(args.benchmark), "counts": list(V.TRACK_COUNTS), "strength": strengths, "partitions": {}}
     for partition in args.partition or ["held_out_edits"]:
         seeds = SP.seeds_of(doc, partition)
         curves: dict[str, list[list[float | None]]] = {n: [] for n in [*priors_of, V.ONE_SEED_FLOOR]}
@@ -363,7 +342,7 @@ def _cmd_select(args: argparse.Namespace) -> int:
 
     given = None if args.params is None else load_params(args.params)
     result = SE.select(rasters, runs, doc, params=given, fit_params=fit_params, seeds=args.seeds, steps=args.steps, device=args.device, log=_log)
-    result.update({"split": str(args.split), "cells": str(args.cells), "params": None if args.params is None else str(args.params)})
+    result.update({"split": str(args.split), "cells": listed(args.cells), "params": None if args.params is None else str(args.params)})
     arms = SE.ARMS
     lines = ["| held-out training world | worlds | " + " | ".join(SE.ARM_LABELS[a] for a in arms) + " |", "|---|---|" + "---|" * len(arms)]
     for f in result["folds"]:
@@ -384,8 +363,7 @@ def _cmd_strength(args: argparse.Namespace) -> int:
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
     sites = rasters.sites
-    runs = Runs.load(args.benchmark / "flow_cells.parquet", sites.grid, planner=args.planner)
-    tracks = _tracks_of(args.benchmark, args.planner)
+    runs, tracks = _recorded(args.benchmark, sites.grid, args.planner)
     worlds = list(doc["partitions"].get("train") or [])
     every = samples(runs, worlds, doc)
     folds = V.seed_folds(sorted({s.seed for s in every}))[: args.folds]
@@ -406,7 +384,7 @@ def _cmd_strength(args: argparse.Namespace) -> int:
         uni = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells()))
         rows.append({"held_out": list(fold), "net": net, "uniform": uni, "train": summary})
         _log(f"strength: fold {k + 1}: {label} best {min(net, key=net.__getitem__):g}, uniform best {min(uni, key=uni.__getitem__):g}")
-    out: dict[str, Any] = {"format": FORMAT, "split": str(args.split), "benchmark": str(args.benchmark), "prior": label, "demand": args.demand, "steps": args.steps, "counts": list(V.STRENGTH_COUNTS), "folds": rows}
+    out: dict[str, Any] = {"format": FORMAT, "split": str(args.split), "benchmark": listed(args.benchmark), "prior": label, "demand": args.demand, "steps": args.steps, "counts": list(V.STRENGTH_COUNTS), "folds": rows}
     for key in ("net", "uniform"):
         chosen, spread = V.choose_strength([r[key] for r in rows])
         out[key] = {"chosen": chosen, **spread}
@@ -527,7 +505,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
 
     def recorded(q: argparse.ArgumentParser) -> None:
         q.add_argument("split", type=Path, help="the split file (see split.py)")
-        q.add_argument("--cells", type=Path, required=True, help="arena_evaluation's flow_cells.parquet of the split's benchmark")
+        q.add_argument("--cells", type=Path, action="append", required=True, help=CELLS_HELP)
         common(q)
 
     def device(q: argparse.ArgumentParser) -> None:
@@ -561,7 +539,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
 
     q = sub.add_parser("curve", help="forecast error against post-edit tracks seen", description="the forecast as a Dirichlet prior updated with the tracks of one held-out seed's run, scored against the pooled map of the other seeds, beside the same update from a uniform prior")
     q.add_argument("split", type=Path, help="the split file (see split.py)")
-    q.add_argument("--benchmark", type=Path, required=True, help="the split's processed benchmark run dir (flow_cells.parquet, combined_metrics.parquet and the track store)")
+    q.add_argument("--benchmark", type=Path, action="append", required=True, help=BENCHMARK_HELP)
     common(q)
     device(q)
     q.add_argument("--net", action="append", required=True, metavar="[NAME=]NET", help="a network from `train`; repeatable")
@@ -593,7 +571,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
         description="leave-two-seeds-out over the train partition: per fold, train the network without the two seeds, then score each prior weight on the curve with tracks from one held-out seed and the truth at the other; the weight with the lowest mean over folds, with the fold spread",
     )
     q.add_argument("split", type=Path, help="the split file (see split.py)")
-    q.add_argument("--benchmark", type=Path, required=True, help="the split's processed benchmark run dir (flow_cells.parquet, combined_metrics.parquet and the track store)")
+    q.add_argument("--benchmark", type=Path, action="append", required=True, help=BENCHMARK_HELP)
     common(q)
     device(q)
     q.add_argument("--out", type=Path, required=True, help="YAML file of the folds and the chosen weights (`curve --strength-file NAME=FILE`)")

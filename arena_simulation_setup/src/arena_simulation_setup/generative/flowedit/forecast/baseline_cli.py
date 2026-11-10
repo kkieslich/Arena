@@ -12,7 +12,7 @@ import yaml
 
 from .. import split as SP
 from . import baselines as B
-from .evaluate import Forecaster, Runs
+from .evaluate import Forecaster, Runs, listed
 from .validity import floor as across_seed_floor
 
 FORMAT = "flowedit-forecast-baseline/1"
@@ -67,7 +67,7 @@ def _cmd_cliff(args: argparse.Namespace) -> int:
 
     doc = SP.load(args.split)
     sites = _forecaster(doc, args)
-    runs = Runs.load(args.benchmark / "flow_cells.parquet", sites.grid, planner=args.planner)
+    runs = Runs.load([b / "flow_cells.parquet" for b in args.benchmark], sites.grid, planner=args.planner)
     tracks = B.Tracks.load(args.benchmark, args.planner)
     given_params = CliffParams.load(yaml.safe_load(args.params.read_text()) or {}) if args.params else None
     priors = args.prior or list(PRIORS)
@@ -102,7 +102,7 @@ def _cmd_cliff(args: argparse.Namespace) -> int:
         _log(f"cliff ({prior}): chose decay {chosen[prior].decay:g}, radius {chosen[prior].radius_m:g} m, bandwidth {chosen[prior].bandwidth}")
     decays = {p: chosen[p].decay for p in priors}
     methods = {f"cliff ({p})": make(p, chosen[p]) for p in priors}
-    report: dict[str, Any] = {"format": FORMAT, "baseline": "cliff", "benchmark": str(args.benchmark), "params": {p: chosen[p].dump() for p in priors}, "decay": decays, "validation": validation, "tuning": tuning, "counts": list(counts), "orders": args.orders, "partitions": {}}
+    report: dict[str, Any] = {"format": FORMAT, "baseline": "cliff", "benchmark": listed(args.benchmark), "params": {p: chosen[p].dump() for p in priors}, "decay": decays, "validation": validation, "tuning": tuning, "counts": list(counts), "orders": args.orders, "partitions": {}}
     for partition in args.partition or ["held_out_edits"]:
         seeds = SP.seeds_of(doc, partition)
         rows = []
@@ -171,7 +171,7 @@ def _cmd_controls(args: argparse.Namespace) -> int:
     doc = SP.load(args.split)
     sites = _forecaster(doc, args)
     runs = Runs.load(args.cells, sites.grid, planner=args.planner)
-    report: dict[str, Any] = {"format": FORMAT, "baseline": "controls", "cells": str(args.cells), "partitions": {}}
+    report: dict[str, Any] = {"format": FORMAT, "baseline": "controls", "cells": listed(args.cells), "partitions": {}}
     cols = ("geometry_simulation", "stale_at_seen", "one_seed_floor")
     for partition in args.partition or [p for p in SP.PARTITIONS if p != "train"]:
         rows = B.controls(runs, doc, partition)
@@ -365,6 +365,8 @@ def _plot_figure(png: Path, partition: str, counts: Sequence[int], curves: Mappi
 
 def register(sub: argparse._SubParsersAction) -> None:
     """Add `baseline` and its verbs to `flowedit forecast`."""
+    from .evaluate import BENCHMARK_HELP, CELLS_HELP, SEVERAL
+
     p = sub.add_parser("baseline", help="the map baselines: online CLiFF-maps, geometry-only simulation and prior, Deep Crowd-Flow", description="the forecaster's map baselines on a split's recorded runs (see the flowedit README, Map baselines)")
     verbs = p.add_subparsers(dest="baseline_verb", required=True, metavar="{cliff,controls,geometry,deepflow,figure}")
 
@@ -377,7 +379,7 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     q = verbs.add_parser("cliff", help="online CLiFF-maps: error against post-edit tracks seen", description="online CLiFF-maps fed the tracks of one seed's run, one track per iteration, scored against the pooled map of the other seeds (leave one seed out), from an empty map and from the pre-edit map")
     common(q)
-    q.add_argument("--benchmark", type=Path, required=True, help="the split's processed benchmark run dir (flow_cells.parquet, combined_metrics.parquet, the track store)")
+    q.add_argument("--benchmark", type=Path, action="append", required=True, help=BENCHMARK_HELP)
     q.add_argument("--prior", action="append", choices=PRIORS, default=None, help="start from an empty map or the pre-edit map; repeatable (default both)")
     q.add_argument("--decay", action="append", default=None, metavar="[PRIOR=]LAMBDA", help="the decay rate lambda, for every prior or one (e.g. empty=0.99); repeatable. A prior without --decay or --params is tuned on the validation split of the train partition")
     q.add_argument("--params", type=Path, default=None, help="YAML of CliffParams fields, for every prior (no tuning)")
@@ -389,14 +391,14 @@ def register(sub: argparse._SubParsersAction) -> None:
 
     q = verbs.add_parser("controls", help="geometry-only simulation: the controls' runs as their edit's map", description="each geometry-only control's recorded run at one seed as the map of its function-carrying edit, against the edit's other seeds")
     common(q)
-    q.add_argument("--cells", type=Path, required=True, help="arena_evaluation's flow_cells.parquet of the split's benchmark")
+    q.add_argument("--cells", type=Path, action="append", required=True, help=CELLS_HELP)
     q.add_argument("--out", type=Path, default=None, help="YAML of every row")
     q.set_defaults(fn=_cmd_controls)
 
     q = verbs.add_parser("geometry", help="geometry-only prior: shortest paths between the entrances", description="flow along the shortest paths between every pair of entrances of the edited floor, no demand; writes a map file")
     common(q)
     q.add_argument("--out", type=Path, required=True, help="map file to write (parquet; `forecast score --predicted` reads it)")
-    q.add_argument("--cells", type=Path, default=None, help="flow_cells.parquet: tune the spreads on the validation split of the train partition, then score the maps beside the floors (without it, the default spreads)")
+    q.add_argument("--cells", type=Path, action="append", default=None, help=f"flow_cells.parquet: tune the spreads on the validation split of the train partition, then score the maps beside the floors (without it, the default spreads); {SEVERAL}")
     q.add_argument("--report", type=Path, default=None, help="YAML of the entrances walked, the tuning and the scores")
     q.add_argument("--plots", type=Path, default=None, help="directory for a PNG per world")
     q.set_defaults(fn=_cmd_geometry)

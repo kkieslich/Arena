@@ -352,6 +352,19 @@ flowedit forecast predict office_1__move_fountain__2af43765 --net net.pt --split
 
 Training takes a few minutes on a GPU (`--device`, default cuda when available).
 
+**Runs from several run dirs.** Every verb that reads recorded runs takes `--cells` (or `--benchmark`) more than once: one split's runs recorded into several run dirs, e.g. `--partition train --partition held_out_edits` on one machine and `--partition held_out_worlds` on another, each processed there with `arena evaluation process`, are read as one (`evaluate.read_cells`):
+
+```bash
+flowedit forecast fit $S --cells home/flow_cells.parquet --cells institute/flow_cells.parquet --out params.yaml
+flowedit forecast curve $S --benchmark home --benchmark institute --net forecaster=net.pt --strength-file forecaster=strength.yaml --out curve.yaml
+```
+
+- The rows are concatenated. A stage (contestant and `<world>__s<seed>`) that two files hold with the same rows is read once.
+- Reading stops when two files hold one stage with different rows (two runs of it), lay different flow grids (cell size, heading bins), or hold different crowds: the manifest of a file's run dir, where it lies beside the file, names each stage's scenario file, which carries the digests of the crowd settings and the robot task. Read a test crowd's or H2's runs on their own.
+- A run dir does not record its humansim commit, so the reader cannot compare it: record every run dir with one Arena release.
+- With `--benchmark`, a stage's tracks come from the first run dir that holds it.
+- Output files list every input file (`cells`, `benchmark`); with one, they keep its path as before.
+
 ### Map files (`score --predicted`)
 
 Any forecaster or baseline joins `score` as a parquet file of cell rows, one map per world, on the world's base grid:
