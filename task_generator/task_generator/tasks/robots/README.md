@@ -229,6 +229,7 @@ words a goto as walking directions through the world's doors and openings.
 | `reserve` | 10 | battery percent a job must leave by its energy estimate, else the robot charges first |
 | `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
 | `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
+| `jam_window_s`, `jam_progress_m`, `jam_goal_m` | 60, 0.5, 1 | the jam rule (INFRA §8): a robot on a job leg or a charging trip that moves less than `jam_progress_m` within `jam_window_s`, further than `jam_goal_m` from its target, is jammed; `jam_window_s: 0` turns it off |
 | `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job may take from its assignment, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
 
 - Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
@@ -253,6 +254,11 @@ words a goto as walking directions through the world's doors and openings.
   estimate (the straight line from the robot to both docks, times `detour`; for a charging trip, to the charger), so
   a job across the twin's 313 m route gets about 300 + 5 x 1.2 x 313 = 2,180 s and a short one about 360 s. Neither is queued again: the job ends there, its docks are freed and the robot goes
   home (or runs the outside task, and goes home once that is done).
+- **Jams.** Each tick the mode keeps the positions of the robots on a job leg or a charging trip. A robot whose
+  positions over the last `jam_window_s` all lie within `jam_progress_m` of the first is jammed: its job fails with
+  reason `jam` (its charge is abandoned with reason `jam`), its docks are freed and it is teleported to its home,
+  where it parks. Within `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
+  Each jam is logged with the distance to the nearest other robot, so robot-robot jams can be told apart.
 - **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
   a charger lowest battery first: a robot parked on its charger home charges there, any other takes a charger whose
   holder is away (on a job, or freed) and swaps homes with it. Chargers are the world's objects with
@@ -288,6 +294,9 @@ with 3 decimals; battery charges are percent with 2.
 | `charge.<n>.ended`, `charge.<n>.outcome`, `charge.<n>.soc_end` | when the charge ended, as `charged` (reached `charge_until`) or `abandoned`, and the charge then |
 | `charge.<n>.reason` | for `abandoned`: the failed trip's reason, `timeout` or `assigned from outside` |
 | `empty.<k>.robot`, `empty.<k>.at` | a robot whose battery reached 0 %, and when |
+| `jam.<k>.robot`, `jam.<k>.at`, `jam.<k>.target` | a jammed robot, when, and the dock or charger it was headed for |
+| `jam.<k>.job` or `jam.<k>.charge` | the job that failed, or the charge abandoned, by the jam |
+| `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
 
 `<i>` is the job's index in the stream, `<n>` and `<k>` count from 0 per episode. A job without `ended` was still
 queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures:

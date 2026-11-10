@@ -96,6 +96,9 @@ class TM_Fleet(TM_Robots):
     _detour: ROSParamT[float]
     _job_timeout: ROSParamT[float]
     _job_timeout_per_m: ROSParamT[float]
+    _jam_window_s: ROSParamT[float]
+    _jam_progress_m: ROSParamT[float]
+    _jam_goal_m: ROSParamT[float]
 
     def __init__(self, **kwargs: typing.Unpack[TaskModeKwargs]) -> None:
         super().__init__(**kwargs)
@@ -114,6 +117,9 @@ class TM_Fleet(TM_Robots):
         self._detour = self.node.ROSParam[float](self.namespace("detour"), 1.2)
         self._job_timeout = self.node.ROSParam[float](self.namespace("job_timeout"), 300.0)
         self._job_timeout_per_m = self.node.ROSParam[float](self.namespace("job_timeout_per_m"), 5.0)
+        self._jam_window_s = self.node.ROSParam[float](self.namespace("jam_window_s"), 60.0)
+        self._jam_progress_m = self.node.ROSParam[float](self.namespace("jam_progress_m"), 0.5)
+        self._jam_goal_m = self.node.ROSParam[float](self.namespace("jam_goal_m"), 1.0)
 
         self._chargers: list[str] = []
         self._xy: dict[str, tuple[float, float]] = {}
@@ -129,6 +135,8 @@ class TM_Fleet(TM_Robots):
         self._charges = itertools.count()
         self._empty: set[str] = set()
         self._empties = itertools.count()
+        self._tracks: dict[str, deque[tuple[float, float, float]]] = {}
+        self._jams = itertools.count()
         self._log: dict[str, str] = {}
         self._log_changed = False
         self._jobs: Iterator[Job] = iter(())
@@ -169,6 +177,7 @@ class TM_Fleet(TM_Robots):
         self._run, self._docks, self._queue = {}, {}, deque()
         self._charge_queue, self._charge, self._charges = {}, {}, itertools.count()
         self._empty, self._empties = set(), itertools.count()
+        self._tracks, self._jams = {}, itertools.count()
         for robot in robots:
             start = robot.resolve_target(GoToPhase(target=self._home[robot.name])).pose
             assert start is not None, f"{robot.name}'s home {self._home[robot.name]!r} has no dispatch pose"
@@ -211,6 +220,7 @@ class TM_Fleet(TM_Robots):
                 self._follow_job(name, state, last, now)
             elif state is _State.CHARGE:
                 self._follow_charge(name, last, now)
+        await self._watch_jams(now)
 
         for name in sorted((name for name, state in self._state.items() if state is _State.WAIT), key=lambda name: typing.cast(float, self._run[name].waiting_s)):
             run = self._run[name]
@@ -470,6 +480,62 @@ class TM_Fleet(TM_Robots):
                 self._note(f"empty.{index}.at", _s(now))
             elif soc > 0.0:
                 self._empty.discard(name)
+
+    # JAMS
+
+    async def _watch_jams(self, now: float) -> None:
+        """§8's jam rule: a robot on a job leg or a charging trip that moved less than `jam_progress_m` from where the
+        last `jam_window_s` started fails its job (reason `jam`) or abandons its charge, and is reset to its home. Within
+        `jam_goal_m` of its target it is docking or holding, and its window starts again. Each jam is logged with the
+        distance to the nearest other robot, so robot-robot jams can be told apart."""
+        window = self._jam_window_s.value
+        for name, state in list(self._state.items()):
+            target = self._jam_target(name, state)
+            if window <= 0.0 or target is None or self._ctx.robots[name].pose is None:
+                self._tracks.pop(name, None)
+                continue
+            x, y = self._where(name)
+            if math.dist((x, y), self._xy[target]) <= self._jam_goal_m.value:
+                self._tracks.pop(name, None)
+                continue
+            track = self._tracks.setdefault(name, deque())
+            track.append((now, x, y))
+            while len(track) > 1 and now - track[1][0] >= window:
+                track.popleft()
+            t0, x0, y0 = track[0]
+            if now - t0 < window or any(math.dist((x0, y0), (px, py)) >= self._jam_progress_m.value for _, px, py in track):
+                continue
+            await self._unjam(name, state, target, now)
+
+    def _jam_target(self, name: str, state: _State) -> str | None:
+        """Where the robot is headed on a job leg or a charging trip, None otherwise."""
+        if state is _State.JOB:
+            run = self._run[name]
+            return run.docks[run.leg]
+        if state is _State.CHARGE and self._charge[name].started_s is None:
+            return self._charge[name].charger
+        return None
+
+    async def _unjam(self, name: str, state: _State, target: str, now: float) -> None:
+        index = next(self._jams)
+        others = [math.dist(self._where(name), self._where(other)) for other in self._state if other != name and self._ctx.robots[other].pose is not None]
+        self._note(f"jam.{index}.robot", name)
+        self._note(f"jam.{index}.at", _s(now))
+        self._note(f"jam.{index}.target", target)
+        if others:
+            self._note(f"jam.{index}.robot_m", f"{min(others):.2f}")
+        if state is _State.JOB:
+            self._note(f"jam.{index}.job", str(self._run[name].job.index))
+            self._end_job(name, "failed", "jam", now)
+        else:
+            self._note(f"jam.{index}.charge", str(self._charge[name].index))
+            self._end_charge(name, "abandoned", "jam", now)
+        self._tracks.pop(name, None)
+        robot = self._ctx.robots[name]
+        home = robot.resolve_target(GoToPhase(target=self._home[name])).pose
+        if home is not None:
+            await robot.move(home)
+        self._logger.warning(f"{name} jammed on its way to {target}: under {self._jam_progress_m.value:g} m in {self._jam_window_s.value:g} s, reset to {self._home[name]}, {now:.1f} s")
 
     # OUTSIDE TASKS AND PLUMBING
 
