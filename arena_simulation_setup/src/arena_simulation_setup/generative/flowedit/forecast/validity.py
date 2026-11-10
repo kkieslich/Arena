@@ -55,10 +55,19 @@ class Truth:
     map: Any
 
 
+def world_seeds(doc: Mapping[str, Any], partition: str, world: str) -> list[int]:
+    """The seeds `partition` scores `world` at: the partition's list, or its `bases` / `edits` list when the split gives
+    them apart. A partition's `baseline_seeds` are never scored."""
+    entry = (doc.get("seeds") or {}).get(partition) if isinstance(doc.get("seeds"), Mapping) else None
+    if isinstance(entry, Mapping):
+        return [int(s) for s in entry["bases" if SP.is_base(world) else "edits"]]
+    return SP.seeds_of(doc, partition)
+
+
 def truths(runs: Runs, doc: Mapping[str, Any], partition: str, log: Callable[[str], None] = print) -> list[Truth]:
-    seeds = SP.seeds_of(doc, partition)
     out = []
     for world in doc["partitions"].get(partition) or []:
+        seeds = world_seeds(doc, partition, world)
         have = runs.seeds(world, seeds)
         if not have:
             log(f"{world}: no recorded map at seeds {seeds}, left out")
@@ -302,4 +311,4 @@ def fit_strength(world_seeds: Sequence[tuple[str, Sequence[int]]], tracks_of: Ca
     return best
 
 
-__all__ = ["PREDICTED_COLUMNS", "TRACK_COUNTS", "Method", "Predicted", "Truth", "changes", "curve", "dirichlet", "fit_strength", "floor", "other_seeds", "score", "stale", "table", "track_maps", "transplant", "truths", "uniform", "write_predicted"]
+__all__ = ["PREDICTED_COLUMNS", "TRACK_COUNTS", "Method", "Predicted", "Truth", "changes", "curve", "dirichlet", "fit_strength", "floor", "other_seeds", "score", "stale", "table", "track_maps", "transplant", "truths", "uniform", "world_seeds", "write_predicted"]

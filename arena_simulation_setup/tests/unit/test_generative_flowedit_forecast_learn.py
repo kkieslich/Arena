@@ -213,3 +213,20 @@ def test_training_runs_leave_out_the_seeds_the_held_out_partitions_score() -> No
     assert held_out_seeds(doc, "b") == {6} and held_out_seeds(doc, "o") == {7}
     # the base world's extra seeds 3 and 4 train too; its reference run at the held-out seed 6 does not
     assert [(s.world, s.seed) for s in samples(runs, ["b", "b__move_f__1"], doc)] == [("b", 1), ("b", 2), ("b", 3), ("b", 4), ("b__move_f__1", 1)]
+
+
+def test_a_split_with_seeds_apart_for_bases_and_edits_scores_each_at_its_own_and_never_trains_on_baseline_seeds() -> None:
+    from arena_simulation_setup.generative.flowedit.forecast.learn import held_out_seeds
+
+    doc = {
+        "partitions": {"train": ["b", "b__move_f__1"], "held_out_edits": ["b__move_f__2"], "held_out_worlds": ["o", "o__move_f__3"]},
+        "seeds": {"train": {"bases": [1, 2, 3], "edits": [1]}, "held_out_edits": [6], "held_out_worlds": [6]},
+        "baseline_seeds": {"held_out_worlds": [9], "held_out_edits": [10]},
+    }
+    assert V.world_seeds(doc, "train", "b") == [1, 2, 3] and V.world_seeds(doc, "train", "b__move_f__1") == [1]
+    m = np.random.default_rng(5).random((2, 3, M.BINS))
+    runs = _runs({("o", 6): m, ("o", 9): m, ("o__move_f__3", 6): m})
+    found = V.truths(runs, doc, "held_out_worlds")
+    assert [(t.world, t.seeds) for t in found] == [("o", (6,)), ("o__move_f__3", (6,))]
+    assert V.other_seeds(runs, "o", [6]) == [9]
+    assert held_out_seeds(doc, "b") == {6, 10}

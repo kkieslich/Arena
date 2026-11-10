@@ -97,12 +97,14 @@ class Sample:
 
 
 def held_out_seeds(doc: Mapping[str, Any], base: str, partition: str = "train") -> set[int]:
-    """The seeds the other partitions score worlds of `base` at: a training run of `base`'s worlds at one of them would be
-    a crowd draw the scores see (the pilot's base world runs at the held-out edits' seeds as their reference)."""
+    """The seeds the other partitions score worlds of `base` at, and their `baseline_seeds` (runs for the baselines only): a
+    training run of `base`'s worlds at a scored seed would be a crowd draw the scores see (the pilot's base world runs at
+    the held-out edits' seeds as their reference)."""
     out: set[int] = set()
+    baseline = doc.get("baseline_seeds") or {}
     for p in SP.PARTITIONS:
         if p != partition and any(SP.base_of(w) == base for w in doc["partitions"].get(p) or []):
-            out |= set(SP.seeds_of(doc, p))
+            out |= set(SP.seeds_of(doc, p)) | {int(s) for s in baseline.get(p) or []}
     return out
 
 

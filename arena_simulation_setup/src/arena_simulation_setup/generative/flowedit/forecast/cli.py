@@ -157,7 +157,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
         methods = {**forecasters, "stale": V.stale(runs, seeds), "transplanted": V.transplant(runs, seeds, sites, rasters.scenario_of)}
         rows = V.score(found, methods, doc, coarse=[n for n in forecasters if n in ("forecaster",)])
         cols = [c for c in rows[0] if c not in ("world", "what", "seeds")] if rows else []
-        floors = {base: V.floor(runs, base, seeds) for base in sorted({SP.base_of(t.world) for t in found})}
+        floors = {base: V.floor(runs, base, V.world_seeds(doc, partition, base)) for base in sorted({SP.base_of(t.world) for t in found})}
         change = V.changes(found, runs, forecasters, doc)
         others = {base: V.other_seeds(runs, base, seeds) for base in floors}
         print(f"## {partition} (scored seeds {seeds}; stale and transplanted from base runs at seeds {others})\n\n{V.table(rows, cols)}\n")
@@ -235,7 +235,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
     runs = Runs.load(args.benchmark / "flow_cells.parquet", sites.grid, planner=args.planner)
     tracks = _tracks_of(args.benchmark, args.planner)
     nets = _net_methods(_named(args.net, "--net"), rasters, args.device)
-    train_ws = [(w, SP.seeds_of(doc, "train")) for w in doc["partitions"].get("train") or []]
+    train_ws = [(w, V.world_seeds(doc, "train", w)) for w in doc["partitions"].get("train") or []]
     priors_of: dict[str, Any] = dict(nets)
     priors_of["uniform (online only)"] = lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells())
     strengths = {}
@@ -250,7 +250,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
             if SP.is_base(world):
                 continue
             grid = sites.grid(SP.base_of(world))
-            res = V.curve(world, seeds, tracks, runs, grid, {n: (p(world), strengths[n]) for n, p in priors_of.items()})
+            res = V.curve(world, V.world_seeds(doc, partition, world), tracks, runs, grid, {n: (p(world), strengths[n]) for n, p in priors_of.items()})
             for n, v in res.items():
                 curves[n].append(v)
         mean = {n: [float(np.mean([c[i] for c in v if c[i] is not None])) if any(c[i] is not None for c in v) else None for i in range(len(V.TRACK_COUNTS))] for n, v in curves.items()}
