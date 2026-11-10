@@ -182,7 +182,7 @@ def test_a_few_training_steps_lower_the_loss_and_a_saved_net_forecasts_the_same(
     counts[M.STANDING, i, j] = r.people * 300.0
 
     class Fixed:
-        def __call__(self, world: str, demand: bool = True):  # noqa: ANN204
+        def __call__(self, world: str, demand: bool = True, demand_model=None):  # noqa: ANN001, ANN204
             return r
 
     model, summary = train(Fixed(), [Sample(queue.name, 1, counts)], steps=60, batch=2, device="cpu", log=lambda _: None)
@@ -193,6 +193,41 @@ def test_a_few_training_steps_lower_the_loss_and_a_saved_net_forecasts_the_same(
     save(tmp_path / "net.pt", model, {"demand": True})
     again, meta = load(tmp_path / "net.pt")
     assert np.allclose(predict(again, r), forecast, atol=1e-5) and meta["demand"] is True
+
+
+@pytest.mark.usefixtures("local_root")
+def test_the_demand_model_variant_takes_the_forecast_as_input_layers_and_keeps_them_through_save(queue, tmp_path: Path) -> None:  # noqa: ANN001
+    pytest.importorskip("torch")
+    import attrs
+
+    from arena_simulation_setup.generative.flowedit.forecast.learn import Sample, load, predict, save, train
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    r, scene = _raster(queue, queue)
+    extra = np.zeros((M.BINS, r.grid.ny, r.grid.nx), np.float32)
+    i, j, _ = r.grid.index(*scene.demands[0].spot(0))
+    extra[M.STANDING, i, j] = 5.0
+    with_input = attrs.evolve(r, extra=extra)
+    counts = np.zeros((M.BINS, r.grid.ny, r.grid.nx), np.float32)
+    counts[M.STANDING, i, j] = r.people * 300.0
+    asked = []
+
+    class Fixed:
+        def __call__(self, world: str, demand: bool = True, demand_model=None):  # noqa: ANN001, ANN204
+            asked.append(demand_model)
+            return with_input if demand_model is not None else r
+
+    params = Params(sigma=0.3)
+    model, _ = train(Fixed(), [Sample(queue.name, 1, counts)], steps=30, batch=2, device="cpu", demand_model=params, log=lambda _: None)
+    assert model.extra == M.BINS and asked == [params]
+    forecast = predict(model, with_input)
+    with pytest.raises(ValueError, match="extra input layers"):
+        predict(model, r)
+    save(tmp_path / "net.pt", model, {})
+    again, _ = load(tmp_path / "net.pt")
+    assert again.extra == M.BINS and again.demand_model == params and np.allclose(predict(again, with_input), forecast, atol=1e-5)
+    with pytest.raises(ValueError, match="demand ablation"):
+        train(Fixed(), [Sample(queue.name, 1, counts)], demand=False, steps=1, device="cpu", demand_model=params, log=lambda _: None)
 
 
 def test_chains_keep_an_edit_with_its_controls() -> None:

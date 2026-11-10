@@ -125,17 +125,23 @@ class UNet(nn.Module):
 class Forecaster(nn.Module):
     """Raster in, (BINS, ny, nx) expected pedestrian-seconds out."""
 
-    def __init__(self, demand: bool = True) -> None:
+    def __init__(self, demand: bool = True, extra: int = 0) -> None:
+        """`extra`: input layers beyond the raster's own (a Raster's `extra`), such as the demand model's forecast."""
         super().__init__()
         self.demand = demand
+        self.extra = extra
         self.gnn = GNN()
         self.need = nn.Sequential(nn.Conv2d(len(NEED_CHANNELS), 16, 3, padding=1), nn.SiLU(), nn.Conv2d(16, NEED_DIM, 3, padding=1))
-        self.unet = UNet(len(CHANNELS) + NEED_DIM + DIM * len(WRITTEN))
+        self.unet = UNet(len(CHANNELS) + extra + NEED_DIM + DIM * len(WRITTEN))
 
     def inputs(self, r: Tensors) -> torch.Tensor:
         """(C, ny, nx): the raster's channels, the need features and the GNN embeddings on their cells, in the world's frame."""
         h = self.gnn(r.x, r.edges)
         layers = [r.channels]
+        if self.extra:
+            if r.extra is None or r.extra.shape[0] != self.extra:
+                raise ValueError(f"the network takes {self.extra} extra input layers, the raster has {0 if r.extra is None else r.extra.shape[0]}")
+            layers.append(r.extra)
         if r.need_channels.shape[0]:
             layers.append(self.need(r.need_channels).sum(0))
         else:
@@ -177,6 +183,7 @@ class Tensors:
 
         t = lambda a, dtype=torch.float32: torch.as_tensor(np.asarray(a), dtype=dtype, device=device)  # noqa: E731
         self.channels = t(r.channels)
+        self.extra = None if r.extra is None else t(r.extra)
         self.need_channels = t(r.need_channels) if demand else t(np.zeros((0, *r.need_channels.shape[1:]), np.float32))
         kinds = NODE_KINDS if demand else ("room", "door")
         self.x = {k: t(r.nodes[k].x) if k in kinds else t(np.zeros((0, len(NODE_FEATURES[k])), np.float32)) for k in NODE_KINDS}

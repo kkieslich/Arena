@@ -91,6 +91,8 @@ class Raster:
     scale: float
     people: float
     demand: bool = True
+    #: extra input layers (E, ny, nx), None without: the demand model's forecast for the `--demand-model-input` variant
+    extra: Any = None
 
 
 def _pool(a: np.ndarray, sub: int) -> np.ndarray:

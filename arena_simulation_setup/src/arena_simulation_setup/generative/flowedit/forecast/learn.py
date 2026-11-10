@@ -23,6 +23,8 @@ import attrs
 from .. import split as SP
 from .evaluate import Forecaster as Sites
 from .evaluate import Runs
+from .maps import BINS
+from .model import Params
 
 if TYPE_CHECKING:
     import numpy as np
@@ -39,21 +41,29 @@ COARSE = 0.5
 
 @attrs.define
 class Rasters:
-    """Rasters of a split's worlds under one crowd setting, cached per (world, demand)."""
+    """Rasters of a split's worlds under one crowd setting, cached per (world, demand, demand model input)."""
 
     sites: Sites
     scenario_of: Mapping[str, str | None]
-    _cache: dict[tuple[str, bool], Raster] = attrs.Factory(dict)
+    _cache: dict[tuple[str, bool, tuple[float, ...] | None], Raster] = attrs.Factory(dict)
 
     @classmethod
     def of(cls, doc: Mapping[str, Any], settings: Mapping[str, Any], worlds: Path | None = None) -> Rasters:
         return cls(Sites(settings, SP.duration_of(doc), worlds=worlds), {base: src.get("scenario") for base, src in (doc.get("sources") or {}).items()})
 
-    def __call__(self, world: str, demand: bool = True) -> Raster:
+    def __call__(self, world: str, demand: bool = True, demand_model: Params | None = None) -> Raster:
+        """The raster of `world`; `demand_model` adds the demand model's forecast with these params as BINS extra layers, in
+        units of the crowd's pedestrian-seconds per room cell (the `--demand-model-input` variant)."""
+        import numpy as np
+
         from .raster import raster
         from .scene import base_people, scene_of
 
-        key = (world, demand)
+        key = (world, demand, None if demand_model is None else tuple(demand_model.vector()))
+        if key[2] is not None and key not in self._cache:
+            plain = self(world, demand)
+            forecast = self.sites.predict(world, demand_model, self.scenario_of.get(SP.base_of(world)))
+            self._cache[key] = attrs.evolve(plain, extra=(np.moveaxis(forecast, -1, 0) / max(plain.scale, 1e-9)).astype(np.float32))
         if key not in self._cache:
             s = self.sites
             site = s.site(world, self.scenario_of.get(SP.base_of(world)))
@@ -129,9 +139,11 @@ def train(
     batch: int = BATCH,
     seed: int = 0,
     device: str | None = None,
+    demand_model: Params | None = None,
     log: Callable[[str], None] = print,
 ) -> tuple[Any, dict[str, Any]]:
-    """The trained network and a summary (losses, time) of `steps` Adam steps of Poisson NLL on `found`."""
+    """The trained network and a summary (losses, time) of `steps` Adam steps of Poisson NLL on `found`; `demand_model`
+    gives the network the demand model's forecast with these params as extra input layers."""
     import numpy as np
     import torch
 
@@ -142,9 +154,12 @@ def train(
     torch.manual_seed(seed)
     rng = random.Random(seed)
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    tensors = {w: Tensors(rasters(w, demand), dev, demand) for w in sorted({s.world for s in found})}
+    if demand_model is not None and not demand:
+        raise ValueError("the demand model's forecast carries the demand: it cannot be an input of the demand ablation")
+    tensors = {w: Tensors(rasters(w, demand, demand_model), dev, demand) for w in sorted({s.world for s in found})}
     targets = [torch.as_tensor(s.counts, device=dev) for s in found]
-    model = Forecaster(demand).to(dev)
+    model = Forecaster(demand, extra=0 if demand_model is None else BINS).to(dev)
+    model.demand_model = demand_model
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=LR, total_steps=steps, pct_start=0.1)
     losses = []
@@ -164,6 +179,11 @@ def train(
             log(f"train: step {step + 1}/{steps}, loss {np.mean(losses[-50:]):.4f}, {time.perf_counter() - t0:.0f} s")
     summary = {"steps": steps, "batch": batch, "seed": seed, "device": str(dev), "seconds": round(time.perf_counter() - t0, 1), "loss_first": round(float(np.mean(losses[:50])), 5), "loss_last": round(float(np.mean(losses[-50:])), 5)}
     return model, summary
+
+
+def forecast(model: Any, rasters: Rasters, world: str) -> np.ndarray:  # noqa: ANN401 - net.Forecaster
+    """(ny, nx, BINS) forecast of `world` by `model`, with the inputs the network was trained on."""
+    return predict(model, rasters(world, model.demand, getattr(model, "demand_model", None)))
 
 
 def predict(model: Any, raster: Raster, device: str | None = None) -> np.ndarray:  # noqa: ANN401 - net.Forecaster
@@ -186,7 +206,8 @@ def predict(model: Any, raster: Raster, device: str | None = None) -> np.ndarray
 def save(path: Path, model: Any, meta: Mapping[str, Any]) -> None:  # noqa: ANN401
     import torch
 
-    torch.save({"format": NET_FORMAT, "demand": model.demand, "state": model.state_dict(), "meta": dict(meta)}, path)
+    params = getattr(model, "demand_model", None)
+    torch.save({"format": NET_FORMAT, "demand": model.demand, "extra": model.extra, "demand_model": None if params is None else params.dump(), "state": model.state_dict(), "meta": dict(meta)}, path)
 
 
 def load(path: Path, device: str | None = None) -> tuple[Any, dict[str, Any]]:
@@ -197,8 +218,9 @@ def load(path: Path, device: str | None = None) -> tuple[Any, dict[str, Any]]:
     doc = torch.load(path, map_location=device or "cpu", weights_only=False)
     if doc.get("format") != NET_FORMAT:
         raise ValueError(f"{path}: format: expected {NET_FORMAT!r}, got {doc.get('format')!r}")
-    model = Forecaster(bool(doc["demand"]))
+    model = Forecaster(bool(doc["demand"]), extra=int(doc.get("extra") or 0))
     model.load_state_dict(doc["state"])
+    model.demand_model = None if doc.get("demand_model") is None else Params.load(doc["demand_model"])
     if device:
         model = model.to(device)
     return model, dict(doc.get("meta") or {})
@@ -219,4 +241,4 @@ def jsd_coarse(p: np.ndarray, q: np.ndarray, factor: int = 2) -> float | None:
     return jsd(coarse(p), coarse(q))
 
 
-__all__ = ["NET_FORMAT", "Rasters", "Sample", "chains", "held_out_seeds", "jsd_coarse", "load", "pick", "predict", "samples", "save", "train"]
+__all__ = ["NET_FORMAT", "Rasters", "Sample", "chains", "forecast", "held_out_seeds", "jsd_coarse", "load", "pick", "predict", "samples", "save", "train"]
