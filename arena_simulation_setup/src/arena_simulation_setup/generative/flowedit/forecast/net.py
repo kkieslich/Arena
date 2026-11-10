@@ -125,17 +125,26 @@ class UNet(nn.Module):
 class Forecaster(nn.Module):
     """Raster in, (BINS, ny, nx) expected pedestrian-seconds out."""
 
-    def __init__(self, demand: bool = True) -> None:
+    def __init__(self, demand: bool = True, extra: int = 0) -> None:
+        """`extra`: 0, or BINS input layers beyond the raster's own (a Raster's `extra`): a forecast's rates per cell and bin,
+        such as the demand model's, whose heading bins turn with the symmetries."""
+        if extra not in (0, BINS):
+            raise ValueError(f"extra input layers are a map's {BINS} bins per cell, got {extra}")
         super().__init__()
         self.demand = demand
+        self.extra = extra
         self.gnn = GNN()
         self.need = nn.Sequential(nn.Conv2d(len(NEED_CHANNELS), 16, 3, padding=1), nn.SiLU(), nn.Conv2d(16, NEED_DIM, 3, padding=1))
-        self.unet = UNet(len(CHANNELS) + NEED_DIM + DIM * len(WRITTEN))
+        self.unet = UNet(len(CHANNELS) + extra + NEED_DIM + DIM * len(WRITTEN))
 
     def inputs(self, r: Tensors) -> torch.Tensor:
         """(C, ny, nx): the raster's channels, the need features and the GNN embeddings on their cells, in the world's frame."""
         h = self.gnn(r.x, r.edges)
         layers = [r.channels]
+        if self.extra:
+            if r.extra is None or r.extra.shape[0] != self.extra:
+                raise ValueError(f"the network takes {self.extra} extra input layers, the raster has {0 if r.extra is None else r.extra.shape[0]}")
+            layers.append(r.extra)
         if r.need_channels.shape[0]:
             layers.append(self.need(r.need_channels).sum(0))
         else:
@@ -149,11 +158,19 @@ class Forecaster(nn.Module):
             layers.append(flat.T.reshape(DIM, ny, nx))
         return torch.cat(layers, 0)
 
+    def oriented(self, inputs: torch.Tensor, flip: bool, k: int) -> torch.Tensor:
+        """`inputs` (`self.inputs`) under the symmetry: every layer moved with the grid, and the extra layers, which hold
+        BINS rates per cell (the demand model's forecast), with their heading bins permuted as the target's are."""
+        if not self.extra:
+            return transform(inputs, flip, k)
+        c0 = len(CHANNELS)
+        return torch.cat([transform(inputs[:c0], flip, k), transform(inputs[c0 : c0 + self.extra], flip, k, bins=True), transform(inputs[c0 + self.extra :], flip, k)], 0)
+
     def forward(self, batch: list[tuple[Tensors, bool, int]]) -> list[torch.Tensor]:
         """Rates of each (raster, flip, k) in its transformed frame, (BINS, ny', nx') each."""
         xs, masks, scales = [], [], []
         for r, flip, k in batch:
-            xs.append(transform(self.inputs(r), flip, k))
+            xs.append(self.oriented(self.inputs(r), flip, k))
             masks.append(transform(r.mask, flip, k))
             scales.append(r.scale)
         hmax = max(x.shape[-2] for x in xs)
@@ -177,6 +194,7 @@ class Tensors:
 
         t = lambda a, dtype=torch.float32: torch.as_tensor(np.asarray(a), dtype=dtype, device=device)  # noqa: E731
         self.channels = t(r.channels)
+        self.extra = None if r.extra is None else t(r.extra)
         self.need_channels = t(r.need_channels) if demand else t(np.zeros((0, *r.need_channels.shape[1:]), np.float32))
         kinds = NODE_KINDS if demand else ("room", "door")
         self.x = {k: t(r.nodes[k].x) if k in kinds else t(np.zeros((0, len(NODE_FEATURES[k])), np.float32)) for k in NODE_KINDS}

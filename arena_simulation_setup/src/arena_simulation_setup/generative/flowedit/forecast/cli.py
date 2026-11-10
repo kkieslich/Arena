@@ -97,8 +97,12 @@ def _cmd_train(args: argparse.Namespace) -> int:
     found = samples(runs, worlds, doc, args.partition)
     seeds = sorted({s.seed for s in found})
     _log(f"train: {len(found)} runs of {len(worlds)} worlds at seeds {seeds} ({args.partition}, {'all' if args.fraction >= 1 else format(args.fraction, '.0%')} of its edit chains), demand {'on' if args.demand else 'off (demand ablation)'}")
-    model, summary = train(rasters, found, demand=args.demand, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device, log=_log)
+    demand_model = None if args.demand_model_input is None else load_params(args.demand_model_input)
+    if demand_model is not None:
+        _log(f"train: the demand model's forecast ({args.demand_model_input}) is an input layer of every world")
+    model, summary = train(rasters, found, demand=args.demand, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device, demand_model=demand_model, log=_log)
     meta = {
+        "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input),
         "split": str(args.split),
         "cells": str(args.cells),
         "partition": args.partition,
@@ -118,17 +122,17 @@ def _cmd_train(args: argparse.Namespace) -> int:
 
 
 def _net_methods(nets: list[tuple[str | None, Path]], rasters: Any, device: str | None) -> dict[str, Any]:  # noqa: ANN401
-    from .learn import load, predict
+    from .learn import forecast, load
 
     methods: dict[str, Any] = {}
     for name, path in nets:
         model, meta = load(path, device)
-        label = name or ("forecaster" if meta.get("demand", True) else "demand ablation")
+        label = name or ("demand ablation" if not meta.get("demand", True) else "forecaster + demand model" if model.demand_model is not None else "forecaster")
         cache: dict[str, Any] = {}
 
         def method(world: str, model: Any = model, cache: dict[str, Any] = cache) -> Any:  # noqa: ANN401
             if world not in cache:
-                cache[world] = predict(model, rasters(world, model.demand))
+                cache[world] = forecast(model, rasters, world)
             return cache[world]
 
         methods[label] = method
@@ -369,7 +373,7 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
     import numpy as np
 
     from . import validity as V
-    from .learn import Rasters, pick, predict, samples, save, train
+    from .learn import Rasters, forecast, pick, samples, save, train
 
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
@@ -386,7 +390,7 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
             save(args.out_dir / f"net_f{fraction:g}_r{r}.pt", model, {"fraction": fraction, "pick_seed": r, "worlds": worlds, **summary})
             entry: dict[str, Any] = {"fraction": fraction, "repeat": r, "edits": sum(not SP.is_base(w) for w in worlds)}
             for p in parts:
-                vals = [V.jsd(predict(model, rasters(t.world)), t.map) for t in found[p] if not SP.is_base(t.world)]
+                vals = [V.jsd(forecast(model, rasters, t.world), t.map) for t in found[p] if not SP.is_base(t.world)]
                 entry[p] = float(np.mean(vals)) if vals else None
             result["runs"].append(entry)
             _log(f"scaling: fraction {fraction:g} repeat {r}: " + ", ".join(f"{p} {entry[p]:.3f}" for p in parts if entry[p] is not None))
@@ -424,11 +428,11 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     forecaster = Forecaster(settings, duration, worlds=args.worlds)
     if args.net is not None:
         from .learn import Rasters, load
-        from .learn import predict as forecast_net
+        from .learn import forecast as forecast_net
 
         rasters = Rasters(forecaster, {args.world: args.scenario})
         model, _ = load(args.net, args.device)
-        forecast = forecast_net(model, rasters(args.world, model.demand))
+        forecast = forecast_net(model, rasters, args.world)
         scene = _scene(rasters, args.world)
         what = f"learned forecaster {args.net.name}"
     else:
@@ -480,6 +484,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
     q.add_argument("--out", type=Path, required=True, help="the network file to write (.pt)")
     q.add_argument("--partition", choices=SP.PARTITIONS, default="train", help="the partition to train on (default train)")
     q.add_argument("--no-demand", dest="demand", action="store_false", help="leave out the need channels and the demand and need nodes: the demand ablation")
+    q.add_argument("--demand-model-input", type=Path, default=None, metavar="PARAMS", help="a params file from `fit`: give the network the demand model's forecast of each world as extra input layers (a variant to compare against the plain forecaster)")
     q.add_argument("--fraction", type=float, default=1.0, help="share of the partition's edit chains to train on, the base world always kept (default 1)")
     q.add_argument("--pick-seed", type=int, default=0, help="seed of the chains `--fraction` keeps (default 0)")
     q.add_argument("--seed", type=int, default=0, help="training seed (default 0)")

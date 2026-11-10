@@ -186,7 +186,7 @@ def test_a_few_training_steps_lower_the_loss_and_a_saved_net_forecasts_the_same(
     counts[M.STANDING, i, j] = r.people * 300.0
 
     class Fixed:
-        def __call__(self, world: str, demand: bool = True):  # noqa: ANN204
+        def __call__(self, world: str, demand: bool = True, demand_model=None):  # noqa: ANN001, ANN204
             return r
 
     model, summary = train(Fixed(), [Sample(queue.name, 1, counts)], steps=60, batch=2, device="cpu", log=lambda _: None)
@@ -197,6 +197,41 @@ def test_a_few_training_steps_lower_the_loss_and_a_saved_net_forecasts_the_same(
     save(tmp_path / "net.pt", model, {"demand": True})
     again, meta = load(tmp_path / "net.pt")
     assert np.allclose(predict(again, r), forecast, atol=1e-5) and meta["demand"] is True
+
+
+@pytest.mark.usefixtures("local_root")
+def test_the_demand_model_variant_takes_the_forecast_as_input_layers_and_keeps_them_through_save(queue, tmp_path: Path) -> None:  # noqa: ANN001
+    pytest.importorskip("torch")
+    import attrs
+
+    from arena_simulation_setup.generative.flowedit.forecast.learn import Sample, load, predict, save, train
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    r, scene = _raster(queue, queue)
+    extra = np.zeros((M.BINS, r.grid.ny, r.grid.nx), np.float32)
+    i, j, _ = r.grid.index(*scene.demands[0].spot(0))
+    extra[M.STANDING, i, j] = 5.0
+    with_input = attrs.evolve(r, extra=extra)
+    counts = np.zeros((M.BINS, r.grid.ny, r.grid.nx), np.float32)
+    counts[M.STANDING, i, j] = r.people * 300.0
+    asked = []
+
+    class Fixed:
+        def __call__(self, world: str, demand: bool = True, demand_model=None):  # noqa: ANN001, ANN204
+            asked.append(demand_model)
+            return with_input if demand_model is not None else r
+
+    params = Params(sigma=0.3)
+    model, _ = train(Fixed(), [Sample(queue.name, 1, counts)], steps=30, batch=2, device="cpu", demand_model=params, log=lambda _: None)
+    assert model.extra == M.BINS and asked == [params]
+    forecast = predict(model, with_input)
+    with pytest.raises(ValueError, match="extra input layers"):
+        predict(model, r)
+    save(tmp_path / "net.pt", model, {})
+    again, _ = load(tmp_path / "net.pt")
+    assert again.extra == M.BINS and again.demand_model == params and np.allclose(predict(again, with_input), forecast, atol=1e-5)
+    with pytest.raises(ValueError, match="demand ablation"):
+        train(Fixed(), [Sample(queue.name, 1, counts)], demand=False, steps=1, device="cpu", demand_model=params, log=lambda _: None)
 
 
 def test_chains_keep_an_edit_with_its_controls() -> None:
@@ -243,6 +278,27 @@ def test_jsd_stays_finite_with_subnormal_entries() -> None:
     p[0, 0, 0], p[1, 1, 1] = 1.0, 5e-324
     q[0, 0, 0] = 1.0
     assert M.jsd(p, q) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_demand_model_layers_turn_their_heading_bins_with_the_grid() -> None:
+    torch = pytest.importorskip("torch")
+    from arena_simulation_setup.generative.flowedit.forecast.net import DIM, NEED_DIM, WRITTEN, Forecaster, transform
+    from arena_simulation_setup.generative.flowedit.forecast.raster import CHANNELS
+
+    square = M.FlowGrid.from_polygons([[(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)]])
+    walk = _walk("a", (0.61, 1.33), (math.cos(0.2), math.sin(0.2)))
+    turned = walk.select("key", "t", (5.0 - pl.col("y")).alias("x"), pl.col("x").alias("y"), (-pl.col("vy")).alias("vx"), pl.col("vx").alias("vy"))
+    east, north = (torch.as_tensor(np.moveaxis(M.counts(t, square), -1, 0), dtype=torch.float32) for t in (walk, turned))
+    net = Forecaster(extra=M.BINS)
+    c0 = len(CHANNELS)
+    inputs = torch.zeros((c0 + M.BINS + NEED_DIM + DIM * len(WRITTEN), square.ny, square.nx))
+    inputs[c0 : c0 + M.BINS] = east
+    out = net.oriented(inputs, False, 1)
+    # the demand model's map of the turned world, as the turned target holds it; the other layers only move
+    assert torch.allclose(out[c0 : c0 + M.BINS], north)
+    assert torch.allclose(out[:c0], transform(inputs[:c0], False, 1))
+    with pytest.raises(ValueError, match="9 bins"):
+        Forecaster(extra=3)
 
 
 def test_strength_folds_hold_out_two_seeds_and_the_choice_reports_the_spread() -> None:

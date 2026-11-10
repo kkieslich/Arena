@@ -313,6 +313,7 @@ Two forecasters read the same inputs:
 - Optimizer: AdamW with a one-cycle schedule, 3000 steps of 8 runs.
 - A forecast is the mean over the eight symmetries.
 - `--no-demand` drops the need channels and the object and need nodes: the **demand ablation**, the same network otherwise.
+- `--demand-model-input PARAMS` is a variant to compare, not the default: the demand model's forecast of each world (with the params from `fit`) becomes 9 more input layers, in units of the crowd's pedestrian-seconds per room cell. The network file keeps the params, so `score`, `curve` and `predict` rebuild the layer. It cannot combine with `--no-demand`.
 
 **Validity** ([`validity.py`](forecast/validity.py)):
 - `score`: each forecaster and the fair baselines per world of a partition, against the across-seed floor.
