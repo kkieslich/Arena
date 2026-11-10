@@ -126,7 +126,10 @@ class Forecaster(nn.Module):
     """Raster in, (BINS, ny, nx) expected pedestrian-seconds out."""
 
     def __init__(self, demand: bool = True, extra: int = 0) -> None:
-        """`extra`: input layers beyond the raster's own (a Raster's `extra`), such as the demand model's forecast."""
+        """`extra`: 0, or BINS input layers beyond the raster's own (a Raster's `extra`): a forecast's rates per cell and bin,
+        such as the demand model's, whose heading bins turn with the symmetries."""
+        if extra not in (0, BINS):
+            raise ValueError(f"extra input layers are a map's {BINS} bins per cell, got {extra}")
         super().__init__()
         self.demand = demand
         self.extra = extra
@@ -155,11 +158,19 @@ class Forecaster(nn.Module):
             layers.append(flat.T.reshape(DIM, ny, nx))
         return torch.cat(layers, 0)
 
+    def oriented(self, inputs: torch.Tensor, flip: bool, k: int) -> torch.Tensor:
+        """`inputs` (`self.inputs`) under the symmetry: every layer moved with the grid, and the extra layers, which hold
+        BINS rates per cell (the demand model's forecast), with their heading bins permuted as the target's are."""
+        if not self.extra:
+            return transform(inputs, flip, k)
+        c0 = len(CHANNELS)
+        return torch.cat([transform(inputs[:c0], flip, k), transform(inputs[c0 : c0 + self.extra], flip, k, bins=True), transform(inputs[c0 + self.extra :], flip, k)], 0)
+
     def forward(self, batch: list[tuple[Tensors, bool, int]]) -> list[torch.Tensor]:
         """Rates of each (raster, flip, k) in its transformed frame, (BINS, ny', nx') each."""
         xs, masks, scales = [], [], []
         for r, flip, k in batch:
-            xs.append(transform(self.inputs(r), flip, k))
+            xs.append(self.oriented(self.inputs(r), flip, k))
             masks.append(transform(r.mask, flip, k))
             scales.append(r.scale)
         hmax = max(x.shape[-2] for x in xs)

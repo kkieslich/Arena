@@ -278,3 +278,24 @@ def test_jsd_stays_finite_with_subnormal_entries() -> None:
     p[0, 0, 0], p[1, 1, 1] = 1.0, 5e-324
     q[0, 0, 0] = 1.0
     assert M.jsd(p, q) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_the_demand_model_layers_turn_their_heading_bins_with_the_grid() -> None:
+    torch = pytest.importorskip("torch")
+    from arena_simulation_setup.generative.flowedit.forecast.net import DIM, NEED_DIM, WRITTEN, Forecaster, transform
+    from arena_simulation_setup.generative.flowedit.forecast.raster import CHANNELS
+
+    square = M.FlowGrid.from_polygons([[(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)]])
+    walk = _walk("a", (0.61, 1.33), (math.cos(0.2), math.sin(0.2)))
+    turned = walk.select("key", "t", (5.0 - pl.col("y")).alias("x"), pl.col("x").alias("y"), (-pl.col("vy")).alias("vx"), pl.col("vx").alias("vy"))
+    east, north = (torch.as_tensor(np.moveaxis(M.counts(t, square), -1, 0), dtype=torch.float32) for t in (walk, turned))
+    net = Forecaster(extra=M.BINS)
+    c0 = len(CHANNELS)
+    inputs = torch.zeros((c0 + M.BINS + NEED_DIM + DIM * len(WRITTEN), square.ny, square.nx))
+    inputs[c0 : c0 + M.BINS] = east
+    out = net.oriented(inputs, False, 1)
+    # the demand model's map of the turned world, as the turned target holds it; the other layers only move
+    assert torch.allclose(out[c0 : c0 + M.BINS], north)
+    assert torch.allclose(out[:c0], transform(inputs[:c0], False, 1))
+    with pytest.raises(ValueError, match="9 bins"):
+        Forecaster(extra=3)
