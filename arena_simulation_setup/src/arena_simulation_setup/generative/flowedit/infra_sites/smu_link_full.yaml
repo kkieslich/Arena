@@ -54,12 +54,18 @@ outlets: []
 # the side walkers keep to: left, as on Singapore's footpaths (LTA Active Mobility code of conduct: keep left on
 # footpaths and shared paths); HumanSim's default is right (Helbing et al. 2001; Moussaid et al. 2009)
 crowd_side: left
-# the design density (study design §9): 0.3 ped/m2 on the floor within 2.5 m of the through-route (1264 m2; the route
-# 313 m at r 0.325), i.e. about 380 walkers present. mean_time_s: walkers present / inflow over 420-800 s (206 s) and the
-# mean time to their sink of the walkers released 420-1100 s (221 s), with the entrance crowd at 1.2 ped/s in HumanSim
-# alone (side left, seed 1); remeasure when the entrances, the crowd model or the site change. 0.3 x 1264 / 215 = 1.76
-# ped/s in all.
-crowd_density: {density: 0.3, area_m2: 1264, mean_time_s: 215}
+# the density the twin's crowd sustains: 0.8 ped/s in all, about 160 walkers on the band (0.1266 x 1264 / 200), below
+# the study design's 0.3 ped/m2 (§9; about 380 walkers, 1.76 ped/s). The crowd model's two-way capacity in the twin's
+# narrow passages sets it: in HumanSim alone (the entrance crowd, side left, 1500 s) the walkers present keep growing
+# after the 420 s warm-up at 0.9-1.2 ped/s, in the north loop (a 1.5 m corridor and a 1.6-1.7 m passage with pillars,
+# Escalator 1's two-way traffic) and in the junction under the north block (a 2.7 m neck): +14 per 100 s at 0.9 (1 of 3
+# seeds), +7 to +31 at 1.0 (2 of 3), +12 to +22 at 1.1 (2 of 3), +17 to +37 at 1.2 (3 of 3); at 0.8 they stay flat at
+# seeds 1-5 (-1.7 to +2.2 per 100 s, 154-169 walkers on average over 420-1500 s, at most 3 standing still for a minute).
+# area_m2: the floor within 2.5 m of the through-route (1264 m2; the route 313 m at r 0.325). mean_time_s: the mean
+# time a walker spends in the twin at 0.8 ped/s, seeds 1-5: walkers present / inflow over 420-1500 s 194-204 s, and
+# the walkers released 420-1100 s reach their sink in 194-200 s on average; remeasure when the entrances, the crowd
+# model or the site change.
+crowd_density: {density: 0.1266, area_m2: 1264, mean_time_s: 200}
 # placeholder until the entrances are ranked
 flow_split:
   - {types: [mrt], share: 0.5}
