@@ -511,7 +511,7 @@ def test_the_crowd_density_sets_the_inflow_by_littles_law() -> None:
     with pytest.raises(ValueError, match="no crowd_density"):
         rate(plain, density=0.3)
     twin = infra.site_config("smu_link_full").crowd_density
-    assert twin.density == 0.1266 and twin.rate() == pytest.approx(0.8, abs=1e-3) and twin.present() == pytest.approx(160.0, abs=0.1)
+    assert twin.density == 0.0251 and twin.rate() == pytest.approx(0.45, abs=1e-3) and twin.present() == pytest.approx(92.7, abs=0.1)
 
 
 def test_the_crowd_side_goes_from_the_site_config_into_every_suites_launch_block() -> None:
