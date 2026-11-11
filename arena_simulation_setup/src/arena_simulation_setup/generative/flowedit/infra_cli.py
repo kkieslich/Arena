@@ -229,7 +229,7 @@ def _cmd_premise(args: argparse.Namespace) -> int:
         return 0
     header = [
         f"INFRA Stage 1 premise check (§10) on {space.site.key}: all elements at the narrowest section ({narrow.layout_id}) and at the widest ({wide.layout_id}), seeds {', '.join(map(str, seeds))}, {args.duration:g} s each, warm-up {IN.WARMUP_S:g} s cut in the analysis",
-        f"with the site as is at the same seeds from {IN.REFERENCE_SUITE}: C_worst of the two against the seed spread (raise the density if it is smaller), and the measured task rate",
+        f"with the site as is at the same seeds from {IN.REFERENCE_SUITE}: C_worst of the two against the seed spread (raise the density if it is smaller), and the task rate measured in the wide layout (`evaluation infra premise`)",
     ]
     extra = {"roles": ["narrow", "wide"], "runs": IN.picks_record({"narrow": narrow, "wide": wide})}
     return _write_layout_suite(args, space, IN.PREMISE_SUITE, runs, seeds, rate, header, extra)
