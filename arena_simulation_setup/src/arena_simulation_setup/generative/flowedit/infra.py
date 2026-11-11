@@ -114,8 +114,12 @@ GROUPS = (("adult", "adult", 0.70), ("wheelchair", "wheelchair_manual", 0.15), (
 #: The study crowd's inflow in all without a crowd density in the site config (both route ends of study_mix_v2: 0.3
 #: ped/m2 x 4.04 m x 1.0 m/s) [ped/s]
 CROWD_RATE = 1.2
-#: A point entrance's source and sink: a square this big around it, cut to the floor kept this far from the walls [m]
-ENTRANCE_SQUARE_M, ENTRANCE_WALL_M = 4.0, 0.35
+#: A point entrance's source and sink: a square this big around it, cut to the floor a walker reaches, which keeps this far
+#: from the walls (HumanSim's planner keeps its paths 0.38 m from them, in whole 0.2 m cells) [m]
+ENTRANCE_SQUARE_M, ENTRANCE_WALL_M = 4.0, 0.4
+#: An entrance whose area holds less floor than this on the floor a walker reaches (its stairs or doorway walled off at that
+#: clearance) takes a larger square around its mark, the next of these sides that holds it [m2], [m]
+ENTRANCE_MIN_M2, ENTRANCE_GROW_M = 2.0, (6.0, 8.0, 10.0)
 #: The parcel locker's object, which the visitors' target stands in front of
 LOCKER = "locker"
 
@@ -324,22 +328,33 @@ def walk_area(floor: shapely.Geometry, walls: shapely.Geometry | None = None) ->
 
 def _entrance_polygon(entrance: place.Entrance, walk: shapely.Polygon) -> list[tuple[float, float]]:
     """The source and sink area of an entrance on the floor a walker reaches (`walk_area`): its polygon, or a square around
-    its point, cut to that floor (its largest piece). A polygon that lies on it stays as given."""
+    its point, cut to that floor (its largest piece). A polygon that lies on it stays as given. Where that leaves less than
+    `ENTRANCE_MIN_M2` (stairs or a doorway the walls close off at the walkers' clearance), a larger square around the mark
+    (`ENTRANCE_GROW_M`) puts the area on the nearest floor walkers reach."""
     import shapely
+
+    def largest(area: shapely.Geometry) -> shapely.Polygon | None:
+        cut = area.intersection(walk)
+        pieces = [g for g in getattr(cut, "geoms", [cut]) if isinstance(g, shapely.Polygon) and not g.is_empty]
+        return _without_holes(max(pieces, key=lambda g: g.area)) if pieces else None
 
     if len(entrance.points) > 1:
         area = shapely.Polygon(entrance.points)
         if walk.covers(area):
             return [(float(x), float(y)) for x, y in entrance.points]
+        mark = area.centroid
     else:
-        x, y = entrance.points[0]
+        mark = shapely.Point(entrance.points[0])
         half = ENTRANCE_SQUARE_M / 2.0
-        area = shapely.box(x - half, y - half, x + half, y + half)
-    cut = area.intersection(walk)
-    pieces = [g for g in getattr(cut, "geoms", [cut]) if isinstance(g, shapely.Polygon) and not g.is_empty]
-    if not pieces:
-        raise ValueError(f"entrance {entrance.name}: no floor a walker reaches at {entrance.points[0]}")
-    best = _without_holes(max(pieces, key=lambda g: g.area)).simplify(0.05)
+        area = shapely.box(mark.x - half, mark.y - half, mark.x + half, mark.y + half)
+    best = largest(area)
+    for side in ENTRANCE_GROW_M:
+        if best is not None and best.area >= ENTRANCE_MIN_M2:
+            break
+        best = largest(shapely.box(mark.x - side / 2.0, mark.y - side / 2.0, mark.x + side / 2.0, mark.y + side / 2.0))
+    if best is None or best.area < ENTRANCE_MIN_M2:
+        raise ValueError(f"entrance {entrance.name}: under {ENTRANCE_MIN_M2:g} m2 of floor a walker reaches within {ENTRANCE_GROW_M[-1] / 2:g} m of {entrance.points[0]}")
+    best = best.simplify(0.05)
     return [(round(float(px), 2), round(float(py), 2)) for px, py in list(best.exterior.coords)[:-1]]
 
 

@@ -546,3 +546,17 @@ def test_an_entrance_area_stays_on_the_floor_a_walker_reaches() -> None:
     cut = shapely.Polygon([(p["x"], p["y"]) for p in regions["p_sink"]["polygon"]])
     assert cut.is_valid and not cut.intersects(shapely.Polygon(pillar).buffer(0.3))
     assert regions["m1_sink"]["polygon"] == [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.0}, {"x": 2.0, "y": 2.0}, {"x": 0.0, "y": 2.0}]
+
+
+def test_an_entrance_walled_off_at_the_walkers_clearance_takes_the_nearest_floor_they_reach() -> None:
+    import shapely
+
+    floor = shapely.box(-5, -5, 30, 15)
+    # a 4 m room round the mark (12, 2) with a 0.5 m gap in its east wall: narrower than a planned path, so no walker gets in
+    room = shapely.MultiLineString([[(14, 2.25), (14, 4), (10, 4), (10, 0), (14, 0), (14, 1.75)]])
+    config = infra.SiteConfig.parse({**FACTS, "entrances": [{"name": "w", "type": "mrt", "at": [12, 2]}, {"name": "m1", "type": "mrt", "polygon": [[0, 0], [2, 0], [2, 2], [0, 2]]}]})
+    regions = infra.entrance_crowd(config, floor, walls=room)[0]["regions"]
+    area = shapely.Polygon([(p["x"], p["y"]) for p in regions["w_sink"]["polygon"]])
+    assert area.area >= infra.ENTRANCE_MIN_M2
+    assert not area.intersects(shapely.box(10.2, 0.2, 13.8, 3.8))
+    assert area.distance(shapely.Point(12, 2)) <= infra.ENTRANCE_GROW_M[0] / 2.0 * 2**0.5
