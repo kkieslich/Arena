@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import attrs
 import pytest
+import shapely
 import yaml
 from arena_simulation_setup.generative.flowedit import place
 from arena_simulation_setup.generative.flowedit.edit import EditType, Site, open_site, world_object
@@ -611,9 +612,17 @@ def test_the_courier_handoff_point_stands_at_the_courier_access_point(hospital: 
     rated = candidate_spots(hospital, "loading_point", facts=place.SiteFacts(courier_access=at))
     passing = [s for s in rated if s.verdict[Rule.COURIER_ACCESS] is Verdict.PASS]
     assert target.id in {s.id for s in passing}
-    assert all(math.dist(s.objects[0].goto, at) <= place.COURIER_ACCESS_M for s in passing)
-    assert all(math.dist(s.objects[0].goto, at) > place.COURIER_ACCESS_M for s in rated if s.verdict[Rule.COURIER_ACCESS] is Verdict.FAIL)
+    assert all(s.objects[0].footprint.distance(shapely.Point(at)) <= place.COURIER_ACCESS_M for s in passing)
+    assert all(s.objects[0].footprint.distance(shapely.Point(at)) > place.COURIER_ACCESS_M for s in rated if s.verdict[Rule.COURIER_ACCESS] is Verdict.FAIL)
     assert {s.verdict[Rule.COURIER_ACCESS] for s in spots} == {Verdict.UNKNOWN}
+    # an access point marked on the wall behind the bay, farther than COURIER_ACCESS_M from its goto point
+    bay = target.objects[0]
+    far = max(bay.footprint.exterior.coords, key=lambda c: math.dist(c, bay.goto))
+    away = math.dist(far, bay.goto)
+    behind = (far[0] + (far[0] - bay.goto[0]) / away * 0.2, far[1] + (far[1] - bay.goto[1]) / away * 0.2)
+    assert math.dist(behind, bay.goto) > place.COURIER_ACCESS_M
+    rated = candidate_spots(hospital, "loading_point", facts=place.SiteFacts(courier_access=behind))
+    assert next(s for s in rated if s.id == target.id).verdict[Rule.COURIER_ACCESS] is Verdict.PASS
 
 
 def test_chargers_and_lockers_stand_within_cable_run_of_an_outlet_once_the_site_names_outlets(hospital: Site) -> None:
