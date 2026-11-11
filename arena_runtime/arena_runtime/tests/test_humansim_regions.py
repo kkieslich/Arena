@@ -221,3 +221,12 @@ def test_a_region_whose_vertex_mean_lies_inside_keeps_it() -> None:
     assert asyncio.run(sim.setup_regions([Region(name="square", type="sink", polygon=SQUARE)])) is True
     pose, _ = _sent(sinks.requests[0])
     assert (pose.x, pose.y) == (1.0, 1.0)
+
+
+def test_a_spike_polygon_is_posed_inside_its_area_not_on_the_spike() -> None:
+    spike = [Position(x, y) for x, y in [(0.0, 0.0), (1.0, 0.0), (1.0, 0.5), (10.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)]]
+    sinks = _Recording()
+    sim = _adapter(add_sink=sinks)
+    assert asyncio.run(sim.setup_regions([Region(name="spike", type="sink", polygon=spike)])) is True
+    pose, _ = _sent(sinks.requests[0])
+    assert shapely.box(0.0, 0.0, 1.0, 1.0).contains(pose)

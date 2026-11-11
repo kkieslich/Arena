@@ -1245,7 +1245,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         cy = sum(p.y for p in polygon) / len(polygon)
         if len(polygon) < 3:
             return cx, cy
-        area = shapely.make_valid(shapely.Polygon([(p.x, p.y) for p in polygon]))
+        # the polygonal part only: a zero-width spike would otherwise count its line as inside
+        area = shapely.make_valid(shapely.Polygon([(p.x, p.y) for p in polygon]), method="structure", keep_collapsed=False)
         if area.is_empty or area.contains(shapely.Point(cx, cy)):
             return cx, cy
         inner = area.point_on_surface()
