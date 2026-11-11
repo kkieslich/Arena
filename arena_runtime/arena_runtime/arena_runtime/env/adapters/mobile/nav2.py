@@ -165,6 +165,12 @@ class Nav2Adapter(MobileAdapter):
     async def on_cabin_open(self, robot: RobotManager) -> None:
         await self._clear_costmap(robot, "local")
 
+    async def on_navigation_reset(self, robot: RobotManager) -> None:
+        # a teleport clears only the local costmap (on_move); the global one keeps the obstacles the robot marked on its
+        # way, which from the new pose it may never see again to clear, and a path they close stays closed for every goal
+        await self._clear_costmap(robot, "global")
+        await self._clear_costmap(robot, "local")
+
     async def _clear_costmap(
         self,
         robot: RobotManager,

@@ -354,12 +354,16 @@ class _FakeAdapter:
     def __init__(self):
         self.dispatched: list = []
         self.cabin_opens = 0
+        self.navigation_resets = 0
 
     async def dispatch_phase(self, phase, robot):
         self.dispatched.append(phase)
 
     async def on_cabin_open(self, robot):
         self.cabin_opens += 1
+
+    async def on_navigation_reset(self, robot: object) -> None:
+        self.navigation_resets += 1
 
     def on_phase_tick(self, phase, robot):
         pass
@@ -878,3 +882,35 @@ def test_a_phase_failure_applies_only_to_the_phase_it_was_raised_on():
     asyncio.run(rm.submit_task(TaskRequest(phases=[GoToPhase(pose=_pose(10.0, 10.0))]), _pose(2.0, 2.0)))
     _tick(rm, 3.0, 2.0, 2.0)
     assert rm._runner.phases[0].outcome == "pending"
+
+
+def test_reset_navigation_runs_every_adapters_hook_and_a_failing_one_spares_the_others():
+    wm = _wm({"0": [_zone("hall", 0, 0, 40, 40, [])]})
+    rm, adapter, _ = _robot_manager(wm)
+
+    class _Failing(_FakeAdapter):
+        kind = "failing"
+
+        async def on_navigation_reset(self, robot: object) -> None:
+            raise RuntimeError("no costmap")
+
+    failing = _Failing()
+    rm._adapter_instances = [failing, adapter]
+    asyncio.run(rm.reset_navigation())
+    assert adapter.navigation_resets == 1 and adapter.dispatched == []
+
+
+def test_nav2_navigation_reset_clears_the_global_and_the_local_costmap():
+    pytest.importorskip("nav2_msgs.srv")
+    from arena_runtime.env.adapters.mobile.nav2 import Nav2Adapter
+
+    cleared: list[str] = []
+
+    async def clear(robot: object, which: str = "local", reset_distance: float = -1.0) -> bool:
+        cleared.append(which)
+        return True
+
+    nav2 = Nav2Adapter.__new__(Nav2Adapter)
+    nav2._clear_costmap = clear
+    asyncio.run(nav2.on_navigation_reset(SimpleNamespace()))
+    assert cleared == ["global", "local"]

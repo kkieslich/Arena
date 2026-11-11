@@ -304,6 +304,11 @@ class Adapter(ABC):
         """Called once per elevator ride, when the cabin that delivered the robot reports its door open."""
         return None
 
+    async def on_navigation_reset(self, robot: RobotManager) -> None:
+        """Called when a task mode resets the robot within an episode (`RobotManager.reset_navigation`, after a teleport):
+        forget what the navigation stack learned on its way, such as obstacles it marked where it can no longer see."""
+        return None
+
     async def on_controllers_active(self, robot: RobotManager) -> None:
         """Called once per robot bring-up after every spawned controller reports active."""
         return None
