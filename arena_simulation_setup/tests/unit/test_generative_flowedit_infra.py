@@ -252,16 +252,16 @@ def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_p
     assert config.site == "smu_link_full" and config.scenario == "study_entrances" and config.crowd_side == "left"
     assert config.exclude == ("ramp",)
     facts = config.facts
-    assert facts.courier_access == search.TWIN_LOADING_XY and facts.outlets == ()
-    assert {e.name for e in facts.recipient_entrances} == {"mrt_bencoolen", "scis1_student", "scis1_staff"}
-    assert {e.name for e in facts.entrances} - {e.name for e in facts.recipient_entrances} == {"bras_basah_2", "escalator_1"}
-    assert all(e.placeholder for e in facts.entrances)
+    assert facts.courier_access == (153.13, 14.99) and len(facts.outlets) == 101
+    assert {e.name for e in facts.recipient_entrances} == {"mrt_bencoolen", "scis1_entrance", "lift_scis1_staff"}
+    assert len(facts.entrances) == 38 and sum(e.placeholder for e in facts.entrances) == 7
     # the rules compile to the search's engine: the courier handoff point pinned at the access point, nothing else
-    assert config.placements == {"loading_point": search.Placement(pin=search.TWIN_LOADING_XY)}
+    assert config.placements == {"loading_point": search.Placement(pin=(153.13, 14.99))}
     assert [(types, share) for types, share in config.flow_split] == [(("mrt",), 0.5), (("building", "shop", "escalator", "stairs"), 0.3), (("lift", "other"), 0.2)]
     record = config.record()
-    assert "elements" not in record and record["pins"] == {"loading_point": list(search.TWIN_LOADING_XY)}
-    assert record["entrances"][2] == {"name": "mrt_bencoolen", "type": "mrt", "points": [[157.5, 241.5]], "recipients": True, "level": None, "placeholder": True}
+    assert "elements" not in record and record["pins"] == {"loading_point": [153.13, 14.99]}
+    bencoolen = next(e for e in record["entrances"] if e["name"] == "mrt_bencoolen")
+    assert bencoolen["type"] == "mrt" and bencoolen["recipients"] and not bencoolen["placeholder"] and bencoolen["level"] is None
     with pytest.raises(FileNotFoundError, match="no INFRA site config"):
         infra.site_config("no_such_site")
 
