@@ -76,6 +76,8 @@ class _Charge:
     started_s: float | None = None
     home_before: str | None = None  # the robot's home before the trip took the charger as its home
     swapped_with: str | None = None  # the charger's holder, who got that home
+    leaving: str | None = None  # a charged holder that gives the charger up and has not cleared it yet
+    holding_since: float | None = None  # when the robot began to hold in place before the charger for `leaving`
 
 
 def releases(rng: np.random.Generator, rate_per_h: float, pickup_share: float) -> Iterator[Job]:
@@ -237,7 +239,7 @@ class TM_Fleet(TM_Robots):
             elif state in (_State.JOB, _State.DOCK_WAIT):
                 await self._follow_job(name, state, last, now)
             elif state is _State.CHARGE:
-                self._follow_charge(name, last, now)
+                await self._follow_charge(name, last, now)
         await self._watch_jams(now)
         await self._watch_docks(now)
 
@@ -462,12 +464,15 @@ class TM_Fleet(TM_Robots):
         self._note(f"charge.{index}.queued", _s(now))
 
     async def _send_to_chargers(self, now: float) -> None:
-        """Queue free robots under `charge_below`, then send queued robots to a charger, lowest battery first: a robot parked at its charger home charges there, any other takes a charger whose holder is away and swaps homes with it."""
+        """Queue free robots under `charge_below`, then send queued robots to a charger, lowest battery first (ties by
+        queue time, then name): a robot parked at its charger home charges there, any other takes a charger whose holder
+        is away, else one whose holder is parked on it charged to `charge_until`, and swaps homes with the holder. A
+        charged holder leaves for its new home only once the robot holds in place before the charger (`_follow_yield`)."""
         for name, state in self._state.items():
             soc = self._soc(name)
             if state in (_State.PARKED, _State.FREE) and soc is not None and soc < self._charge_below.value:
                 self._queue_charge(name, "charge_below", now)
-        for name in sorted(self._charge_queue, key=lambda name: (self._soc(name) or 0.0, self._charge_queue[name][1])):
+        for name in sorted(self._charge_queue, key=lambda name: (self._soc(name) or 0.0, self._charge_queue[name][1], name)):
             if self._state[name] not in (_State.PARKED, _State.FREE):
                 continue
             home = self._home[name]
@@ -479,16 +484,23 @@ class TM_Fleet(TM_Robots):
             else:
                 charger = home if home in self._chargers else next((charger for charger in self._chargers if self._owner_away(charger)), None)
                 if charger is None:
+                    charger = next((charger for charger in self._chargers if self._yields(charger)), None)
+                if charger is None:
                     continue
                 trip_m = math.dist(self._where(name), self._xy[charger]) * self._detour.value
                 if not await self._submit(name, [GoToPhase(target=charger, on_failure="stop_task", text=f"charge at {charger}")]):
                     continue
                 owner = self._holder(charger)
+                leaving = owner if owner is not None and owner != name and self._yields(charger) else None
                 if owner is not None and owner != name:
                     self._home[owner] = home
                 self._home[name] = charger
                 self._start_charge(name, charger, now, trip_m)
-                self._charge[name].home_before, self._charge[name].swapped_with = home, owner if owner != name else None
+                charge = self._charge[name]
+                charge.home_before, charge.swapped_with, charge.leaving = home, owner if owner != name else None, leaving
+                if leaving is not None:
+                    self._note(f"charge.{charge.index}.yielded_by", leaving)
+                    self._logger.info(f"{leaving} gives {charger} up to {name} ({_pct(self._soc(leaving))} %) and takes {home}, {now:.1f} s")
             self._logger.info(f"{name} charges at {self._home[name]} from {self._soc(name):.1f} %, {now:.1f} s")
 
     def _start_charge(self, name: str, charger: str, now: float, trip_m: float = 0.0) -> None:
@@ -500,8 +512,16 @@ class TM_Fleet(TM_Robots):
         self._note(f"charge.{charge.index}.charger", charger)
         self._note(f"charge.{charge.index}.dispatched", _s(now))
 
-    def _follow_charge(self, name: str, last: PhaseState | None, now: float) -> None:
+    async def _follow_charge(self, name: str, last: PhaseState | None, now: float) -> None:
         charge = self._charge[name]
+        if charge.started_s is None and (charge.leaving is not None or charge.holding_since is not None):
+            await self._follow_yield(name, charge, now)
+            if charge.holding_since is not None:
+                # holding in place before the charger: its hold's end is no news; the trip's timeout still runs
+                if self._timed_out(charge.dispatched_s, charge.timeout_s, now):
+                    await self._revert_swap(name, charge)
+                    self._end_charge(name, "abandoned", "timeout", now)
+                return
         if charge.started_s is None:
             if last is not None and last.outcome == "met":
                 charge.started_s = now
@@ -520,6 +540,56 @@ class TM_Fleet(TM_Robots):
             self._end_charge(name, "charged", "", now)
             self._state[name] = _State.PARKED
 
+    async def _follow_yield(self, name: str, charge: _Charge, now: float) -> None:
+        """A swap with a charged holder (`charge.leaving`): the robot drives to within `approach_m` of the charger and
+        holds in place there; then the holder leaves for its new home, past the holding robot, so the two pass by the
+        charger and not head-on somewhere along the robot's way; once the holder is clear of the charger, the robot drives
+        on to it."""
+        charger, holder = charge.charger, charge.leaving
+        if holder is not None and self._cleared(holder, charger):
+            self._note(f"charge.{charge.index}.holder_left", _s(now))
+            charge.leaving = holder = None
+        if holder is None:
+            if charge.holding_since is not None and await self._submit(name, [GoToPhase(target=charger, on_failure="stop_task", text=f"charge at {charger}")]):
+                self._note(f"charge.{charge.index}.held_s", _s(now - charge.holding_since))
+                charge.holding_since = None
+                self._tracks.pop(name, None)
+            return
+        if charge.holding_since is None:
+            if math.dist(self._where(name), self._xy[charger]) > self._approach_m.value:
+                return
+            if not await self._submit(name, [GoToPhase(hold_time=WAIT_HOLD_S, text=f"wait for {charger}, {holder} leaving it")]):
+                return
+            charge.holding_since = now
+            self._tracks.pop(name, None)
+        # the holder leaves once the robot holds before the charger; a holder whose park could not be submitted tries again
+        if self._state[holder] is _State.PARKED and holder in self._arrived and await self._submit(holder, [GoToPhase(target=self._home[holder], text=f"park at {self._home[holder]}")]):
+            self._arrived.discard(holder)
+            self._logger.info(f"{holder} leaves {charger} for {self._home[holder]}, {name} holding before it, {now:.1f} s")
+
+    def _cleared(self, holder: str, charger: str) -> bool:
+        """Whether a holder that gave its charger up is out of the way: off on a job, a charge or a task from outside, at
+        its new home, or further than `approach_m` from the charger."""
+        if self._state[holder] not in (_State.PARKED, _State.FREE):
+            return True
+        where = self._where(holder)
+        return math.dist(where, self._xy[charger]) > self._approach_m.value or math.dist(where, self._xy[self._home[holder]]) <= self._jam_goal_m.value
+
+    async def _revert_swap(self, name: str, charge: _Charge) -> None:
+        """Give the charger of a trip that did not arrive back to its holder and the robot its home before the trip; a
+        parked holder that is not on the charger (it left, or was parked elsewhere) is sent back to it, parked on its
+        way, so the charger is not away for the next queued robot."""
+        if charge.home_before is None or self._home[name] != charge.charger:
+            return
+        holder = charge.swapped_with
+        if holder is not None and self._home.get(holder) == charge.home_before:
+            self._home[holder] = charge.charger
+            if self._state[holder] is _State.PARKED and (holder not in self._arrived or math.dist(self._where(holder), self._xy[charge.charger]) > self._jam_goal_m.value):
+                self._arrived.discard(holder)
+                if not await self._submit(holder, [GoToPhase(target=charge.charger, text=f"park at {charge.charger}")]):
+                    self._state[holder] = _State.FREE
+        self._home[name] = charge.home_before
+
     def _end_charge(self, name: str, outcome: str, reason: str, now: float) -> None:
         charge = self._charge.pop(name)
         self._note(f"charge.{charge.index}.ended", _s(now))
@@ -536,6 +606,14 @@ class TM_Fleet(TM_Robots):
     def _owner_away(self, spot: str) -> bool:
         holder = self._holder(spot)
         return holder is None or self._state[holder] in (_State.JOB, _State.DOCK_WAIT, _State.FREE)
+
+    def _yields(self, charger: str) -> bool:
+        """Whether the charger's holder gives it up to a queued robot: parked on it (arrived), not queued itself, and charged to `charge_until`."""
+        holder = self._holder(charger)
+        if holder is None or self._state[holder] is not _State.PARKED or holder not in self._arrived or holder in self._charge_queue:
+            return False
+        soc = self._soc(holder)
+        return soc is not None and soc >= self._charge_until.value
 
     def _soc(self, name: str) -> float | None:
         return self._ctx.robots[name].soc
@@ -586,7 +664,7 @@ class TM_Fleet(TM_Robots):
         if state is _State.JOB:
             run = self._run[name]
             return run.docks[run.leg] if run.dispatched else None
-        if state is _State.CHARGE and self._charge[name].started_s is None:
+        if state is _State.CHARGE and self._charge[name].started_s is None and self._charge[name].holding_since is None:
             return self._charge[name].charger
         return None
 
@@ -605,16 +683,16 @@ class TM_Fleet(TM_Robots):
             charge = self._charge[name]
             self._note(f"jam.{index}.charge", str(charge.index))
             # §8: reset to its bay, the home it had before the trip; the charger goes back to its holder
-            if charge.home_before is not None and self._home[name] == charge.charger:
-                if charge.swapped_with is not None and self._home.get(charge.swapped_with) == charge.home_before:
-                    self._home[charge.swapped_with] = charge.charger
-                self._home[name] = charge.home_before
+            await self._revert_swap(name, charge)
             self._end_charge(name, "abandoned", "jam", now)
         self._tracks.pop(name, None)
         robot = self._ctx.robots[name]
         home = robot.resolve_target(GoToPhase(target=self._home[name])).pose
         if home is not None:
             await robot.move(home)
+            # nav2 keeps its global costmap through a teleport: obstacles marked where the robot stalled would close its
+            # way for every goal from home on
+            await robot.reset_navigation()
         self._logger.warning(f"{name} jammed on its way to {target}: under {self._jam_progress_m.value:g} m in {self._jam_window_s.value:g} s, reset to {self._home[name]}, {now:.1f} s")
 
     # OUTSIDE TASKS AND PLUMBING

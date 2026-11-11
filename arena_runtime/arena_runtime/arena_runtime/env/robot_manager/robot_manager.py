@@ -633,6 +633,14 @@ class RobotManager(NodeInterface):
             await self._dispatch(state.index)
         return transition
 
+    async def reset_navigation(self) -> None:
+        """Run the adapters' `on_navigation_reset`: a task mode that teleports the robot within an episode calls it after
+        `move`, so the navigation stack plans from the new pose without what it marked on its way."""
+        results = await asyncio.gather(*(a.on_navigation_reset(self) for a in self._adapter_instances), return_exceptions=True)
+        for adapter, result in zip(self._adapter_instances, results, strict=True):
+            if isinstance(result, BaseException):
+                self._logger.error(f"adapter {adapter.kind!r} on_navigation_reset failed: {result!r}")
+
     async def _clear_on_cabin_open(self) -> None:
         """Run the adapters' `on_cabin_open` once the cabin that delivered the robot reports its door open."""
         if not self._cabin_to_clear or self.node._semantic_value(self._cabin_to_clear, "cabin_door") != "open":

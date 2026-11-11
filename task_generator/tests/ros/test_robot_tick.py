@@ -30,6 +30,7 @@ class _Manager:
         self.done = done
         self.submitted: list[object] = []
         self.moved: list[object] = []
+        self.navigation_resets = 0
         self.soc: float | None = None
         self.battery_capacity_wh: float | None = None
         self.power_profile: dict[str, float] | None = None
@@ -47,6 +48,9 @@ class _Manager:
 
     async def move(self, pose: object) -> None:
         self.moved.append(pose)
+
+    async def reset_navigation(self) -> None:
+        self.navigation_resets += 1
 
     def namespace(self, *path: str) -> str:
         return "/".join((self.name, *path))
@@ -647,8 +651,9 @@ def test_fleet_fails_a_jammed_job_and_resets_the_robot_to_its_home(monkeypatch: 
     assert (record.log["job.0.outcome"], record.log["job.0.reason"], record.log["job.0.ended"]) == ("failed", "jam", "80.501")
     assert (record.log["jam.0.robot"], record.log["jam.0.job"], record.log["jam.0.target"]) == ("r0", "0", "dock_a")
     assert float(record.log["jam.0.robot_m"]) == pytest.approx(math.dist((1.2, 1.5), (23.0, 9.0)), abs=0.01)
-    # reset to its home, bay_1 (the fake's dispatch pose of a spot), and parked there
+    # reset to its home, bay_1 (the fake's dispatch pose of a spot), its navigation reset after the teleport, and parked there
     assert managers["r0"].moved and managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
+    assert managers["r0"].navigation_resets == len(managers["r0"].moved) == 1
     assert _phase_text(managers["r0"]) == "park at bay_1"
     assert any(level == "warning" and "r0 jammed" in line for level, line in record.lines)
 
@@ -671,7 +676,7 @@ def test_fleet_counts_no_jam_for_a_robot_that_moves_or_holds_at_its_dock(monkeyp
         _at(node, t)
         _tick(mode)
     assert not any(field.startswith("jam.") for field in record.log) and "job.0.ended" not in record.log
-    assert managers["r0"].moved == []
+    assert managers["r0"].moved == [] and managers["r0"].navigation_resets == 0
 
 
 def test_fleet_abandons_a_jammed_charging_trip_and_the_rule_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -689,10 +694,139 @@ def test_fleet_abandons_a_jammed_charging_trip_and_the_rule_can_be_turned_off(mo
         assert ("charge.0.reason" in record.log) == jams
         if jams:
             assert (record.log["charge.0.outcome"], record.log["charge.0.reason"], record.log["jam.0.charge"]) == ("abandoned", "jam", "0")
-            # reset to the bay it had before the trip, not to the charger it was headed for
+            # reset to the bay it had before the trip, not to the charger it was headed for, its navigation reset too
             assert managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
+            assert managers["r0"].navigation_resets == 1
             # still under charge_below, it queues for a charger again from there
             assert record.log["charge.1.robot"] == "r0"
+
+
+def _yield_fleet(monkeypatch: pytest.MonkeyPatch, **params: object) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
+    """The fleet with no jobs, charge below 30 % until 90 %, approach 2 m, each robot standing at its home: r0 bay_1, r1 bay_2, r2 charger_1, r3 charger_2."""
+    mode, managers, node, record = _fleet(monkeypatch, jobs="", charge_below=30.0, charge_until=90.0, approach_m=2.0, **params)
+    asyncio.run(mode.reset())
+    for name, xy in (("r0", (0.5, 0.5)), ("r1", (2.5, 0.5)), ("r2", (1.0, 3.0)), ("r3", (4.0, 3.0))):
+        managers[name].pose = _pose(*xy)
+    return mode, managers, node, record
+
+
+def test_fleet_a_charged_holder_parked_on_its_charger_gives_it_up_and_leaves_once_the_queued_robot_holds_before_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _yield_fleet(monkeypatch)
+    _socs(managers, r0=20.0, r1=95.0, r2=95.0, r3=60.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # r2 parked on charger_1 at 95 % gives it up and takes r0's bay; r3 at 60 % keeps charger_2
+    assert _phase_text(managers["r0"]) == "charge at charger_1"
+    assert (record.log["charge.0.robot"], record.log["charge.0.charger"], record.log["charge.0.yielded_by"]) == ("r0", "charger_1", "r2")
+    assert (mode._home["r0"], mode._home["r2"], mode._home["r3"]) == ("charger_1", "bay_1", "charger_2")
+    # r2 stays on the charger while r0 is on its way: they do not meet head-on along r0's way
+    assert managers["r2"].submitted == []
+    _at(node, 10.0)
+    _tick(mode)
+    assert managers["r2"].submitted == []
+
+    # within approach_m (2 m) of charger_1 r0 holds in place, and only then r2 leaves for bay_1
+    managers["r0"].pose = _pose(1.0, 1.5)
+    _at(node, 20.0)
+    _tick(mode)
+    assert _phase_text(managers["r0"]) == "wait for charger_1, r2 leaving it"
+    assert _phase(managers["r0"]).hold and _phase(managers["r0"]).target is None
+    assert _phase_text(managers["r2"]) == "park at bay_1"
+
+    # holding past the jam window is no jam; r2 still within approach_m of the charger keeps r0 holding
+    managers["r2"].pose = _pose(1.5, 2.0)
+    for t in (50.0, 90.0):
+        _at(node, t)
+        _tick(mode)
+    assert _phase_text(managers["r0"]) == "wait for charger_1, r2 leaving it"
+    assert not any(field.startswith("jam.") for field in record.log)
+
+    # r2 is clear: r0 drives on to the charger and charges there
+    managers["r2"].pose = _pose(0.5, 0.5)
+    _at(node, 100.0)
+    _tick(mode, {"r2": _met()})
+    assert _phase_text(managers["r0"]) == "charge at charger_1"
+    assert (record.log["charge.0.holder_left"], record.log["charge.0.held_s"]) == ("100.001", "80.000")
+    _tick(mode, {"r0": _met()})
+    assert record.log["charge.0.started"] == "100.001"
+    assert managers["r1"].submitted == []
+
+
+def test_fleet_a_holder_under_charge_until_or_charging_keeps_its_charger(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _yield_fleet(monkeypatch)
+    # r3 at 25 % charges on its charger home; r2 parked on charger_1 just under charge_until keeps it
+    _socs(managers, r0=20.0, r1=95.0, r2=89.9, r3=25.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert (record.log["charge.1.robot"], record.log["charge.1.started"]) == ("r3", "1.001")
+    assert managers["r0"].submitted == []
+    assert not any(field.endswith(".yielded_by") for field in record.log)
+    assert (mode._home["r0"], mode._home["r2"]) == ("bay_1", "charger_1")
+    # r3 still charging (50 %, under charge_until) keeps charger_2; r2 at charge_until gives charger_1 up
+    _socs(managers, r2=90.0, r3=50.0)
+    _at(node, 2.0)
+    _tick(mode)
+    assert _phase_text(managers["r0"]) == "charge at charger_1"
+    assert (record.log["charge.0.robot"], record.log["charge.0.yielded_by"]) == ("r0", "r2")
+    assert mode._home["r3"] == "charger_2" and "charge.1.ended" not in record.log
+
+
+def test_fleet_sends_the_lowest_battery_to_a_yielding_charger_first_ties_by_queue_time_then_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    for socs, first in (({"r0": 25.0, "r1": 15.0}, "r1"), ({"r0": 20.0, "r1": 20.0}, "r0")):
+        mode, managers, node, record = _yield_fleet(monkeypatch)
+        # r3 charging on charger_2 keeps it; r2 parked full on charger_1 gives it up to one of the two
+        _socs(managers, r2=95.0, r3=25.0, **socs)
+        _at(node, 1.0)
+        _tick(mode)
+        other = "r0" if first == "r1" else "r1"
+        assert _phase_text(managers[first]) == "charge at charger_1"
+        assert managers[other].submitted == []
+        assert mode._home[first] == "charger_1" and mode._home["r2"] == ("bay_1" if first == "r0" else "bay_2")
+
+
+def test_fleet_swaps_no_charger_back_once_both_robots_are_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _yield_fleet(monkeypatch)
+    _socs(managers, r0=20.0, r1=95.0, r2=95.0, r3=60.0)
+    _at(node, 1.0)
+    _tick(mode)
+    managers["r0"].pose = _pose(1.0, 1.5)
+    _tick(mode)
+    managers["r2"].pose = _pose(0.5, 0.5)
+    _tick(mode, {"r2": _met()})
+    _tick(mode, {"r0": _met()})
+    _socs(managers, r0=95.0)
+    _tick(mode)
+    assert record.log["charge.0.outcome"] == "charged"
+    sent = {name: len(manager.submitted) for name, manager in managers.items()}
+    homes = dict(mode._home)
+    # r0 parked full on charger_1 and r2 full on bay_1: nobody is queued, so nobody moves and the homes stay
+    for t in (10.0, 100.0, 1000.0):
+        _at(node, t)
+        _tick(mode)
+    assert {name: len(manager.submitted) for name, manager in managers.items()} == sent
+    assert mode._home == homes == {"r0": "charger_1", "r1": "bay_2", "r2": "bay_1", "r3": "charger_2"}
+    assert "charge.1.robot" not in record.log
+
+
+def test_fleet_a_yield_trip_that_times_out_gives_the_charger_back_and_sends_the_holder_back_to_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _yield_fleet(monkeypatch, job_timeout=100.0, job_timeout_per_m=0.0)
+    _socs(managers, r0=20.0, r1=95.0, r2=95.0, r3=60.0)
+    _at(node, 1.0)
+    _tick(mode)
+    managers["r0"].pose = _pose(1.0, 1.5)
+    _at(node, 2.0)
+    _tick(mode)
+    assert _phase_text(managers["r2"]) == "park at bay_1"
+    # r2 stops halfway, within approach_m of the charger, and r0 holds until the trip's timeout
+    managers["r2"].pose = _pose(1.2, 2.2)
+    _at(node, 102.0)
+    _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.0.reason"]) == ("abandoned", "timeout")
+    assert (mode._home["r0"], mode._home["r2"]) == ("bay_1", "charger_1")
+    # r2 heads back to charger_1, parked on its way, so r0, queued again, takes no charger until r2 is on it again
+    assert _phase_text(managers["r2"]) == "park at charger_1"
+    assert record.log["charge.1.robot"] == "r0" and "charge.1.dispatched" not in record.log
+    assert _phase_text(managers["r0"]) == "park at bay_1"
 
 
 def test_fleet_sends_a_second_leg_again_that_could_not_be_submitted_and_never_completes_the_job_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
