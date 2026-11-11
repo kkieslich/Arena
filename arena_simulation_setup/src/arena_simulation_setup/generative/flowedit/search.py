@@ -51,7 +51,8 @@ SEARCHED = ("charger_pair", "bay_pair", "locker")
 LOADING = "loading_point"
 #: Route end A of the twin smu_link_full, the south end of lower_concourse: the loading point of the twin agent's layout
 TWIN_LOADING_XY = (152.44, 19.61)
-#: How far a pinned element (the loading point) may lie from the goto point of the valid spot it snaps to
+#: How far a pinned element (the loading point) may lie from the goto point of the valid spot it snaps to, or from that
+#: spot's bay (a site marks its courier access point on the wall behind the bay) [m]
 PIN_SNAP_M = 0.5
 #: Each robot's home, one robot each, in robot order (the fleet mode's `homes`)
 HOMES = ("bay_1", "bay_2", "charger_1", "charger_2")
@@ -356,7 +357,7 @@ def _reach(spot: Spot) -> shapely.Polygon:
 class Search:
     """The search space of one site (see the module doc): built once, then `robot_only`, `joint` and `random_valid`
     read it. `loading` pins the loading point: a `Spot`, or a level point that snaps to the nearest valid loading spot's
-    goto point (within `PIN_SNAP_M`). `pins` pins searched elements the same way, by element name (e.g. the locker,
+    goto point (within `PIN_SNAP_M` of it or of the spot's bay). `pins` pins searched elements the same way, by element name (e.g. the locker,
     whose robot-only optimum is otherwise next to the loading point). `zones` and `exclude` choose the candidate zones
     as `candidate_spots` does.
     A spot whose floor (`Spot.keep_clear`) overlaps a `keep_out` polygon is no candidate: the study's PEDS sources and
@@ -453,12 +454,15 @@ class Search:
 
     @staticmethod
     def _snap(spots: Sequence[Spot], at: Point) -> Spot:
-        """The valid spot whose first object's goto point is nearest to `at`, within `PIN_SNAP_M`."""
+        """The valid spot whose first object's goto point is nearest to `at`, within `PIN_SNAP_M` of that point or of the
+        object's footprint."""
+        import shapely
+
         valid = [s for s in spots if s.valid]
         if not valid:
             raise ValueError(f"no valid {spots[0].element.name if spots else 'element'} spot to pin")
         best = min(valid, key=lambda s: (math.dist(s.objects[0].goto, at), s.id))
-        off = math.dist(best.objects[0].goto, at)
+        off = min(math.dist(best.objects[0].goto, at), best.objects[0].footprint.distance(shapely.Point(at)))
         if off > PIN_SNAP_M:
             raise ValueError(f"the nearest valid {best.element.name} spot ({best.zone} piece {best.piece} step {best.step}) is {off:.2f} m from {at}, over {PIN_SNAP_M} m")
         return best

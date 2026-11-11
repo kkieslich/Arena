@@ -12,7 +12,7 @@ import yaml
 from arena_simulation_setup.generative.flowedit import place, search
 from arena_simulation_setup.generative.flowedit.edit import Site, open_site
 from arena_simulation_setup.generative.flowedit.place import Layout
-from arena_simulation_setup.generative.flowedit.search import SEARCHED, Occupancy, Search, TaskMix
+from arena_simulation_setup.generative.flowedit.search import PIN_SNAP_M, SEARCHED, Occupancy, Search, TaskMix
 
 np = pytest.importorskip("numpy")
 pytest.importorskip("scipy")
@@ -143,6 +143,17 @@ def test_layouts_carry_the_loading_point_and_their_ids_stay_the_same(hospital: S
 def test_a_loading_point_far_from_every_valid_spot_is_refused(hospital: Site) -> None:
     with pytest.raises(ValueError, match="nearest valid loading_point spot"):
         Search(hospital, loading=(-100.0, -100.0))
+
+
+def test_a_loading_point_marked_behind_its_bay_snaps_to_it(hospital: Site, loading: place.Spot) -> None:
+    import math
+
+    bay = loading.objects[0]
+    far = max(bay.footprint.exterior.coords, key=lambda c: math.dist(c, bay.goto))
+    away = math.dist(far, bay.goto)
+    behind = (far[0] + (far[0] - bay.goto[0]) / away * 0.2, far[1] + (far[1] - bay.goto[1]) / away * 0.2)
+    assert math.dist(behind, bay.goto) > PIN_SNAP_M
+    assert Search(hospital, loading=behind).loading.id == loading.id
 
 
 def test_pins_fix_a_searched_element_to_one_spot(hospital: Site, loading: place.Spot, space: Search) -> None:

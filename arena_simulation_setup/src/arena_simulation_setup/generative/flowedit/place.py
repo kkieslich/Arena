@@ -71,7 +71,8 @@ SLOT = ((-0.6, -0.5), (0.6, -0.5), (0.6, 0.5), (-0.6, 0.5))
 RECIPIENT_DISTANCE_M = 30.0
 #: A charger or a locker stands within this cable run (walked on the floor) of a power outlet (§3)
 OUTLET_CABLE_M = 10.0
-#: The courier handoff point stands at the courier access point: its goto point within this distance of it
+#: The courier handoff point stands at the courier access point: the point within this distance of its bay (a site marks
+#: the access point where couriers arrive, often on the wall behind the bay) [m]
 COURIER_ACCESS_M = 0.5
 #: The kinds of entrance a site names (`Entrance.type`)
 ENTRANCE_TYPES = ("mrt", "building", "shop", "escalator", "stairs", "lift", "other")
@@ -735,11 +736,12 @@ def _warn_off_floor(walk: Any, entrances: Sequence[Entrance], level_id: str) -> 
 
 
 def _with_facts(site: Site, level_id: str, element: Element, spots: list[Spot], facts: SiteFacts | None) -> list[Spot]:
-    """`spots` with the verdicts of the rules that read the site's facts: the courier access point (a spot's goto point
-    within `COURIER_ACCESS_M` of it), recipient entrances (walking distance from one, on this level, to a spot's goto
+    """`spots` with the verdicts of the rules that read the site's facts: the courier access point (within
+    `COURIER_ACCESS_M` of a spot's first object's footprint, its bay), recipient entrances (walking distance from one, on this level, to a spot's goto
     point within the element's `recipient_distance_m`) and outlets (every object's footprint centre within
     `OUTLET_CABLE_M` walked from an outlet). Unknown where the facts give nothing for a rule."""
     import numpy as np
+    import shapely
 
     rules = [rule for rule in FACT_RULES if rule in element.rules]
     if facts is None or not spots or not rules:
@@ -747,7 +749,8 @@ def _with_facts(site: Site, level_id: str, element: Element, spots: list[Spot], 
     verdicts: dict[Rule, list[Verdict]] = {}
     if Rule.COURIER_ACCESS in rules and facts.courier_access is not None:
         ax, ay = facts.courier_access
-        verdicts[Rule.COURIER_ACCESS] = [Verdict.PASS if math.hypot(s.objects[0].goto[0] - ax, s.objects[0].goto[1] - ay) <= COURIER_ACCESS_M else Verdict.FAIL for s in spots]
+        access = shapely.Point(ax, ay)
+        verdicts[Rule.COURIER_ACCESS] = [Verdict.PASS if s.objects[0].footprint.distance(access) <= COURIER_ACCESS_M else Verdict.FAIL for s in spots]
     here = [e for e in facts.recipient_entrances if e.level in (None, level_id)]
     if Rule.RECIPIENT_DISTANCE in rules and element.recipient_distance_m is not None and facts.recipient_entrances:
         if not here:
