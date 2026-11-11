@@ -115,7 +115,7 @@ def test_the_rate_asks_for_three_quarters_of_the_slowest_layouts_capacity() -> N
 
 def test_the_contest_scales_the_battery_and_reads_back_from_its_literal() -> None:
     entries = infra.contest()
-    assert entries == [{"name": "fleet_dwb", "mobile": infra.PLANNER, "task.episode.battery.capacity_wh": 22.0, "task.episode.battery.soc.min": 40.0, "task.episode.battery.soc.max": 100.0}]
+    assert entries == [{"name": "fleet_dwb", "mobile": infra.PLANNER, "task.episode.battery.capacity_wh": 36.0, "task.episode.battery.soc.min": 40.0, "task.episode.battery.soc.max": 100.0}]
     with pytest.raises(ValueError, match="soc_min"):
         infra.contest(soc_min=80.0, soc_max=50.0)
     literal = infra.contest_literal(entries)
@@ -212,7 +212,7 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     assert manifest["loading"]["spot"] == loading.id
     assert len(manifest["joint_top"]) <= search.JOINT_TOP
     printed = capsys.readouterr().out
-    assert "--suite infra_h1 --contest" in printed and "task.episode.battery.capacity_wh: 22.0" in printed
+    assert "--suite infra_h1 --contest" in printed and "task.episode.battery.capacity_wh: 36.0" in printed
 
 
 VISITORS = {

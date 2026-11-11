@@ -214,7 +214,7 @@ def test_a_charge_reading_stamped_at_or_before_the_reset_is_ignored() -> None:
     manager = _manager_in_env(0, "jackal")
     manager._capacity_pub = manager._soc_pub = SimpleNamespace(publish=lambda msg: None)
     manager.node.sim_time = Time(sec=50)
-    manager.reset_battery(_rng(3), 22.0, 40.0, 40.0)
+    manager.reset_battery(_rng(3), 36.0, 40.0, 40.0)
     assert manager.soc == 40.0
     # the power publisher computed these on the last episode's battery, before the start charge reached it
     for sec, soc in ((12, 3.0), (50, 4.0)):
@@ -227,7 +227,7 @@ def test_a_charge_reading_stamped_at_or_before_the_reset_is_ignored() -> None:
     assert manager.soc == pytest.approx(39.5)
     # the next reset moves the cut
     manager.node.sim_time = Time(sec=900)
-    manager.reset_battery(_rng(3), 22.0, 60.0, 60.0)
+    manager.reset_battery(_rng(3), 36.0, 60.0, 60.0)
     manager._on_energy(_energy(899, 10.0))
     assert manager.soc == 60.0
 
@@ -239,8 +239,8 @@ def test_the_battery_capacity_is_the_episodes_override_else_the_power_profiles()
     manager._config = SimpleNamespace(power_profile=lambda parts: asked.append(parts) or {"battery_capacity_wh": 270.0, "static_power_w": 42.2})
     manager._robot = SimpleNamespace(name="jackal", resolved_request={"lidar": []})
     assert manager.battery_capacity_wh == 270.0
-    manager.publish_battery_capacity(22.0)
-    assert manager.battery_capacity_wh == 22.0
+    manager.publish_battery_capacity(36.0)
+    assert manager.battery_capacity_wh == 36.0
     manager.publish_battery_capacity(0.0)
     assert manager.battery_capacity_wh == 270.0
     assert manager.power_profile == {"battery_capacity_wh": 270.0, "static_power_w": 42.2}

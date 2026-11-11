@@ -25,8 +25,8 @@ pytestmark = pytest.mark.usefixtures("local_root")
 WORLDS = Path(__file__).resolve().parents[2] / "worlds"
 HOSPITAL = WORLDS / "hospital_1"
 MEMBERS = ["charger_1", "charger_2", "bay_1", "bay_2", "locker_1", "loading_point"]
-#: The fleet study's chargers (Kolja: 22 Wh batteries, 175 W chargers)
-STUDY_CHARGE_POWER_W = 175.0
+#: The fleet study's chargers (36 Wh batteries, 290 W chargers)
+STUDY_CHARGE_POWER_W = 290.0
 #: How close the floor raster's corridor width comes to the geometric one: about 1.5 cells, by where walls fall on it
 RASTER_M = 1.5 * place.RESOLUTION_M
 
