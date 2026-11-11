@@ -8,7 +8,8 @@ The study runs in this order, each suite its own benchmark run:
    and its runs are the reference every layout's element part pairs with (§6).
 2. the premise check (`infra_h1_premise`, §10): the two most different layouts (`search.premise_pair`) on the premise
    seeds, with the fleet and without robots. With the site's runs at those seeds it is §10's 15 episodes. It checks
-   that layouts differ by more than the seed spread and measures the task rate.
+   that layouts differ by more than the seed spread and measures the task rate: 75 % of the fleet's capacity in the
+   wide layout (the narrow one's cost and failed jobs are layout cost).
 3. the selection (`infra_h1`, §5, §10): the robot-only pick, the joint top 10 (ranked among the layouts the travel
    pre-filter keeps) and 5 random valid layouts, each with the fleet and without robots, on the selection seeds.
 4. the evaluation (`infra_h1_eval` and `infra_h1_eval_site`, §10, §12): the joint pick and the robot-only pick, with
@@ -91,7 +92,7 @@ FLEET_CONTESTANT = "fleet_dwb"
 #: The jackal's planner speed limit (`velocity_limits` in its caps/mobile.yaml, Nav2 DWB's `max_vel_x`), for the rate
 #: estimate: an upper bound, since the crowd slows the robots
 SPEED_MPS = 0.5
-#: The share of the fleet's capacity the rate asks for (§8: near 75 %)
+#: The share of the fleet's capacity in the wide premise layout the rate asks for (§8: near 75 %)
 UTILISATION = 0.75
 #: Suite names; `arena evaluation benchmark --suite <name>` finds them under <imported assets root>/suites
 REFERENCE_SUITE = "infra_h1_site"
@@ -581,15 +582,15 @@ def fleet_config(rate_per_h: float, *, pickup_share: float = PICKUP_SHARE, load_
     }
 
 
-def fleet_rate(travel_m: Iterable[float], *, robots: int = len(HOMES), speed_mps: float = SPEED_MPS, load_s: float = LOAD_S, unload_s: float = UNLOAD_S, utilisation: float = UTILISATION) -> float:
-    """A rate (jobs per hour) at `utilisation` of the fleet's capacity in the slowest of the layouts, whose expected
-    robot travel per job is `travel_m`: a job takes its travel at `speed_mps` plus the holds. The same rate runs in
-    every layout (§8), so the slowest one sets it and no layout builds a backlog. Charging time is not counted: the
-    premise check measures the real one."""
-    slowest = max(travel_m)
-    if not math.isfinite(slowest):
-        raise ValueError("a layout has no finite robot travel")
-    job_s = slowest / speed_mps + load_s + unload_s
+def fleet_rate(travel_m: float, *, robots: int = len(HOMES), speed_mps: float = SPEED_MPS, load_s: float = LOAD_S, unload_s: float = UNLOAD_S, utilisation: float = UTILISATION) -> float:
+    """A rate (jobs per hour) at `utilisation` of the fleet's capacity in the wide premise layout (every element at the
+    widest section, `search.premise_pair`), whose expected robot travel per job is `travel_m`: a job takes its travel at
+    `speed_mps` plus the holds. The same rate runs in every layout (§8); a layout slower than the wide one may build a
+    backlog, which the restricted mean task time T shows. Charging time and the crowd are not counted, so this is an
+    upper bound: the premise check measures the capacity in the same layout (`evaluation infra premise`)."""
+    if not math.isfinite(travel_m):
+        raise ValueError("the layout has no finite robot travel")
+    job_s = travel_m / speed_mps + load_s + unload_s
     return round(utilisation * robots * 3600.0 / job_s, 2)
 
 

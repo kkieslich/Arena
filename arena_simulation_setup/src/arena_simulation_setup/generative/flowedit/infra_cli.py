@@ -114,6 +114,7 @@ class _Space:
         exclude = self.config.exclude if self.config is not None else SE.EXCLUDED_ZONES
         loading = args.loading if args.loading is not None else (None if SE.LOADING in placements else SE.TWIN_LOADING_XY)
         self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration)
+        self.rate_from: dict[str, Any] | None = None
         facts = self.config.facts if self.config is not None else None
         self.search = SE.Search(self.site, loading=loading, pins=dict(args.pin or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml"), mix=self.mix, facts=facts)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
@@ -126,33 +127,30 @@ class _Space:
         return {"spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "goto": list(s.objects[0].goto)}
 
     def settle_rate(self, args: argparse.Namespace, pick: Any) -> tuple[float, Any]:
-        """The rate `--rate` gives, else 75 % of the fleet's capacity in the slowest layout `pick` returns: the rate sets
-        how many jobs a charge is spread over, so the travel it is estimated from, so both settle together."""
+        """The rate `--rate` gives, else 75 % of the fleet's capacity in the wide premise layout (`search.premise_pair`),
+        the layout the premise check measures the rate in; and the layouts `pick` returns at that rate. The rate sets
+        how many jobs a charge is spread over, so the travel it is estimated from, so both settle together. Sets
+        `rate_from`, what the rate came from, for the manifest."""
         import attrs
 
-        self.search.mix = attrs.evolve(self.mix, rate_per_h=args.rate or self.mix.rate_per_h)
-        picked = pick()
         if args.rate is not None:
-            return float(args.rate), picked
+            self.search.mix = attrs.evolve(self.mix, rate_per_h=args.rate)
+            self.rate_from = {"given": "--rate"}
+            return float(args.rate), pick()
         rate = self.mix.rate_per_h
+        self.search.mix = attrs.evolve(self.mix, rate_per_h=rate)
         for _ in range(8):
-            estimate = IN.fleet_rate([s.travel_m for s in _layouts(picked)], speed_mps=args.speed, load_s=IN.LOAD_S, unload_s=IN.UNLOAD_S)
+            _, wide = SE.premise_pair(self.search)
+            estimate = IN.fleet_rate(wide.travel_m, speed_mps=args.speed, load_s=IN.LOAD_S, unload_s=IN.UNLOAD_S)
             if estimate == rate:
                 break
             rate = estimate
             self.search.mix = attrs.evolve(self.mix, rate_per_h=rate)
-            picked = pick()
         else:
             _log(f"the rate estimate did not settle, last {rate:g} jobs/h")
-        _log(f"rate {rate:g} jobs/h: {IN.UTILISATION:.0%} of the fleet's capacity in the slowest layout at {args.speed:g} m/s, no charging, no crowd (an upper bound; the premise check measures it, pass --rate)")
-        return rate, picked
-
-
-def _layouts(picked: Any) -> list[SE.Scored]:
-    out: list[SE.Scored] = []
-    for item in picked if isinstance(picked, (list, tuple)) else [picked]:
-        out += _layouts(item) if isinstance(item, (list, tuple)) else [item]
-    return out
+        self.rate_from = {"estimate": "wide premise layout", "layout_id": wide.layout_id, "travel_m": round(wide.travel_m, 3), "speed_mps": args.speed, "utilisation": IN.UTILISATION}
+        _log(f"rate {rate:g} jobs/h: {IN.UTILISATION:.0%} of the fleet's capacity in the wide premise layout {wide.layout_id} ({wide.travel_m:.1f} m per job) at {args.speed:g} m/s, no charging, no crowd (an upper bound; `evaluation infra premise` measures it in the same layout, pass that as --rate)")
+        return rate, pick()
 
 
 def _print_runs(runs: list[tuple[str, SE.Scored]], speed: float, ranking: dict[str, float] | None = None) -> None:
@@ -195,6 +193,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
         "episode_s": args.duration,
         "warmup_s": IN.WARMUP_S,
         "rate_per_h": rate,
+        "rate_from": space.rate_from,
         "speed_mps": args.speed,
         "fleet": fleet,
         "contest": contest,
@@ -419,7 +418,7 @@ def add_parser(verbs: Any) -> None:
     searched = argparse.ArgumentParser(add_help=False)
     searched.add_argument("--loading", type=_point, default=None, help="x,y of the loading point, snapped to the nearest valid spot (default the site config's pin)")
     searched.add_argument("--pin", type=_pin, action="append", default=None, help="pin a searched element, e.g. locker=150.1,160.2 (over the site config); repeatable")
-    searched.add_argument("--rate", type=float, default=None, help="jobs per hour in every layout (the premise check's measured rate; default: 75 %% of the fleet's capacity in the slowest layout at --speed, an upper bound)")
+    searched.add_argument("--rate", type=float, default=None, help="jobs per hour in every layout (the premise check's measured rate, 75 %% of the fleet's capacity in the wide premise layout; default: the same share of that layout's capacity estimated at --speed without charging or crowd, an upper bound)")
     searched.add_argument("--speed", type=float, default=IN.SPEED_MPS, help=f"robot speed for the rate estimate, m/s (default {IN.SPEED_MPS:g}, the jackal's planner limit)")
     searched.add_argument("--pickup-share", type=float, default=IN.PICKUP_SHARE, help=f"share of pickups (default {IN.PICKUP_SHARE:g})")
     searched.add_argument("--charge-below", type=float, default=IN.CHARGE_BELOW, help=f"battery percent that sends a free robot to charge (default {IN.CHARGE_BELOW:g})")
