@@ -286,12 +286,16 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
 def _cmd_crowd(args: argparse.Namespace) -> int:
     import shapely
 
+    from ...shared.navmesh import nav_walls
+
     site = open_site(_site_root(args.site))
     config = _config(args, site.key)
     if config is None:
         raise ValueError(f"{site.key}: the crowd comes from the site config's entrances; there is none")
     level = next(iter(site.world.levels.values()))
     floor = shapely.union_all([shapely.Polygon([(p.x, p.y) for p in z.polygon]) for z in level.zones if len(z.polygon) >= 3])
+    # the walls HumanSim's walkers meet: an entrance area stays on the floor they reach
+    walls = shapely.MultiLineString([[(w.start.x, w.start.y), (w.end.x, w.end.y)] for w in nav_walls(level)])
     robots = []
     template = IN.scenario_dir(site, config.scenario, args.scenarios_from) / "scenario.yaml"
     if template.is_file():
@@ -299,7 +303,7 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
 
         robots = (yaml.safe_load(template.read_text()) or {}).get("robots") or []
     rate, how = _crowd_rate(args, config)
-    scenario, visitors_doc, types = IN.entrance_crowd(config, floor, rate=rate, visitor_rate_per_h=args.visitor_rate, robots=robots)
+    scenario, visitors_doc, types = IN.entrance_crowd(config, floor, walls=walls, rate=rate, visitor_rate_per_h=args.visitor_rate, robots=robots)
     shares = IN.entrance_shares(config)
     lines = [f"{e.name} ({e.type}{', recipients' if e.recipients else ''}): {shares[e.name] * rate:.3f} ped/s" for e in config.facts.entrances]
     header = "\n".join([
@@ -307,7 +311,8 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
         f"The inflow: {how}.",
         f"Every entrance is a PEDS source and sink. Walkers come in at {rate:.4g} ped/s in all, split by entrance type",
         "(flow_split, evenly within a group; groups without an entrance spread over the others), 70/15/15 adult /",
-        "wheelchair / long cane per entrance, and leave by another entrance in proportion to its share.",
+        "wheelchair / long cane per entrance, and leave by another entrance in proportion to its share. Each entrance's",
+        f"area lies on the floor a walker reaches, {IN.ENTRANCE_WALL_M:g} m clear of the walls, without the pockets they close off.",
         f"Parcel recipients ({args.visitor_rate:g}/h in all, locker_visitors.yaml) come in at a recipient entrance and leave by it.",
         "Robots as in the site config's scenario. Entrances and their inflow:",
         *[f"  {line}" for line in lines],

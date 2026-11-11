@@ -524,3 +524,25 @@ def test_the_crowd_side_goes_from_the_site_config_into_every_suites_launch_block
     assert infra.layout_suite(["w"], infra.fleet_config(10.0), [1], side="right")["launch"]["humansim.global_planner.lane_side"] == "right"
     assert infra.site_config("smu_link_full").crowd_side == "left"
 
+
+
+def test_an_entrance_area_stays_on_the_floor_a_walker_reaches() -> None:
+    import shapely
+
+    config = _entrance_config()
+    floor = shapely.box(-5, -5, 30, 15)
+    # a 1.2 m pillar loop beside m2's point (20, 1): its inside is floor, but no walker gets in
+    pillar = [(20.4, 1.4), (21.6, 1.4), (21.6, 2.6), (20.4, 2.6), (20.4, 1.4)]
+    walls = shapely.MultiLineString([pillar])
+    walk = infra.walk_area(floor, walls)
+    inside = shapely.Polygon(pillar).buffer(-infra.ENTRANCE_WALL_M)
+    assert not inside.is_empty and not walk.intersects(inside)
+    regions = infra.entrance_crowd(config, floor, walls=walls)[0]["regions"]
+    square = shapely.Polygon([(p["x"], p["y"]) for p in regions["m2_sink"]["polygon"]])
+    assert not square.intersects(shapely.Polygon(pillar).buffer(0.3)) and square.area > 10.0
+    # a polygon entrance reaching into the pillar is cut to the floor outside it; one clear of it keeps its vertices
+    reach = infra.SiteConfig.parse({**FACTS, "entrances": [{"name": "p", "type": "mrt", "polygon": [[19, 0], [23, 0], [23, 4], [19, 4]]}, {"name": "m1", "type": "mrt", "polygon": [[0, 0], [2, 0], [2, 2], [0, 2]]}]})
+    regions = infra.entrance_crowd(reach, floor, walls=walls)[0]["regions"]
+    cut = shapely.Polygon([(p["x"], p["y"]) for p in regions["p_sink"]["polygon"]])
+    assert cut.is_valid and not cut.intersects(shapely.Polygon(pillar).buffer(0.3))
+    assert regions["m1_sink"]["polygon"] == [{"x": 0.0, "y": 0.0}, {"x": 2.0, "y": 0.0}, {"x": 2.0, "y": 2.0}, {"x": 0.0, "y": 2.0}]

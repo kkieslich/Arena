@@ -307,24 +307,62 @@ def entrance_shares(config: SiteConfig) -> dict[str, float]:
     return {name: present[i] / total / len(members[i]) for i in present for name in members[i]}
 
 
-def _entrance_polygon(entrance: place.Entrance, floor: shapely.Geometry) -> list[tuple[float, float]]:
-    """The source and sink area of an entrance: its polygon, or a square around its point cut to the floor kept
-    `ENTRANCE_WALL_M` from the walls (its largest piece)."""
+def walk_area(floor: shapely.Geometry, walls: shapely.Geometry | None = None) -> shapely.Polygon:
+    """The floor a walker reaches: the floor kept `ENTRANCE_WALL_M` from its edges and from every wall, its largest
+    connected piece. A pocket the walls close off at that clearance (between pillars, behind a glass front) is left out:
+    a walker spawned there could not get out, and one bound for a sink there could not reach it."""
+    import shapely
+
+    free = floor.buffer(-ENTRANCE_WALL_M)
+    if walls is not None and not walls.is_empty:
+        free = free.difference(walls.buffer(ENTRANCE_WALL_M))
+    pieces = [g for g in getattr(free, "geoms", [free]) if isinstance(g, shapely.Polygon) and not g.is_empty]
+    if not pieces:
+        raise ValueError(f"no floor left {ENTRANCE_WALL_M} m clear of the walls")
+    return max(pieces, key=lambda g: g.area)
+
+
+def _entrance_polygon(entrance: place.Entrance, walk: shapely.Polygon) -> list[tuple[float, float]]:
+    """The source and sink area of an entrance on the floor a walker reaches (`walk_area`): its polygon, or a square around
+    its point, cut to that floor (its largest piece). A polygon that lies on it stays as given."""
     import shapely
 
     if len(entrance.points) > 1:
-        return [(float(x), float(y)) for x, y in entrance.points]
-    x, y = entrance.points[0]
-    half = ENTRANCE_SQUARE_M / 2.0
-    cut = shapely.box(x - half, y - half, x + half, y + half).intersection(floor.buffer(-ENTRANCE_WALL_M))
+        area = shapely.Polygon(entrance.points)
+        if walk.covers(area):
+            return [(float(x), float(y)) for x, y in entrance.points]
+    else:
+        x, y = entrance.points[0]
+        half = ENTRANCE_SQUARE_M / 2.0
+        area = shapely.box(x - half, y - half, x + half, y + half)
+    cut = area.intersection(walk)
     pieces = [g for g in getattr(cut, "geoms", [cut]) if isinstance(g, shapely.Polygon) and not g.is_empty]
     if not pieces:
-        raise ValueError(f"entrance {entrance.name}: no floor within {half} m of {entrance.points[0]}")
-    best = max(pieces, key=lambda g: g.area).simplify(0.05)
+        raise ValueError(f"entrance {entrance.name}: no floor a walker reaches at {entrance.points[0]}")
+    best = _without_holes(max(pieces, key=lambda g: g.area)).simplify(0.05)
     return [(round(float(px), 2), round(float(py), 2)) for px, py in list(best.exterior.coords)[:-1]]
 
 
-def entrance_crowd(config: SiteConfig, floor: shapely.Geometry, *, rate: float = CROWD_RATE, visitor_rate_per_h: float = 12.0, robots: Sequence[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict[str, Any]]]:
+def _without_holes(area: shapely.Polygon) -> shapely.Polygon:
+    """`area` without holes: a region is sent as its outer ring, so a pillar inside it would count as its floor. Each hole
+    is cut through, along x or along y, whichever keeps the larger piece, and the largest piece stays."""
+    import shapely
+    from shapely.ops import split
+
+    while area.interiors:
+        hole = shapely.Polygon(area.interiors[0]).centroid
+        x0, y0, x1, y1 = area.bounds
+        best = None
+        for line in (shapely.LineString([(hole.x, y0 - 1.0), (hole.x, y1 + 1.0)]), shapely.LineString([(x0 - 1.0, hole.y), (x1 + 1.0, hole.y)])):
+            parts = [g for g in split(area, line).geoms if isinstance(g, shapely.Polygon)]
+            piece = max(parts, key=lambda g: g.area)
+            if best is None or piece.area > best.area:
+                best = piece
+        area = best
+    return area
+
+
+def entrance_crowd(config: SiteConfig, floor: shapely.Geometry, *, walls: shapely.Geometry | None = None, rate: float = CROWD_RATE, visitor_rate_per_h: float = 12.0, robots: Sequence[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict[str, Any]]]:
     """The study crowd from the site's entrances (§2, §9): every entrance a PEDS source and sink. Its walkers come in at
     `rate` in all, each entrance its `entrance_shares` share, one source per walker group (`GROUPS`, 70/15/15), and
     leave by another entrance, picked in proportion to the other entrances' shares (more walkers come in where more
@@ -335,7 +373,8 @@ def entrance_crowd(config: SiteConfig, floor: shapely.Geometry, *, rate: float =
     entrances = config.facts.entrances
     if len(entrances) < 2:
         raise ValueError(f"{config.site}: a crowd between entrances needs two of them")
-    areas = {e.name: [{"x": x, "y": y} for x, y in _entrance_polygon(e, floor)] for e in entrances}
+    walk = walk_area(floor, walls)
+    areas = {e.name: [{"x": x, "y": y} for x, y in _entrance_polygon(e, walk)] for e in entrances}
     regions: dict[str, Any] = {}
     for e in entrances:
         others = [o for o in entrances if o.name != e.name]
@@ -724,6 +763,7 @@ def runs(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 __all__ = [
     "entrance_crowd",
+    "walk_area",
     "entrance_shares",
     "write_crowd",
     "CAPACITY_WH",
