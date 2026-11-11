@@ -481,10 +481,10 @@ def test_fleet_sends_a_robot_to_charge_before_a_job_that_would_leave_it_under_th
     mode, managers, node, record = _fleet(monkeypatch, jobs="d", charge_below=5.0)
     asyncio.run(mode.reset())
     for manager in managers.values():
-        manager.battery_capacity_wh, manager.power_profile = 22.0, {"static_power_w": 42.2}
+        manager.battery_capacity_wh, manager.power_profile = 36.0, {"static_power_w": 42.2}
     far, near = _job_wh((0.5, 0.5)), _job_wh((2.5, 0.5))
-    # r0 on bay_1 is fuller than r1 on bay_2, but the job would leave it just under 10 % of 22 Wh, and r1 just over
-    _socs(managers, r0=10.0 + 100.0 * far / 22.0 - 0.1, r1=10.0 + 100.0 * near / 22.0 + 0.1, r2=4.0, r3=4.0)
+    # r0 on bay_1 is fuller than r1 on bay_2, but the job would leave it just under 10 % of 36 Wh, and r1 just over
+    _socs(managers, r0=10.0 + 100.0 * far / 36.0 - 0.1, r1=10.0 + 100.0 * near / 36.0 + 0.1, r2=4.0, r3=4.0)
     assert managers["r0"].soc > managers["r1"].soc
     _at(node, 1.0)
     _tick(mode)
@@ -500,7 +500,7 @@ def test_fleet_gives_a_job_to_a_robot_charged_to_charge_until_whatever_the_estim
     mode, managers, node, record = _fleet(monkeypatch, jobs="d", wh_per_m=10.0)
     asyncio.run(mode.reset())
     for manager in managers.values():
-        manager.battery_capacity_wh = 22.0
+        manager.battery_capacity_wh = 36.0
     _socs(managers, r0=100.0, r1=50.0, r2=50.0, r3=50.0)
     _at(node, 1.0)
     _tick(mode)
@@ -516,7 +516,7 @@ def test_the_energy_per_metre_follows_the_power_profile_when_wh_per_m_is_0(monke
     assert wh_per_m(None) == 0.0
     mode, managers, node, record = _fleet(monkeypatch, jobs="d", wh_per_m=0.0)
     asyncio.run(mode.reset())
-    managers["r0"].soc, managers["r0"].battery_capacity_wh, managers["r0"].power_profile = 90.0, 22.0, JACKAL
+    managers["r0"].soc, managers["r0"].battery_capacity_wh, managers["r0"].power_profile = 90.0, 36.0, JACKAL
     _at(node, 1.0)
     _tick(mode)
     assert record.log["job.0.energy_wh"] == f"{_job_wh((0.5, 0.5), wh_per_m(JACKAL)):.3f}"
@@ -617,7 +617,7 @@ def test_fleet_job_energy_counts_the_leg_to_the_charger_nearest_the_second_dock(
     mode, managers, node, record = _fleet(monkeypatch, jobs="dp", charge_below=5.0)
     asyncio.run(mode.reset())
     for manager in managers.values():
-        manager.battery_capacity_wh, manager.power_profile = 22.0, {"static_power_w": 42.2}
+        manager.battery_capacity_wh, manager.power_profile = 36.0, {"static_power_w": 42.2}
     _socs(managers, r0=90.0, r1=80.0, r2=4.0, r3=4.0)
     _at(node, 1.0)
     _tick(mode)

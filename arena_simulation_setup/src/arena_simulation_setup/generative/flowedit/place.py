@@ -47,8 +47,9 @@ CORRIDOR_CAP_M = 5.0
 TURNING_CIRCLE_M = 1.5
 #: Chargers and waiting bays keep this far from door spans and lift cabins (§3)
 DOOR_DISTANCE_M = 2.0
-#: The fleet study's charger power (Kolja: 22 Wh batteries, 175 W chargers)
-CHARGE_POWER_W = 175.0
+#: The fleet study's charger power: 36 Wh (`infra.CAPACITY_WH`) over 290 W is about 7.5 min, a full charge in about
+#: 8.7 min net of a parked jackal's 42.2 W standby draw
+CHARGE_POWER_W = 290.0
 #: The floor raster's cell size, the one NAV@r and the nav map use
 RESOLUTION_M = 0.05
 #: Zones no element goes to besides the cut-off ones, as `fnmatch` patterns: none by default. The zones NAV@r cuts off

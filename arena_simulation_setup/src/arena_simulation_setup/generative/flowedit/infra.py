@@ -73,9 +73,11 @@ REFERENCES = ["unhindered_peds"]
 #: humans' tf topic (its only subscriber in a headless run is the recorder, and `hri_producer` idles without one); they
 #: grow with the crowd: 94 % of a pilot recording at 15-20 people, 93 % of a twin smoke at up to ~210 walkers
 RECORD = {"exclude": ["peds", "animation_states", "tf_humans"], "tf_frames": [[r"_agent_\d+$", -1.0], [r"^env_\d+/[^/]+$", -1.0], [r"^\d+$", -1.0]]}
-#: The study battery and charger (Kolja, 9 Nov: 22 Wh, 175 W; the catalog writes the charger power into the world), and
-#: the start charge each robot draws per episode seed (§8: 40-100 %)
-CAPACITY_WH = 22.0
+#: The study battery: the longest job of either premise layout on the twin (28.6 Wh by the fleet's own energy estimate,
+#: the narrow layout's; the robot-only pick's 25.6 Wh) fits in the 80 % between `CHARGE_UNTIL` and the fleet's 10 %
+#: reserve (28.6 / 0.8 = 35.7 Wh). The chargers' power is `place.CHARGE_POWER_W` (the catalog writes it into the
+#: world). And the start charge each robot draws per episode seed (§8: 40-100 %)
+CAPACITY_WH = 36.0
 SOC_MIN = 40.0
 SOC_MAX = 100.0
 #: The fleet mode's charging thresholds (§8: 30 %; charge until 90 %)
