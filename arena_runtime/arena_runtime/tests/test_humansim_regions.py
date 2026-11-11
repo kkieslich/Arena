@@ -7,6 +7,7 @@ import types
 import typing
 
 import pytest
+import shapely
 
 pytest.importorskip("rclpy")
 
@@ -174,3 +175,49 @@ def test_a_backend_that_reports_a_region_missing_fails_the_setup_and_the_removal
         asyncio.run(sim.setup_regions(_twin()))
     with pytest.raises(RegionSetupError, match="did not remove every one of the 29 regions"):
         asyncio.run(sim.remove_all_regions())
+
+
+class _Recording(_Client):
+    """A _Client that keeps every request it was sent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[typing.Any] = []
+
+    async def call_timeout(self, request: typing.Any) -> typing.Any:
+        self.requests.append(request)
+        return await super().call_timeout(request)
+
+
+# The INFRA twin's Bras Basah 1 entrance: a 4 m square cut to the floor along an alcove wall. Most vertices lie on the cut
+# edge, so their mean (155.65, 83.50) falls just outside the polygon.
+CUT = [Position(x, y) for x, y in [(153.31, 81.48), (153.31, 85.48), (156.68, 85.48), (156.2, 85.11), (156.21, 84.49), (155.76, 84.43), (155.46, 83.99), (155.54, 83.6), (155.71, 83.4), (155.73, 83.17), (155.93, 82.83), (156.07, 82.72), (156.41, 82.64), (156.41, 82.13), (156.04, 81.51)]]
+
+
+def _sent(request: typing.Any) -> tuple[shapely.Point, shapely.Polygon]:
+    """The pose and the absolute polygon a source or sink request carries."""
+    config = request.source if hasattr(request, "source") else request.sink
+    pose = shapely.Point(config.pose.x, config.pose.y)
+    return pose, shapely.Polygon([(config.pose.x + v.x, config.pose.y + v.y) for v in config.shape.vertices])
+
+
+def test_a_concave_region_is_posed_inside_its_polygon_so_its_sink_can_remove_walkers() -> None:
+    area = shapely.Polygon([(p.x, p.y) for p in CUT])
+    mean = shapely.Point(sum(p.x for p in CUT) / len(CUT), sum(p.y for p in CUT) / len(CUT))
+    assert not area.contains(mean)
+    sources, sinks = _Recording(), _Recording()
+    sim = _adapter(add_source=sources, add_sink=sinks)
+    regions = [Region(name="bb1_src", type="source", polygon=CUT, config={"agent": {"agent_type": "adult"}}), Region(name="bb1_sink", type="sink", polygon=CUT)]
+    assert asyncio.run(sim.setup_regions(regions)) is True
+    for request in (*sources.requests, *sinks.requests):
+        pose, sent = _sent(request)
+        assert area.contains(pose)
+        assert sent.symmetric_difference(area).area < 1e-9
+
+
+def test_a_region_whose_vertex_mean_lies_inside_keeps_it() -> None:
+    sinks = _Recording()
+    sim = _adapter(add_sink=sinks)
+    assert asyncio.run(sim.setup_regions([Region(name="square", type="sink", polygon=SQUARE)])) is True
+    pose, _ = _sent(sinks.requests[0])
+    assert (pose.x, pose.y) == (1.0, 1.0)

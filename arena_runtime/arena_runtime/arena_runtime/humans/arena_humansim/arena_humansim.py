@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 
 import attrs
 import numpy as np
+import shapely
 import yaml
 from arena_humansim.core.interaction_kinds import InteractionType, MembershipRole
 from arena_humansim.utils.types import InteractionOutcome
@@ -1232,12 +1233,23 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return shape
 
     def _polygon_centroid(self, polygon: Sequence[Position]) -> tuple[float, float]:
-        """Compute centroid of a polygon."""
+        """The point a region is sent around: the mean of its vertices, or a point inside the polygon where that mean is not.
+
+        arena_humansim takes the pose as the region's goal. A walker bound for a sink heads for the sink's pose and is
+        removed only while that waypoint lies inside the sink's polygon, so a sink posed outside its own polygon (the mean of
+        a concave region's vertices, e.g. a square cut to the floor along a wall) never removes anyone.
+        """
         if not polygon:
             return 0.0, 0.0
         cx = sum(p.x for p in polygon) / len(polygon)
         cy = sum(p.y for p in polygon) / len(polygon)
-        return cx, cy
+        if len(polygon) < 3:
+            return cx, cy
+        area = shapely.make_valid(shapely.Polygon([(p.x, p.y) for p in polygon]))
+        if area.is_empty or area.contains(shapely.Point(cx, cy)):
+            return cx, cy
+        inner = area.point_on_surface()
+        return float(inner.x), float(inner.y)
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
         """Add the regions one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.
