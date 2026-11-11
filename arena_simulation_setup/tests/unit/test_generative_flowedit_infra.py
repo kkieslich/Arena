@@ -105,12 +105,12 @@ def test_the_layout_suite_runs_each_copy_at_each_seed_with_the_fleet_and_its_ref
         infra.fleet_config(0.0)
 
 
-def test_the_rate_asks_for_three_quarters_of_the_slowest_layouts_capacity() -> None:
+def test_the_rate_asks_for_three_quarters_of_the_layouts_capacity() -> None:
     # 4 robots, 130 m at 0.26 m/s plus 25 s of holds: 525 s a job
-    assert infra.fleet_rate([10.0, 130.0, 50.0], speed_mps=0.26) == pytest.approx(round(0.75 * 4 * 3600 / 525.0, 2))
-    assert infra.fleet_rate([130.0]) == pytest.approx(round(0.75 * 4 * 3600 / (130.0 / infra.SPEED_MPS + 25.0), 2))
+    assert infra.fleet_rate(130.0, speed_mps=0.26) == pytest.approx(round(0.75 * 4 * 3600 / 525.0, 2))
+    assert infra.fleet_rate(130.0) == pytest.approx(round(0.75 * 4 * 3600 / (130.0 / infra.SPEED_MPS + 25.0), 2))
     with pytest.raises(ValueError):
-        infra.fleet_rate([10.0, math.inf])
+        infra.fleet_rate(math.inf)
 
 
 def test_the_contest_scales_the_battery_and_reads_back_from_its_literal() -> None:
@@ -204,7 +204,14 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     assert all(r["ranking_score"] is not None for r in manifest["runs"])
     assert manifest["episodes"] == 2 * len(doc["stages"]) and manifest["site_config"] is None
     rate = manifest["rate_per_h"]
-    assert rate == pytest.approx(infra.fleet_rate([r["travel_m"] for r in manifest["runs"]]), abs=0.01)
+    # without --rate, the estimate in the wide premise layout of the same search at the settled rate, not in the
+    # slowest layout the selection runs (a random one here)
+    rate_from = manifest["rate_from"]
+    assert rate == pytest.approx(infra.fleet_rate(rate_from["travel_m"]), abs=0.01)
+    assert max(r["travel_m"] for r in manifest["runs"]) > rate_from["travel_m"] + 1.0
+    space = search.Search(site, loading=loading.objects[0].goto, keep_out=infra.keep_out(hospital_copy / "scenarios" / "mix" / "scenario.yaml"), mix=search.TaskMix(**manifest["mix"]))
+    _, wide = search.premise_pair(space)
+    assert rate_from == {"estimate": "wide premise layout", "layout_id": wide.layout_id, "travel_m": pytest.approx(wide.travel_m, abs=1e-3), "speed_mps": infra.SPEED_MPS, "utilisation": infra.UTILISATION}
     assert all(s["config"]["fleet"]["rate"] == rate for s in doc["stages"])
     for i in ids:
         world = Path(manifest["worlds"][i])
@@ -369,8 +376,17 @@ def test_cli_premise_writes_the_two_most_different_layouts_with_the_fleet(hospit
     ids = [r["layout_id"] for r in manifest["runs"]]
     assert [s["name"] for s in doc["stages"]] == [f"hospital_copy__layout_{i}__s{seed}" for i in ids for seed in infra.PREMISE_SEEDS]
     assert doc["references"] == ["unhindered_peds"] and manifest["episodes"] == 12
+    # the rate estimate comes from the wide layout
+    wide = manifest["runs"][1]
+    assert manifest["rate_from"]["layout_id"] == wide["layout_id"] and manifest["rate_from"]["travel_m"] == pytest.approx(wide["travel_m"], abs=1e-3)
+    assert manifest["rate_per_h"] == pytest.approx(infra.fleet_rate(wide["travel_m"]), abs=0.01)
+    assert all(s["config"]["fleet"]["rate"] == manifest["rate_per_h"] for s in doc["stages"])
     printed = capsys.readouterr()
     assert "15 episodes (§10: 15)" in printed.err and "--suite infra_h1_premise --contest" in printed.out
+    assert f"of the fleet's capacity in the wide premise layout {wide['layout_id']}" in printed.err
+    assert cli.main([*args, "--rate", "7.5"]) == 0
+    manifest = json.loads(infra.manifest_path(out).read_text())
+    assert manifest["rate_per_h"] == 7.5 and manifest["rate_from"] == {"given": "--rate"}
 
 
 def test_cli_evaluation_writes_the_two_picks_and_the_site_on_fresh_seeds(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
