@@ -30,8 +30,8 @@ site: smu_link_full
 # the crowd every stage runs (scenarios/<name> of the site); layout copies also get its locker_visitors.yaml;
 # `flowedit infra crowd --name study_entrances --out <site>/scenarios` builds it from the entrances below
 scenario: study_entrances
-# the 4 % ramp
-exclude: [ramp]
+# the ramps: the 4 % ramp, and the west ramp (flat to y 86, then 1.3 m up by y 58, ~4.6 %) to the side corridor
+exclude: [ramp, west_ramp]
 entrances:
   - {name: outdoor_space_scis1, type: building, at: [143.44, 181.47]}
   - {name: scis1_entrance, type: building, at: [154.14, 166.72], recipients: true}

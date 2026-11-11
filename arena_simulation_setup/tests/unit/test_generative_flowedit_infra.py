@@ -250,7 +250,7 @@ def with_visitors(hospital_copy: Path) -> Path:
 def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_point_by_rule() -> None:
     config = infra.site_config("smu_link_full")
     assert config.site == "smu_link_full" and config.scenario == "study_entrances" and config.crowd_side == "left"
-    assert config.exclude == ("ramp",)
+    assert config.exclude == ("ramp", "west_ramp")
     facts = config.facts
     assert facts.courier_access == (153.13, 14.99) and len(facts.outlets) == 101
     assert {e.name for e in facts.recipient_entrances} == {"mrt_bencoolen", "scis1_entrance", "lift_scis1_staff"}
