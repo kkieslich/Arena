@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Any
 
 import attrs
 
+from arena_simulation_setup.tree.World.Scenario import parse_scenario
+
 from . import place
 from . import suite as SU
 from .search import HOMES, LOADING, SEARCHED, Placement, Scored
@@ -63,8 +65,11 @@ WARMUP_S = 420.0
 ROBOT = f"jackal[{len(HOMES)}]"
 #: Launch args of every suite: lockstep for seed pairing, people see the robots (§8: PEDS robot visibility on), and no
 #: pedestrian skeletons on `arena_peds` (`human.skeleton`: no INFRA measure reads them, the crowd and what the robots see
-#: stay the same, and it takes most of the env node's per-pedestrian cost off a run at the study density)
-LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "true", "human.skeleton": "false"}
+#: stay the same, and it takes most of the env node's per-pedestrian cost off a run at the study density), and route
+#: choice over stairs (`humansim.zone_route_choice`: walkers that climb take a stair or escalator of the world where that
+#: is cheaper than walking, by HumanSim's congestion-weighted walking cost, wheelchairs walk; a world without stair halves
+#: is unaffected)
+LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "true", "human.skeleton": "false", "humansim.zone_route_choice": "true"}
 #: The reference runs the layout suites ask the runner for: each stage without robots (the traffic part's reference,
 #: §6); the fleet without pedestrians is never read
 REFERENCES = ["unhindered_peds"]
@@ -122,6 +127,11 @@ ENTRANCE_SQUARE_M, ENTRANCE_WALL_M = 4.0, 0.4
 ENTRANCE_MIN_M2, ENTRANCE_GROW_M = 2.0, (6.0, 8.0, 10.0)
 #: The parcel locker's object, which the visitors' target stands in front of
 LOCKER = "locker"
+#: The floor in front of a link's mouth that no element takes, out from its entry line across its width: walkers step
+#: off a stair or escalator half there and queue for it [m]
+LINK_APRON_M = 1.5
+#: HumanSim refuses a stair or escalator half whose hold lies closer than this to a wall (its HOLD_CLEARANCE) [m]
+LINK_HOLD_WALL_M = 0.25
 
 
 # --- the site config -------------------------------------------------------------------------------------------------
@@ -165,8 +175,11 @@ class SiteConfig:
     crowd_side: str | None = None
     crowd_density: CrowdDensity | None = None
     path: Path | None = None
+    #: stair and escalator halves that join floor the world lays out on one level (HumanSim teleport zones, as the
+    #: scenario's `teleport_zones`): the crowd's scenario carries them
+    links: tuple[Mapping[str, Any], ...] = ()
 
-    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side", "crowd_density")
+    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side", "crowd_density", "links")
 
     @property
     def placements(self) -> dict[str, Placement]:
@@ -236,8 +249,16 @@ class SiteConfig:
             if min(values.values()) <= 0.0:
                 raise ValueError(f"{where}crowd_density: every value must be > 0, not {block}")
             density = CrowdDensity(**values)
+        try:
+            raw = doc.get("links") or []
+            if not isinstance(raw, list) or not all(isinstance(z, Mapping) for z in raw):
+                raise ValueError(f"a list of teleport zones, each a mapping, not {raw!r}")
+            links = tuple(dict(z) for z in raw)
+            parse_scenario({"format": "arena-scenario/2", "teleport_zones": list(links)})
+        except ValueError as e:
+            raise ValueError(f"{where}links: {e}") from None
         facts = place.SiteFacts(tuple(entrances), courier, outlets)
-        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, density, path)
+        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, density, path, links)
 
     @classmethod
     def load(cls, path: Path) -> SiteConfig:
@@ -259,6 +280,7 @@ class SiteConfig:
             "flow_split": [{"types": list(types), "share": share} for types, share in self.flow_split],
             "crowd_side": self.crowd_side,
             "crowd_density": None if self.crowd_density is None else attrs.asdict(self.crowd_density),
+            "links": [dict(z) for z in self.links],
             "pins": {name: list(p.pin) for name, p in self.placements.items() if p.pin is not None},
         }
 
@@ -326,7 +348,7 @@ def walk_area(floor: shapely.Geometry, walls: shapely.Geometry | None = None) ->
     return max(pieces, key=lambda g: g.area)
 
 
-def _entrance_polygon(entrance: place.Entrance, walk: shapely.Polygon) -> list[tuple[float, float]]:
+def _entrance_polygon(entrance: place.Entrance, walk: shapely.Geometry) -> list[tuple[float, float]]:
     """The source and sink area of an entrance on the floor a walker reaches (`walk_area`): its polygon, or a square around
     its point, cut to that floor (its largest piece). A polygon that lies on it stays as given. Where that leaves less than
     `ENTRANCE_MIN_M2` (stairs or a doorway the walls close off at the walkers' clearance), a larger square around the mark
@@ -382,13 +404,26 @@ def entrance_crowd(config: SiteConfig, floor: shapely.Geometry, *, walls: shapel
     `rate` in all, each entrance its `entrance_shares` share, one source per walker group (`GROUPS`, 70/15/15), and
     leave by another entrance, picked in proportion to the other entrances' shares (more walkers come in where more
     leave). Parcel recipients (`visitor_rate_per_h` in all, split evenly over the recipient entrances) come in at a
-    recipient entrance, use the locker and leave by the entrance they came in by. Returns the scenario document, the
-    locker visitors document (None without a recipient entrance) and the visitors' agent types by file name."""
+    recipient entrance, use the locker and leave by the entrance they came in by. No entrance's area takes floor of a
+    link or of the apron in front of its mouth (`link_keep_out`). Returns the scenario document, the locker visitors
+    document (None without a recipient entrance) and the visitors' agent types by file name."""
     shares = entrance_shares(config)
     entrances = config.facts.entrances
     if len(entrances) < 2:
         raise ValueError(f"{config.site}: a crowd between entrances needs two of them")
+    import shapely
+
     walk = walk_area(floor, walls)
+    if walls is not None and not walls.is_empty:
+        # HumanSim refuses the whole set when a stair half's hold lies on a wall: say so here
+        near = [z["name"] for z in config.links if z.get("kind") and walls.distance(shapely.Point(float(z["hold"]["x"]), float(z["hold"]["y"]))) <= LINK_HOLD_WALL_M]
+        if near:
+            raise ValueError(f"{config.site}: links {near}: the hold lies within {LINK_HOLD_WALL_M:g} m of a wall, HumanSim refuses them")
+    links = link_keep_out(config.links)
+    if links:
+        # no source or sink on a link or its apron: a walker spawned on a running belt rides it whatever its goal. 0.1 m
+        # more, so that the simplified and rounded outline of an entrance's area stays off them too
+        walk = walk.difference(shapely.union_all(links).buffer(0.1))
     areas = {e.name: [{"x": x, "y": y} for x, y in _entrance_polygon(e, walk)] for e in entrances}
     regions: dict[str, Any] = {}
     for e in entrances:
@@ -404,6 +439,8 @@ def entrance_crowd(config: SiteConfig, floor: shapely.Geometry, *, walls: shapel
     for e in entrances:
         regions[f"{e.name}_sink"] = {"type": "sink", "polygon": areas[e.name], "config": {"capacity": -1}}
     scenario = {"format": "arena-scenario/2", "robots": [dict(r) for r in robots], "regions": regions}
+    if config.links:
+        scenario["teleport_zones"] = [dict(z) for z in config.links]
     recipients = list(config.facts.recipient_entrances)
     if not recipients:
         return scenario, None, {}
@@ -455,9 +492,31 @@ def write_crowd(folder: Path, scenario: Mapping[str, Any], visitors_doc: Mapping
     return folder
 
 
-def keep_out(scenario: Path) -> list[shapely.Polygon]:
-    """The source and sink polygons of a scenario (its file or directory, world frame), and of its locker visitors: the
-    floor no element may take (§3)."""
+def link_keep_out(links: Iterable[Mapping[str, Any]]) -> list[shapely.Polygon]:
+    """The floor of each link with a footprint (teleport zones in HumanSim's form: stair and escalator halves, cabins) and
+    an apron in front of its mouth, `LINK_APRON_M` out from its entry line and as wide as its footprint across it: an
+    element there would stand on the stair, or in the way of the walkers stepping off it and queueing for it."""
+    import shapely
+
+    out = []
+    for link in links:
+        points = [(float(p["x"]), float(p["y"])) for p in link.get("footprint") or []]
+        if len(points) < 3:
+            continue
+        entry = link["entry"]
+        ex, ey = float(entry["x"]), float(entry["y"])
+        ax, ay = math.cos(float(entry.get("theta", 0.0))), math.sin(float(entry.get("theta", 0.0)))
+        across = [-(x - ex) * ay + (y - ey) * ax for x, y in points]
+        lo, hi = min(across), max(across)
+        out.append(shapely.Polygon(points))
+        out.append(shapely.Polygon([(ex - along * ax - c * ay, ey - along * ay + c * ax) for along, c in ((0.0, lo), (LINK_APRON_M, lo), (LINK_APRON_M, hi), (0.0, hi))]))
+    return out
+
+
+def keep_out(scenario: Path, links: Iterable[Mapping[str, Any]] = ()) -> list[shapely.Polygon]:
+    """The floor no element may take (§3): the source and sink polygons of a scenario (its file or directory, world
+    frame) and of its locker visitors, and every link of the scenario's `teleport_zones` and of `links` (the site
+    config's) with its apron (`link_keep_out`)."""
     import shapely
     import yaml
 
@@ -474,6 +533,7 @@ def keep_out(scenario: Path) -> list[shapely.Polygon]:
             if len(points) < 3:
                 raise ValueError(f"{path}: region {name!r} has no polygon")
             out.append(shapely.Polygon(points))
+    out.extend(link_keep_out([*(doc.get("teleport_zones") or []), *links]))
     return out
 
 

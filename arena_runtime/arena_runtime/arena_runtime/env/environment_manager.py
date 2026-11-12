@@ -12,7 +12,7 @@ from arena_simulation_setup.shared import Ceiling, Light, Placement, Stairs, sta
 from arena_simulation_setup.shared.navmesh import NavLevel, nav_floors, nav_walls
 from arena_simulation_setup.tree.World import Level, World, entity_lights
 from arena_simulation_setup.tree.World.model import render_door_polygons, render_elevator_polygons
-from arena_simulation_setup.tree.World.Scenario import TimelineEntry
+from arena_simulation_setup.tree.World.Scenario import TeleportZone, TimelineEntry
 from arena_simulation_setup.utils.affordance import AffordanceSlot
 from rcl_interfaces.msg import Parameter as ParameterMsg
 from std_msgs.msg import String
@@ -667,6 +667,16 @@ class EnvironmentManager(NodeInterface):
         """
         realized = [attrs.evolve(region, polygon=[self._realizer.realize(vertex) for vertex in region.polygon]) for region in regions]
         return await self._human_simulator.setup_regions(realized)
+
+    async def setup_teleport_zones(self, zones: Sequence[TeleportZone]) -> bool:
+        """Hand the scenario's teleport zones (stair and escalator halves the world joins on one level) to the human simulator, realized."""
+
+        def at(x: float, y: float) -> tuple[float, float]:
+            p = self._realizer.realize(Position(x, y, 0.0))
+            return (p.x, p.y)
+
+        realized = [attrs.evolve(z, entry=(*at(z.entry[0], z.entry[1]), z.entry[2]), wait=(*at(z.wait[0], z.wait[1]), z.wait[2]), hold=(*at(z.hold[0], z.hold[1]), z.hold[2]), footprint=tuple(at(x, y) for x, y in z.footprint)) for z in zones]
+        return await self._human_simulator.setup_teleport_zones(realized)
 
     async def configure_contact(self, mode: str, standing_distance: float) -> None:
         """Contact mode of the human simulator for the episode about to spawn."""

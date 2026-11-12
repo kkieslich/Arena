@@ -361,7 +361,8 @@ class Search:
     whose robot-only optimum is otherwise next to the loading point). `zones` and `exclude` choose the candidate zones
     as `candidate_spots` does.
     A spot whose floor (`Spot.keep_clear`) overlaps a `keep_out` polygon is no candidate: the study's PEDS sources and
-    sinks, given as polygons where the §3 rule needs zone names. Spots on other levels than the loading point's are left
+    sinks, given as polygons where the §3 rule needs zone names, and the links (stair and escalator halves) with the
+    apron in front of their mouths. Spots on other levels than the loading point's are left
     out. `mix` is the task mix robot travel is weighed with. `placements` gives an element its zones, areas or pin
     (`Placement`); `zones` is the default for the others. `loading` and `pins` take precedence over the placements' pins.
     `facts` are the site's (`place.SiteFacts`): the catalog's rules that read them filter every element's spots, so the
@@ -408,7 +409,7 @@ class Search:
         # §3: no element in a PEDS source or sink, the pinned ones included: say so rather than search an empty space
         for name, spot in [(LOADING, self.loading), *self.pins.items()]:
             if blocked is not None and _overlaps(spot.keep_clear, blocked):
-                raise ValueError(f"the pinned {name} ({spot.zone} piece {spot.piece} step {spot.step}, goto {spot.objects[0].goto}) overlaps a PEDS source or sink of the keep-out")
+                raise ValueError(f"the pinned {name} ({spot.zone} piece {spot.piece} step {spot.step}, goto {spot.objects[0].goto}) overlaps a PEDS source or sink or a link of the keep-out")
         level = self.loading.level
         self.pair_checks = 0
         self.dropped: dict[str, dict[str, int]] = {}

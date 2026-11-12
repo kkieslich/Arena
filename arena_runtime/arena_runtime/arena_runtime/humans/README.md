@@ -31,6 +31,7 @@ human-sim `_*_impl` methods:
 | `elevator_doors_changed(doors)` | cabin name to door open, called by the mechanism shim when a cabin door turns open or stops being open, forwarded to `_set_elevator_doors_impl` |
 | `spawn_stairs(stairs)` | sync, remember the realized stair halves of the world with every belt running. The environment manager calls it before `spawn_elevators`, which sends them along, and `remove_obstacles(purge >= WORLD)` clears them |
 | `stairs_changed(running)` | realized stair half name to belt running, called by the runtime when an escalator's `running` semantic changes. Kept per half and sent again with every zone through `_set_elevators_impl` |
+| `setup_teleport_zones(zones)` | the scenario's own teleport zones (`teleport_zones`: stair and escalator halves joining floor of one level, realized into the env frame), replacing the scenario's before and sent with the world's cabins and stair halves through `_set_elevators_impl`. Returns False, sending nothing, when one is named like a zone of the world; the scenario task fails the episode when this or the human simulator refuses them. `remove_obstacles(purge >= WORLD)` clears them |
 | `unuse_obstacles()` | call `_remove_obstacles_impl`, then flip all `INUSE` layers to `UNUSED` |
 | `remove_obstacles(purge)` | remove all obstacles at or below `purge` layer from both layers. `WORLD` survives unless `purge >= WORLD` |
 | `spawn_robot(robots)` | spawn in physics sim, start tracking the robot, then call `_spawn_robot_impl` |

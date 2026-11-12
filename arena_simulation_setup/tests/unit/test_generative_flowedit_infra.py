@@ -66,6 +66,7 @@ def test_the_reference_suite_runs_the_site_without_robots_at_each_seed() -> None
     doc = infra.reference_suite("site", [1, 2, 3])
     assert doc["references"] is False and doc["launch"] == infra.LAUNCH and doc["launch"]["human.robots.visible"] == "true"
     assert doc["launch"]["human.skeleton"] == "false"
+    assert doc["launch"]["humansim.zone_route_choice"] == "true"
     # the recorder keeps the tracks, robots and semantics, not the pedestrians' skeletons, named frames or arena_peds
     assert doc["record"] == infra.RECORD and doc["record"]["exclude"] == ["peds", "animation_states", "tf_humans"]
     import re
@@ -283,6 +284,7 @@ def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_p
     assert facts.courier_access == (153.13, 14.99) and len(facts.outlets) == 101
     assert {e.name for e in facts.recipient_entrances} == {"mrt_bencoolen", "scis1_entrance", "lift_scis1_staff"}
     assert len(facts.entrances) == 38 and sum(e.placeholder for e in facts.entrances) == 7
+    assert config.links == ()
     # the rules compile to the search's engine: the courier handoff point pinned at the access point, nothing else
     assert config.placements == {"loading_point": search.Placement(pin=(153.13, 14.99))}
     assert [(types, share) for types, share in config.flow_split] == [(("mrt",), 0.5), (("building", "shop", "escalator", "stairs"), 0.3), (("lift", "other"), 0.2)]
@@ -292,6 +294,39 @@ def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_p
     assert bencoolen["type"] == "mrt" and bencoolen["recipients"] and not bencoolen["placeholder"] and bencoolen["level"] is None
     with pytest.raises(FileNotFoundError, match="no INFRA site config"):
         infra.site_config("no_such_site")
+
+
+def test_the_v2_twin_config_links_the_t_junction_stairs_and_escalators_in_place_of_their_entrances() -> None:
+    config = infra.site_config("smu_link_full_v2")
+    assert config.site == "smu_link_full_v2" and config.scenario == "study_entrances" and config.crowd_side == "left"
+    shipped = infra.site_config("smu_link_full")
+    facts = config.facts
+    assert facts.courier_access == shipped.facts.courier_access and facts.outlets == shipped.facts.outlets
+    assert config.flow_split == shipped.flow_split and config.exclude == shipped.exclude
+    # the same entrances but the two the links replace, and the toilets
+    replaced = {"stairs_t_junction", "escalator_t_junction"}
+    toilets = {e.name: e for e in facts.entrances if e.name.startswith("toilet_")}
+    assert [e for e in facts.entrances if e.name not in toilets] == [e for e in shipped.facts.entrances if e.name not in replaced] and len(facts.entrances) == 38
+    # the toilets at the west end of the branch west of the strip's north mouth, the women's door south of the men's
+    women, men = toilets["toilet_women"], toilets["toilet_men"]
+    assert women.type == men.type == "other" and max(y for _, y in women.points) < min(y for _, y in men.points)
+    assert all(138.5 <= x <= 147.5 and 139.5 <= y <= 142.0 for e in (women, men) for x, y in e.points)
+    links = {z["name"]: z for z in config.links}
+    assert len(links) == 8 and {z["kind"] for z in links.values()} == {"stairs", "escalator"}
+    # two-way stairs: each half boards and lands, the flight 14.05 s from the seam trigger to the landing
+    for stair in ("tj_stairs_south", "tj_stairs_north"):
+        top, bottom = links[f"{stair}_top"], links[f"{stair}_bottom"]
+        assert top["destinations"] == [f"{stair}_bottom"] and bottom["destinations"] == [f"{stair}_top"]
+        assert top["delay"] == bottom["delay"] == 14.05 and top["belt"] == bottom["belt"] == 0
+    # one-way escalators, south up and north down: the boarding half carries the flight, the exit half's belt runs off its seam
+    up, down = links["tj_escalator_south_bottom"], links["tj_escalator_north_top"]
+    assert up["destinations"] == ["tj_escalator_south_top"] and (up["delay"], up["belt"]) == (22.04, 0.5)
+    assert down["destinations"] == ["tj_escalator_north_bottom"] and (down["delay"], down["belt"]) == (21.13, 0.5)
+    for exit_half in ("tj_escalator_south_top", "tj_escalator_north_bottom"):
+        assert links[exit_half]["destinations"] == [] and links[exit_half]["belt"] == -0.5
+    # the rate the crowd settles at on every seed: 0.9 ped/s, 171 s on the site on average
+    density = config.crowd_density
+    assert (density.density, density.area_m2, density.mean_time_s) == (0.039, 3944, 171) and density.rate() == pytest.approx(0.9, abs=1e-3)
 
 
 FACTS = {"site": "s", "courier_access": [1, 2]}
@@ -588,6 +623,128 @@ def test_an_entrance_walled_off_at_the_walkers_clearance_takes_the_nearest_floor
     assert area.area >= infra.ENTRANCE_MIN_M2
     assert not area.intersects(shapely.box(10.2, 0.2, 13.8, 3.8))
     assert area.distance(shapely.Point(12, 2)) <= infra.ENTRANCE_GROW_M[0] / 2.0 * 2**0.5
+
+
+def _link_half(name: str, to: str, x0: float, facing: float) -> dict:
+    """A stair half 1.5 m deep and 2 m wide (y 4-6) from its mouth at x0, facing in along `facing` (0 or pi), its hold
+    0.7 m in, as the twin's halves."""
+    depth = 1.5 if facing == 0.0 else -1.5
+    return {
+        "name": name,
+        "kind": "stairs",
+        "destinations": [to] if to else [],
+        "entry": {"x": x0, "y": 5.0, "theta": facing},
+        "hold": {"x": x0 + 0.7 * depth / 1.5, "y": 5.0, "theta": facing},
+        "footprint": [{"x": min(x0, x0 + depth), "y": 4.0}, {"x": max(x0, x0 + depth), "y": 4.0}, {"x": max(x0, x0 + depth), "y": 6.0}, {"x": min(x0, x0 + depth), "y": 6.0}],
+    }
+
+
+def test_site_links_reach_the_crowd_scenario_as_teleport_zones() -> None:
+    import shapely
+    from arena_simulation_setup.tree.World.Scenario import parse_scenario
+
+    links = [_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)]
+    config = _entrance_config(links=links)
+    assert config.record()["links"] == links
+    scenario = infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15))[0]
+    assert scenario["teleport_zones"] == links
+    zones = parse_scenario(scenario).teleport_zones
+    assert [(z.name, z.destinations, z.kind) for z in zones] == [("st_top", ("st_bottom",), "stairs"), ("st_bottom", ("st_top",), "stairs")]
+    assert zones[1].entry == (16.0, 5.0, pytest.approx(math.pi)) and zones[0].wait == zones[0].entry
+    assert "teleport_zones" not in infra.entrance_crowd(_entrance_config(), shapely.box(-5, -5, 30, 15))[0]
+
+
+def test_site_links_are_checked() -> None:
+    with pytest.raises(ValueError, match="links: .*unknown zones"):
+        _entrance_config(links=[_link_half("st_top", "nowhere", 4.0, 0.0)])
+    bare = {k: v for k, v in _link_half("st_top", "", 4.0, 0.0).items() if k != "footprint"}
+    with pytest.raises(ValueError, match="links: .*footprint"):
+        _entrance_config(links=[bare])
+    with pytest.raises(ValueError, match="links: .*kind"):
+        _entrance_config(links=[{**_link_half("st_top", "", 4.0, 0.0), "kind": "ladder"}])
+    # a hold on the footprint's edge, which HumanSim refuses: caught here
+    with pytest.raises(ValueError, match="links: .*inside the footprint"):
+        _entrance_config(links=[{**_link_half("st_top", "", 4.0, 0.0), "hold": {"x": 5.5, "y": 5.0}}])
+    # a malformed entry says where it is
+    for bad in ([[4.0, 5.0]], ["st_top"], {"st_top": _link_half("st_top", "", 4.0, 0.0)}):
+        with pytest.raises(ValueError, match="links: a list of teleport zones"):
+            _entrance_config(links=bad)
+
+
+def test_the_crowd_refuses_a_link_whose_hold_lies_on_a_wall() -> None:
+    import shapely
+
+    config = _entrance_config(links=[_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)])
+    walls = shapely.MultiLineString([[(-5, -5), (30, -5)], [(4.7, 4.9), (4.7, 5.6)]])
+    with pytest.raises(ValueError, match=r"links \['st_top'\]: the hold lies within 0.25 m of a wall"):
+        infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15), walls=walls)
+    assert infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15), walls=shapely.MultiLineString([[(-5, -5), (30, -5)]]))[0]["teleport_zones"]
+
+
+def test_the_keep_out_holds_every_link_and_the_apron_in_front_of_its_mouth(tmp_path: Path) -> None:
+    import shapely
+
+    config = _entrance_config(links=[_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)])
+    scenario = infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15))[0]
+    folder = infra.write_crowd(tmp_path / "crowd", scenario, None, {}, "links")
+    regions = len(scenario["regions"])
+    blocked = infra.keep_out(folder / "scenario.yaml")
+    assert len(blocked) == regions + 2 * 2  # each link and its apron
+    union = shapely.union_all(blocked[regions:])
+    # the half itself (4-5.5, facing +x; 14.5-16, facing -x) and LINK_APRON_M out of each mouth, as wide as the half
+    for x, y in ((4.7, 5.0), (5.4, 4.1), (4.0 - infra.LINK_APRON_M + 0.05, 5.9), (15.3, 5.0), (16.0 + infra.LINK_APRON_M - 0.05, 4.1)):
+        assert union.contains(shapely.Point(x, y)), (x, y)
+    for x, y in ((4.0 - infra.LINK_APRON_M - 0.1, 5.0), (3.0, 6.2), (6.0, 5.0), (16.0 + infra.LINK_APRON_M + 0.1, 5.0)):
+        assert not union.contains(shapely.Point(x, y)), (x, y)
+    # the site config's links count where the scenario has none
+    assert len(infra.keep_out(folder / "scenario.yaml", config.links)) == regions + 4 * 2
+    plain = infra.write_crowd(tmp_path / "plain", {**scenario, "teleport_zones": []}, None, {}, "plain")
+    assert len(infra.keep_out(plain / "scenario.yaml", config.links)) == regions + 2 * 2
+
+
+def test_no_entrance_area_takes_a_link_or_the_apron_in_front_of_its_mouth() -> None:
+    import shapely
+
+    links = [_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)]
+    entrances = [
+        {"name": "m1", "type": "mrt", "polygon": [[0, 0], [2, 0], [2, 2], [0, 2]]},
+        {"name": "m2", "type": "mrt", "at": [20, 1], "recipients": True},
+        {"name": "s1", "type": "shop", "at": [3.0, 5.0]},  # its 4 m square takes the top half and its apron
+    ]
+    scenario = infra.entrance_crowd(_entrance_config(entrances=entrances, links=links), shapely.box(-5, -5, 30, 15))[0]
+    taken = shapely.union_all(infra.link_keep_out(links))
+    area = shapely.Polygon([(p["x"], p["y"]) for p in scenario["regions"]["s1_sink"]["polygon"]])
+    assert area.area >= infra.ENTRANCE_MIN_M2 and not area.intersects(taken)
+    assert all(not shapely.Polygon([(p["x"], p["y"]) for p in r["polygon"]]).intersects(taken) for r in scenario["regions"].values())
+
+
+def test_no_search_spot_or_entrance_area_on_the_v2_twin_stands_on_a_link_or_its_apron() -> None:
+    import os
+
+    import shapely
+    from arena_simulation_setup.shared.navmesh import nav_walls
+
+    # a local world, outside the fake assets the tests run on: the checkout's own local assets
+    root = Path(os.environ.get("ARENA_DIR", "/nonexistent")) / "arena_simulation_setup" / "assets" / "worlds" / "smu_link_full_v2"
+    if not (root / "world.yaml").is_file():
+        pytest.skip("the local world smu_link_full_v2 is not installed")
+    config = infra.site_config("smu_link_full_v2")
+    site = open_site(root)
+    links = shapely.union_all(infra.link_keep_out(config.links))
+    blocked = shapely.union_all(infra.keep_out(root / "scenarios" / config.scenario / "scenario.yaml", config.links))
+    on_links = 0
+    for name in (*search.SEARCHED, search.LOADING):
+        spots = place.candidate_spots(site, name, exclude=config.exclude, facts=config.facts)
+        on_links += sum(1 for s in spots if s.valid and s.keep_clear.intersects(links))
+        # what the search keeps: valid spots off the keep-out, none of them on a link or its apron
+        assert not [s.id for s in spots if s.valid and not s.keep_clear.intersects(blocked) and s.keep_clear.intersects(links)]
+    assert on_links >= 4  # the bays the keep-out now drops lie on the T-junction's bottom stair halves
+    # nor does any entrance's source or sink (a walker spawned on a running belt would ride it)
+    level = next(iter(site.world.levels.values()))
+    floor = shapely.union_all([shapely.Polygon([(p.x, p.y) for p in z.polygon]) for z in level.zones if len(z.polygon) >= 3])
+    walls = shapely.MultiLineString([[(w.start.x, w.start.y), (w.end.x, w.end.y)] for w in nav_walls(level)])
+    scenario = infra.entrance_crowd(config, floor, walls=walls)[0]
+    assert not [name for name, r in scenario["regions"].items() if shapely.Polygon([(p["x"], p["y"]) for p in r["polygon"]]).intersects(links)]
 
 
 def _evaluation_inputs(tmp_path: Path, joint: str, robot_only: str) -> tuple[list[str], Path]:

@@ -1,0 +1,121 @@
+# INFRA site config of smu_link_full_v2: the twin smu_link_full with its walkable floor on the real wall faces (the west ramp's east
+# wall on the glass railing / kiosk-front line, the T-junction stair well no floor, the lower concourse up to the stair foot), and
+# the T-junction stairs and escalators as links: the site's facts (study design §2, §3, §9) and the study crowd.
+# `flowedit infra` reads it by the site's name; `--site-config` takes another. It names no elements: the catalog's
+# rules in place.py read these facts (a locker within walking distance of a recipient entrance, the courier handoff
+# point at the courier access point, chargers and lockers within cable run of an outlet) and the search decides.
+#
+#   entrances:      name, type (mrt, building, shop, escalator, stairs, lift, other), position as `at: [x, y]` or a
+#                   `polygon: [[x, y], ...]` in the world frame, `recipients: true` where parcel recipients come in,
+#                   `placeholder: true` where the position is not surveyed yet
+#   courier_access: [x, y], where couriers arrive with parcels; the courier handoff point stands there
+#   outlets:        [[x, y], ...], the power outlets as marked on the walls; the cable-run rule measures from them
+#   exclude:        zones no element goes to besides those NAV@r cuts off at 0.325 m (left out on their own)
+#   flow_split:     the share of the crowd's inflow per group of entrance types, split evenly within a group, at the
+#                   crowd's total rate; `flowedit infra crowd` builds the crowd from it
+#   crowd_side:     the side the crowd keeps to (right, left, none), HumanSim's global_planner.lane_side in every suite
+#   links:          stair and escalator halves joining floor the twin lays out on one level, as HumanSim teleport zones
+#                   (name, kind, destinations, entry, wait, hold, footprint, open, delay, belt; poses as {x, y, theta}):
+#                   the crowd's scenario carries them as `teleport_zones`, and walkers that climb take them where that is
+#                   cheaper than walking (HumanSim's zone_route_choice, on in every suite); an entrance a link replaces leaves
+#                   `entrances`
+#   crowd_density:  the crowd's design density and what sets its rate by Little's law (walkers present = inflow x mean
+#                   time on the site): density [ped/m2] on area_m2 of floor, and mean_time_s, the mean time a walker
+#                   spends on the site from its source to its sink, measured in the site's crowd; `flowedit infra crowd`
+#                   then sets the inflow in all to density x area_m2 / mean_time_s (`--density` for another density,
+#                   `--rate` to set the inflow directly)
+#
+# Entrances from the site zone map (marked on the twin's top-down and in its 3D scan), on the twin's walking floor (free map cells a 0.325 m walker reaches from the upper concourse): the MRT exits, building
+# doors, lifts, escalators and stairs, and the shops, places and rooms people walk into (types shop and other); the
+# benches are left out. A polygon is the mark's floor 0.35 m off the walls where 6 m2 or more of it lies inside the
+# mark; `at` is the middle of the walkway along a mark drawn beyond the wall (the crowd cuts a 4 m square round it).
+# `placeholder`: rooms whose door is not marked (the anchor is the middle of their edge on the walkway).
+# SCIS1's foyer (the world's side_room) lies behind its glass doors, cut off on purpose: scis1_entrance stands on the
+# concourse side of the door line.
+site: smu_link_full_v2
+# the crowd every stage runs (scenarios/<name> of the site); layout copies also get its locker_visitors.yaml;
+# `flowedit infra crowd --name study_entrances --out <site>/scenarios` builds it from the entrances below
+scenario: study_entrances
+# the ramps: the 4 % ramp, and the west ramp (flat to y 86, then 1.3 m up by y 58, ~4.6 %) to the side corridor
+exclude: [ramp, west_ramp]
+entrances:
+  - {name: outdoor_space_scis1, type: building, at: [143.44, 181.47]}
+  - {name: scis1_entrance, type: building, at: [154.14, 166.72], recipients: true}
+  - {name: escalator_1, type: escalator, at: [149.59, 304.27]}
+  - {name: escalator_koufu, type: escalator, at: [107.94, 34.57]}
+  - {name: stairs_koufu, type: stairs, at: [112.09, 34.47]}
+  - {name: study_room_3, type: other, at: [150.09, 245.42], placeholder: true}
+  - {name: connexion_entrance, type: lift, at: [15.89, 45.92], placeholder: true}
+  - {name: lift_library, type: lift, at: [120.49, 58.57]}
+  - {name: lift_school_of_accountancy, type: lift, at: [20.34, 57.82]}
+  - {name: lift_school_of_social_science, type: lift, at: [142.84, 256.56]}
+  - {name: lift_scis1, type: lift, at: [144.84, 171.72]}
+  - {name: lift_scis1_staff, type: lift, at: [153.19, 176.02], recipients: true}
+  - {name: bras_basah_1, type: mrt, at: [155.31, 83.48]}
+  - {name: bras_basah_2, type: mrt, at: [153.93, 9.91]}
+  - {name: mrt_bencoolen, type: mrt, at: [147.89, 218.82], recipients: true}
+  - {name: audio_drama_lab, type: other, at: [143.14, 297.22]}
+  - {name: barber_shop, type: other, at: [18.84, 37.97]}
+  - {name: behavioral_lab, type: other, at: [80.44, 54.32]}
+  - {name: culture_space, type: other, polygon: [[154.04, 290.06], [156.19, 289.76], [156.28, 292.87], [155.64, 293.35], [155.87, 294.42], [155.15, 294.47], [154.69, 294.07], [154.98, 293.76], [154.98, 293.17], [154.19, 292.67], [154.19, 292.37], [154.87, 291.69], [154.88, 291.09], [154.08, 290.57]]}
+  - {name: gym, type: other, polygon: [[143.43, 164.13], [143.54, 163.47], [143.98, 163.01], [144.09, 162.13], [144.78, 161.51], [144.52, 160.69], [144.97, 160.59], [145.40, 160.12], [146.12, 160.12], [145.99, 160.74], [146.34, 161.13], [147.45, 161.29], [146.37, 161.77], [146.09, 162.29], [146.09, 162.93], [146.63, 163.50], [147.27, 163.47], [147.53, 163.88], [147.24, 164.27], [147.35, 165.19], [147.00, 165.56], [146.99, 166.04], [147.41, 166.65], [148.03, 166.67], [148.09, 167.47], [146.29, 167.77], [144.94, 167.67], [144.87, 166.69], [145.12, 165.86], [143.69, 164.67]]}
+  - {name: healthcare, type: other, at: [126.39, 51.07]}
+  - {name: it_help_centre, type: other, at: [9.44, 32.91]}
+  - {name: outdoor_space_2, type: other, at: [98.09, 40.22], placeholder: true}
+  - {name: rest_nest, type: other, at: [17.69, 55.77]}
+  - {name: student_service_hub, type: other, at: [56.69, 48.87], placeholder: true}
+  - {name: study_room_1, type: other, at: [152.69, 280.72], placeholder: true}
+  - {name: study_room_4, type: other, at: [142.19, 241.47], placeholder: true}
+  - {name: study_room_and_lecture_room_2, type: other, at: [143.49, 272.77], placeholder: true}
+  # the toilets (not on the site zone map): the short branch west of the strip's north mouth (x 138.5-147.5, y 139.5-142)
+  # ends in two doors, the women's south and the men's north of the divider; each polygon is the floor in front of its door
+  # 0.4 m clear of the walls (the end wall and the divider keep walkers off the doors themselves)
+  - {name: toilet_women, type: other, polygon: [[140.2, 140.25], [142.4, 140.25], [142.4, 140.9], [140.2, 140.9]]}
+  - {name: toilet_men, type: other, polygon: [[140.2, 141.0], [142.4, 141.0], [142.4, 141.6], [140.2, 141.6]]}
+  - {name: bakery, type: shop, at: [132.13, 29.32]}
+  - {name: bibimbap, type: shop, at: [138.34, 33.77]}
+  - {name: braek, type: shop, at: [118.49, 34.07]}
+  - {name: koufu_1, type: shop, at: [83.56, 34.05]}
+  - {name: koufu_2, type: shop, polygon: [[94.85, 35.37], [95.22, 34.92], [95.28, 34.27], [96.91, 34.31], [97.41, 33.85], [98.11, 34.41], [100.25, 34.36], [100.79, 34.07], [101.25, 34.49], [100.76, 34.93], [100.73, 35.32]]}
+  - {name: smu_alcove, type: shop, at: [158.94, 147.72]}
+  - {name: starbucks, type: shop, at: [155.09, 175.07]}
+  - {name: student_service, type: shop, at: [138.25, 54.96]}
+# the site zone map's first loading point (loading_point_1): the south end beside bras_basah_2
+courier_access: [153.13, 14.99]
+# the power outlets of the site zone map, as marked on the wall
+outlets: [[152.08, 245.66], [135.38, 187.49], [135.77, 217.13], [135.63, 224.85], [135.61, 212.04], [145.41, 132.37], [145.26, 120.28], [150.48, 12.29], [150.61, 17.88], [150.74, 29.03], [150.99, 37.48], [151.51, 49.03], [151.25, 57.02], [144.51, 195.73], [151.61, 68.24], [151.74, 78.43], [152.74, 103.43], [152.86, 108.64], [153.25, 125.52], [60.64, 49.35], [55.36, 49.43], [46.11, 49.50], [38.41, 49.59], [8.80, 28.68], [135.55, 227.37], [39.95, 49.56], [8.75, 27.01], [8.94, 25.31], [8.77, 23.66], [8.79, 22.02], [8.71, 20.35], [8.86, 18.60], [8.72, 17.05], [8.73, 15.43], [8.70, 13.64], [135.52, 192.64], [8.80, 12.02], [8.58, 10.38], [8.58, 8.72], [8.63, 3.75], [8.58, 5.37], [8.65, 7.07], [41.50, 49.56], [42.93, 49.53], [44.57, 49.53], [31.75, 54.56], [135.62, 195.24], [39.87, 52.09], [47.57, 49.55], [49.25, 49.52], [50.61, 49.46], [52.27, 49.46], [53.91, 49.44], [56.66, 49.39], [57.89, 49.37], [59.30, 49.55], [31.98, 47.26], [135.64, 197.84], [25.43, 47.39], [54.65, 44.17], [62.77, 44.20], [76.81, 47.19], [142.63, 37.63], [152.37, 88.25], [152.49, 89.47], [152.45, 90.83], [152.41, 92.17], [152.51, 93.42], [143.86, 204.48], [152.48, 94.78], [152.62, 96.03], [152.62, 97.31], [152.72, 98.59], [152.74, 99.90], [152.73, 101.09], [152.87, 104.61], [152.87, 106.12], [152.87, 107.42], [152.88, 109.99], [144.00, 210.40], [152.87, 111.30], [152.98, 112.62], [152.97, 113.90], [152.97, 115.12], [153.00, 116.50], [153.09, 117.71], [153.11, 119.07], [153.31, 120.29], [153.23, 121.70], [153.25, 122.99], [144.35, 224.90], [153.25, 124.08], [135.65, 199.14], [135.33, 200.85], [135.77, 204.24], [135.79, 206.38], [135.62, 208.62], [135.76, 209.73], [135.76, 214.50], [135.65, 216.00], [135.55, 218.24]]
+# the T-junction stairs and escalators between the deck (side corridor, +1.55 m) and the lower concourse (-2.25 m), each as
+# halves on the floor at either end of the flight (the flight crosses the stairwell; the bottom stair halves at the stair foot):
+# the seam trigger 0.8 m before the seam wall, `delay` the time from the seam trigger to the landing, so that a walker takes
+# the whole traverse from the boarding half's entry to the exit half's entry (flat floor at 1.1 m/s, the flight at 0.7 m/s on
+# the stairs, at 0.5 m/s belt speed on the escalators: 15.9 s on the stairs, 24.6 s and 23.7 s on the escalators) with the
+# halves walked at stair or belt speed. The stairs are two-way, each half boards and lands; the escalators run one way each
+# (south up, north down; not visible in the scan); wheelchairs take the west ramp
+links:
+  - {name: tj_escalator_south_top, kind: escalator, destinations: [], entry: {x: 122.2, y: 34.475, theta: 0}, hold: {x: 122.9, y: 34.475, theta: 0}, footprint: [{x: 122.2, y: 34}, {x: 123.7, y: 34}, {x: 123.7, y: 34.95}, {x: 122.2, y: 34.95}], delay: 0, belt: -0.5}
+  - {name: tj_escalator_south_bottom, kind: escalator, destinations: [tj_escalator_south_top], entry: {x: 136.4, y: 34.475, theta: 3.1416}, hold: {x: 135.7, y: 34.475, theta: 3.1416}, footprint: [{x: 134.9, y: 34}, {x: 136.4, y: 34}, {x: 136.4, y: 34.95}, {x: 134.9, y: 34.95}], delay: 22.04, belt: 0.5}
+  - {name: tj_escalator_north_top, kind: escalator, destinations: [tj_escalator_north_bottom], entry: {x: 122.05, y: 36, theta: 0}, hold: {x: 122.75, y: 36, theta: 0}, footprint: [{x: 122.05, y: 35.45}, {x: 123.55, y: 35.45}, {x: 123.55, y: 36.55}, {x: 122.05, y: 36.55}], delay: 21.13, belt: 0.5}
+  - {name: tj_escalator_north_bottom, kind: escalator, destinations: [], entry: {x: 135.25, y: 36, theta: 3.1416}, hold: {x: 134.55, y: 36, theta: 3.1416}, footprint: [{x: 133.75, y: 35.45}, {x: 135.25, y: 35.45}, {x: 135.25, y: 36.55}, {x: 133.75, y: 36.55}], delay: 0, belt: -0.5}
+  - {name: tj_stairs_south_top, kind: stairs, destinations: [tj_stairs_south_bottom], entry: {x: 121.9, y: 40.6, theta: 0}, hold: {x: 122.6, y: 40.6, theta: 0}, footprint: [{x: 121.9, y: 38.9}, {x: 123.4, y: 38.9}, {x: 123.4, y: 42.3}, {x: 121.9, y: 42.3}], delay: 14.05, belt: 0}
+  - {name: tj_stairs_south_bottom, kind: stairs, destinations: [tj_stairs_south_top], entry: {x: 133, y: 40.6, theta: 3.1416}, hold: {x: 132.3, y: 40.6, theta: 3.1416}, footprint: [{x: 131.5, y: 38.9}, {x: 133, y: 38.9}, {x: 133, y: 42.3}, {x: 131.5, y: 42.3}], delay: 14.05, belt: 0}
+  - {name: tj_stairs_north_top, kind: stairs, destinations: [tj_stairs_north_bottom], entry: {x: 121.9, y: 46.35, theta: 0}, hold: {x: 122.6, y: 46.35, theta: 0}, footprint: [{x: 121.9, y: 44.7}, {x: 123.4, y: 44.7}, {x: 123.4, y: 48}, {x: 121.9, y: 48}], delay: 14.05, belt: 0}
+  - {name: tj_stairs_north_bottom, kind: stairs, destinations: [tj_stairs_north_top], entry: {x: 133, y: 46.35, theta: 3.1416}, hold: {x: 132.3, y: 46.35, theta: 3.1416}, footprint: [{x: 131.5, y: 44.7}, {x: 133, y: 44.7}, {x: 133, y: 48}, {x: 131.5, y: 48}], delay: 14.05, belt: 0}
+# the side walkers keep to: left, as on Singapore's footpaths (LTA Active Mobility code of conduct: keep left on
+# footpaths and shared paths); HumanSim's default is right (Helbing et al. 2001; Moussaid et al. 2009)
+crowd_side: left
+# the density the twin's crowd sustains: 0.9 ped/s in all, about 154 walkers (0.039 x 3944 / 171), below the study
+# design's 0.3 ped/m2 (§9). In HumanSim alone (the 38-entrance crowd of `flowedit infra crowd`, side left, the links with
+# route choice on, 2400 s) the walkers present stay flat at 0.7-0.9 ped/s at seeds 1-7 (-3.0 to +2.9 per 100 s over
+# 1200-2400 s, none of the walkers released 420-1100 s left at the end); at 1.0 three of seven seeds do not settle
+# (+4.0 and +4.4 per 100 s, or 5 of those walkers still there). The growth sits at the north end of the strip west of
+# the upper concourse (x 140-150, y 130-150) and in one seed at its south end (x 130-150, y 40-60).
+# area_m2: the floor a walker reaches (`walk_area`, 0.4 m clear of the walls). mean_time_s: the mean time a walker
+# spends in the twin at 0.9 ped/s, seeds 1-7: walkers present / inflow over 420-2400 s, 165-178 s (mean 171 s);
+# remeasure when the entrances, the links, the crowd model or the site change.
+crowd_density: {density: 0.039, area_m2: 3944, mean_time_s: 171}
+# the ranking of the entrances: the MRT exits first, then the building doors, shops,
+# escalators and stairs, then the lifts and rooms; even within a group
+flow_split:
+  - {types: [mrt], share: 0.5}
+  - {types: [building, shop, escalator, stairs], share: 0.3}
+  - {types: [lift, other], share: 0.2}

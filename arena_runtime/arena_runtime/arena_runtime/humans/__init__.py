@@ -28,6 +28,7 @@ from arena_runtime_msgs.msg import LockstepChannel
 from arena_simulation_setup.shared import Placement, Stairs, stair_height
 from arena_simulation_setup.shared.body import DEFAULT_STANCE, load_stance
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
+from arena_simulation_setup.tree.World.Scenario import TeleportZone
 from arena_simulation_setup.utils.models import ModelType
 from geometry_msgs.msg import Point as PointMsg
 from geometry_msgs.msg import Pose as PoseMsg
@@ -206,6 +207,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         self._wall_counter = itertools.count()
         self._known_regions: dict[str, Region] = {}
         self._known_elevators: tuple[Elevator, ...] = ()
+        #: the scenario's own teleport zones (stair and escalator halves of one level), realized, sent with the elevators
+        self._scenario_zones: tuple[TeleportZone, ...] = ()
         self._known_stairs: tuple[Stairs, ...] = ()
         self._stair_running: dict[str, bool] = {}
         self._robots: dict[str, TrackedRobot] = {}
@@ -1012,6 +1015,19 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         self._known_elevators = tuple(elevators)
         return await self._set_elevators_impl(self._known_elevators)
 
+    async def setup_teleport_zones(self, zones: Sequence[TeleportZone]) -> bool:
+        """Hand the scenario's realized teleport zones to the human simulator, replacing the scenario's before, sent along with
+        the world's elevators and stairs. False, and nothing sent, when one is named like a zone of the world (the human
+        simulator would refuse the whole set)."""
+        if not zones and not self._scenario_zones:
+            return True
+        clash = sorted({z.name for z in zones} & ({e.name for e in self._known_elevators} | {s.name for s in self._known_stairs}))
+        if clash:
+            self._logger.error(f"scenario teleport zones {clash} are named like zones of the world")
+            return False
+        self._scenario_zones = tuple(zones)
+        return await self._set_elevators_impl(self._known_elevators)
+
     def spawn_stairs(self, stairs: Sequence[Stairs]) -> None:
         """Remember the realized stair halves of the world, sent along with the next elevators, every belt running."""
         self._known_stairs = tuple(stairs)
@@ -1235,9 +1251,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             await self._clear_mechanism_walls()
             self._semantic_values.clear()
             futures.append(self._simulator.remove_world())
-            if self._known_elevators or self._known_stairs:
+            if self._known_elevators or self._known_stairs or self._scenario_zones:
                 self._known_elevators = ()
                 self._known_stairs = ()
+                self._scenario_zones = ()
                 self._stair_running = {}
                 futures.append(self._set_elevators_impl(()))
 

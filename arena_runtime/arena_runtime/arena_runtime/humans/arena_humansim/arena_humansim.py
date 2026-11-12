@@ -94,6 +94,7 @@ from arena_runtime_msgs.msg import LockstepChannel
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET, CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, Stairs
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
 from arena_simulation_setup.tree.World.model import elevator_doorway_pose
+from arena_simulation_setup.tree.World.Scenario import TeleportZone
 from arena_simulation_setup.utils.affordance import AffordanceClaims, AffordanceKind, AffordanceSlot, SlotOccupied, conflicts, has_z, max_occupancy, placed_slots
 from arena_simulation_setup.utils.face import front_angle
 from geometry_msgs.msg import (
@@ -1700,8 +1701,28 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             belt=stair.belt if running else 0.0,
         )
 
+    def _scenario_zone_msg(self, zone: TeleportZone) -> TeleportZoneMsg:
+        """A scenario teleport zone (realized) in the engine frame."""
+
+        def pose(p: tuple[float, float, float]) -> Pose2DMsg:
+            x, y = self._to_engine(p[0], p[1])
+            return Pose2DMsg(x=x, y=y, theta=p[2])
+
+        return TeleportZoneMsg(
+            name=zone.name,
+            destinations=list(zone.destinations),
+            entry=pose(zone.entry),
+            wait=pose(zone.wait),
+            hold=pose(zone.hold),
+            footprint=[Point32(x=x, y=y, z=0.0) for x, y in (self._to_engine(px, py) for px, py in zone.footprint)],
+            open=zone.open,
+            delay=zone.delay,
+            kind=zone.kind,
+            belt=zone.belt,
+        )
+
     async def _set_elevators_impl(self, elevators: Sequence[Elevator]) -> bool:
-        request = SetTeleportZones.Request(zones=[self._zone_msg(elevator) for elevator in elevators] + [self._stair_zone_msg(stair) for stair in self._known_stairs if stair.kind != 'ramp'])
+        request = SetTeleportZones.Request(zones=[self._zone_msg(elevator) for elevator in elevators] + [self._stair_zone_msg(stair) for stair in self._known_stairs if stair.kind != 'ramp'] + [self._scenario_zone_msg(zone) for zone in self._scenario_zones])
         try:
             response = await self._set_teleport_zones_client.call_timeout(request)
         except Exception as e:
