@@ -73,11 +73,11 @@ levels:
   - {name: lab_6_bench_1, pose: [48.79, 2.93, -1.5708], model: Hospital/Lab_Bench}
   - {name: lab_6_table_1, pose: [50.45, 6.9], model: Hospital/Instrument_Table}
   - {name: office_d_desk_1, pose: [39.6, 23.17, 1.5708], model: Office/SM_TableWorkingDouble}
-  - {name: break_table_1, pose: [50.05, 19.05], model: Office/SM_TableRound_module}
+  - {name: break_table_1, pose: [50.05, 19.05], model: Office/Table_Round}
   - {name: break_drinks_1, pose: [55.48, 17.24], model: Office/SM_DrinksMachine}
-  - {name: reception_sofa_1, pose: [0.62, 6.55, 3.14159], model: Office/SM_Sofa}
+  - {name: reception_sofa_1, pose: [0.62, 6.55, 3.14159], model: Office/Sofa}
   - {name: storage_rack_1, pose: [15.75, 3.83, -1.5708], model: Office/SM_Rack}
   - {name: storage_rack_2, pose: [11.92, 7.35, 3.14159], model: Office/SM_Rack}
   - {name: wc_toilet_1, pose: [33.5, 3.83, -1.5708], model: Office/SM_Toilet}
-  - {name: seminar_table_1, pose: [41.35, 6.17], model: Office/SM_TableD}
-  - {name: seminar_table_2, pose: [41.35, 8.58], model: Office/SM_TableD}
+  - {name: seminar_table_1, pose: [41.35, 6.17], model: Office/Table_B}
+  - {name: seminar_table_2, pose: [41.35, 8.58], model: Office/Table_B}
