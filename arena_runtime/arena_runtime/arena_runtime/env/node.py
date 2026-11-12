@@ -8,13 +8,8 @@ import traceback
 import typing
 from collections.abc import Mapping, Sequence
 
-import arena_robots.Robot
 import arena_runtime_msgs.msg
 import arena_runtime_msgs.srv
-import arena_simulation_setup.tree.assets.Human
-import arena_simulation_setup.tree.assets.Object
-import arena_simulation_setup.tree.configs.environment
-import arena_simulation_setup.tree.configs.parametrized
 import arena_simulation_setup.tree.World as World
 import attrs
 import rclpy
@@ -23,6 +18,7 @@ import rclpy.qos
 import tf2_ros
 from arena_rclpy_mixins import ArenaMixinNode
 from arena_rclpy_mixins.Async import ClientWrapper
+from arena_rclpy_mixins.params import Param, declare
 from arena_rclpy_mixins.shared import Namespace
 from arena_robots.Sensor import SensorType
 from arena_runtime_msgs.msg import AdapterDisplay, AdapterEntry, AdapterVizManifest, RecordedTopics
@@ -31,15 +27,15 @@ from arena_simulation_setup.tree.World import Level
 from arena_simulation_setup.utils.articulation import family_members
 from arena_viz.kinds import DisplayKind
 from arena_viz.style import StyleSpec
-from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.exceptions import InvalidHandle
 from rclpy.impl.implementation_singleton import rclpy_implementation
 from rclpy.lifecycle import TransitionCallbackReturn
 
 from arena_runtime.acoustics import AcousticsSimulatorRegistry, BaseAcousticsSimulator
+from arena_runtime.env.catalogs import LISTERS
 from arena_runtime.env.colors import RobotColors
 from arena_runtime.env.constants import Constants
-from arena_runtime.env.constants.runtime import Configuration, migrate_deprecated_params
+from arena_runtime.env.constants.runtime import Config, Configuration, migrate_deprecated_params
 from arena_runtime.env.environment_manager import EnvironmentManager
 from arena_runtime.env.phase_clock import PhaseClock
 from arena_runtime.env.realizer import Realizer
@@ -49,6 +45,7 @@ from arena_runtime.env.world_manager.world_manager_ros import WorldManagerROS as
 from arena_runtime.flags import flag_enabled
 from arena_runtime.hearing import BaseHearing, HearingRegistry
 from arena_runtime.humans import BaseHumanSimulator, HumanSimulatorRegistry
+from arena_runtime.node_params import NodeParams
 from arena_runtime.safe_callback import SafeCallbackNode
 from arena_runtime.shared import Orientation, Pose, Position
 from arena_runtime.sim import BaseSim, SimulatorRegistry
@@ -56,7 +53,6 @@ from arena_runtime.static_tf import StaticTransformBroadcaster
 
 if typing.TYPE_CHECKING:
     from arena_rclpy_mixins.node import AiomonitorConfig
-    from arena_simulation_setup.tree import Identifier
     from std_srvs.srv import Trigger
 
     from arena_runtime.env.adapters import AdapterDisplayHint
@@ -76,18 +72,10 @@ _ONE_TICK = 1e-6
 _STEP_TIMEOUT = 10.0
 
 
-def _available(identifier: type[Identifier]) -> list[str]:
-    return [item.shortname for item in identifier.listall()]
-
-
-async def _available_async(identifier: type[Identifier], **kwargs: bool) -> list[str]:
-    return [item.shortname for item in await identifier.listall_async(**kwargs)]
-
-
 class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, metaclass=abc.ABCMeta):
     """The per-env lifecycle node: simulator, managers, semantics and entity services, driven by an episode loop subclass."""
 
-    conf: type
+    conf: Config
     _simulator: BaseSim | None = None
     _realizer: Realizer
     _static_tf_broadcaster: StaticTransformBroadcaster
@@ -120,9 +108,9 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self._static_tf_broadcaster = StaticTransformBroadcaster(self)
 
-        self.rosparam[bool].set("initialized", False)
+        self._initialized = declare(self, Param[bool]("initialized", False, "true once the env finished setting up its managers."))
 
-        self._env_id = self.rosparam[int].get("env_id", 0)
+        self._env_id = declare(self, Param[int]("env_id", 0, "Index of this env in the runtime's env table.")).value
         # Reference and prespawn anchor are unknown at boot, populated by the first
         # confirm_world response handled in WorldManagerROS.apply_world.
         self._reference = (0.0, 0.0)
@@ -207,6 +195,9 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
     def _after_setup(self) -> None:
         """Runs once the env is initialized, before it configures."""
 
+    def _on_watchdog(self) -> None:
+        """Runs on the executor at every 1 s wall tick of the arena watchdog until the env shuts down."""
+
     async def _teardown_episode(self) -> None:
         """Runs in teardown after the tick loop stops, before the robots and the simulator go."""
 
@@ -268,7 +259,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             self._publish_viz_manifest()
             self._logger.info(f"setup took {clock}")
 
-            self.rosparam[bool].set("initialized", True)
+            self._initialized.value = True
             self._after_setup()
         except Exception as e:
             self._logger.error(f"configure failed: {e!r}\n{traceback.format_exc()}")
@@ -285,9 +276,6 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             await self._robots_manager.teardown()
         if self._simulator is not None:
             await self._simulator.shutdown()
-
-    def _declare_mutable_param(self, name: str, default: object, descriptor: ParameterDescriptor) -> None:
-        self.rosparam[type(default)].declare_safe(name, default, descriptor=descriptor)
 
     def aiomonitor_config(self) -> AiomonitorConfig | None:
         # Skip when not in debug mode (no client attaches), and offset ports per
@@ -313,6 +301,9 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._pub_heartbeat.publish(msg)
 
     def _cb_arena_watchdog(self) -> None:
+        if self._heartbeat_stop.is_set():
+            return
+        self._on_watchdog()
         info = self.get_publishers_info_by_topic("/arena/state/envs")
         if info:
             self._arena_seen = True
@@ -400,7 +391,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._logger.info("Setting up managers")
 
         ref_x, ref_y = self._reference
-        prefix = self.rosparam[str].get('prefix', '')
+        prefix = declare(self, NodeParams.PREFIX).value
         realizer = Realizer(Realizer._Configuration(x=ref_x, y=ref_y, prefix=prefix))
         self._realizer = realizer
 
@@ -1007,7 +998,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         request: arena_runtime_msgs.srv.QueryWorlds.Request,
         response: arena_runtime_msgs.srv.QueryWorlds.Response,
     ) -> arena_runtime_msgs.srv.QueryWorlds.Response:
-        response.ids = _available(World.WorldIdentifier)
+        response.ids = await LISTERS["worlds"]("")
         return response
 
     async def _cb_query_robots(
@@ -1015,7 +1006,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         request: arena_runtime_msgs.srv.QueryRobots.Request,
         response: arena_runtime_msgs.srv.QueryRobots.Response,
     ) -> arena_runtime_msgs.srv.QueryRobots.Response:
-        response.ids = _available(arena_robots.Robot.RobotIdentifier)
+        response.ids = await LISTERS["robots"]("")
         return response
 
     async def _cb_query_static_obstacles(
@@ -1023,7 +1014,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         request: arena_runtime_msgs.srv.QueryStaticObstacles.Request,
         response: arena_runtime_msgs.srv.QueryStaticObstacles.Response,
     ) -> arena_runtime_msgs.srv.QueryStaticObstacles.Response:
-        response.ids = await _available_async(arena_simulation_setup.tree.assets.Object.ObjectIdentifier, network=True)
+        response.ids = await LISTERS["static_obstacles"]("")
         return response
 
     async def _cb_query_dynamic_obstacles(
@@ -1031,10 +1022,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         request: arena_runtime_msgs.srv.QueryDynamicObstacles.Request,
         response: arena_runtime_msgs.srv.QueryDynamicObstacles.Response,
     ) -> arena_runtime_msgs.srv.QueryDynamicObstacles.Response:
-        response.ids = await _available_async(
-            arena_simulation_setup.tree.assets.Human.HumanIdentifier,
-            network=True,
-        )
+        response.ids = await LISTERS["dynamic_obstacles"]("")
         return response
 
     async def _cb_query_environments(
@@ -1042,7 +1030,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         request: arena_runtime_msgs.srv.QueryEnvironments.Request,
         response: arena_runtime_msgs.srv.QueryEnvironments.Response,
     ) -> arena_runtime_msgs.srv.QueryEnvironments.Response:
-        response.ids = _available(arena_simulation_setup.tree.configs.environment.EnvironmentIdentifier)
+        response.ids = await LISTERS["environments"]("")
         return response
 
     async def _cb_query_parametrizeds(
@@ -1050,7 +1038,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         request: arena_runtime_msgs.srv.QueryParametrizeds.Request,
         response: arena_runtime_msgs.srv.QueryParametrizeds.Response,
     ) -> arena_runtime_msgs.srv.QueryParametrizeds.Response:
-        response.ids = _available(arena_simulation_setup.tree.configs.parametrized.ParametrizedIdentifier)
+        response.ids = await LISTERS["parametrizeds"]("")
         return response
 
     async def _cb_require_map(
@@ -1058,7 +1046,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         request: Trigger.Request,
         response: Trigger.Response,
     ) -> Trigger.Response:
-        if not self.rosparam[bool].get("initialized", False):
+        if not self._initialized.value:
             response.success = False
             response.message = "task generator not initialized"
             return response

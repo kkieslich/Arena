@@ -62,17 +62,17 @@ levels:
   - {name: kitchen_door, span: [[17.4, 6.0], [18.6, 6.0]]}
   - {name: storage_door, span: [[26.4, 6.0], [27.6, 6.0]]}
   objects:
-  - {name: court_table_1, pose: [12.4, 12.3], model: Office/SM_TableRound_module}
-  - {name: court_table_2, pose: [18.8, 12.3], model: Office/SM_TableRound_module}
-  - {name: court_table_3, pose: [25.2, 12.3], model: Office/SM_TableRound_module}
-  - {name: court_table_4, pose: [31.6, 12.3], model: Office/SM_TableRound_module}
-  - {name: court_table_5, pose: [15.6, 17.7], model: Office/SM_TableRound_module}
-  - {name: court_table_6, pose: [22.0, 17.7], model: Office/SM_TableRound_module}
-  - {name: court_table_7, pose: [28.4, 17.7], model: Office/SM_TableRound_module}
-  - {name: kiosk_1_counter, pose: [10.0, 29.4, 1.5708], model: Office/SM_ReceptionTableStraight}
-  - {name: kiosk_2_counter, pose: [18.0, 29.4, 1.5708], model: Office/SM_ReceptionTableStraight}
-  - {name: kiosk_3_counter, pose: [26.0, 29.4, 1.5708], model: Office/SM_ReceptionTableStraight}
-  - {name: kiosk_4_counter, pose: [34.0, 29.4, 1.5708], model: Office/SM_ReceptionTableStraight}
+  - {name: court_table_1, pose: [12.4, 12.3], model: Office/Table_Round}
+  - {name: court_table_2, pose: [18.8, 12.3], model: Office/Table_Round}
+  - {name: court_table_3, pose: [25.2, 12.3], model: Office/Table_Round}
+  - {name: court_table_4, pose: [31.6, 12.3], model: Office/Table_Round}
+  - {name: court_table_5, pose: [15.6, 17.7], model: Office/Table_Round}
+  - {name: court_table_6, pose: [22.0, 17.7], model: Office/Table_Round}
+  - {name: court_table_7, pose: [28.4, 17.7], model: Office/Table_Round}
+  - {name: kiosk_1_counter, pose: [10.0, 29.4, 1.5708], model: Office/Reception_Table_Straight}
+  - {name: kiosk_2_counter, pose: [18.0, 29.4, 1.5708], model: Office/Reception_Table_Straight}
+  - {name: kiosk_3_counter, pose: [26.0, 29.4, 1.5708], model: Office/Reception_Table_Straight}
+  - {name: kiosk_4_counter, pose: [34.0, 29.4, 1.5708], model: Office/Reception_Table_Straight}
   - {name: kitchen_bench_1, pose: [18.0, 0.6, -1.5708], model: Hospital/Lab_Bench}
   - {name: storage_rack_1, pose: [27.0, 0.6, -1.5708], model: Office/SM_Rack}
   - {name: wc_toilet_1, pose: [9.0, 0.6, -1.5708], model: Office/SM_Toilet}

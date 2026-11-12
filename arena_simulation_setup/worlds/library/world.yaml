@@ -67,15 +67,15 @@ levels:
   - {name: stack_4, pose: [8.32, 24.5, 1.5708], model: Office/SM_BookcaseA}
   - {name: stack_5, pose: [13.52, 20.1, 1.5708], model: Office/SM_BookcaseA}
   - {name: stack_6, pose: [13.52, 24.5, 1.5708], model: Office/SM_BookcaseA}
-  - {name: reading_table_1, pose: [19.5, 14.6], model: Office/SM_TableD}
-  - {name: reading_table_2, pose: [19.5, 20.1], model: Office/SM_TableD}
-  - {name: reading_table_3, pose: [19.5, 25.6], model: Office/SM_TableD}
-  - {name: reading_table_4, pose: [7.8, 12.4], model: Office/SM_TableD}
+  - {name: reading_table_1, pose: [19.5, 14.6], model: Office/Table_B}
+  - {name: reading_table_2, pose: [19.5, 20.1], model: Office/Table_B}
+  - {name: reading_table_3, pose: [19.5, 25.6], model: Office/Table_B}
+  - {name: reading_table_4, pose: [7.8, 12.4], model: Office/Table_B}
   - {name: lobby_plant_1, pose: [0.6, 5.6, 3.14159], model: Office/SM_Plant01}
-  - {name: cafe_table_1, pose: [18.8, 4.0], model: Office/SM_TableRound_module}
-  - {name: cafe_table_2, pose: [23.0, 4.0], model: Office/SM_TableRound_module}
-  - {name: study_1_table, pose: [29.5, 26.4], model: Office/SM_TableRound_module}
-  - {name: study_2_table, pose: [36.5, 26.4], model: Office/SM_TableRound_module}
+  - {name: cafe_table_1, pose: [18.8, 4.0], model: Office/Table_Round}
+  - {name: cafe_table_2, pose: [23.0, 4.0], model: Office/Table_Round}
+  - {name: study_1_table, pose: [29.5, 26.4], model: Office/Table_Round}
+  - {name: study_2_table, pose: [36.5, 26.4], model: Office/Table_Round}
   - {name: office_desk_1, pose: [26.6, 14.0, 3.14159], model: Office/SM_TableWorkingDouble}
   - {name: wc_toilet_1, pose: [39.4, 15.0], model: Office/SM_Toilet}
   - {name: storage_rack_1, pose: [39.4, 10.0], model: Office/SM_Rack}
