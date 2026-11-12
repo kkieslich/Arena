@@ -69,6 +69,8 @@ LIMITS: tuple[tuple[float, float], ...] = (
     (-1.4, 1.2),  # l_wrist
     (-1.4, 1.4),  # r_r_wrist
     (-1.4, 1.2),  # r_wrist
+    (-0.6, 0.35),  # l_d_wrist
+    (-0.6, 0.35),  # r_d_wrist
 )
 
 
@@ -109,7 +111,7 @@ class GaitGenerator:
         phase: float | None = None,
         profile: PoseProfile | None = None,
     ) -> dict[str, float]:
-        """Return base-joint-name -> angle for all 40 joints, clamped to limits.
+        """Return base-joint-name -> angle for all 42 joints, clamped to limits.
 
         Phase advances by dt each call and is keyed per agent_id, unless `phase` supplies it. Given its phase, the angles
         depend on the state, speed, phase and profile only, so a call repeating the agent's last such inputs gets (a copy

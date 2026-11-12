@@ -7,9 +7,12 @@ import typing
 from collections.abc import AsyncIterator, Callable, Collection, Mapping
 
 import attrs
+from arena_rclpy_mixins.params import Param, declare
 
 from arena_runtime.env.node import EnvNode
 from arena_runtime.env.task_layer import EpisodeRecord, ResetPlan, TaskContext, TaskModeOverrides, TaskModes, validate_modes
+
+MULTI_AXES = ("modules",)
 
 if typing.TYPE_CHECKING:
     import rclpy.task
@@ -108,8 +111,7 @@ class FakeTaskLayer:
 
     def declare_mode_schema(self, node: ROSParamServer, axis: str, mode: str) -> None:
         name = f"{self.NAMESPACES[axis][mode]}.level"
-        if not node.has_parameter(name):
-            node.declare_parameter(name, 1)
+        declare(node, Param[int](name, 1, "Level of the fake task mode."))
 
     async def create_task(self, *, node: object, ctx: TaskContext, params: object) -> FakeTask:
         del node, params
@@ -117,7 +119,10 @@ class FakeTaskLayer:
         return self.task
 
     def validate_modes(self, modes: TaskModes) -> TaskModes:
-        return validate_modes(modes, {axis: list(names) for axis, names in self.NAMESPACES.items()}, ("modules",))
+        return validate_modes(modes, {axis: list(names) for axis, names in self.NAMESPACES.items()}, MULTI_AXES)
+
+    def multi_axes(self) -> Collection[str]:
+        return MULTI_AXES
 
     def mode_namespaces(self) -> dict[str, dict[str, str]]:
         return self.NAMESPACES
@@ -148,13 +153,13 @@ async def arena_on_dummy(on_taken: Callable[[str], object] | None = None) -> Asy
     from arena_runtime_msgs.srv import RegisterEnv
 
     from arena_runtime.arena_runtime_node import ArenaRuntimeNode
+    from arena_runtime.runtime_params import RuntimeParams
 
     loop = asyncio.get_running_loop()
     executor = create_executor()
     arena = ArenaRuntimeNode()
-    arena.declare_parameter("physics_dt", 0.02)
-    arena.declare_parameter("sim", "dummy")
-    arena.declare_parameter("heartbeat_timeout_sec", 600.0)
+    declare(arena, RuntimeParams.PHYSICS_DT).value = 0.02
+    declare(arena, RuntimeParams.HEARTBEAT_TIMEOUT).value = 600.0
     executor.add_node(arena)
     spin = loop.run_in_executor(None, executor.spin)
     probe = rclpy.create_node("arena_rig_probe")

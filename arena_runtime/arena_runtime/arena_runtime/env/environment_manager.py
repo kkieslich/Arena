@@ -247,10 +247,14 @@ class EnvironmentManager(NodeInterface):
     def ezilear(self, target: Pose) -> Pose:
         return self._realizer.ezilear(target)
 
-    def ramp_height(self, position: Position) -> float:
-        """Height of the ramp under an env-local position, 0 off every ramp."""
+    def footing(self, position: Position) -> float:
+        """Height a body stands at an env-local position on the spawned stairs and ramps, 0 off all of them."""
         point = self.realize(position)
-        return stair_height(self._ramps, point.x, point.y)
+        return self._human_simulator.footing(point.x, point.y)
+
+    def _on_footing[T: Entity](self, entity: T) -> T:
+        position = entity.pose.position
+        return attrs.evolve(entity, pose=attrs.evolve(entity.pose, position=attrs.evolve(position, z=position.z + self._human_simulator.footing(position.x, position.y))))
 
     def placement(self) -> Placement:
         """The map from the abstract frame into the simulator frame for this env."""
@@ -396,7 +400,7 @@ class EnvironmentManager(NodeInterface):
         for fid, level in _world.levels.items():
             if not _match_level_id(fid):
                 continue
-            for light in await world_lights(level.with_lighting(self.node.conf.Arena.WORLD_LIGHTING.value or 'authored')):
+            for light in await world_lights(level.with_lighting(self.node.conf.Arena.WORLD_LIGHTING.value)):
                 realized_l = self._realizer.realize(light, fid)
                 self.node._register_semantic_entity(light.name, realized_l.name)
                 self._world_light_names.add(light.name)
@@ -464,7 +468,7 @@ class EnvironmentManager(NodeInterface):
             if _match_level_id(fid)
         )
         self._human_simulator.spawn_stairs(stairs)
-        statics = tuple(self._realizer.realize(s, fid) for fid, level in _world.levels.items() if _match_level_id(fid) for s in level.all_static_entities)
+        statics = tuple(self._on_footing(self._realizer.realize(s, fid)) for fid, level in _world.levels.items() if _match_level_id(fid) for s in level.all_static_entities)
         if self._skip_obstacles:
             statics = ()
         for static in statics:
@@ -523,7 +527,7 @@ class EnvironmentManager(NodeInterface):
         """
         if self._skip_obstacles:
             return
-        realized = tuple(self._realizer.realize(obstacle, obstacle.level) for obstacle in setups)
+        realized = tuple(self._on_footing(self._realizer.realize(obstacle, obstacle.level)) for obstacle in setups)
         for obstacle in realized:
             if not obstacle.name.startswith(WORLD_ENTITY_PREFIX):
                 self.node._register_semantic_entity(obstacle.name, self._realizer.prefix(obstacle.name))

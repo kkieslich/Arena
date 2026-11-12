@@ -122,7 +122,7 @@ class TaskPhase(ABC):
 
 @attrs.define
 class GoToPhase(TaskPhase):
-    """Navigate to a pose or a named target (judged on the target, `pose` is then the dispatch pose), hold in place with neither."""
+    """Navigate to a pose or a named target (judged on the target, `pose` is then the dispatch pose), hold in place with neither. With `dispatch` false the phase is judged but never sent to a planner."""
 
     kind: typing.ClassVar[str] = "goto_pose"
 
@@ -134,6 +134,7 @@ class GoToPhase(TaskPhase):
     signal: str | None = None
     pose_zone: str = ""
     via: tuple[str, ...] = attrs.field(default=(), converter=tuple, kw_only=True)
+    dispatch: bool = attrs.field(default=True, kw_only=True)
 
     @property
     def hold(self) -> bool:
@@ -162,6 +163,7 @@ class GoToPhase(TaskPhase):
             signal=None if data.get("signal") is None else str(data.pop("signal")),
             pose_zone=pose_zone,
             via=via_list(data.pop("via", None)),
+            dispatch=bool(data.pop("dispatch", True)),
             **common,
         )
 
@@ -181,14 +183,17 @@ class GoToPhase(TaskPhase):
             result["signal"] = self.signal
         if self.via:
             result["via"] = list(self.via)
+        if not self.dispatch:
+            result["dispatch"] = False
         return result
 
 
 @attrs.define
 class ReachPhase(TaskPhase):
-    """Move an arm to a pose in `frame`, to a named configuration, or to a random workspace sample."""
+    """Move an arm to a pose in `frame` (a robot frame, an episode object or `<object>/<link>`), to a named configuration, or to a random workspace sample, ended early and canceled when `stop` holds."""
 
     kind: typing.ClassVar[str] = "reach_pose"
+    MOTIONS: typing.ClassVar[tuple[str, ...]] = ("free", "linear")
 
     target: Pose | None = None
     frame: str = ""
@@ -198,11 +203,28 @@ class ReachPhase(TaskPhase):
     orientation_tolerance: float | None = None
     planning_time: float | None = None
     instance: str = ""  # arm cap instance (mount name), empty = sole arm
+    motion: str = "free"
+    speed: float | None = None
+    relative: bool = False
+    stop: ConditionSource | None = None
 
     def __attrs_post_init__(self) -> None:
         super().__attrs_post_init__()
         if sum([self.target is not None, self.named_target is not None, self.random]) != 1:
             raise ValueError("ReachPhase requires exactly one of target / named_target / random")
+        if self.motion not in self.MOTIONS:
+            raise ValueError(f"reach motion must be one of {list(self.MOTIONS)}, got {self.motion!r}")
+        if self.target is None and (self.relative or self.motion != "free"):
+            raise ValueError("reach relative and linear motion need a Cartesian target")
+        if self.speed is not None and not 0.0 < self.speed <= 1.0:
+            raise ValueError(f"reach speed must be in (0, 1], got {self.speed}")
+        if self.stop is not None:
+            parse_node(self.stop)
+
+    @property
+    def stop_node(self) -> Node | None:
+        """The parsed `stop`, None without one."""
+        return None if self.stop is None else parse_node(self.stop)
 
     @classmethod
     def _parse_body(cls, data: dict, common: dict) -> ReachPhase:
@@ -225,6 +247,10 @@ class ReachPhase(TaskPhase):
             orientation_tolerance=_optional_float(data.pop("orientation_tolerance", None)),
             planning_time=_optional_float(data.pop("planning_time", None)),
             instance=str(data.pop("instance", "")),
+            motion=str(data.pop("motion", "free")),
+            speed=_optional_float(data.pop("speed", None)),
+            relative=bool(data.pop("relative", False)),
+            stop=_until(data.pop("stop", None)),
             **common,
         )
 
@@ -239,12 +265,18 @@ class ReachPhase(TaskPhase):
             result["reach"] = [*map(float, self.target.position), orientation.w, orientation.x, orientation.y, orientation.z]
         if self.frame:
             result["frame"] = self.frame
-        for key in ("position_tolerance", "orientation_tolerance", "planning_time"):
+        for key in ("position_tolerance", "orientation_tolerance", "planning_time", "speed"):
             value = getattr(self, key)
             if value is not None:
                 result[key] = value
         if self.instance:
             result["instance"] = self.instance
+        if self.motion != "free":
+            result["motion"] = self.motion
+        if self.relative:
+            result["relative"] = True
+        if self.stop is not None:
+            result["stop"] = copy.deepcopy(self.stop)
         return result
 
 

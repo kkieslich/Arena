@@ -26,6 +26,7 @@ class Modes:
         STATIONARY = "stationary"
         CHARACTERIZATION = "characterization"
         FLEET = "fleet"
+        SEARCH = "search"
 
         @classmethod
         def default(cls) -> "Modes.TM_Robots":

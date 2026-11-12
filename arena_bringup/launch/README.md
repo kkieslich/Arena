@@ -4,9 +4,10 @@ Entry point: [`arena_runtime.launch.py`](arena_runtime.launch.py) (runtime: sim 
 
 ## Arguments
 
-All arguments are declared with `LaunchArgument` (a thin wrapper around
-`DeclareLaunchArgument` that also auto-appends to the description list and
-exposes `.substitution` / `.dict` / `.param`).
+All arguments are declared with `LaunchArgument` from `arena_rclpy_mixins.launch_argument`
+(a `DeclareLaunchArgument` that also auto-appends to the description list and
+exposes `.substitution` / `.dict` / `.param`). `description` is a required keyword.
+An argument that only forwards a node parameter is `LaunchArgument.from_param`.
 
 The table below covers the combined argument surface of `arena launch`. Runtime
 args (`sim`, `headless`, `world`, `use_sim_time`, `log_level`) go to
@@ -24,10 +25,11 @@ Old flat names (`tm_robots`, `mobile`, `env_n`, ...) still work with a warning, 
 | `robot.gripper` | string | `direct` | Gripper adapter kind: `direct`, `none` |
 | `robot.planner` | string | `` (empty) | Top-level planner selector; resolves to `robot.mobile:=<adapter> robot.mobile.<selector>:=<name>` via `arena_planners.resolver` |
 | `robot.train` | bool string | `false` | Training mode: robot adapters route `cmd_vel` from the RL agent |
-| `robot.hearing` | `none` \| `bus` \| `srp` \| `seld` | `none` | Robot-side hearing layer ([arena_hearing](../../arena_hearing/README.md)): belief grid and a Nav2 speed-filter mask per fleet robot, merged into each robot's nav2 params, RViz displays. `bus` consumes simulator bus events, `srp` runs the untrained energy-onset + GCC-PHAT front-end on any array, `seld` runs the SELDnet front-end on the array its weights were trained on. Needs `acoustics:=arena` and the hearing feature (`arena feature hearing install`), dispatched by [launch/hearing](../../arena_runtime/arena_runtime/launch/hearing/README.md). |
+| `robot.hearing` | `none` \| `bus` \| `srp` \| `seld` \| `call` | `none` | Robot-side hearing layer ([arena_hearing](../../arena_hearing/README.md)): belief grid and a Nav2 speed-filter mask per fleet robot, merged into each robot's nav2 params, RViz displays. `bus` consumes simulator bus events, `srp` runs the untrained energy-onset + GCC-PHAT front-end on any array, `seld` runs the SELDnet front-end on the array its weights were trained on. Needs `acoustics:=arena` and the hearing feature (`arena feature hearing install`), dispatched by [launch/hearing](../../arena_runtime/arena_runtime/launch/hearing/README.md). |
 | `robot.hearing.policy` | `belief` \| `listen` \| `full` | `full` | Hearing mask layers: belief only, plus the corner listen cap, plus creep-yield at blind bends ([arena_hearing](../../arena_hearing/README.md)). |
 | `robot.hearing.<param>` | node param | node default | Every other `robot.hearing.<param>:=<val>` reaches the hearing nodes as ROS param `<param>`. The launch-facing ones (`robot.hearing.seld.device`, `robot.hearing.srp.hop_s`, ...) are declared by arena_hearing's `hearing.launch.py`, empty = node default. Never forwarded to the robot adapters. |
 | `robot.mobile.<key>:=<val>` | adapter-scoped | - | Override any kwarg the bound mobile adapter accepts. Lands as ROS param `robot.mobile.<key>` and overlays the cap-file YAML. Examples: `robot.mobile.local_planner:=teb`, `robot.mobile.global_planner:=smac`, `robot.mobile.agent:=jackal_pretrained`. |
+| `robot.mobile.mapping` | `static` \| `slam` | `static` | Map of the nav2 adapter: `static` reads the env's map server, `slam` maps from the robot's lidar while it drives with slam_toolbox, localization still from the simulator, and every episode starts from an empty map ([adapters README](../../arena_robots/arena_robots/launch/adapters/README.md)). Every other mobile adapter refuses `slam` when the robot spawns. With hearing, pair `slam` with `robot.hearing.belief.standalone.enabled:=true` so the belief grid does not read the env's map. |
 | `robot.arm.<key>:=<val>` | adapter-scoped | - | Same shape for the arm cap. |
 | `sim` | string | `arena settings sim` | Physics simulator: `dummy`, `flatsim`, `gazebo`, `isaac`, or `mujoco`. The default is the setting, else the first installed simulator in `SIM_ORDER` ([defaults.py](../arena_bringup/defaults.py)), else `dummy`. Standalone `arena env` may omit it (adopts the runtime's sim); if given explicitly it must match the running runtime. |
 | `sim.flatsim.dynamics` | string | `rigid` | `sim:=flatsim` only, a runtime argument. `rigid` = walls and obstacles stop or push the robot, pedestrians touch it without pushing, `kinematic` = the robot passes through. |
@@ -46,6 +48,9 @@ Old flat names (`tm_robots`, `mobile`, `env_n`, ...) still work with a warning, 
 | `task.obstacles` | string | task runtime's (`random`) | Obstacle task mode |
 | `task.modules` | string | task runtime's (`clear_forbidden_zones`, `rviz_ui`, plus `sounds` with acoustics) | Comma-separated task modules to load, the always-on ones added |
 | `task.scenario.file` | string | `` (empty) | Scenario for the `scenario` task modes (empty = the task layer default) |
+| `task.scenario.linger_after_completion` | bool string | `false` | Keep a completed scenario robot task alive until timeout or external cancellation. |
+| `task_layer` | string | `` (empty) | Task runtime: an entry point name of the `arena_runtime.task_layer` group. Empty = `$ARENA_TASK_LAYER`, else `task_generator`. |
+| `view.fov_deg` | float string | `60.0` | Horizontal fov in degrees of the pedestrian views. |
 | `task.params` | string | `` (empty) | Env node ROS parameter YAML over the task layer's defaults, the mode schemas own those |
 | `task.episode.count` | int string | `-1` | Stop the env after N episodes (`-1` = run forever) |
 | `task.episode.fail_on_collision` | bool string | `false` | Abort the episode as FAILED on robot footprint contact |
@@ -73,6 +78,8 @@ Old flat names (`tm_robots`, `mobile`, `env_n`, ...) still work with a warning, 
 | `auditory.viewport.height_m` | float string | `1.6` | Listening height of the viewport down-projection microphone. |
 | `auditory.array.spec` | `stereo` \| `four_mic` \| `mono` \| path | `stereo`, `four_mic` when `robot.hearing` is `srp` or `seld` | Robot microphone array rendered by `array_renderer`. |
 | `auditory.array.mount_frame` | string | `` (empty) | TF frame the robot microphone array is mounted on, `{prefix}` and `{base_frame}` expand, a bare leaf joins the robot prefix, empty uses the robot base frame. |
+| `auditory.render.bed.enabled` | bool string | `false` | Add a diffuse ambient bed to every robot array: seamless pink noise from 20 Hz, independent per microphone, in `stem_ambient`. |
+| `auditory.render.bed.level_dba` | float string | `40.0` | A-weighted level of the ambient bed at each array microphone, dB SPL through the array sensitivity. |
 | `auditory.microphones` | YAML string | `[]` | Robot microphone mappings (owner, robot, placement, frame, index). |
 | `auditory.static_sounds` | YAML string | `[]` | World-independent `sound` entities (radios, alarms), as a flat list of the same `Sound` schema used in `world.yaml`. Non-empty adds `sounds` to `task.modules` (already on whenever `acoustics` is not `none`). With `acoustics:=none` nothing hears them and the launch warns once. |
 | `use_sim_time` | bool string | `true` | Use sim clock instead of wall clock |

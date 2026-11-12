@@ -55,6 +55,8 @@ def _adapter(seed: int, prefix: str) -> ArenaHumanSimulator:
     adapter = object.__new__(ArenaHumanSimulator)
     adapter._NodeInterface__node = types.SimpleNamespace(conf=types.SimpleNamespace(General=types.SimpleNamespace(RNG=_rng(seed))))  # NodeInterface keeps it private
     adapter._realizer = _realizer(prefix)
+    adapter._pose_profiles = {}
+    adapter._agent_type_paths = {}
     return adapter
 
 

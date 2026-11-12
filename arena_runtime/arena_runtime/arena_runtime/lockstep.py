@@ -11,11 +11,13 @@ import arena_runtime_msgs.srv
 import rclpy.qos
 import rclpy.subscription
 import rosgraph_msgs.msg
+from arena_rclpy_mixins.params import declare
 from arena_rclpy_mixins.Time import Time
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
 from arena_runtime.lockstep_gates import Channel, ChannelRegistry, ChannelSpec, GateLedger, parse_channel_entry, step_slice
+from arena_runtime.runtime_params import RuntimeParams
 
 if typing.TYPE_CHECKING:
     import std_msgs.msg
@@ -297,7 +299,7 @@ class LockstepScheduler:
             await asyncio.sleep(0.05)
 
     async def _run(self, config: LockstepConfig) -> None:
-        dt = self._node.rosparam[float].get('physics_dt', 0.0333)
+        dt = declare(self._node, RuntimeParams.PHYSICS_DT).value
         await self._await_quiet_clock()
         ledger = GateLedger(dt=dt, base=self._node.sim_time.to_seconds())
         self._ledger = ledger
