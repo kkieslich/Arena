@@ -183,9 +183,9 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     pd.DataFrame(cells).to_parquet(tmp_path / "flow_cells.parquet")
     out = tmp_path / "suites" / "infra_h1.yaml"
     x, y = loading.objects[0].goto
-    args = ["infra", "layouts", "--site", str(hospital_copy), "--scenario", "mix", "--occupancy", str(tmp_path), "--loading", f"{x},{y}", "--seeds", "1-2", "--samples", "20", "--random", "2", "--out", str(out)]
+    args = ["infra", "layouts", "--site", str(hospital_copy), "--scenario", "mix", "--occupancy", str(tmp_path), "--loading", f"{x},{y}", "--seeds", "1-2", "--samples", "20", "--random", "2", "--out", str(out), "--parts", "1,2"]
     assert cli.main([*args, "--dry-run"]) == 0
-    assert not out.exists()
+    assert not out.exists() and not out.with_name("infra_h1_p1.yaml").exists()
     assert cli.main(args) == 0
     assert "&id" not in out.read_text()  # each stage its own fleet block, no YAML aliases
     doc = yaml.safe_load(out.read_text())
@@ -220,6 +220,34 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     assert len(manifest["joint_top"]) <= search.JOINT_TOP
     printed = capsys.readouterr().out
     assert "--suite infra_h1 --contest" in printed and "task.episode.battery.capacity_wh: 36.0" in printed
+    # --parts 1,2: the same stages split by layout copy into two suites, a third and two thirds of the copies
+    parts = manifest["parts"]
+    assert [p["suite"] for p in parts] == ["infra_h1_p1", "infra_h1_p2"] and [p["weight"] for p in parts] == [1, 2]
+    assert sorted(i for p in parts for i in p["layouts"]) == sorted(ids) and abs(len(parts[1]["layouts"]) - 2 * len(parts[0]["layouts"])) <= 2
+    stages = []
+    for p in parts:
+        part_doc = yaml.safe_load(out.with_name(f"{p['suite']}.yaml").read_text())
+        assert {s["name"].split("__s")[0] for s in part_doc["stages"]} == set(p["worlds"]) and part_doc["references"] == doc["references"]
+        assert p["episodes"] == infra.episodes(part_doc)
+        stages += part_doc["stages"]
+    assert sorted(stages, key=lambda s: s["name"]) == sorted(doc["stages"], key=lambda s: s["name"])
+    assert "--suite infra_h1_p2 --contest" in printed and "--lanes 2" in printed
+
+
+def test_split_parts_divides_the_copies_by_weight_the_same_way_every_time() -> None:
+    ids = [f"{i:08x}" for i in range(16)]
+    parts = infra.split_parts(reversed(ids), [4, 6])
+    assert [len(p) for p in parts] == [6, 10] and sorted(parts[0] + parts[1]) == ids
+    assert parts == infra.split_parts(ids, [4, 6]) and all(p == sorted(p) for p in parts)
+    assert [len(p) for p in infra.split_parts(ids, [1, 1, 1])] == [6, 5, 5]
+    assert infra.split_parts(["b", "a"], [1, 5]) == [["b"], ["a"]]  # no part stays empty, whatever its weight
+    with pytest.raises(ValueError, match="cannot fill 3 parts"):
+        infra.split_parts(["a", "b"], [1, 1, 1])
+    with pytest.raises(ValueError, match="two or more positive weights"):
+        infra.split_parts(ids, [3])
+    with pytest.raises(ValueError, match="two or more positive weights"):
+        infra.split_parts(ids, [3, 0])
+    assert infra.part_name("infra_h1", 2) == "infra_h1_p2"
 
 
 VISITORS = {

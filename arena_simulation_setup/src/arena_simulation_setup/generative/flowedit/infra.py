@@ -746,6 +746,29 @@ def default_out(name: str) -> Path:
     return imported_root() / SU.SUITES / f"{name}.yaml"
 
 
+def split_parts(items: Iterable[str], weights: Sequence[int]) -> list[list[str]]:
+    """`items` (layout copies) over one part per weight, in proportion to the weights (e.g. the lanes of the machine
+    each part runs on): in sorted order, each item to the part furthest below its share (the fewest items per weight,
+    the lower part on ties), an empty part first so none stays empty. The same items and weights always give the same
+    parts."""
+    weights = [int(w) for w in weights]
+    if len(weights) < 2 or any(w <= 0 for w in weights):
+        raise ValueError(f"parts need two or more positive weights, not {weights}")
+    items = sorted(dict.fromkeys(items))
+    if len(items) < len(weights):
+        raise ValueError(f"{len(items)} layout copies cannot fill {len(weights)} parts")
+    parts: list[list[str]] = [[] for _ in weights]
+    for item in items:
+        best = min(range(len(weights)), key=lambda i: (bool(parts[i]), (len(parts[i]) + 1) / weights[i], i))
+        parts[best].append(item)
+    return parts
+
+
+def part_name(suite: str, index: int) -> str:
+    """The suite name of part `index` (from 1) of `suite`: `<suite>_p<index>`."""
+    return f"{suite}_p{index}"
+
+
 def manifest_path(suite: Path) -> Path:
     """The manifest a layout suite's writer leaves beside it: `<suite>.layouts.json`."""
     suite = Path(suite)
@@ -823,10 +846,12 @@ __all__ = [
     "layout_suite",
     "locker_front",
     "manifest_path",
+    "part_name",
     "picks_record",
     "reference_suite",
     "runs",
     "save_layouts",
+    "split_parts",
     "scenario_dir",
     "sim_hours",
     "site_config",
