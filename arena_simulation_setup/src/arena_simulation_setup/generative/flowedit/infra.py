@@ -747,10 +747,11 @@ def default_out(name: str) -> Path:
 
 
 def split_parts(items: Iterable[str], weights: Sequence[int]) -> list[list[str]]:
-    """`items` (layout copies) over one part per weight, in proportion to the weights (e.g. the lanes of the machine
-    each part runs on): in sorted order, each item to the part furthest below its share (the fewest items per weight,
-    the lower part on ties), an empty part first so none stays empty. The same items and weights always give the same
-    parts."""
+    """`items` (layout copies) over one part per weight, about in proportion to the weights (e.g. the lanes of the machine
+    each part runs on): in sorted order, each item goes to an empty part first, else to the part with the fewest items
+    per weight once it holds this one (D'Hondt: a part can end above its exact share, e.g. 29 items at weights 12,1,2,1
+    give the first 24 against a share of 21.75), the lower part on ties. The same items and weights always give the
+    same parts, and none stays empty."""
     weights = [int(w) for w in weights]
     if len(weights) < 2 or any(w <= 0 for w in weights):
         raise ValueError(f"parts need two or more positive weights, not {weights}")

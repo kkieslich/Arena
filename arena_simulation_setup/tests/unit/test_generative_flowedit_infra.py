@@ -588,3 +588,36 @@ def test_an_entrance_walled_off_at_the_walkers_clearance_takes_the_nearest_floor
     assert area.area >= infra.ENTRANCE_MIN_M2
     assert not area.intersects(shapely.box(10.2, 0.2, 13.8, 3.8))
     assert area.distance(shapely.Point(12, 2)) <= infra.ENTRANCE_GROW_M[0] / 2.0 * 2**0.5
+
+
+def _evaluation_inputs(tmp_path: Path, joint: str, robot_only: str) -> tuple[list[str], Path]:
+    """A selection manifest of two layout copies and a pick, and the `flowedit infra evaluation` call that reads them."""
+    worlds = {"aaaa1111": str(tmp_path / "site__layout_aaaa1111"), "bbbb2222": str(tmp_path / "site__layout_bbbb2222")}
+    selection = tmp_path / "infra_h1.layouts.json"
+    runs = [{"role": "robot_only", "rank": 1, "layout_id": "aaaa1111", "travel_m": 1.0}, {"role": "joint", "rank": 1, "layout_id": "aaaa1111", "travel_m": 1.0}, {"role": "joint", "rank": 2, "layout_id": "bbbb2222", "travel_m": 1.0}]
+    selection.write_text(json.dumps({"site": "site", "site_root": "/x", "scenario": "/x/scenarios/study_mix_v2", "seeds": [1, 2, 3, 4, 5], "episode_s": 1500.0, "warmup_s": 420.0, "rate_per_h": 9.5, "fleet": infra.fleet_config(9.5), "contest": "[{name: fleet_dwb}]", "runs": runs, "worlds": worlds}))
+    pick = tmp_path / "pick.json"
+    pick.write_text(json.dumps({"joint_pick": joint, "robot_only": robot_only}))
+    out = tmp_path / "suites" / "infra_h1_eval.yaml"
+    return ["infra", "evaluation", "--pick", str(pick), "--selection", str(selection), "--out", str(out)], out
+
+
+def test_parts_that_cannot_be_made_stop_the_command_before_it_writes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    args, out = _evaluation_inputs(tmp_path, "aaaa1111", "aaaa1111")  # the joint pick is the robot-only pick: one copy
+    assert cli.main([*args, "--parts", "1,1", "--dry-run"]) == 1
+    assert cli.main([*args, "--parts", "1,1"]) == 1
+    assert "the joint pick is the robot-only pick, run it without --parts" in capsys.readouterr().err
+    assert not out.parent.exists()  # nothing written: no main suite without its site suite and manifest
+    assert cli.main(args) == 0 and out.is_file() and infra.manifest_path(out).is_file() and out.with_name("infra_h1_eval_site.yaml").is_file()
+
+
+def test_a_rerun_leaves_no_part_suite_its_manifest_does_not_list(tmp_path: Path) -> None:
+    args, out = _evaluation_inputs(tmp_path, "bbbb2222", "aaaa1111")
+    assert cli.main([*args, "--parts", "1,1"]) == 0
+    assert sorted(p["suite"] for p in json.loads(infra.manifest_path(out).read_text())["parts"]) == ["infra_h1_eval_p1", "infra_h1_eval_p2"]
+    assert out.with_name("infra_h1_eval_p1.yaml").is_file() and out.with_name("infra_h1_eval_p2.yaml").is_file()
+    foreign = out.with_name("infra_h1_eval_p3.yaml")
+    foreign.write_text("stages: []\n")  # not written by flowedit infra: kept
+    assert cli.main(args) == 0
+    assert "parts" not in json.loads(infra.manifest_path(out).read_text())
+    assert sorted(p.name for p in out.parent.glob("infra_h1_eval_p*.yaml")) == ["infra_h1_eval_p3.yaml"]
