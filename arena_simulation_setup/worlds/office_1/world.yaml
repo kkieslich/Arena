@@ -188,7 +188,7 @@ levels:
   - {name: reception_desk_stand_2, pose: [35.0, 5.5], model: Office/SM_ReceptionStandB}
   - {name: reception_personenleit_1a, pose: [37.75, 7.7, -1.5708], model: Office/SM_Personenleitsystem}
   - {name: reception_personenleit_1b, pose: [36.75, 7.7, -1.5708], model: Office/SM_Personenleitsystem_Red1m}
-  - {name: reception_personenleit_1c, pose: [37.75, -0.5, -1.5708], model: Office/SM_Personenleitsystem}
+  - {name: reception_personenleit_1c, pose: [37.75, -1.6, -1.5708], model: Office/SM_Personenleitsystem}
   - {name: reception_personenleit_1d, pose: [36.75, -0.5, -1.5708], model: Office/SM_Personenleitsystem}
   - {name: reception_chair_1, pose: [36.5, 5.1, -2.3562], model: Office/SM_ChairOffice}
   - {name: reception_chair_2, pose: [36.5, 3.9, 1.57079], model: Office/SM_ChairOffice}

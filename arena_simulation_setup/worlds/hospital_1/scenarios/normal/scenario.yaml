@@ -24,7 +24,7 @@ humans:
   model: worker_male_african_young
   pose: [10.0, 27.5, 3.14159]
   agent: {agent_type: adult, desired_velocity: 1.2}
-  waypoints: [[5.0, 27.3, 3.14159]]
+  waypoints: [[3.5, 27.3, 3.14159]]
 - name: hunav_6
   model: Hospital/nurse_female_caucasian_young
   pose: [3.5, 1.5, 0.0]
@@ -42,14 +42,14 @@ humans:
   waypoints: [[18.1, 2.6, -1.5708]]
 - name: hunav_9
   model: Hospital/doctor_male_caucasian_middleage
-  pose: [18.1, 4.5, -1.5708]
+  pose: [16.5, 4.5, -1.5708]
   agent: {agent_type: adult, desired_velocity: 1.4}
-  waypoints: [[18.1, 4.5, -1.5708]]
+  waypoints: [[16.5, 4.5, -1.5708]]
 - name: hunav_10
   model: Hospital/doctor_male_caucasian_middleage
   pose: [15.0, 25.5, 0.0]
   agent: {agent_type: adult, desired_velocity: 1.4}
-  waypoints: [[15.0, 26.0, 0.0]]
+  waypoints: [[15.0, 25.0, 0.0]]
 - name: hunav_11
   model: Hospital/nurse_female_caucasian_young
   pose: [15.0, 28.0, 0.0]

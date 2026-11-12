@@ -16,7 +16,7 @@ objects:
     formation: {type: f_formation, anchor: {kind: object, ref: gathering_area}, params: {base_radius: 0.8, radius_per_member: 0.12}}
 - name: fountain
   model: Hospital/SM_WaterDispenser_01a
-  pose: [11.5, 23.5, 0.0]
+  pose: [11.83, 23.5, 3.14159]
   humansim:
     type: fountain
     capacity: 1
