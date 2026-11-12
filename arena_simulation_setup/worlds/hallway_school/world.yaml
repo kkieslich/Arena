@@ -36,20 +36,20 @@ levels:
   - {name: west_entrance, span: [[0.025, 16.0], [0.025, 18.0]]}
   - {name: east_entrance, span: [[51.975, 16.0], [51.975, 18.0]]}
   objects:
-  - {name: classroom_1_table_1, pose: [5.56, 24.37], model: Office/SM_TableD}
-  - {name: classroom_1_table_2, pose: [10.17, 24.37], model: Office/SM_TableD}
-  - {name: classroom_1_table_3, pose: [5.56, 27.84], model: Office/SM_TableD}
-  - {name: classroom_1_table_4, pose: [10.17, 27.84], model: Office/SM_TableD}
+  - {name: classroom_1_table_1, pose: [5.56, 24.37], model: Office/Table_B}
+  - {name: classroom_1_table_2, pose: [10.17, 24.37], model: Office/Table_B}
+  - {name: classroom_1_table_3, pose: [5.56, 27.84], model: Office/Table_B}
+  - {name: classroom_1_table_4, pose: [10.17, 27.84], model: Office/Table_B}
   - {name: classroom_1_teacher_desk, pose: [17.88, 26.45], model: Office/SM_SecretaryDeskA}
-  - {name: classroom_2_table_1, pose: [23.4, 23.43], model: Office/SM_TableD}
-  - {name: classroom_2_table_2, pose: [27.46, 23.43], model: Office/SM_TableD}
-  - {name: classroom_2_table_3, pose: [23.4, 26.21], model: Office/SM_TableD}
-  - {name: classroom_2_table_4, pose: [27.46, 26.21], model: Office/SM_TableD}
+  - {name: classroom_2_table_1, pose: [23.4, 23.43], model: Office/Table_B}
+  - {name: classroom_2_table_2, pose: [27.46, 23.43], model: Office/Table_B}
+  - {name: classroom_2_table_3, pose: [23.4, 26.21], model: Office/Table_B}
+  - {name: classroom_2_table_4, pose: [27.46, 26.21], model: Office/Table_B}
   - {name: classroom_2_teacher_desk, pose: [34.17, 25.1], model: Office/SM_SecretaryDeskA}
-  - {name: classroom_3_table_1, pose: [5.62, 6.45], model: Office/SM_TableD}
-  - {name: classroom_3_table_2, pose: [10.28, 6.45], model: Office/SM_TableD}
-  - {name: classroom_3_table_3, pose: [5.62, 9.54], model: Office/SM_TableD}
-  - {name: classroom_3_table_4, pose: [10.28, 9.54], model: Office/SM_TableD}
+  - {name: classroom_3_table_1, pose: [5.62, 6.45], model: Office/Table_B}
+  - {name: classroom_3_table_2, pose: [10.28, 6.45], model: Office/Table_B}
+  - {name: classroom_3_table_3, pose: [5.62, 9.54], model: Office/Table_B}
+  - {name: classroom_3_table_4, pose: [10.28, 9.54], model: Office/Table_B}
   - {name: classroom_3_teacher_desk, pose: [18.07, 8.3], model: Office/SM_SecretaryDeskA}
   - {name: canteen_table_1, pose: [40.79, 25.26], model: Office/Table_Round}
   - {name: canteen_table_2, pose: [45.91, 25.26], model: Office/Table_Round}

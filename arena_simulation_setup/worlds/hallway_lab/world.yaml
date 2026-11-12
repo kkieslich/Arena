@@ -79,5 +79,5 @@ levels:
   - {name: storage_rack_1, pose: [15.75, 3.83, -1.5708], model: Office/SM_Rack}
   - {name: storage_rack_2, pose: [11.92, 7.35, 3.14159], model: Office/SM_Rack}
   - {name: wc_toilet_1, pose: [33.5, 3.83, -1.5708], model: Office/SM_Toilet}
-  - {name: seminar_table_1, pose: [41.35, 6.17], model: Office/SM_TableD}
-  - {name: seminar_table_2, pose: [41.35, 8.58], model: Office/SM_TableD}
+  - {name: seminar_table_1, pose: [41.35, 6.17], model: Office/Table_B}
+  - {name: seminar_table_2, pose: [41.35, 8.58], model: Office/Table_B}
