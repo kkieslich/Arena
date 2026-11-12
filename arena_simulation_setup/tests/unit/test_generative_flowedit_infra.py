@@ -255,7 +255,13 @@ def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_p
     facts = config.facts
     assert facts.courier_access == (153.13, 14.99) and len(facts.outlets) == 101
     assert {e.name for e in facts.recipient_entrances} == {"mrt_bencoolen", "scis1_entrance", "lift_scis1_staff"}
-    assert len(facts.entrances) == 38 and sum(e.placeholder for e in facts.entrances) == 7
+    assert len(facts.entrances) == 36 and sum(e.placeholder for e in facts.entrances) == 7
+    # the T-junction stairs and escalators are links between the deck and the lower concourse, not entrances
+    assert not {"stairs_t_junction", "escalator_t_junction"} & {e.name for e in facts.entrances}
+    links = {z["name"]: z for z in config.links}
+    assert len(links) == 8 and {z["kind"] for z in links.values()} == {"stairs", "escalator"}
+    assert links["tj_stairs_south_top"]["destinations"] == ["tj_stairs_south_bottom"] and links["tj_stairs_south_top"]["delay"] > 10.0
+    assert links["tj_escalator_south_top"]["destinations"] == [] and links["tj_escalator_south_top"]["belt"] < 0.0
     # the rules compile to the search's engine: the courier handoff point pinned at the access point, nothing else
     assert config.placements == {"loading_point": search.Placement(pin=(153.13, 14.99))}
     assert [(types, share) for types, share in config.flow_split] == [(("mrt",), 0.5), (("building", "shop", "escalator", "stairs"), 0.3), (("lift", "other"), 0.2)]
