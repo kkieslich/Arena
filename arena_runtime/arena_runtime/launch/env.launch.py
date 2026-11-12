@@ -147,6 +147,12 @@ def generate_launch_description() -> launch.LaunchDescription:
         default_value="true",
         description="false = arena_peds carries no joint states or body poses and animation_states is not published: no pedestrian skeleton for renderers, rviz or a recording. Poses, motion and everything the simulator, the robots and the task layer see stay the same. For headless runs that keep no skeletons.",
     )
+    human_check = LaunchArgument(
+        name="human.check",
+        choices=["true", "false"],
+        default_value="true",
+        description="false = the arena human backend skips its check at every episode start that the scenario's models resolve and that its crowd reaches every use point, queue slot, seat, source, sink, start, waypoint and room it is sent to. For debugging a scenario that fails it.",
+    )
     acoustics = LaunchArgument(
         name="acoustics",
         choices=["none", "arena"],
@@ -484,6 +490,7 @@ def generate_launch_description() -> launch.LaunchDescription:
                     "human": human_val,
                     "human.robots.visible": human_robots_visible.param_value(bool),
                     "human.skeleton": human_skeleton.param_value(bool),
+                    "human.check": human_check.param_value(bool),
                     "acoustics": acoustics_val,
                     "robot.mobile_adapter": mobile_val,
                     "robot.hearing": hearing_val,

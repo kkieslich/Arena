@@ -1,7 +1,8 @@
 import asyncio
 import json
 import typing
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import attrs
@@ -10,9 +11,9 @@ import shapely
 from arena_people_msgs.msg import Pedestrians
 from arena_simulation_setup.shared import Ceiling, Light, Placement, Stairs, stair_height
 from arena_simulation_setup.shared.navmesh import NavLevel, nav_floors, nav_walls
-from arena_simulation_setup.tree.World import Level, World, entity_lights
+from arena_simulation_setup.tree.World import Level, World, WorldView, entity_lights
 from arena_simulation_setup.tree.World.model import render_door_polygons, render_elevator_polygons
-from arena_simulation_setup.tree.World.Scenario import TeleportZone, TimelineEntry
+from arena_simulation_setup.tree.World.Scenario import Scenario, TeleportZone, TimelineEntry
 from arena_simulation_setup.utils.affordance import AffordanceSlot
 from rcl_interfaces.msg import Parameter as ParameterMsg
 from std_msgs.msg import String
@@ -611,6 +612,10 @@ class EnvironmentManager(NodeInterface):
 
     def check_stimuli(self, scenario: str, humans: Sequence[DynamicObstacle], timeline: Sequence[TimelineEntry]) -> None:
         self._human_simulator.check_stimuli(scenario, humans, timeline)
+
+    async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
+        """Have the human simulator refuse a scenario its crowd cannot carry out (`BaseHumanSimulator.check_scenario`)."""
+        await self._human_simulator.check_scenario(view, world, scenario, scenario_dir, origins)
 
     async def spawn_robot(self, robots: Sequence[Robot]) -> Sequence[Robot]:
         """

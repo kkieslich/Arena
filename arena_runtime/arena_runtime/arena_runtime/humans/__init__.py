@@ -60,7 +60,8 @@ from arena_runtime.sim import BaseSim
 
 if typing.TYPE_CHECKING:
     from arena_rclpy_mixins.Time import Time
-    from arena_simulation_setup.tree.World.Scenario import TimelineEntry
+    from arena_simulation_setup.tree.World import World, WorldView
+    from arena_simulation_setup.tree.World.Scenario import Scenario, TimelineEntry
 
     from arena_runtime.acoustics import BaseAcousticsSimulator, PedestrianHearing
 
@@ -144,6 +145,10 @@ class TrackedRobot:
 
 class RegionSetupError(RuntimeError):
     """The human simulator did not take every region of the episode, or did not drop the last one's: the episode would run with a partial or stale crowd."""
+
+
+class ScenarioCheckError(ValueError):
+    """The scenario sends the crowd somewhere it cannot reach (a dead queue, a cut-off room) or holds a model that does not resolve: the episode would run with walkers that wait forever."""
 
 
 class HumanSimulatorOptions(typing.TypedDict):
@@ -1419,6 +1424,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 taken = self.stimuli_taken(by_name[agent])
                 if taken is not None and stimulus.need not in taken[1]:
                     raise ValueError(f"scenario {scenario!r}: stimulus {stimulus.need!r} for {agent!r} is neither a need nor a step `until` event of its agent type {taken[0]!r}, which acts on {sorted(taken[1])}")
+
+    async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
+        """Raise ScenarioCheckError naming every point of `scenario` in `world` this backend's crowd cannot reach. No-op by default."""
+        del view, world, scenario, scenario_dir, origins
 
     async def _set_elevators_impl(self, elevators: Sequence[Elevator]) -> bool:
         return True

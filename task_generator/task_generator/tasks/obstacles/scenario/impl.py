@@ -43,13 +43,15 @@ class TM_Scenario(TM_Obstacles):
             is_valid=is_valid,
         )
 
-        scenario_view = WorldIdentifier(self._ctx.world_manager.loaded_world).resolve_sync().scenario(scenario_name).resolve_sync()
+        world_view = WorldIdentifier(self._ctx.world_manager.loaded_world).resolve_sync()
+        scenario_view = world_view.scenario(scenario_name).resolve_sync()
         point_scenario_assets(scenario_view.path)
         scenario = scenario_view.load(converter=zone_conv)
         self.scenario = scenario
         self.lights = [anchor_light(light, scenario.objects) for light in scenario.lights]
         await self._check_clips(scenario_view, scenario)
         self._ctx.environment_manager.check_stimuli(scenario_view.path.name, scenario.humans, scenario.timeline)
+        await self._ctx.environment_manager.check_scenario(world_view, self._ctx.world_manager.world, scenario, scenario_view.path, self._ctx.world_manager.map.level_origins)
         await self._check_articulations(scenario_view, scenario)
 
         regions = [

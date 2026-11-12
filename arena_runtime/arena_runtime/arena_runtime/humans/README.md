@@ -352,6 +352,12 @@ keys below go in the entry's `humansim:` block (`Obstacle.humansim`):
 The pose theta the engine receives is the object's yaw turned to the model's annotated `face`, and queues form at
 that front. An object without an annotated `face` keeps its yaw, so queues form behind it (at yaw + 180 degrees).
 
+At every episode start of a scenario task, `ArenaHumanSimulator.check_scenario` runs
+[`use_points.check`](../../../../arena_simulation_setup/src/arena_simulation_setup/metrics/use_points.py) on the world
+and the loaded scenario and fails the episode (`ScenarioCheckError`) naming every finding: a model that does not
+resolve, or a point the crowd cannot reach (a sought object's use point and first queue slots, a seat's standing point,
+a source, a sink, a human's start, waypoints and go_to stops, a room people are sent to). `human.check:=false` skips it.
+
 ```yaml
 objects:
   - name: reception_desk
