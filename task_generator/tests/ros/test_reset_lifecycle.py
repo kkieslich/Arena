@@ -109,7 +109,10 @@ def _on_task(error: Exception | None, body: Callable[..., Awaitable[None]], modu
     log: list[str] = []
 
     class _Node(ServiceNamespace, AsyncNode):
-        conf = SimpleNamespace(General=SimpleNamespace(RNG=EpisodeRng()))
+        conf = SimpleNamespace(
+            General=SimpleNamespace(RNG=EpisodeRng()),
+            Robot=SimpleNamespace(BATTERY_CAPACITY_WH=SimpleNamespace(value=0.0), BATTERY_SOC_MIN=SimpleNamespace(value=40.0), BATTERY_SOC_MAX=SimpleNamespace(value=100.0)),
+        )
         episode_id = 0
         _reset_episode = EpisodeNode._reset_episode
 
