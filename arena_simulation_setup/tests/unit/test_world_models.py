@@ -8,9 +8,10 @@ import json
 from pathlib import Path, PurePosixPath
 
 import pytest
-from arena_assets.impl.fetch import DEFAULT_SOURCE, assets_root
 from arena_simulation_setup.tree.assets.Object import ObjectIdentifier
 from arena_simulation_setup.tree.World import WorldView, world_assets
+
+from arena_assets.impl.fetch import DEFAULT_SOURCE, assets_root
 
 WORLDS = Path(__file__).resolve().parents[2] / 'worlds'
 
