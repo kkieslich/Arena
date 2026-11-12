@@ -25,6 +25,7 @@ def test_teleport_zones_parse_in_humansim_form() -> None:
     up, down = zones
     assert up == TeleportZone("up", ("down",), (1.0, 2.0, 0.0), (0.2, 2.0, 0.0), (2.5, 2.0, 0.0), ((1.0, 1.5), (3.0, 1.5), (3.0, 2.5), (1.0, 2.5)), True, 0.0, "escalator", 0.5)
     assert down.destinations == () and down.wait == down.entry and down.belt == 0.0 and down.open
+    assert parse_scenario({"format": "arena-scenario/2", "teleport_zones": [{**TOP, "delay": 14.05}, BOTTOM]}).teleport_zones[0].delay == 14.05
     assert parse_scenario({"format": "arena-scenario/2"}).teleport_zones == []
 
 

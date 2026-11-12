@@ -255,15 +255,8 @@ def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_p
     facts = config.facts
     assert facts.courier_access == (153.13, 14.99) and len(facts.outlets) == 101
     assert {e.name for e in facts.recipient_entrances} == {"mrt_bencoolen", "scis1_entrance", "lift_scis1_staff"}
-    assert len(facts.entrances) == 36 and sum(e.placeholder for e in facts.entrances) == 7
-    # the T-junction stairs and escalators are links between the deck and the lower concourse, not entrances
-    assert not {"stairs_t_junction", "escalator_t_junction"} & {e.name for e in facts.entrances}
-    links = {z["name"]: z for z in config.links}
-    assert len(links) == 12 and {z["kind"] for z in links.values()} == {"stairs", "escalator"}
-    # each stair is two one-way lanes, keep left: down on the north lane, up on the south lane
-    assert links["tj_stairs_south_n_top"]["destinations"] == ["tj_stairs_south_n_bottom"] and links["tj_stairs_south_n_top"]["delay"] > 10.0
-    assert links["tj_stairs_south_n_bottom"]["destinations"] == [] and links["tj_stairs_south_s_bottom"]["destinations"] == ["tj_stairs_south_s_top"]
-    assert links["tj_escalator_south_top"]["destinations"] == [] and links["tj_escalator_south_top"]["belt"] < 0.0
+    assert len(facts.entrances) == 38 and sum(e.placeholder for e in facts.entrances) == 7
+    assert config.links == ()
     # the rules compile to the search's engine: the courier handoff point pinned at the access point, nothing else
     assert config.placements == {"loading_point": search.Placement(pin=(153.13, 14.99))}
     assert [(types, share) for types, share in config.flow_split] == [(("mrt",), 0.5), (("building", "shop", "escalator", "stairs"), 0.3), (("lift", "other"), 0.2)]
@@ -273,6 +266,31 @@ def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_p
     assert bencoolen["type"] == "mrt" and bencoolen["recipients"] and not bencoolen["placeholder"] and bencoolen["level"] is None
     with pytest.raises(FileNotFoundError, match="no INFRA site config"):
         infra.site_config("no_such_site")
+
+
+def test_the_v2_twin_config_links_the_t_junction_stairs_and_escalators_in_place_of_their_entrances() -> None:
+    config = infra.site_config("smu_link_full_v2")
+    assert config.site == "smu_link_full_v2" and config.scenario == "study_entrances" and config.crowd_side == "left"
+    shipped = infra.site_config("smu_link_full")
+    facts = config.facts
+    assert facts.courier_access == shipped.facts.courier_access and facts.outlets == shipped.facts.outlets
+    assert config.flow_split == shipped.flow_split and config.exclude == shipped.exclude
+    # the same entrances but the two the links replace
+    replaced = {"stairs_t_junction", "escalator_t_junction"}
+    assert list(facts.entrances) == [e for e in shipped.facts.entrances if e.name not in replaced] and len(facts.entrances) == 36
+    links = {z["name"]: z for z in config.links}
+    assert len(links) == 8 and {z["kind"] for z in links.values()} == {"stairs", "escalator"}
+    # two-way stairs: each half boards and lands, the flight 14.05 s from the seam trigger to the landing
+    for stair in ("tj_stairs_south", "tj_stairs_north"):
+        top, bottom = links[f"{stair}_top"], links[f"{stair}_bottom"]
+        assert top["destinations"] == [f"{stair}_bottom"] and bottom["destinations"] == [f"{stair}_top"]
+        assert top["delay"] == bottom["delay"] == 14.05 and top["belt"] == bottom["belt"] == 0
+    # one-way escalators, south up and north down: the boarding half carries the flight, the exit half's belt runs off its seam
+    up, down = links["tj_escalator_south_bottom"], links["tj_escalator_north_top"]
+    assert up["destinations"] == ["tj_escalator_south_top"] and (up["delay"], up["belt"]) == (22.04, 0.5)
+    assert down["destinations"] == ["tj_escalator_north_bottom"] and (down["delay"], down["belt"]) == (21.13, 0.5)
+    for exit_half in ("tj_escalator_south_top", "tj_escalator_north_bottom"):
+        assert links[exit_half]["destinations"] == [] and links[exit_half]["belt"] == -0.5
 
 
 FACTS = {"site": "s", "courier_access": [1, 2]}
@@ -572,7 +590,14 @@ def test_an_entrance_walled_off_at_the_walkers_clearance_takes_the_nearest_floor
 
 
 def _link_half(name: str, to: str, x0: float, facing: float) -> dict:
-    return {"name": name, "kind": "stairs", "destinations": [to] if to else [], "entry": {"x": x0, "y": 5.0, "theta": facing}, "hold": {"x": x0 + (1.5 if facing == 0.0 else -1.5), "y": 5.0, "theta": facing}, "footprint": [{"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}, {"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}]}
+    return {
+        "name": name,
+        "kind": "stairs",
+        "destinations": [to] if to else [],
+        "entry": {"x": x0, "y": 5.0, "theta": facing},
+        "hold": {"x": x0 + (1.5 if facing == 0.0 else -1.5), "y": 5.0, "theta": facing},
+        "footprint": [{"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}, {"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}],
+    }
 
 
 def test_site_links_reach_the_crowd_scenario_as_teleport_zones() -> None:

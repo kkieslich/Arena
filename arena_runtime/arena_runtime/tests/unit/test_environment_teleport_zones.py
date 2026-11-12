@@ -16,7 +16,7 @@ ORIGIN = (30.0, -12.0)
 def _zone() -> TeleportZone:
     from arena_simulation_setup.tree.World.Scenario import TeleportZone
 
-    return TeleportZone("up", ("down",), (1.0, 2.0, 0.0), (0.2, 2.0, 0.0), (2.5, 2.0, math.pi), ((1.0, 1.5), (3.0, 1.5), (3.0, 2.5)), True, 0.0, "stairs", 0.0)
+    return TeleportZone("up", ("down",), (1.0, 2.0, 0.0), (0.2, 2.0, 0.0), (2.5, 2.0, math.pi), ((1.0, 1.5), (3.0, 1.5), (3.0, 2.5)), True, 14.05, "escalator", 0.5)
 
 
 def test_scenario_teleport_zones_are_realized_and_sent_with_the_elevators():
@@ -50,6 +50,7 @@ def test_scenario_teleport_zones_are_realized_and_sent_with_the_elevators():
             assert (realized.entry[0] - config.x, realized.entry[1] - config.y, realized.entry[2]) == zone.entry
             assert [(x - config.x, y - config.y) for x, y in realized.footprint] == list(zone.footprint)
             assert realized.hold[2] == zone.hold[2] and realized.destinations == zone.destinations
+            assert (realized.delay, realized.belt, realized.kind) == (14.05, 0.5, "escalator")
             assert len(sent) == 1 and sent[0][1] == (realized,)
             assert await env.setup_teleport_zones([])
             assert human._scenario_zones == () and len(sent) == 2
@@ -75,12 +76,13 @@ def test_arena_humansim_sends_a_scenario_zone_in_the_engine_frame():
         (zone.hold[0] + ORIGIN[0], zone.hold[1] + ORIGIN[1], zone.hold[2]),
         tuple((x + ORIGIN[0], y + ORIGIN[1]) for x, y in zone.footprint),
         True,
-        0.0,
-        "stairs",
-        0.0,
+        zone.delay,
+        zone.kind,
+        zone.belt,
     )
     msg = ArenaHumanSimulator._scenario_zone_msg(stub, realized)
-    assert (msg.name, list(msg.destinations), msg.kind, msg.open, msg.delay, msg.belt) == ("up", ["down"], "stairs", True, 0.0, 0.0)
+    # each half's flight time and belt reach HumanSim as the site config gives them
+    assert (msg.name, list(msg.destinations), msg.kind, msg.open, msg.delay, msg.belt) == ("up", ["down"], "escalator", True, 14.05, 0.5)
     assert (msg.entry.x, msg.entry.y, msg.entry.theta) == (1.0, 2.0, 0.0)
     assert (msg.hold.x, msg.hold.y) == (2.5, 2.0) and math.isclose(msg.hold.theta, math.pi)
     assert [(p.x, p.y) for p in msg.footprint] == list(zone.footprint)
