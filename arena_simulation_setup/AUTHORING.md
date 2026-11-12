@@ -1549,6 +1549,41 @@ keeps the base's components, less the removed cells, plus the pockets.
 Otherwise it relabels the whole level. `navr_check(..., relabel=True)` always
 relabels, the reference the tests compare the incremental result against.
 
+### Pedestrian reach
+
+`metrics/use_points.py` checks what HumanSim's crowd gets from a world and a
+scenario, as the runtime hands it over. The runtime runs it at every episode
+start of a scenario task and fails the episode naming each finding
+(`human.check:=false` skips it); the FLOWEDIT generator refuses edits by it.
+
+```python
+from arena_simulation_setup.metrics.use_points import check_scenario
+from arena_simulation_setup.tree.World import WorldIdentifier
+
+for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'default'):
+    print(finding)
+```
+
+- Every model resolves, else HumanSim never gets the object and walkers walk
+  through it.
+- The points people are walked to lie within arrival distance (HumanSim's
+  0.5 m) of floor their walkers reach: the use point and first three queue slots
+  of a sought object's `line` formation, from its pose turned to its annotated
+  `face` (no wall between two slots), a seat's standing point, the object itself
+  within its interaction radius when it has neither, a sink, each human's start,
+  waypoints and agent-type `go_to` poses, and a source holds such floor. Sought
+  objects are those with `satisfies` or named, or typed, by a step `target`.
+- Floor is the rooms, door spans and cabins less the walls, doors locked to
+  everyone and the bounding box of every object, kept HumanSim's 0.38 m planner
+  clearance from them. A walker reaches the connected part it starts in and the
+  parts elevators, stair halves and the scenario's teleport zones join to it.
+- No room people are sent to (every room of a scenario with demand and no crowd
+  of its own, as FLOWEDIT's) has more than 2 m^2 of floor cut off from the
+  parts the crowd starts in.
+
+Turn an object so its annotated front faces into the room, or move it along
+the wall, until its findings are gone.
+
 ### Navigation mesh
 
 MeshNav plans on a triangle mesh of every walkable surface, built from the

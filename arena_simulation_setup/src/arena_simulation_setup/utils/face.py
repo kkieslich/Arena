@@ -26,4 +26,12 @@ def front_angle(face: str | float | None) -> float | None:
     return None
 
 
-__all__ = ["front_angle"]
+def queue_theta(yaw: float, front: float | None) -> float:
+    """The theta HumanSim gets for an object at `yaw` whose front lies at `front` in its frame: HumanSim lines people up behind theta, so theta turns until that side is the front; the yaw itself without a front."""
+    if front is None:
+        return yaw
+    theta = yaw + front - math.pi
+    return math.atan2(math.sin(theta), math.cos(theta))
+
+
+__all__ = ["front_angle", "queue_theta"]
