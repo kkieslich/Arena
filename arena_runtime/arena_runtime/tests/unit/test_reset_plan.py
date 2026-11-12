@@ -68,6 +68,10 @@ class _Manager:
         self.log.append(f"reset {self.name} at {ctx.start_pose}")
         return {}
 
+    def reset_battery(self, rng: object, capacity_wh: float, soc_min: float, soc_max: float) -> None:
+        del rng
+        self.log.append(f"battery {self.name} {capacity_wh} {soc_min}-{soc_max}")
+
 
 class _Task:
     def __init__(self, log: list[str], plan: object) -> None:
@@ -135,7 +139,10 @@ def test_the_node_applies_the_plan_between_the_robot_and_the_obstacle_reset() ->
         _apply_staged_params=lambda: None,
         _apply_staged_human_params=nothing,
         _consecutive_reset_failures=0,
-        conf=SimpleNamespace(General=SimpleNamespace(RNG=EpisodeRng())),
+        conf=SimpleNamespace(
+            General=SimpleNamespace(RNG=EpisodeRng()),
+            Robot=SimpleNamespace(BATTERY_CAPACITY_WH=SimpleNamespace(value=0.0), BATTERY_SOC_MIN=SimpleNamespace(value=40.0), BATTERY_SOC_MAX=SimpleNamespace(value=100.0)),
+        ),
         sim_time=SimpleNamespace(sec=0.0),
         episode_id=0,
         get_logger=lambda: SimpleNamespace(error=log.append),
