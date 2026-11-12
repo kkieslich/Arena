@@ -449,17 +449,20 @@ teleport_zones:
     wait: {x: 121.9, y: 40.6, theta: 0}      # where walkers queue, default the entry
     hold: {x: 122.6, y: 40.6, theta: 0}      # the seam trigger: walkers past it are carried
     footprint: [{x: 121.9, y: 38.9}, {x: 123.4, y: 38.9}, {x: 123.4, y: 42.3}, {x: 121.9, y: 42.3}]
-    delay: 14.05                  # s from the seam trigger to the landing (the flight the halves leave out), >= 0
+    delay: 14.05                  # s from the seam trigger to the landing (the flight the halves leave out), >= 0;
+                                  # a cabin's negative delay leaves its teleport to the caller
     belt: 0.0                     # m/s along the facing on a running escalator half, < 0 carrying off the seam
     open: true
 ```
 
 Checked on load as HumanSim checks them: a known kind, finite numbers,
-`delay` >= 0, unique names, destinations among the zones and of the same sort
+`delay` >= 0 on a stair or escalator half, unique names, destinations among the zones and of the same sort
 (a stair or escalator half lands on stair or escalator halves, a cabin on
 cabins), none landing in itself, and a stair or escalator half's footprint with
 its hold more than 0.25 m inside it. A set the human simulator still refuses (a
 hold within 0.25 m of a wall, a name the world's zones use) fails the episode.
+`flowedit infra crowd` keeps its entrances' sources and sinks off every zone
+and the 1.5 m in front of its mouth.
 
 `conditions` is a list of episode success/failure clauses:
 

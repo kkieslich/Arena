@@ -348,7 +348,7 @@ def walk_area(floor: shapely.Geometry, walls: shapely.Geometry | None = None) ->
     return max(pieces, key=lambda g: g.area)
 
 
-def _entrance_polygon(entrance: place.Entrance, walk: shapely.Polygon) -> list[tuple[float, float]]:
+def _entrance_polygon(entrance: place.Entrance, walk: shapely.Geometry) -> list[tuple[float, float]]:
     """The source and sink area of an entrance on the floor a walker reaches (`walk_area`): its polygon, or a square around
     its point, cut to that floor (its largest piece). A polygon that lies on it stays as given. Where that leaves less than
     `ENTRANCE_MIN_M2` (stairs or a doorway the walls close off at the walkers' clearance), a larger square around the mark
@@ -404,20 +404,26 @@ def entrance_crowd(config: SiteConfig, floor: shapely.Geometry, *, walls: shapel
     `rate` in all, each entrance its `entrance_shares` share, one source per walker group (`GROUPS`, 70/15/15), and
     leave by another entrance, picked in proportion to the other entrances' shares (more walkers come in where more
     leave). Parcel recipients (`visitor_rate_per_h` in all, split evenly over the recipient entrances) come in at a
-    recipient entrance, use the locker and leave by the entrance they came in by. Returns the scenario document, the
-    locker visitors document (None without a recipient entrance) and the visitors' agent types by file name."""
+    recipient entrance, use the locker and leave by the entrance they came in by. No entrance's area takes floor of a
+    link or of the apron in front of its mouth (`link_keep_out`). Returns the scenario document, the locker visitors
+    document (None without a recipient entrance) and the visitors' agent types by file name."""
     shares = entrance_shares(config)
     entrances = config.facts.entrances
     if len(entrances) < 2:
         raise ValueError(f"{config.site}: a crowd between entrances needs two of them")
+    import shapely
+
     walk = walk_area(floor, walls)
     if walls is not None and not walls.is_empty:
-        import shapely
-
         # HumanSim refuses the whole set when a stair half's hold lies on a wall: say so here
         near = [z["name"] for z in config.links if z.get("kind") and walls.distance(shapely.Point(float(z["hold"]["x"]), float(z["hold"]["y"]))) <= LINK_HOLD_WALL_M]
         if near:
             raise ValueError(f"{config.site}: links {near}: the hold lies within {LINK_HOLD_WALL_M:g} m of a wall, HumanSim refuses them")
+    links = link_keep_out(config.links)
+    if links:
+        # no source or sink on a link or its apron: a walker spawned on a running belt rides it whatever its goal. 0.1 m
+        # more, so that the simplified and rounded outline of an entrance's area stays off them too
+        walk = walk.difference(shapely.union_all(links).buffer(0.1))
     areas = {e.name: [{"x": x, "y": y} for x, y in _entrance_polygon(e, walk)] for e in entrances}
     regions: dict[str, Any] = {}
     for e in entrances:

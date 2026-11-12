@@ -702,10 +702,27 @@ def test_the_keep_out_holds_every_link_and_the_apron_in_front_of_its_mouth(tmp_p
     assert len(infra.keep_out(plain / "scenario.yaml", config.links)) == regions + 2 * 2
 
 
-def test_no_search_spot_on_the_v2_twin_stands_on_a_link_or_its_apron() -> None:
+def test_no_entrance_area_takes_a_link_or_the_apron_in_front_of_its_mouth() -> None:
+    import shapely
+
+    links = [_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)]
+    entrances = [
+        {"name": "m1", "type": "mrt", "polygon": [[0, 0], [2, 0], [2, 2], [0, 2]]},
+        {"name": "m2", "type": "mrt", "at": [20, 1], "recipients": True},
+        {"name": "s1", "type": "shop", "at": [3.0, 5.0]},  # its 4 m square takes the top half and its apron
+    ]
+    scenario = infra.entrance_crowd(_entrance_config(entrances=entrances, links=links), shapely.box(-5, -5, 30, 15))[0]
+    taken = shapely.union_all(infra.link_keep_out(links))
+    area = shapely.Polygon([(p["x"], p["y"]) for p in scenario["regions"]["s1_sink"]["polygon"]])
+    assert area.area >= infra.ENTRANCE_MIN_M2 and not area.intersects(taken)
+    assert all(not shapely.Polygon([(p["x"], p["y"]) for p in r["polygon"]]).intersects(taken) for r in scenario["regions"].values())
+
+
+def test_no_search_spot_or_entrance_area_on_the_v2_twin_stands_on_a_link_or_its_apron() -> None:
     import os
 
     import shapely
+    from arena_simulation_setup.shared.navmesh import nav_walls
 
     # a local world, outside the fake assets the tests run on: the checkout's own local assets
     root = Path(os.environ.get("ARENA_DIR", "/nonexistent")) / "arena_simulation_setup" / "assets" / "worlds" / "smu_link_full_v2"
@@ -722,6 +739,12 @@ def test_no_search_spot_on_the_v2_twin_stands_on_a_link_or_its_apron() -> None:
         # what the search keeps: valid spots off the keep-out, none of them on a link or its apron
         assert not [s.id for s in spots if s.valid and not s.keep_clear.intersects(blocked) and s.keep_clear.intersects(links)]
     assert on_links >= 4  # the bays the keep-out now drops lie on the T-junction's bottom stair halves
+    # nor does any entrance's source or sink (a walker spawned on a running belt would ride it)
+    level = next(iter(site.world.levels.values()))
+    floor = shapely.union_all([shapely.Polygon([(p.x, p.y) for p in z.polygon]) for z in level.zones if len(z.polygon) >= 3])
+    walls = shapely.MultiLineString([[(w.start.x, w.start.y), (w.end.x, w.end.y)] for w in nav_walls(level)])
+    scenario = infra.entrance_crowd(config, floor, walls=walls)[0]
+    assert not [name for name, r in scenario["regions"].items() if shapely.Polygon([(p["x"], p["y"]) for p in r["polygon"]]).intersects(links)]
 
 
 def _evaluation_inputs(tmp_path: Path, joint: str, robot_only: str) -> tuple[list[str], Path]:

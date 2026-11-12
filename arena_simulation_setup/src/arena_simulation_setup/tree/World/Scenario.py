@@ -181,9 +181,10 @@ class TeleportZone:
     """A pedestrian teleport zone the scenario adds to the human simulator, in the world frame, as HumanSim reads them
     (its `teleport_zones`): a stair or escalator half joining floor of one level that the world models as a whole, such
     as a stair between two floors a digital twin lays out side by side. `entry`, `wait` and `hold` are (x, y, theta).
-    Checked as HumanSim checks them, so that it does not refuse the set: finite numbers, `delay` >= 0, no zone landing in
-    itself, and a stair or escalator half's hold more than `STAIR_HOLD_INSET_M` inside its footprint (its distance to
-    the walls is checked where they are known)."""
+    Checked as HumanSim checks them, so that it does not refuse the set: finite numbers, a stair or escalator half's
+    `delay` >= 0 (a cabin's negative `delay` leaves its teleport to the caller), no zone landing in itself, and a stair
+    or escalator half's hold more than `STAIR_HOLD_INSET_M` inside its footprint (its distance to the walls is checked
+    where they are known)."""
 
     name: str
     destinations: tuple[str, ...]
@@ -225,8 +226,8 @@ class TeleportZone:
         numbers = [*zone.entry, *zone.wait, *zone.hold, *(v for p in footprint for v in p), zone.delay, zone.belt]
         if not all(math.isfinite(v) for v in numbers):
             raise ValueError(f"teleport zone {name!r}: every number must be finite")
-        if zone.delay < 0.0:
-            raise ValueError(f"teleport zone {name!r}: delay must be >= 0, not {zone.delay}")
+        if kind and zone.delay < 0.0:
+            raise ValueError(f"teleport zone {name!r}: a stair or escalator half's delay must be >= 0, not {zone.delay}")
         if name in zone.destinations:
             raise ValueError(f"teleport zone {name!r} lands in itself")
         if kind:

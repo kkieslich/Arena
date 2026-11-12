@@ -27,6 +27,9 @@ def test_teleport_zones_parse_in_humansim_form() -> None:
     assert down.destinations == () and down.wait == down.entry and down.belt == 0.0 and down.open
     assert parse_scenario({"format": "arena-scenario/2", "teleport_zones": [{**TOP, "delay": 14.05}, BOTTOM]}).teleport_zones[0].delay == 14.05
     assert parse_scenario({"format": "arena-scenario/2"}).teleport_zones == []
+    # a cabin's negative delay: HumanSim leaves its teleport to the caller
+    cabins = [{"name": "lift_a", "destinations": ["lift_b"], "entry": {"x": 0.0, "y": 0.0}, "hold": {"x": 0.5, "y": 0.0}, "delay": -1.0}, {"name": "lift_b", "destinations": ["lift_a"], "entry": {"x": 9.0, "y": 0.0}, "hold": {"x": 9.5, "y": 0.0}, "delay": -1.0}]
+    assert [z.delay for z in parse_scenario({"format": "arena-scenario/2", "teleport_zones": cabins}).teleport_zones] == [-1.0, -1.0]
 
 
 @pytest.mark.parametrize(
@@ -45,7 +48,7 @@ def test_teleport_zones_parse_in_humansim_form() -> None:
         ([{**BOTTOM, "hold": {"x": 7.5, "y": 1.7}}], "more than 0.25 m inside the footprint"),
         ([{**BOTTOM, "delay": float("nan")}], "finite"),
         ([{**BOTTOM, "entry": {"x": float("inf"), "y": 2.0}}], "finite"),
-        ([{**BOTTOM, "delay": -1.0}], "delay must be >= 0"),
+        ([{**BOTTOM, "delay": -1.0}], "half's delay must be >= 0"),
         ([{**BOTTOM, "destinations": ["down"]}], "lands in itself"),
         ([{**BOTTOM, "destinations": ["lift"]}, {"name": "lift", "entry": {"x": 0.0, "y": 0.0}, "hold": {"x": 0.5, "y": 0.0}}], "lands only in stair or escalator halves"),
     ],
