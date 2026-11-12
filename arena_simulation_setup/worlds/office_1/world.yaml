@@ -153,7 +153,7 @@ levels:
   - {name: meet1_chair_2b, pose: [19.6, 4.7, 1.57079], model: Office/Chair_Office}
   - {name: meet1_chair_2c, pose: [18.5, 5.1, 1.57079], model: Office/Chair_Office}
   - {name: meet1_tv, pose: {x: 23.05, y: 7.9, z: 1.1, yaw: 3.14159}, model: Office/SM_TVDisplay_small}
-  - {name: meet1_board, pose: {x: 22.95, y: 6.5, z: 0.7}, model: Office/SM_MarkerBoard}
+  - {name: meet1_board, pose: {x: 22.95, y: 6.5, z: 0.7}, model: Office/SM_Board}
   - {name: meet1_plant, pose: [22.5, 3.5], model: Office/SM_Plant02}
   - {name: meet1_ringbinder_1, pose: {x: 20.5, y: 7.0, z: 0.75, yaw: 0.3}, model: Office/SM_RingBinder}
   - {name: meet1_papertray_1, pose: {x: 19.3, y: 7.2, z: 0.75, yaw: 1.2}, model: Office/SM_PaperTray}
@@ -483,7 +483,7 @@ levels:
   - {name: meet_big_chair_4c, pose: [6.5, 19.2, 3.14159], model: Office/Chair_Office}
   - {name: meet_big_chair_4d, pose: [6.5, 17.9, 2.5], model: Office/Chair_Office}
   - {name: meet_big_tv_1, pose: {x: 3.6, y: 25.05, z: 1.1, yaw: -1.5708}, model: Office/SM_TVDisplay_small}
-  - {name: meet_big_board, pose: {x: 5.0, y: 24.95, z: 0.7, yaw: 1.5708}, model: Office/SM_MarkerBoard}
+  - {name: meet_big_board, pose: {x: 5.0, y: 24.95, z: 0.7, yaw: 1.5708}, model: Office/SM_Board}
   - {name: meet_big_plant_1, pose: [0.5, 24.5], model: Office/SM_Plant01}
   - {name: meet_big_ringbinder_1, pose: {x: 4.5, y: 21.0, z: 0.75, yaw: 0.5}, model: Office/SM_RingBinder}
   - {name: meet_big_ringbinder_2, pose: {x: 5.4, y: 19.2, z: 0.75, yaw: -0.3}, model: Office/SM_RingBinder}
