@@ -291,6 +291,9 @@ def test_the_v2_twin_config_links_the_t_junction_stairs_and_escalators_in_place_
     assert down["destinations"] == ["tj_escalator_north_bottom"] and (down["delay"], down["belt"]) == (21.13, 0.5)
     for exit_half in ("tj_escalator_south_top", "tj_escalator_north_bottom"):
         assert links[exit_half]["destinations"] == [] and links[exit_half]["belt"] == -0.5
+    # the rate the crowd settles at on every seed: 0.9 ped/s, 175 s on the site on average
+    density = config.crowd_density
+    assert (density.density, density.area_m2, density.mean_time_s) == (0.0399, 3944, 175) and density.rate() == pytest.approx(0.9, abs=1e-3)
 
 
 FACTS = {"site": "s", "courier_access": [1, 2]}
