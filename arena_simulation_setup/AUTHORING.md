@@ -226,7 +226,9 @@ A door's `activation_distance` takes a scalar or a pair `[a, b]` (the larger
 value is the trigger radius).
 
 Door `kind` is one of `sliding` (default, slab slides along the span),
-`sliding_top` (slab lifts), `teleport` (slab vanishes) and `hinged`: the slab
+`sliding_split` (two half-span leaves part from the middle, each into its own
+end's wall, the default of an elevator's `door_kind`), `sliding_top` (slab
+lifts), `teleport` (slab vanishes) and `hinged`: the slab
 rotates about the first span point by up to 90 deg over `transition_time`.
 `swing_direction: 1` (default) opens towards the left normal of the span,
 `swing_direction: -1` towards the right. Like sliding doors, a hinged slab
@@ -521,8 +523,9 @@ deck. A ramp's mouth is its low end, at height `base`, and it rises `rise` over
 its length. `rise: 0`, the default, makes a level deck. Where footprints overlap
 the first entry wins. Off every ramp the height is 0.
 
-Pedestrians take the height of the ramp under them. Robots spawn and teleport
-onto it, then drive on the slab under their own physics. Their sensors see the
+Pedestrians, robots and objects stand on the ramp under them, an object's `z`
+counting from the ramp's surface. Robots spawn and teleport onto it, then drive
+on the slab under their own physics. Their sensors see the
 slope as it is, so nav2's costmaps can mark it, stall the robot on it and,
 above 0.8 m, miss walkers. A slab leaves the space under it open, so run it wall to wall or
 add walls, and leave no gap at its ends. Flatsim has no floor heights, so a ramp
@@ -948,6 +951,11 @@ holds its cabin door open, all as pure regime consults with no per-effect
 timeline entry. See
 [worlds/three_storied_residential/scenarios/fire_alarm/scenario.yaml](worlds/three_storied_residential/scenarios/fire_alarm/scenario.yaml)
 for the reference timeline.
+
+Two `every:` entries with the same period and different offsets toggle a looped
+sound's `sounding`, which makes an intermittent caller.
+[worlds/hospital_1/scenarios/search_caller/scenario.yaml](worlds/hospital_1/scenarios/search_caller/scenario.yaml)
+calls for 2 s every 8 s from a hidden human for the `search` robots mode.
 
 A `stimulus` drives behavior-tree agents whose agent type declares the need
 and a transition on it, as for [pedestrian stimuli](#pedestrian-stimuli). Here

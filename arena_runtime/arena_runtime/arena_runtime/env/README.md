@@ -55,7 +55,7 @@ the robots manager there. The optional hooks of `EnvNode` it overrides: simulato
 default), its tick (`async _on_tick(ended)`, after the robots are judged, `ended`
 mapping each robot to the `PhaseState` that ended on this tick), entity snapshots
 (`_extra_semantic_states`), env displays (`_interaction_displays`), a step once the
-env is initialized (`_after_setup`) and its teardown (`_teardown_episode`, after the tick
+env is initialized (`_after_setup`), the arena watchdog's 1 s wall tick (`_on_watchdog`) and its teardown (`_teardown_episode`, after the tick
 loop stops, before the robots and the simulator), plus `on_task_submitted` and
 `reset_timeline`.
 
@@ -105,7 +105,7 @@ outcome is set is not lost.
 ### Reset semantics
 
 The `resetting` parameter and `state/resetting` belong to the node. Async ROS I/O in
-this package goes through [`arena_rclpy_mixins`](../../../../utils/arena_rclpy_mixins).
+this package goes through [`arena_rclpy_mixins`](../../../../utils/arena_rclpy_mixins/arena_rclpy_mixins).
 
 `EpisodeNode._reset_episode(record)` runs in this order:
 
@@ -160,6 +160,7 @@ setup(entry_points={"arena_runtime.task_layer": ["my_runtime = my_runtime.layer"
 | `declare_mode_schema(node, axis, mode)` | Declares the params of one mode. `declare_mode_schemas(layer, node)` declares every registered mode. |
 | `create_task(node=, ctx=, params=)` | Binds an `EpisodeTask` to the env's `TaskContext`. |
 | `mode_namespaces()` | The registered modes per axis, each with its param namespace: the one source of param names. `registered_modes(layer)` is its names. |
+| `multi_axes()` | The axes that take several modes at once, the ones it passes to `validate_modes`. |
 | `fleet_only_robots()` | Robot modes reachable only through a fleet config. |
 | `next_episode(previous=, queued=)` | Chooses what the next episode changes, given the finished record and what was queued. |
 
@@ -285,6 +286,11 @@ coordinates the way an rviz goal handle's are. An empty phase list stops the
 robot: `RobotManager.stop_task` drops its unfinished phases and cancels the
 in-flight adapter goals.
 
+A phase that ends while its action still runs (a reach `stop` holding, a loop `until`
+exit, a failure policy or an episode abort) has that action canceled and the cancel answered
+before the next phase dispatches. A reach the judge met by `stop` reads no status from its
+client while the action runs, so the canceled status that follows does not fail it.
+
 ### Goal progress
 
 [`goal_progress.py`](goal_progress.py) is `EpisodeNode`'s ROS-independent per-robot goal
@@ -295,6 +301,19 @@ zero. `GoalProgressTracker` keys `GoalProgress` by robot name and exposes
 `least_progress()`, the tracked robot with the lowest `closed_fraction`. It is
 sampled by `EpisodeNode._sample_goal_progress` and reset once per episode in
 `_build_next_record`.
+
+### Hung nodes
+
+While an episode runs, the node pings every node under its env namespace each
+`task.episode.node_ping.period` wall seconds, driven by `EnvNode`'s 1 s arena
+watchdog tick through `_on_watchdog`. [`node_watch.py`](node_watch.py) pings a node on its
+lifecycle `get_state` service where it has one (it must report active) and on its
+parameter service otherwise. A node that has answered before and then misses
+`task.episode.node_ping.misses` pings in a row, or leaves the graph mid-episode,
+ends the episode FATAL naming that node, which the benchmark runner counts as a
+systemic step failure and retries. A round most nodes miss counts for nobody, so a
+stalled box or event loop does not fault one node. With `task.episode.auto_reset`
+on (standalone) a hung node is only logged.
 
 ## Map generator
 

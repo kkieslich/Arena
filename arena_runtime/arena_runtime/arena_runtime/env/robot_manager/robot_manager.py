@@ -27,6 +27,7 @@ import shapely
 import std_msgs.msg
 import tf2_ros
 from arena_rclpy_mixins.Async import LaunchHandle
+from arena_rclpy_mixins.params import declare
 from arena_rclpy_mixins.shared import FrameNamespace, Namespace
 from arena_robots.Robot import RobotView
 from arena_simulation_setup.shared.conditions import render_until
@@ -38,6 +39,7 @@ from arena_runtime.env.environment_manager import EnvironmentManager, authored_s
 from arena_runtime.env.robot_manager.controller_manager_client import ControllerManagerClient
 from arena_runtime.env.robot_manager.controller_transitions import next_transition
 from arena_runtime.env.robot_manager.task_runner import PhaseState, TaskRunner, Transition, standoff_pose
+from arena_runtime.node_params import NodeParams
 from arena_runtime.shared import Orientation, Pose, Position, Robot
 from arena_runtime.sim._interface import SimUnavailable
 
@@ -193,11 +195,11 @@ class RobotManager(NodeInterface):
 
     @property
     def goal(self) -> Pose | None:
-        """Map-frame pose of the active GoToPhase, or None."""
+        """Map-frame pose of the active GoToPhase, None without one or for a judge-only goto."""
         from arena_runtime.env.request import GoToPhase
 
         state = self._runner.active_state
-        if state is None or not isinstance(state.phase, GoToPhase) or state.phase.pose is None:
+        if state is None or not isinstance(state.phase, GoToPhase) or state.phase.pose is None or not state.phase.dispatch:
             return None
         return self._environment_manager.realize(state.phase.pose)
 
@@ -251,7 +253,7 @@ class RobotManager(NodeInterface):
                 caps_to_kind[cap] = override
                 continue
             param_name = f"robot.{cap}_adapter"
-            default_kind = self.node.rosparam[str].get(param_name, None)
+            default_kind = self.node.rosparam[str].get_unsafe(param_name, None)
             if default_kind is None:
                 self._logger.warning(f"robot {self._robot.name!r} advertises cap {cap!r} but no default adapter is configured (param {param_name!r}); cap will be unbound.")
                 continue
@@ -325,11 +327,11 @@ class RobotManager(NodeInterface):
         for key, param in self.node.get_parameters_by_prefix(f"robot.{cap}").items():
             kwargs[key] = param.value
         if cap == 'mobile':
-            kwargs.setdefault('train_mode', self.node.rosparam[bool].get('robot.train', False))
+            kwargs.setdefault('train_mode', declare(self.node, NodeParams.ROBOT_TRAIN).value)
         return kwargs
 
     async def set_up_robot(self):
-        self._robot.pose.position.z += self._config.model_params.z_offset + self._environment_manager.ramp_height(self._robot.pose.position)
+        self._robot.pose.position.z += self._config.model_params.z_offset + self._environment_manager.footing(self._robot.pose.position)
         self._robot = (await self._environment_manager.spawn_robot((self._robot,)))[0]
         await self._environment_manager.spawn_robot_lights(self.name, [attrs.evolve(light, name=f'{self.name}_{light.name}', frame=self.frame.tf(light.frame)) for light in self._config.model_params.lights])
 
@@ -532,12 +534,15 @@ class RobotManager(NodeInterface):
         return None if ped is None else standoff_pose((here.position.x, here.position.y), ped)
 
     async def _dispatch(self, state_index: int) -> None:
-        """Dispatch one phase to its adapter, a hold or ped-target phase first taking its pose from the live state."""
+        """Dispatch one phase to its adapter, a hold or ped-target phase first taking its pose from the live state, a judge-only goto to none."""
         from arena_runtime.env.adapters.mobile import MobileAdapter
         from arena_runtime.env.request import ElevatorRidePhase, GoToPhase, kind_of
 
         state = self._runner.phases[state_index]
         phase = state.phase
+        if isinstance(phase, GoToPhase) and not phase.dispatch:
+            state.dispatched = True
+            return
         if isinstance(phase, GoToPhase) and phase.pose is None:
             pose = self._dispatch_pose(phase)
             if pose is None:
@@ -605,7 +610,8 @@ class RobotManager(NodeInterface):
                 adapter.on_phase_tick(dispatched, self)
             ride = state.phase if isinstance(state.phase, ElevatorRidePhase) else None
             boarded = state.monitor.held
-            transition = self._runner.step(sample, zones, action_done, (None, None) if ride is not None else self._outcome_for_phase(state.phase), adapter.signal)
+            unjudged = ride is not None or (isinstance(state.phase, GoToPhase) and not state.phase.dispatch)
+            transition = self._runner.step(sample, zones, action_done, (None, None) if unjudged else self._outcome_for_phase(state.phase), adapter.signal)
             if ride is not None and transition.ended is state:
                 self._set_elevator_target(ride, release=True)
                 if state.outcome == "met":
@@ -625,9 +631,12 @@ class RobotManager(NodeInterface):
             self._logger.info(f"robot {self.name!r} condition {scoped.id} violated: {render_until(scoped.condition.p_node)}")
         if transition.stop:
             self._stop_current_task()
+            await asyncio.gather(*(adapter.cancel_and_wait() for adapter in self._adapter_instances))
             if transition.abort is not None and self._abort_episode is not None:
                 self._abort_episode(transition.abort)
             return transition
+        if ended is not None:
+            await self._cancel_ended(ended)
         state = self._runner.active_state
         if state is not None and not state.dispatched:
             await self._dispatch(state.index)
@@ -640,6 +649,14 @@ class RobotManager(NodeInterface):
         for adapter, result in zip(self._adapter_instances, results, strict=True):
             if isinstance(result, BaseException):
                 self._logger.error(f"adapter {adapter.kind!r} on_navigation_reset failed: {result!r}")
+    async def _cancel_ended(self, ended: PhaseState) -> None:
+        """Cancel the action of a phase that ended before its server finished, a goto that arrived keeps its planner goal."""
+        from arena_runtime.env.request import TaskKind, kind_of
+
+        kind = kind_of(ended.phase)
+        adapter = self._adapters.get(kind)
+        if adapter is not None and (kind is not TaskKind.GOTO_POSE or ended.outcome == "dropped"):
+            await adapter.cancel_and_wait((kind,))
 
     async def _clear_on_cabin_open(self) -> None:
         """Run the adapters' `on_cabin_open` once the cabin that delivered the robot reports its door open."""
@@ -665,13 +682,15 @@ class RobotManager(NodeInterface):
         return self._runner.done
 
     def active_dispatch_phase(self) -> TaskPhase | None:
-        """The active phase as its adapter received it, goto poses in the map frame."""
+        """The active phase as its adapter received it, goto poses in the map frame, None for a judge-only goto."""
         from arena_runtime.env.request import GoToPhase
 
         state = self._runner.active_state
         if state is None or not state.dispatched:
             return None
         phase = state.phase
+        if isinstance(phase, GoToPhase) and not phase.dispatch:
+            return None
         if isinstance(phase, GoToPhase) and phase.pose is not None:
             return attrs.evolve(phase, pose=self._environment_manager.realize(phase.pose))
         return phase
@@ -906,7 +925,7 @@ class RobotManager(NodeInterface):
             raise self._teleport_never_landed(target, last_error)
 
     async def _apply_pose(self, pose: Pose):
-        pose.position.z += self._config.model_params.z_offset + self._environment_manager.ramp_height(pose.position)
+        pose.position.z += self._config.model_params.z_offset + self._environment_manager.footing(pose.position)
         self.robot.pose = pose
 
         # TF reports the realized map frame, pose is env-local
