@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,17 @@ def _seeds(text: str) -> list[int]:
     if not out:
         raise argparse.ArgumentTypeError(f"no seeds in {text!r}")
     return list(dict.fromkeys(out))
+
+
+def _weights(text: str) -> list[int]:
+    """`4,6`: one positive weight per part."""
+    try:
+        out = [int(w) for w in text.split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"parts are comma-separated whole numbers, not {text!r}") from None
+    if len(out) < 2 or any(w <= 0 for w in out):
+        raise argparse.ArgumentTypeError(f"parts need two or more positive weights, not {text!r}")
+    return out
 
 
 def _point(text: str) -> tuple[float, float]:
@@ -161,6 +174,52 @@ def _print_runs(runs: list[tuple[str, SE.Scored]], speed: float, ranking: dict[s
         _log(f"{role:10s} {s.layout_id}: {s.travel_m:7.1f} m per job (about {job_s / 60:.1f} min at {speed:g} m/s){occ}{rank}, floor loss {s.floor_loss_m2:.2f} m2, {' / '.join(sp.zone for sp in s.layout.spots)}")
 
 
+def _plan_parts(args: argparse.Namespace, layout_ids: Iterable[str]) -> list[list[str]] | None:
+    """With `--parts`, the layout copies of each part (`IN.split_parts`), worked out before anything is written and in a
+    dry run too, so a split that cannot be made stops the command before it writes a suite; None without."""
+    if not getattr(args, "parts", None):
+        return None
+    ids = list(dict.fromkeys(layout_ids))
+    if len(ids) < len(args.parts):
+        hint = ": the joint pick is the robot-only pick, run it without --parts" if len(ids) == 1 else ""
+        raise ValueError(f"--parts {','.join(map(str, args.parts))} splits by layout copy into {len(args.parts)} parts, but the suite has {len(ids)} layout {'copy' if len(ids) == 1 else 'copies'}{hint}")
+    parts = IN.split_parts(ids, args.parts)
+    for index, (part, weight) in enumerate(zip(parts, args.parts, strict=True), start=1):
+        _log(f"part {index} (weight {weight}): {len(part)} layouts, {', '.join(part)}")
+    return parts
+
+
+def _drop_stale_parts(out: Path, keep: Collection[str]) -> None:
+    """Remove the part suites an earlier run left beside `out` (`<suite>_p<N>.yaml`, written by flowedit infra) that
+    this run did not write, so a suite's parts are always the ones its manifest lists."""
+    pattern = re.compile(rf"^{re.escape(out.stem)}_p\d+\.yaml$")
+    for path in sorted(out.parent.glob(f"{out.stem}_p*.yaml")):
+        if pattern.match(path.name) and path.stem not in keep and path.read_text().startswith(IN.MARKER):
+            path.unlink()
+            _log(f"removed {path}: a part of an earlier run of {out.stem}")
+
+
+def _write_parts(args: argparse.Namespace, out: Path, plan: list[list[str]] | None, worlds: dict[str, str], doc_for: Callable[[list[str]], dict[str, Any]], contest: str) -> list[dict[str, Any]]:
+    """The suite of each part of `plan` (`_plan_parts`; `worlds`: layout id -> world name) beside `out`, each runnable on
+    its own machine as its own run, and no part suite of an earlier run left; the parts as the manifest records them,
+    [] without."""
+    records: list[dict[str, Any]] = []
+    plan = plan or []
+    for index, (ids, weight) in enumerate(zip(plan, getattr(args, "parts", None) or [], strict=True), start=1):
+        name = IN.part_name(out.stem, index)
+        doc = doc_for([worlds[layout_id] for layout_id in ids])
+        header = [
+            f"part {index} of {len(plan)} of suite {out.stem} (weight {weight}): layouts {', '.join(ids)}",
+            f"{_summary(doc)}; every part runs as its own run on its own machine, `evaluation infra` reads their run dirs together with {IN.manifest_path(out).name}",
+            f"run: {SU.benchmark_command(name, weight, contest)}",
+        ]
+        path = IN.write(doc, out.with_name(f"{name}.yaml"), header, force=args.force)
+        records.append({"suite": name, "weight": weight, "layouts": ids, "worlds": [worlds[layout_id] for layout_id in ids], "episodes": IN.episodes(doc), "sim_hours": IN.sim_hours(doc)})
+        print(f"part {index}: {path} ({len(ids)} layouts, {_summary(doc)}): {SU.benchmark_command(name, weight, contest)}")
+    _drop_stale_parts(out, {r["suite"] for r in records})
+    return records
+
+
 def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs: list[tuple[str, SE.Scored]], seeds: list[int], rate: float, header: list[str], extra: dict[str, Any]) -> int:
     """Save the copies of `runs`, write their fleet suite `name` on `seeds` and its manifest."""
     import attrs
@@ -168,6 +227,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
     from . import place
 
     unique = list({s.layout_id: s for _, s in runs}.values())
+    plan = _plan_parts(args, [s.layout_id for s in unique])
     worlds = IN.save_layouts(space.site, [s.layout for s in unique], space.scenario, visitor_rate_per_h=args.visitor_rate)
     fleet = IN.fleet_config(rate, pickup_share=args.pickup_share, charge_below=args.charge_below, charge_until=args.charge_until)
     doc = IN.layout_suite([worlds[s.layout_id].name for s in unique], fleet, seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
@@ -181,6 +241,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
         f"run: {SU.benchmark_command(out.stem, args.lanes, contest)}",
     ]
     out = IN.write(doc, out, header, force=args.force)
+    parts = _write_parts(args, out, plan, {s.layout_id: worlds[s.layout_id].name for s in unique}, lambda names: IN.layout_suite(names, fleet, seeds, scenario=space.scenario_name, duration=args.duration, side=space.side), contest)
     record = {
         "suite": out.stem,
         "site": space.site.key,
@@ -204,6 +265,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
         "sim_hours": IN.sim_hours(doc),
         **extra,
         "worlds": {layout_id: str(path) for layout_id, path in worlds.items()},
+        **({"parts": parts} if parts else {}),
     }
     manifest = IN.manifest_path(out)
     manifest.write_text(json.dumps(record, indent=1) + "\n")
@@ -224,6 +286,7 @@ def _cmd_premise(args: argparse.Namespace) -> int:
         raise ValueError("the narrowest and the widest layout are the same: the site has one section width")
     doc = IN.layout_suite([narrow.layout_id, wide.layout_id], IN.fleet_config(rate), seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
     _log(f"premise suite: {_summary(doc)}; with the site as is at seeds {', '.join(map(str, seeds))} from {IN.REFERENCE_SUITE}: {IN.episodes(doc) + len(seeds)} episodes (§10: 15)")
+    _plan_parts(args, [narrow.layout_id, wide.layout_id])
     if args.dry_run:
         _log("(dry run - no world or suite written)")
         return 0
@@ -266,6 +329,7 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
     unique = {s.layout_id for _, s in runs}
     doc = IN.layout_suite(sorted(unique), IN.fleet_config(rate), seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
     _log(f"selection suite: {len(unique)} layouts, {_summary(doc)}; with the site as is at seeds {', '.join(map(str, seeds))} from {IN.REFERENCE_SUITE}: {IN.episodes(doc) + len(seeds)} episodes")
+    _plan_parts(args, sorted(unique))
     if args.dry_run:
         _log("(dry run - no world or suite written)")
         return 0
@@ -376,6 +440,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     _log(f"evaluation: joint pick {chosen['joint']}, robot-only pick {chosen['robot_only']}; {_summary(doc)}, the site as is {_summary(site_doc)}: {total} episodes, {IN.sim_hours(doc) + IN.sim_hours(site_doc):g} sim-hours")
     if chosen["joint"] == chosen["robot_only"]:
         _log("the joint pick is the robot-only pick: the comparison's differences are 0 by construction")
+    plan = _plan_parts(args, chosen.values())
     if args.dry_run:
         _log("(dry run - nothing written)")
         return 0
@@ -384,6 +449,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     site_out = out.with_name(f"{IN.EVALUATION_SITE_SUITE}.yaml") if args.out is None else out.with_name(f"{out.stem}_site.yaml")
     common = f"seeds {', '.join(map(str, seeds))}, {duration:g} s each, warm-up {float(manifest['warmup_s']):g} s cut in the analysis"
     IN.write(doc, out, [f"INFRA Stage 1 evaluation (§10, §12): the joint pick {chosen['joint']} and the robot-only pick {chosen['robot_only']} from {selection}, with the fleet and without robots, {common}", f"{_summary(doc)}", f"run: {SU.benchmark_command(out.stem, args.lanes, contest)}"], force=args.force)
+    parts = _write_parts(args, out, plan, {layout_id: Path(worlds[layout_id]).name for layout_id in dict.fromkeys(chosen.values())}, lambda names: IN.layout_suite(names, fleet, seeds, scenario=scenario, duration=duration, side=side), contest)
     IN.write(site_doc, site_out, [f"INFRA Stage 1 evaluation reference: {manifest['site']} as is without robots, {common}", f"{_summary(site_doc)}", f"run: {SU.benchmark_command(site_out.stem, args.lanes)}"], force=args.force)
     record = {
         "suite": out.stem,
@@ -397,6 +463,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
         "sim_hours": round(IN.sim_hours(doc) + IN.sim_hours(site_doc), 2),
         "runs": [{**next(r for r in manifest["runs"] if r["layout_id"] == layout_id), "role": role} for role, layout_id in chosen.items()],
         "worlds": {layout_id: worlds[layout_id] for layout_id in chosen.values()},
+        **({"parts": parts} if parts else {}),
     }
     manifest_out = IN.manifest_path(out)
     manifest_out.write_text(json.dumps(record, indent=1) + "\n")
@@ -431,6 +498,8 @@ def add_parser(verbs: Any) -> None:
     searched.add_argument("--charge-until", type=float, default=IN.CHARGE_UNTIL, help=f"battery percent that frees a charging robot (default {IN.CHARGE_UNTIL:g})")
     searched.add_argument("--capacity-wh", type=float, default=IN.CAPACITY_WH, help=f"battery capacity of every robot, Wh (default {IN.CAPACITY_WH:g})")
     searched.add_argument("--visitor-rate", type=float, default=None, help=f"locker visitors per hour in all (default the scenario's {IN.VISITORS})")
+    parts_help = "also split the suite by layout copy into one suite per weight, <suite>_p1, <suite>_p2, ..., in proportion to the weights (e.g. 4,6: the lanes of two machines); the manifest lists the parts; each part runs as its own run on its own machine, and `evaluation infra` reads their run dirs together (repeated --layouts)"
+    searched.add_argument("--parts", type=_weights, default=None, metavar="W1,W2[,...]", help=parts_help)
 
     q = infra.add_parser("reference", parents=[common], help="the site as is without robots, one stage per seed", description=f"write suite {IN.REFERENCE_SUITE}: the site as is without robots at each seed, the robots parked off the map. Run it first: its flow cells are the joint search's occupancy.")
     q.set_defaults(fn=_cmd_reference)
@@ -452,5 +521,6 @@ def add_parser(verbs: Any) -> None:
     q.set_defaults(fn=_cmd_crowd)
     q = infra.add_parser("evaluation", parents=[common], help="the evaluation: the two picks and the site as is on fresh seeds", description=f"write suites {IN.EVALUATION_SUITE} (the joint pick and the robot-only pick, each with the fleet and without robots) and {IN.EVALUATION_SITE_SUITE} (the site as is) on seeds {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]}, from the pick `evaluation infra pick` wrote and the selection's manifest")
     q.add_argument("--pick", type=Path, required=True, help="the pick file `evaluation infra pick` writes (joint_pick, robot_only)")
+    q.add_argument("--parts", type=_weights, default=None, metavar="W1,W2", help=parts_help)
     q.add_argument("--selection", type=Path, default=None, help=f"the selection's manifest (default <imported assets root>/suites/{IN.LAYOUT_SUITE}.layouts.json)")
     q.set_defaults(fn=_cmd_evaluation)

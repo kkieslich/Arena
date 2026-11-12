@@ -800,6 +800,30 @@ def default_out(name: str) -> Path:
     return imported_root() / SU.SUITES / f"{name}.yaml"
 
 
+def split_parts(items: Iterable[str], weights: Sequence[int]) -> list[list[str]]:
+    """`items` (layout copies) over one part per weight, about in proportion to the weights (e.g. the lanes of the machine
+    each part runs on): in sorted order, each item goes to an empty part first, else to the part with the fewest items
+    per weight once it holds this one (D'Hondt: a part can end above its exact share, e.g. 29 items at weights 12,1,2,1
+    give the first 24 against a share of 21.75), the lower part on ties. The same items and weights always give the
+    same parts, and none stays empty."""
+    weights = [int(w) for w in weights]
+    if len(weights) < 2 or any(w <= 0 for w in weights):
+        raise ValueError(f"parts need two or more positive weights, not {weights}")
+    items = sorted(dict.fromkeys(items))
+    if len(items) < len(weights):
+        raise ValueError(f"{len(items)} layout copies cannot fill {len(weights)} parts")
+    parts: list[list[str]] = [[] for _ in weights]
+    for item in items:
+        best = min(range(len(weights)), key=lambda i: (bool(parts[i]), (len(parts[i]) + 1) / weights[i], i))
+        parts[best].append(item)
+    return parts
+
+
+def part_name(suite: str, index: int) -> str:
+    """The suite name of part `index` (from 1) of `suite`: `<suite>_p<index>`."""
+    return f"{suite}_p{index}"
+
+
 def manifest_path(suite: Path) -> Path:
     """The manifest a layout suite's writer leaves beside it: `<suite>.layouts.json`."""
     suite = Path(suite)
@@ -877,10 +901,12 @@ __all__ = [
     "layout_suite",
     "locker_front",
     "manifest_path",
+    "part_name",
     "picks_record",
     "reference_suite",
     "runs",
     "save_layouts",
+    "split_parts",
     "scenario_dir",
     "sim_hours",
     "site_config",
