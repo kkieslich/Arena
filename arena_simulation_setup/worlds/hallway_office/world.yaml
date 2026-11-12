@@ -74,4 +74,4 @@ levels:
   - {name: meeting_2_table_1, pose: [33.15, 8.5], model: Office/Table_Round}
   - {name: lounge_sofa_1, pose: [41.29, 4.33, -1.5708], model: Office/Sofa}
   - {name: lounge_table_1, pose: [42.4, 9.46], model: Office/SM_TableCoffee}
-  - {name: hallway_plant_1, pose: [15.84, 16.15, 1.5708], model: Office/SM_Plant02}
+  - {name: hallway_plant_1, pose: [17.5, 16.15, 1.5708], model: Office/SM_Plant02}

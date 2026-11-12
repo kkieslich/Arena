@@ -12,7 +12,7 @@ humans:
   pose: [27.3, 1.31, 0.0]
   hunav: {type: adult}
 - {name: '2', model: arenian, waypoints: [[30.0, 14.3, 0], [17.0, 15.2, 0.0]], pose: [30.0, 14.3, 0], hunav: {type: adult}}
-- {name: '3', model: arenian, waypoints: [[30.6, 8.85, 0.0], [22.0, 0.7, 0.0]], pose: [30.6, 8.85, 0.0], hunav: {type: adult}}
+- {name: '3', model: arenian, waypoints: [[29.5, 8.9, 0.0], [22.0, 0.7, 0.0]], pose: [29.5, 8.9, 0.0], hunav: {type: adult}}
 robots:
 - start: [17.0, 18.0, 0.7]
   phases:
