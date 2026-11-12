@@ -1,5 +1,6 @@
 import functools
 import itertools
+import math
 import os
 import typing
 import warnings
@@ -145,6 +146,28 @@ LEGACY_SCENARIO_FORMAT = "arena-scenario/1"
 SCENARIO_KEYS = frozenset({"format", "objects", "humans", "sounds", "lights", "robots", "regions", "timeline", "conditions", "teleport_zones"})
 #: The kinds of a scenario teleport zone: a cabin (""), a stair half, an escalator half
 TELEPORT_ZONE_KINDS = ("", "stairs", "escalator")
+#: A stair or escalator half's hold lies more than this inside its footprint, an adult's body radius (HumanSim's adult,
+#: 0.25 m), so a walker's centre reaches it; HumanSim also refuses a hold closer than this to a wall [m]
+STAIR_HOLD_INSET_M = 0.25
+
+
+def _inside(points: tuple[tuple[float, float], ...], x: float, y: float) -> bool:
+    """Whether x, y lies inside the polygon `points` (even-odd rule)."""
+    inside = False
+    for (ax, ay), (bx, by) in zip(points, points[1:] + points[:1], strict=True):
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            inside = not inside
+    return inside
+
+
+def _edge_distance(points: tuple[tuple[float, float], ...], x: float, y: float) -> float:
+    """The distance from x, y to the nearest edge of the polygon `points`."""
+    best = math.inf
+    for (ax, ay), (bx, by) in zip(points, points[1:] + points[:1], strict=True):
+        dx, dy = bx - ax, by - ay
+        t = 0.0 if dx == dy == 0.0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
+        best = min(best, math.hypot(x - ax - t * dx, y - ay - t * dy))
+    return best
 
 
 def _pose3(value: object, what: str) -> tuple[float, float, float]:
@@ -157,7 +180,10 @@ def _pose3(value: object, what: str) -> tuple[float, float, float]:
 class TeleportZone:
     """A pedestrian teleport zone the scenario adds to the human simulator, in the world frame, as HumanSim reads them
     (its `teleport_zones`): a stair or escalator half joining floor of one level that the world models as a whole, such
-    as a stair between two floors a digital twin lays out side by side. `entry`, `wait` and `hold` are (x, y, theta)."""
+    as a stair between two floors a digital twin lays out side by side. `entry`, `wait` and `hold` are (x, y, theta).
+    Checked as HumanSim checks them, so that it does not refuse the set: finite numbers, `delay` >= 0, no zone landing in
+    itself, and a stair or escalator half's hold more than `STAIR_HOLD_INSET_M` inside its footprint (its distance to
+    the walls is checked where they are known)."""
 
     name: str
     destinations: tuple[str, ...]
@@ -184,7 +210,7 @@ class TeleportZone:
         if kind and len(footprint) < 3:
             raise ValueError(f"teleport zone {value['name']!r}: a stair or escalator half needs a footprint polygon")
         name = str(value["name"])
-        return cls(
+        zone = cls(
             name,
             tuple(str(d) for d in value.get("destinations") or []),
             _pose3(value.get("entry"), f"{name}: entry"),
@@ -196,6 +222,18 @@ class TeleportZone:
             kind,
             float(value.get("belt", 0.0)),
         )
+        numbers = [*zone.entry, *zone.wait, *zone.hold, *(v for p in footprint for v in p), zone.delay, zone.belt]
+        if not all(math.isfinite(v) for v in numbers):
+            raise ValueError(f"teleport zone {name!r}: every number must be finite")
+        if zone.delay < 0.0:
+            raise ValueError(f"teleport zone {name!r}: delay must be >= 0, not {zone.delay}")
+        if name in zone.destinations:
+            raise ValueError(f"teleport zone {name!r} lands in itself")
+        if kind:
+            hx, hy = zone.hold[0], zone.hold[1]
+            if not _inside(footprint, hx, hy) or _edge_distance(footprint, hx, hy) <= STAIR_HOLD_INSET_M:
+                raise ValueError(f"teleport zone {name!r}: the hold ({hx:g}, {hy:g}) must lie more than {STAIR_HOLD_INSET_M:g} m inside the footprint, or no walker reaches it")
+        return zone
 
 
 @attrs.define
@@ -214,10 +252,14 @@ class Scenario:
         zones = {z.name for z in self.teleport_zones}
         if len(zones) != len(self.teleport_zones):
             raise ValueError("teleport zone names repeat")
+        kinds = {z.name: z.kind for z in self.teleport_zones}
         for zone in self.teleport_zones:
             missing = sorted(set(zone.destinations) - zones)
             if missing:
                 raise ValueError(f"teleport zone {zone.name!r} lands in unknown zones {missing}")
+            other = sorted(d for d in zone.destinations if bool(kinds[d]) != bool(zone.kind))
+            if other:
+                raise ValueError(f"teleport zone {zone.name!r}: a {'stair or escalator half' if zone.kind else 'cabin'} lands only in {'stair or escalator halves' if zone.kind else 'cabins'}, not in {other}")
         names: set[str] = set()
         for light in self.lights:
             if light.spec.ambient:

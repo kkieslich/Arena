@@ -598,13 +598,16 @@ def test_an_entrance_walled_off_at_the_walkers_clearance_takes_the_nearest_floor
 
 
 def _link_half(name: str, to: str, x0: float, facing: float) -> dict:
+    """A stair half 1.5 m deep and 2 m wide (y 4-6) from its mouth at x0, facing in along `facing` (0 or pi), its hold
+    0.7 m in, as the twin's halves."""
+    depth = 1.5 if facing == 0.0 else -1.5
     return {
         "name": name,
         "kind": "stairs",
         "destinations": [to] if to else [],
         "entry": {"x": x0, "y": 5.0, "theta": facing},
-        "hold": {"x": x0 + (1.5 if facing == 0.0 else -1.5), "y": 5.0, "theta": facing},
-        "footprint": [{"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}, {"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}],
+        "hold": {"x": x0 + 0.7 * depth / 1.5, "y": 5.0, "theta": facing},
+        "footprint": [{"x": min(x0, x0 + depth), "y": 4.0}, {"x": max(x0, x0 + depth), "y": 4.0}, {"x": max(x0, x0 + depth), "y": 6.0}, {"x": min(x0, x0 + depth), "y": 6.0}],
     }
 
 
@@ -631,3 +634,63 @@ def test_site_links_are_checked() -> None:
         _entrance_config(links=[bare])
     with pytest.raises(ValueError, match="links: .*kind"):
         _entrance_config(links=[{**_link_half("st_top", "", 4.0, 0.0), "kind": "ladder"}])
+    # a hold on the footprint's edge, which HumanSim refuses: caught here
+    with pytest.raises(ValueError, match="links: .*inside the footprint"):
+        _entrance_config(links=[{**_link_half("st_top", "", 4.0, 0.0), "hold": {"x": 5.5, "y": 5.0}}])
+    # a malformed entry says where it is
+    for bad in ([[4.0, 5.0]], ["st_top"], {"st_top": _link_half("st_top", "", 4.0, 0.0)}):
+        with pytest.raises(ValueError, match="links: a list of teleport zones"):
+            _entrance_config(links=bad)
+
+
+def test_the_crowd_refuses_a_link_whose_hold_lies_on_a_wall() -> None:
+    import shapely
+
+    config = _entrance_config(links=[_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)])
+    walls = shapely.MultiLineString([[(-5, -5), (30, -5)], [(4.7, 4.9), (4.7, 5.6)]])
+    with pytest.raises(ValueError, match=r"links \['st_top'\]: the hold lies within 0.25 m of a wall"):
+        infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15), walls=walls)
+    assert infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15), walls=shapely.MultiLineString([[(-5, -5), (30, -5)]]))[0]["teleport_zones"]
+
+
+def test_the_keep_out_holds_every_link_and_the_apron_in_front_of_its_mouth(tmp_path: Path) -> None:
+    import shapely
+
+    config = _entrance_config(links=[_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)])
+    scenario = infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15))[0]
+    folder = infra.write_crowd(tmp_path / "crowd", scenario, None, {}, "links")
+    regions = len(scenario["regions"])
+    blocked = infra.keep_out(folder / "scenario.yaml")
+    assert len(blocked) == regions + 2 * 2  # each link and its apron
+    union = shapely.union_all(blocked[regions:])
+    # the half itself (4-5.5, facing +x; 14.5-16, facing -x) and LINK_APRON_M out of each mouth, as wide as the half
+    for x, y in ((4.7, 5.0), (5.4, 4.1), (4.0 - infra.LINK_APRON_M + 0.05, 5.9), (15.3, 5.0), (16.0 + infra.LINK_APRON_M - 0.05, 4.1)):
+        assert union.contains(shapely.Point(x, y)), (x, y)
+    for x, y in ((4.0 - infra.LINK_APRON_M - 0.1, 5.0), (3.0, 6.2), (6.0, 5.0), (16.0 + infra.LINK_APRON_M + 0.1, 5.0)):
+        assert not union.contains(shapely.Point(x, y)), (x, y)
+    # the site config's links count where the scenario has none
+    assert len(infra.keep_out(folder / "scenario.yaml", config.links)) == regions + 4 * 2
+    plain = infra.write_crowd(tmp_path / "plain", {**scenario, "teleport_zones": []}, None, {}, "plain")
+    assert len(infra.keep_out(plain / "scenario.yaml", config.links)) == regions + 2 * 2
+
+
+def test_no_search_spot_on_the_v2_twin_stands_on_a_link_or_its_apron() -> None:
+    import os
+
+    import shapely
+
+    # a local world, outside the fake assets the tests run on: the checkout's own local assets
+    root = Path(os.environ.get("ARENA_DIR", "/nonexistent")) / "arena_simulation_setup" / "assets" / "worlds" / "smu_link_full_v2"
+    if not (root / "world.yaml").is_file():
+        pytest.skip("the local world smu_link_full_v2 is not installed")
+    config = infra.site_config("smu_link_full_v2")
+    site = open_site(root)
+    links = shapely.union_all(infra.link_keep_out(config.links))
+    blocked = shapely.union_all(infra.keep_out(root / "scenarios" / config.scenario / "scenario.yaml", config.links))
+    on_links = 0
+    for name in (*search.SEARCHED, search.LOADING):
+        spots = place.candidate_spots(site, name, exclude=config.exclude, facts=config.facts)
+        on_links += sum(1 for s in spots if s.valid and s.keep_clear.intersects(links))
+        # what the search keeps: valid spots off the keep-out, none of them on a link or its apron
+        assert not [s.id for s in spots if s.valid and not s.keep_clear.intersects(blocked) and s.keep_clear.intersects(links)]
+    assert on_links >= 4  # the bays the keep-out now drops lie on the T-junction's bottom stair halves

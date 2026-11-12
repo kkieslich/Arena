@@ -38,6 +38,16 @@ def test_teleport_zones_parse_in_humansim_form() -> None:
         ([{k: v for k, v in BOTTOM.items() if k != "footprint"}], "footprint"),
         ([{**BOTTOM, "colour": "red"}], "takes name"),
         ([{**BOTTOM, "hold": {"x": 1.0}}], "hold"),
+        # as HumanSim checks them: a hold a walker reaches, finite numbers, no flight back in time, no landing in itself
+        ([{**BOTTOM, "hold": {"x": 7.0, "y": 2.0}}], "more than 0.25 m inside the footprint"),
+        ([{**BOTTOM, "hold": {"x": 7.2, "y": 2.0}}], "more than 0.25 m inside the footprint"),
+        ([{**BOTTOM, "hold": {"x": 5.0, "y": 2.0}}], "more than 0.25 m inside the footprint"),
+        ([{**BOTTOM, "hold": {"x": 7.5, "y": 1.7}}], "more than 0.25 m inside the footprint"),
+        ([{**BOTTOM, "delay": float("nan")}], "finite"),
+        ([{**BOTTOM, "entry": {"x": float("inf"), "y": 2.0}}], "finite"),
+        ([{**BOTTOM, "delay": -1.0}], "delay must be >= 0"),
+        ([{**BOTTOM, "destinations": ["down"]}], "lands in itself"),
+        ([{**BOTTOM, "destinations": ["lift"]}, {"name": "lift", "entry": {"x": 0.0, "y": 0.0}, "hold": {"x": 0.5, "y": 0.0}}], "lands only in stair or escalator halves"),
     ],
 )
 def test_teleport_zones_are_checked(zones: list[dict], match: str) -> None:

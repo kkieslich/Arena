@@ -25,6 +25,7 @@ def test_scenario_teleport_zones_are_realized_and_sent_with_the_elevators():
     from arena_runtime.env.environment_manager import EnvironmentManager
     from arena_runtime.env.realizer import Realizer
     from arena_runtime.humans.noop import NoopHumanSimulator
+    from arena_runtime.humans.utils import ObstacleLayer
     from arena_runtime.sim.dummy_simulator import DummySimulator
     from arena_runtime.testing.env_host import env_host
 
@@ -56,6 +57,16 @@ def test_scenario_teleport_zones_are_realized_and_sent_with_the_elevators():
             assert human._scenario_zones == () and len(sent) == 2
             assert await env.setup_teleport_zones([])
             assert len(sent) == 2  # nothing to clear
+            # a zone named like one of the world's: refused before anything is sent
+            human._known_stairs = (types.SimpleNamespace(name="up"),)
+            assert not await env.setup_teleport_zones([zone])
+            assert human._scenario_zones == () and len(sent) == 2
+            human._known_stairs = ()
+            # the world's purge drops the scenario's zones with it
+            assert await env.setup_teleport_zones([zone])
+            assert len(human._scenario_zones) == 1 and len(sent) == 3
+            await human.remove_obstacles(purge=ObstacleLayer.WORLD)
+            assert human._scenario_zones == () and sent[-1] == ((), ())
         finally:
             node._heartbeat_stop.set()
             node.destroy_node()

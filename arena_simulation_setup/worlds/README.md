@@ -431,6 +431,36 @@ regions:
 
 An unrecognized `type` is rejected when the region is spawned.
 
+`teleport_zones` is a list of pedestrian teleport zones the scenario adds to
+the human simulator, in HumanSim's zone form and the world frame: stair and
+escalator halves joining floor of one level that the world models as a whole,
+such as the stairs between two floors a digital twin lays out side by side
+(world `stairs` cannot do this: their `to:` names another level). Sent with the
+world's elevators and stair halves each episode and dropped with the world. With
+HumanSim's `zone_route_choice` on, walkers that climb take them where that is
+cheaper than walking.
+
+```yaml
+teleport_zones:
+  - name: tj_stairs_south_top     # unique, and unlike the world's zones
+    kind: stairs                  # stairs | escalator | "" (a cabin)
+    destinations: [tj_stairs_south_bottom]   # halves it lands on; [] for an exit-only half
+    entry: {x: 121.9, y: 40.6, theta: 0}     # middle of the mouth, theta facing in
+    wait: {x: 121.9, y: 40.6, theta: 0}      # where walkers queue, default the entry
+    hold: {x: 122.6, y: 40.6, theta: 0}      # the seam trigger: walkers past it are carried
+    footprint: [{x: 121.9, y: 38.9}, {x: 123.4, y: 38.9}, {x: 123.4, y: 42.3}, {x: 121.9, y: 42.3}]
+    delay: 14.05                  # s from the seam trigger to the landing (the flight the halves leave out), >= 0
+    belt: 0.0                     # m/s along the facing on a running escalator half, < 0 carrying off the seam
+    open: true
+```
+
+Checked on load as HumanSim checks them: a known kind, finite numbers,
+`delay` >= 0, unique names, destinations among the zones and of the same sort
+(a stair or escalator half lands on stair or escalator halves, a cabin on
+cabins), none landing in itself, and a stair or escalator half's footprint with
+its hold more than 0.25 m inside it. A set the human simulator still refuses (a
+hold within 0.25 m of a wall, a name the world's zones use) fails the episode.
+
 `conditions` is a list of episode success/failure clauses:
 
 ```yaml

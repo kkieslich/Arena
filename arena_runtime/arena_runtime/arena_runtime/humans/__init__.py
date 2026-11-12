@@ -1017,9 +1017,14 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     async def setup_teleport_zones(self, zones: Sequence[TeleportZone]) -> bool:
         """Hand the scenario's realized teleport zones to the human simulator, replacing the scenario's before, sent along with
-        the world's elevators and stairs."""
+        the world's elevators and stairs. False, and nothing sent, when one is named like a zone of the world (the human
+        simulator would refuse the whole set)."""
         if not zones and not self._scenario_zones:
             return True
+        clash = sorted({z.name for z in zones} & ({e.name for e in self._known_elevators} | {s.name for s in self._known_stairs}))
+        if clash:
+            self._logger.error(f"scenario teleport zones {clash} are named like zones of the world")
+            return False
         self._scenario_zones = tuple(zones)
         return await self._set_elevators_impl(self._known_elevators)
 
