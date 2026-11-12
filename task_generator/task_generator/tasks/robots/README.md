@@ -19,7 +19,7 @@ intent into goals sent at a specific robot through its bound adapter.
 
 Each `TM_Robots` subclass is a package:
 
-- `__init__.py` (eager): declares `_NS` and (optionally) `_declare_schema`, then registers the mode on `ROBOTS_MODES` (a `TaskModeRegistry` from `tasks/registry.py`) with `namespace=_NS` and `schema=_declare_schema`. Imported at node startup.
+- `__init__.py` (eager): declares `_NS` and (optionally) a `ParamGroup` schema, then registers the mode on `ROBOTS_MODES` (a `TaskModeRegistry` from `tasks/registry.py`) with `namespace=_NS` and `schema=<Group>`. Imported at node startup.
 - `impl.py` (lazy): contains the class body. Imported only on first activation.
 
 Parameters live under `task.<mode>.<leaf>`. Mode names are shared across the
@@ -103,6 +103,7 @@ and an async `done` flag. Shipped modes:
 | `guided` | [`guided/`](guided/) | external controller drives the goal sequence. 2D Nav Goal clicks append waypoints, which show as numbered drag handles with Delete, Insert after and Clear chain menus |
 | `stationary` | [`stationary/`](stationary/) | robot stays parked without goal dispatch, at `pos_x`/`pos_y`/`pos_theta` or a free pose sampled per episode |
 | `scenario` | [`scenario/`](scenario/) | reads `start`/`goal` pairs from the world's scenario YAML. A robot past the `robots:` entries, or on an entry without `phases`, stays parked, and an episode with only parked robots runs until `task.episode.timeout` |
+| `search` | [`search/`](search/) | `scenario` for a hidden human: each robot gets one goto judged on the human (`task.search.target`, default the scenario's only human) within `task.search.radius` (1.5 m), with `task.search.line_of_sight` also without a wall between them and with `task.search.dwell_s` for that long without a break, judge-only (`dispatch: false`), so neither the human's pose nor any other goal reaches the planner and a search driver owns the robot's navigation. Reads `task.scenario.file`, runs with `task.obstacles:=scenario`, refuses scenario robot phases. Example: [`hospital_1/scenarios/search_caller`](../../../../arena_simulation_setup/worlds/hospital_1/scenarios/search_caller/scenario.yaml) |
 | `characterization` | [`characterization/`](characterization/) | open-loop maneuver sweep: publishes exact `cmd_vel` profiles through the robot's rated envelope (no nav goals), tags each maneuver with `characterization_phase` markers, odom stall watchdog |
 | `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, with charging trips below a battery level, see [Fleet task stream](#fleet-task-stream) |
 | `null` | [`composite.py`](composite.py) | idle sink for robots unallocated by the fleet manager |
@@ -115,7 +116,7 @@ the enum, they are only reachable via `set_tm_robots_composite`.
 ## Adding a TM_Robots mode
 
 1. Create `tasks/robots/<name>/` as a package.
-2. In `__init__.py`: declare `_NS = _REGISTRY_NAMESPACE("<name>")`, define `_declare_schema(node, ns)` if the mode has parameters, and register it on `ROBOTS_MODES`.
+2. In `__init__.py`: declare `_NS = _REGISTRY_NAMESPACE("<name>")`, define a `ParamGroup` subclass if the mode has parameters (see [tasks/README.md](../README.md#tm-package-structure)), and register it on `ROBOTS_MODES` with `schema=<Group>`.
 3. In `impl.py`: define the class extending `TM_Robots`; override `reset` to return a `ResetPlan`.
 4. Add `<NAME> = "<name>"` to `Modes.TM_Robots` in [`modes.py`](../../modes.py).
 5. `declare_mode_schemas(layer, node)` picks up your schema automatically at node init.
@@ -161,7 +162,7 @@ share one definition. [`request.py`](../../../../arena_runtime/arena_runtime/are
 - `LoopPhase(phases, until?)`: the phases repeated in order; the `until` is
   judged on every tick and, once it holds, drops the running phase and
   continues with the phase after the loop.
-- `GoToPhase(pose | target, tolerance_radius?, tolerance_angle?, hold_time?, signal?)`:
+- `GoToPhase(pose | target, tolerance_radius?, tolerance_angle?, hold_time?, signal?, dispatch?)`:
   navigate to a pose, or to a zone, door, elevator, docked object or pedestrian
   by name. A zone target dispatches to a free map cell inside the zone with the
   robot's spawn clearance, at least `ZONE_GOAL_MARGIN_M` (0.3 m) inside its
@@ -187,9 +188,27 @@ share one definition. [`request.py`](../../../../arena_runtime/arena_runtime/are
   rejects a signal the robot's adapter cannot send (`Adapter.signals`). With
   neither pose nor target the phase holds the robot where it stands once the
   reset has placed it.
+  With `dispatch: false` the phase is judged as usual but never sent to the
+  robot's adapter, so no planner sees its pose and another node drives the
+  robot (the `search` mode uses it).
 - `ReachPhase`, `PlayGesturePhase`: arm phases, completed by their action
   result. A reach pose's `frame` (the base frame by default) is a robot link,
-  put under the robot's TF prefix unless it already carries it.
+  put under the robot's TF prefix unless it already carries it, an episode
+  object (`chest`) or one of its articulated links (`chest/drawer02_44`),
+  resolved once at dispatch at the object's current joint values. Every reach
+  plans against the episode's objects within the arm's `scene_radius`.
+  `motion: linear` moves the tool along a straight line (Pilz LIN) instead of
+  a free OMPL path, and a linear reach in an object's frame may touch that
+  object with the arm. `speed` in (0, 1] scales velocity and
+  acceleration. `relative: true` adds the target to the current tool pose in
+  `frame`. `stop` takes the `until` grammar and, unlike `until` (judged after
+  the action ends), meets the phase on the tick it holds while the arm still
+  moves and cancels the motion, for example a push that ends once
+  `{field: chest.openness.prismatic_joint_left_02, le: 0.02}` holds. A reach
+  whose arm stalls or reports a non-finite joint state fails as
+  `arm blocked` or `arm state not finite`. Any phase that ends while its
+  action still runs (a `stop`, a loop `until`, an abort) cancels the action
+  before the next phase is dispatched.
 - `TaskRequest(phases, conditions?)`: ordered phase list plus clauses judged
   over the whole request.
 

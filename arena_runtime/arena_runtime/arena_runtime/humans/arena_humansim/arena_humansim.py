@@ -615,6 +615,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
     def _support(self, ped: Pedestrian) -> Support | None:
         return self._supports.get(ped.id)
 
+    def _interaction(self, ped: Pedestrian) -> str | None:
+        return InteractionType(ped.interaction_type).name if ped.interaction_id >= 0 else None
+
     def _apply_held_seats(self, held: dict[str, list[int]]) -> None:
         if held == self._held_seats:
             return
@@ -656,6 +659,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         seqs = msg.source_seq if len(msg.source_seq) == n else [0] * n
         names = msg.name if len(msg.name) == n else [""] * n
         self._agent_sources = {int(i): AgentSource(str(s), int(q), self._realizer.unprefix(str(m))) for i, s, q, m in zip(msg.agent_id, sources, seqs, names, strict=True)}
+        self.preload_pose_profiles(self._agent_type_of(agent_id) for agent_id in msg.agent_id)
 
     def _remember_agent_type_path(self, agent_type: str) -> None:
         """File a path-based agent type under the name the engine reports for it."""
@@ -1786,7 +1790,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return ok
 
     async def _seed_engine(self) -> None:
-        """Hand the engine a seed from this episode's RNG, like the seats and walker params; it re-roots its streams on the remove-all that follows."""
+        """Hand the engine a seed from this episode's RNG."""
         seed = int(self.node.conf.General.RNG.stream("humansim", "engine").integers(2**63 - 1))
         request = SetParametersAtomically.Request(parameters=[Parameter("seed", value=seed).to_parameter_msg()])
         response = await self._set_params_client.call_timeout(request)

@@ -23,6 +23,7 @@ CABIN_DOOR_THRESHOLD = 0.6
 
 
 ActivationDistance = typing.NewType('ActivationDistance', tuple[float, float])
+DoorKind = typing.Literal['sliding', 'sliding_split', 'hinged', 'teleport', 'sliding_top']
 
 
 _POCKET_OVERLAP_M = 0.01
@@ -64,6 +65,7 @@ class Elevator(Named):
     position: Position = attrs.field(converter=Position.converter)
     size: list[float] = attrs.field(factory=lambda: [2.0, 2.0, 2.0])
     door_side: typing.Literal['+x', '-x', '+y', '-y'] | None = None
+    door_kind: DoorKind = 'sliding_split'
     material: MaterialIdentifier = attrs.field(converter=MaterialIdentifier.converter, default=Material.default('elevator'))
     destinations: list[str] = attrs.field(factory=list, converter=lambda value: [str(name).strip() for name in value])
     # must cover v_max * transition_time plus latency so the door is fully open before arrival
@@ -107,6 +109,7 @@ STAIRS_LANDING_BACKOFF = 0.1
 STAIRS_PLATE = 0.05
 STAIRS_GAP = 0.001
 STAIRS_SINK = 0.001
+STAIRS_BRIDGED_GAP = 0.01
 STAIRS_CLEARANCE = 0.06
 STAIRS_PLANK = 0.03
 STAIRS_BASE = 0.15
@@ -497,6 +500,15 @@ class Stairs(Named):
             return self.height(along)
         return self.height(along) - self.riser - 2.0 * STAIRS_GAP
 
+    def footing(self, along: float, travel: float = 0.0) -> float:
+        """Height a body stands at `along` meters from the mouth: a landing plate over its zone, else the highest walking surface within `STAIRS_BRIDGED_GAP`."""
+        for begin, end in self.plate_zones:
+            if begin <= along <= end:
+                return self.height(0.0) if begin < 0.0 else self.height(self.length)
+        if not self.spans(travel):
+            return self.surface(min(max(along, 0.0), self.length), travel)
+        return max(self.surface(min(max(a, 0.0), self.length), travel) for a in (along - STAIRS_BRIDGED_GAP, along, along + STAIRS_BRIDGED_GAP))
+
     def steps(self) -> list[StairsBox]:
         """Static step boxes of a stair half, a solid stair rising to the seam or a well sinking to it."""
         floor = -self.rise / 2.0 - 0.05
@@ -647,9 +659,21 @@ class Stairs(Named):
         return (span, width, self.plank), Pose(position=self.local(along, 0.0, z), orientation=Orientation.from_euler((0.0, -tilt, self.yaw)))
 
 
-def stair_height(stairs: typing.Iterable[Stairs], x: float, y: float) -> float:
-    """Walking surface height at a map point on the first stair half or ramp holding it, 0 elsewhere."""
-    return next((stair.position.z + stair.height(stair.along(x, y)) for stair in stairs if stair.contains(x, y, stair.reach)), 0.0)
+def stair_height(stairs: typing.Iterable[Stairs], x: float, y: float, travel: typing.Mapping[str, float] | None = None) -> float:
+    """Footing at a map point on the first stair half or ramp holding it, its treads moved by `travel` per stair name, those of a joined pair on their whole body, 0 elsewhere."""
+    stairs = tuple(stairs)
+    travel = travel or {}
+    stair = next((stair for stair in stairs if stair.contains(x, y, stair.reach)), None)
+    if stair is None:
+        return 0.0
+    along = stair.along(x, y)
+    bottom = stair if not stair.top else next((other for other in stairs if other.group == stair.group and not other.top), None)
+    if not stair.joined or bottom is None:
+        return stair.position.z + stair.footing(along, travel.get(stair.name, 0.0))
+    body, moved = bottom.whole_stair(), travel.get(bottom.name, 0.0)
+    if stair.top:
+        return stair.position.z + body.footing(2.0 * bottom.length - along, moved) - stair.rise
+    return stair.position.z + body.footing(along, moved)
 
 
 STOREY = 3.0
@@ -700,7 +724,7 @@ class Placement:
 class Door(Named):
     start: Position = attrs.field(converter=Position.converter)
     end: Position = attrs.field(converter=Position.converter)
-    kind: typing.Literal['sliding', 'hinged', 'teleport', 'sliding_top'] = 'sliding'
+    kind: DoorKind = 'sliding'
     width: float = 0.1
     height: float = attrs.field(default=2.0)
     material: MaterialIdentifier = attrs.field(converter=MaterialIdentifier.converter, default=Material.default('door'))
@@ -745,8 +769,8 @@ class Door(Named):
         ]
 
 
-def _leaf_rests_on(start: Position, end: Position, door: Door, others: typing.Sequence[Door]) -> bool:
-    """Whether a leaf sliding from `start` past `end` by its own length covers the span of a collinear door among `others`."""
+def _leaf_rests_on(start: Position, end: Position, door: Door, others: typing.Sequence[Door], reach: float = 1.0) -> bool:
+    """Whether the pocket from `end` to `reach` span lengths past it covers the span of a collinear door among `others`."""
     length = math.hypot(end.x - start.x, end.y - start.y)
     if length == 0.0:
         return False
@@ -756,15 +780,17 @@ def _leaf_rests_on(start: Position, end: Position, door: Door, others: typing.Se
             continue
         along = sorted((p.x - start.x) * ux + (p.y - start.y) * uy for p in (other.start, other.end))
         across = max(abs((p.y - start.y) * ux - (p.x - start.x) * uy) for p in (other.start, other.end))
-        if across <= door.width and min(along[1], 2.0 * length) - max(along[0], length) > _POCKET_OVERLAP_M:
+        if across <= door.width and min(along[1], (1.0 + reach) * length) - max(along[0], length) > _POCKET_OVERLAP_M:
             return True
     return False
 
 
 def clear_door_pockets(doors: typing.Sequence[Door]) -> list[Door]:
-    """Keep open sliding leaves off other doors' spans: such a door slides the other way, or teleports open when that side is taken too."""
+    """Keep open sliding leaves off other doors' spans: a split door turns sliding, a sliding door slides the other way, or teleports open when that side is taken too."""
     result = list(doors)
     for index, door in enumerate(result):
+        if door.kind == 'sliding_split' and (_leaf_rests_on(door.start, door.end, door, result, 0.5) or _leaf_rests_on(door.end, door.start, door, result, 0.5)):
+            door = result[index] = attrs.evolve(door, kind='sliding')
         if door.kind != 'sliding' or not _leaf_rests_on(door.start, door.end, door, result):
             continue
         result[index] = attrs.evolve(door, kind='teleport') if _leaf_rests_on(door.end, door.start, door, result) else attrs.evolve(door, start=door.end, end=door.start)

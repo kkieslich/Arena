@@ -39,7 +39,7 @@ behave exactly as before.
 
 Each `TM_Obstacles` subclass is a package:
 
-- `__init__.py` (eager): declares `_NS` and (optionally) `_declare_schema`, then registers the mode on `OBSTACLES_MODES` (a `TaskModeRegistry` from `tasks/registry.py`) with `namespace=_NS` and `schema=_declare_schema`. Imported at node startup.
+- `__init__.py` (eager): declares `_NS` and (optionally) a `ParamGroup` schema, then registers the mode on `OBSTACLES_MODES` (a `TaskModeRegistry` from `tasks/registry.py`) with `namespace=_NS` and `schema=<Group>`. Imported at node startup.
 - `impl.py` (lazy): contains the class body. Imported only on first activation.
 
 Parameters live under `task.<mode>.<leaf>` (e.g. `task.random.static.n`).
@@ -63,8 +63,8 @@ Declared under the mode namespace (e.g. `task.random.*`):
 | `static.n` | `[0, 0]` | `[min, max]` static obstacle count |
 | `interactive.n` | `[0, 0]` | `[min, max]` interactive obstacle count |
 | `dynamic.n` | `[0, 0]` | `[min, max]` dynamic obstacle count |
-| `static.models` | `[shelf]` | model name list, empty = all ObjectIdentifiers |
-| `interactive.models` | `[shelf]` | model name list, empty = all ObjectIdentifiers |
+| `static.models` | `[Warehouse/Object/Barrel_Plastic]` | model name list, empty = all ObjectIdentifiers |
+| `interactive.models` | `[Warehouse/Object/Barrel_Plastic]` | model name list, empty = all ObjectIdentifiers |
 | `dynamic.models` | `[arenian]` | model name list, empty = all PedestrianIdentifiers |
 
 ### `TM_Parametrized` params
@@ -131,7 +131,14 @@ Behaviour-tree prompt context lives in
 ## Adding a new TM_Obstacles mode
 
 1. Create `tasks/obstacles/<name>/` as a package.
-2. In `__init__.py`: declare `_NS = _REGISTRY_NAMESPACE("<name>")`, define `_declare_schema(node, ns)` if the mode has tunable parameters (using helpers from [`arena_rclpy_mixins.declarations`](../../../../utils/arena_rclpy_mixins/arena_rclpy_mixins/declarations.py), e.g. `declare_int_pair`, `declare_catalog`), then register the loader with `@OBSTACLES_MODES.register(Modes.TM_Obstacles.<NAME>, namespace=_NS, schema=_declare_schema)`.
-3. In `impl.py`: define the class extending `TM_Obstacles`; override `reset` to return `(list[Obstacle], list[DynamicObstacle])`.
+2. In `__init__.py`: declare `_NS = _REGISTRY_NAMESPACE("<name>")`, define a `ParamGroup` subclass if the mode has tunable parameters (see the example in [tasks/README.md](../README.md#tm-package-structure)), e.g.
+
+   ```python
+   class MyParams(ParamGroup):
+       STATIC_N = Param[tuple[float, float]]("static.n", [0, 0], "[min, max] count of static obstacles.", constraint=Pair(), parse=pair)
+   ```
+
+   then register the loader with `@OBSTACLES_MODES.register(Modes.TM_Obstacles.<NAME>, namespace=_NS, schema=MyParams)`.
+3. In `impl.py`: define the class extending `TM_Obstacles`, build `MyParams(self.node, namespace=self.namespace())` in `__init__` and read `.value`; override `reset` to return `(list[Obstacle], list[DynamicObstacle])`.
 4. Add `<NAME> = "<name>"` to `Modes.TM_Obstacles` in [`modes.py`](../../modes.py).
 5. `declare_mode_schemas(layer, node)` picks up your schema automatically at node init.
