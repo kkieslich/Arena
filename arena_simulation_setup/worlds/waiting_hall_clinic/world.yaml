@@ -71,5 +71,5 @@ levels:
   - {name: exam_3_table, pose: [24.75, 27.4, 1.5708], model: Hospital/Exam_Table}
   - {name: exam_2_cabinet, pose: [15.1, 24.4, 3.14159], model: Hospital/SM_MedicalCabinet_01a}
   - {name: wc_toilet_1, pose: [33.4, 9.0], model: Hospital/SM_Toilet}
-  - {name: staff_sofa_1, pose: [31.0, 21.4, 1.5708], model: Office/Sofa}
+  - {name: staff_sofa_1, pose: [31.0, 21.4, 1.5708], model: Office/SM_Sofa}
   - {name: staff_table_1, pose: [31.0, 16.0], model: Office/SM_TableCoffee}

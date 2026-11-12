@@ -75,7 +75,7 @@ levels:
   - {name: office_d_desk_1, pose: [39.6, 23.17, 1.5708], model: Office/SM_TableWorkingDouble}
   - {name: break_table_1, pose: [50.05, 19.05], model: Office/SM_TableRound_module}
   - {name: break_drinks_1, pose: [55.48, 17.24], model: Office/SM_DrinksMachine}
-  - {name: reception_sofa_1, pose: [0.62, 6.55, 3.14159], model: Office/Sofa}
+  - {name: reception_sofa_1, pose: [0.62, 6.55, 3.14159], model: Office/SM_Sofa}
   - {name: storage_rack_1, pose: [15.75, 3.83, -1.5708], model: Office/SM_Rack}
   - {name: storage_rack_2, pose: [11.92, 7.35, 3.14159], model: Office/SM_Rack}
   - {name: wc_toilet_1, pose: [33.5, 3.83, -1.5708], model: Office/SM_Toilet}
