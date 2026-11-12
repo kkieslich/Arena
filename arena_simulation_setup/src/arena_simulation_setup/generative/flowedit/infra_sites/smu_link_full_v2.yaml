@@ -103,16 +103,16 @@ links:
 # the side walkers keep to: left, as on Singapore's footpaths (LTA Active Mobility code of conduct: keep left on
 # footpaths and shared paths); HumanSim's default is right (Helbing et al. 2001; Moussaid et al. 2009)
 crowd_side: left
-# the density the twin's crowd sustains: 0.9 ped/s in all, about 158 walkers (0.0399 x 3944 / 175), below the study
-# design's 0.3 ped/m2 (§9). In HumanSim alone (the 36-entrance crowd of `flowedit infra crowd`, side left, the links with
-# route choice on, 2400 s) the walkers present stay flat at 0.6-0.9 ped/s at seeds 1-7 (-3.0 to +2.6 per 100 s over
-# 1200-2400 s, none of the walkers released 420-1100 s left at the end); at 1.0 and 1.1 two of seven seeds do not settle
-# (up to +8.3 per 100 s, or 12-13 of those walkers still there), at 1.2 five of seven (+8 to +16 per 100 s, or 12-30 still
-# there). The growth sits at the north end of the strip west of the upper concourse (x 140-160, y 120-150).
+# the density the twin's crowd sustains: 0.9 ped/s in all, about 154 walkers (0.039 x 3944 / 171), below the study
+# design's 0.3 ped/m2 (§9). In HumanSim alone (the 38-entrance crowd of `flowedit infra crowd`, side left, the links with
+# route choice on, 2400 s) the walkers present stay flat at 0.7-0.9 ped/s at seeds 1-7 (-3.0 to +2.9 per 100 s over
+# 1200-2400 s, none of the walkers released 420-1100 s left at the end); at 1.0 three of seven seeds do not settle
+# (+4.0 and +4.4 per 100 s, or 5 of those walkers still there). The growth sits at the north end of the strip west of
+# the upper concourse (x 140-150, y 130-150) and in one seed at its south end (x 130-150, y 40-60).
 # area_m2: the floor a walker reaches (`walk_area`, 0.4 m clear of the walls). mean_time_s: the mean time a walker
-# spends in the twin at 0.9 ped/s, seeds 1-7: walkers present / inflow over 420-2400 s, 166-182 s (mean 175 s);
+# spends in the twin at 0.9 ped/s, seeds 1-7: walkers present / inflow over 420-2400 s, 165-178 s (mean 171 s);
 # remeasure when the entrances, the links, the crowd model or the site change.
-crowd_density: {density: 0.0399, area_m2: 3944, mean_time_s: 175}
+crowd_density: {density: 0.039, area_m2: 3944, mean_time_s: 171}
 # the ranking of the entrances: the MRT exits first, then the building doors, shops,
 # escalators and stairs, then the lifts and rooms; even within a group
 flow_split:
