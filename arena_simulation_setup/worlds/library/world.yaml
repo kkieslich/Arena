@@ -67,10 +67,10 @@ levels:
   - {name: stack_4, pose: [8.32, 24.5, 1.5708], model: Office/SM_BookcaseA}
   - {name: stack_5, pose: [13.52, 20.1, 1.5708], model: Office/SM_BookcaseA}
   - {name: stack_6, pose: [13.52, 24.5, 1.5708], model: Office/SM_BookcaseA}
-  - {name: reading_table_1, pose: [19.5, 14.6], model: Office/Table_B}
-  - {name: reading_table_2, pose: [19.5, 20.1], model: Office/Table_B}
-  - {name: reading_table_3, pose: [19.5, 25.6], model: Office/Table_B}
-  - {name: reading_table_4, pose: [7.8, 12.4], model: Office/Table_B}
+  - {name: reading_table_1, pose: [19.5, 14.6], model: Office/SM_TableD}
+  - {name: reading_table_2, pose: [19.5, 20.1], model: Office/SM_TableD}
+  - {name: reading_table_3, pose: [19.5, 25.6], model: Office/SM_TableD}
+  - {name: reading_table_4, pose: [7.8, 12.4], model: Office/SM_TableD}
   - {name: lobby_plant_1, pose: [0.6, 5.6, 3.14159], model: Office/SM_Plant01}
   - {name: cafe_table_1, pose: [18.8, 4.0], model: Office/Table_Round}
   - {name: cafe_table_2, pose: [23.0, 4.0], model: Office/Table_Round}
