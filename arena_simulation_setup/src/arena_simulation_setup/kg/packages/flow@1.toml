@@ -49,6 +49,11 @@ to = ["interaction"]
 from = ["obj"]
 to = "literal"
 
+# decided: the object has no demand, nobody goes to it or uses it (true). Without it and without demand an object is undecided
+[verbs.inert]
+from = ["obj"]
+to = "literal"
+
 [nodes.schedule]
 props = []
 

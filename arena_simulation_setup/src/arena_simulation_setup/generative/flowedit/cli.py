@@ -1,4 +1,4 @@
-"""`flowedit`: build the FLOWEDIT graph of a world and scenario, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, write a split as a seed-paired benchmark suite, forecast its flow, and write the INFRA Stage 1 suites."""
+"""`flowedit`: build the FLOWEDIT graph of a world and scenario, pre-fill its demand, edit it, generate edits from a seed, read a site back into a scenario, record a PEDS run of it, write a split as a seed-paired benchmark suite, forecast its flow, and write the INFRA Stage 1 suites."""
 
 from __future__ import annotations
 
@@ -11,11 +11,12 @@ from typing import Any
 
 import yaml
 
-from arena_simulation_setup.kg import dumps, write
+from arena_simulation_setup.kg import Scene, dumps, write
 from arena_simulation_setup.tree.World.write import to_yaml
 
 from ..scenario.cli import world_root
 from ..scenario.materialize import WouldOverwrite
+from . import demand as D
 from . import settings as S
 from . import split as SP
 from . import suite as SU
@@ -36,6 +37,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         raise FileNotFoundError(f"no scenario {args.scenario!r} at {scenario}")
     notes: list[str] = []
     scene = build(root, scenario, args.seed, notes)
+    if args.prefill:
+        D.prefill(scene, args.prefill, D.world_tags(root, scene), notes)
     for note in notes:
         print(f"note: {note}", file=sys.stderr)
     if not args.write:
@@ -45,6 +48,69 @@ def _cmd_build(args: argparse.Namespace) -> int:
     write(scene, out)
     print(f"wrote {out}")
     return 0
+
+
+def _stages(text: str) -> list[D.Stage]:
+    """Comma-separated pre-fill stages."""
+    try:
+        return [D.Stage(t.strip()) for t in text.split(",") if t.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"pre-fill stages are {', '.join(D.Stage)}, got {text!r}") from exc
+
+
+def _cmd_demand(args: argparse.Namespace) -> int:
+    from . import demand_propose as DP
+
+    root = world_root(args.worlds, args.world)
+    scenario = root / "scenarios" / args.scenario / "scenario.yaml" if args.scenario else None
+    if scenario is not None and not scenario.is_file():
+        raise FileNotFoundError(f"no scenario {args.scenario!r} at {scenario}")
+    notes: list[str] = []
+    classes = D.load_classes()
+
+    def filled() -> tuple[Scene, D.Tags]:
+        notes.clear()
+        scene = build(root, scenario, args.seed, notes)
+        tags = D.world_tags(root, scene)
+        D.prefill(scene, args.prefill, tags, notes, classes, D.load_proposals(args.proposals))
+        return scene, tags
+
+    scene, tags = filled()
+    if args.propose:
+        todo = DP.unproposed(scene, D.load_proposals(args.proposals))
+        if not todo:
+            print("every undecided model has a proposal already")
+        elif not args.write:
+            print(DP.system(classes))
+            print(DP.build_prompt(scene, todo, tags, world=root.name))
+            print("(dry run - this is the prompt that would be sent, pass --write to ask and store)")
+            return 0
+        else:
+            try:
+                proposals, complaints = DP.propose(scene, todo, classes, tags, world=root.name, model=args.model)
+            except DP.Unavailable as exc:
+                print(f"  ! {exc}")
+                return 1
+            for proposal in proposals:
+                print(f"  {' ' if proposal.confident else '?'} {proposal.model:40s} {proposal.cls:14s} {proposal.why}")
+            for complaint in complaints:
+                print(f"  ! {complaint}")
+            landed, kept = DP.merge(proposals, args.proposals)
+            for note in kept:
+                print(f"  = {note}")
+            print(f"  {landed} proposal(s) written to {args.proposals}")
+            scene, tags = filled()
+    for note in notes:
+        print(f"note: {note}", file=sys.stderr)
+    rows = D.coverage(scene)
+    width = max((len(r.model) for r in rows), default=5)
+    for r in rows:
+        print(f"{r.count:4d}  {r.model:{width}s}  {r.source:9s}  {r.decision:24s}  {r.why}")
+    by_source: dict[str, int] = {}
+    for r in rows:
+        by_source[r.source] = by_source.get(r.source, 0) + r.count
+    print(", ".join(f"{count} {by}" for by, count in sorted(by_source.items())) or "no objects")
+    return 1 if by_source.get(D.UNDECIDED) else 0
 
 
 def _cmd_read(args: argparse.Namespace) -> int:
@@ -250,15 +316,31 @@ def _cmd_suite(args: argparse.Namespace) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="flowedit", description="FLOWEDIT graphs: each object's demand on its KG node. `flowedit <verb> --help` lists a verb's options.")
-    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,edit,generate,read,run,sweep,suite,forecast,infra}")
+    verbs = parser.add_subparsers(dest="verb", required=True, metavar="{build,demand,edit,generate,read,run,sweep,suite,forecast,infra}")
     p = verbs.add_parser("build", help="build the graph of a world and scenario", description="build the graph of a world and scenario, a dry run that prints it without --write")
     p.add_argument("world", help="the world to build from")
     p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
     p.add_argument("--seed", type=int, default=0, help="seed of the point drawn for an object posed at a zone name (default 0)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds)")
     p.add_argument("--out", type=Path, default=None, help=f"file to write (default: {GRAPH} next to the scenario.yaml, or in the world without a scenario)")
+    p.add_argument("--prefill", type=_stages, default=[], metavar="STAGE[,STAGE...]", help=f"pre-fill the demand of the objects nobody authored: `{D.Stage.CLASS}` by the class of their asset, `{D.Stage.LLM}` by a model's proposals in {D.PROPOSALS.name} (default: authored demand only)")
     p.add_argument("--write", action="store_true", help="write the graph (default: print it)")
     p.set_defaults(fn=_cmd_build)
+    p = verbs.add_parser(
+        "demand",
+        help="show who decided each object's demand, and ask a model about the rest",
+        description=f"build the graph of a world and scenario with its demand pre-filled and print, per asset model, how many objects it has, what they are decided as and by whom ({D.AUTHORED}, {', '.join(D.Stage)}, {D.UNDECIDED}); exits 1 while an object is undecided. --propose prints the prompt for the undecided models that have no proposal yet, --propose --write asks the model and stores its answers",
+    )
+    p.add_argument("world", help="the world to build from")
+    p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
+    p.add_argument("--prefill", type=_stages, default=list(D.Stage), metavar="STAGE[,STAGE...]", help=f"the pre-fill stages to count (default: {','.join(D.Stage)})")
+    p.add_argument("--propose", action="store_true", help="ask a model for the class of the undecided models (a dry run that prints the prompt without --write)")
+    p.add_argument("--model", default=None, help="the model to ask (default: $ARENA_PROMPT_LLM, else utils/llm.py's DEFAULT_MODEL)")
+    p.add_argument("--proposals", type=Path, default=D.PROPOSALS, help=f"the proposals file to read and write (default: {D.PROPOSALS.name} of the package)")
+    p.add_argument("--seed", type=int, default=0, help="seed of the point drawn for an object posed at a zone name (default 0)")
+    p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds)")
+    p.add_argument("--write", action="store_true", help="with --propose: ask the model and write its proposals (default: print the prompt)")
+    p.set_defaults(fn=_cmd_demand)
     p = verbs.add_parser("edit", help="apply one edit and save the edited world", description="apply one edit to a world's graph and geometry, a dry run that prints the edit record without --write, which saves the world as <base>__<edit id> under $ARENA_ASSETS_DIR_LOCAL/worlds")
     p.add_argument("world", help="the world to edit, shipped or saved by an earlier edit")
     p.add_argument("type", type=EditType, choices=list(EditType), help="the edit type")

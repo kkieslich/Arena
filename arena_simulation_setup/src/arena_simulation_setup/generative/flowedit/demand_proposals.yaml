@@ -1,0 +1,64 @@
+# FLOWEDIT demand proposals: the demand class (`demand_classes.yaml`) of asset models no class rule covers, by model.
+# `flowedit demand <world> --propose --write` asks a model and adds its answers with `by: llm`; `flowedit build --prefill
+# llm` pre-fills them marked `by: llm`. To accept or correct a proposal, set its class and drop `by: llm`: an entry
+# without it is a human's, never replaced, and pre-filled by `--prefill class`.
+format: flowedit-demand-proposals/1
+models:
+  Hospital/Anesthesia_Machine:
+    class: inert
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: medical machine operated by specialist during procedure
+  Hospital/Autoclave: {class: inert, by: llm, model: gemini-3.5-flash, prompt_sha: 28e35cd583a85a56, why: lab sterilization equipment}
+  Hospital/Defibrillator:
+    class: inert
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: medical emergency device used during procedures
+  Hospital/Exam_Table:
+    class: bed
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: examination bed or cot for patient to lie on
+  Hospital/IV_Stand: {class: inert, by: llm, model: gemini-3.5-flash, prompt_sha: 28e35cd583a85a56, why: medical pole equipment}
+  Hospital/Instrument_Table:
+    class: inert
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: medical equipment table used during procedure
+  Hospital/Microscope_Station:
+    class: desk
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: workstation for lab technician to work at
+  Hospital/Operating_Table:
+    class: inert
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: surgical table operated by specialists during procedure
+  Hospital/Refrigerated_Medicine_Unit:
+    class: inert
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: storage appliance for medical supplies
+  Hospital/SM_Scale_01a: {class: inert, by: llm, model: gemini-3.5-flash, prompt_sha: 28e35cd583a85a56, why: medical measuring device}
+  Hospital/Surgical_Table:
+    class: inert
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: surgical procedure table operated by specialists
+  Hospital/Ventilator:
+    class: inert
+    by: llm
+    model: gemini-3.5-flash
+    prompt_sha: 28e35cd583a85a56
+    why: medical machine operated by specialist
+  Hospital/Vital_Signal_Station: {class: inert, by: llm, model: gemini-3.5-flash, prompt_sha: 28e35cd583a85a56, why: medical monitoring equipment}

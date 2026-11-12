@@ -42,6 +42,8 @@ SERVICE_KEYS = ("capacity", "interaction_radius")
 DWELL_KEYS = ("mean", "std", "clip_low", "clip_high")
 #: How an object is used (`affords`) is part of its demand: it moves with a left demand and goes with a cleared one.
 DEMAND_VERBS = ("serves", "satisfies", "has_formation", "dwells", "affords")
+#: The fact of an object decided to have no demand. An object has demand facts or this one, never both.
+INERT = "inert"
 FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "clear")
 #: Params that only switch an operation on: false names the same edit as leaving them out.
 FLAGS = ("leave_demand", "clear", "remove")
@@ -427,6 +429,9 @@ def _set_demand(site: Site, obj: str, params: Mapping[str, Any], origin: str) ->
         _set_satisfies(site.graph, obj, params["satisfies"], block)
     if "dwell" in params:
         _set_dwell(site.graph, obj, params["dwell"], origin)
+    if any(f.subject == obj and f.verb in DEMAND_VERBS for f in site.graph.facts):
+        for fact in [f for f in site.graph.facts if f.subject == obj and f.verb == INERT]:
+            site.graph.remove_fact(fact.subject, fact.verb, fact.object, fact.params)
     if found is not None and block is not None:
         level, i = found
         level.objects[i] = attrs.evolve(level.objects[i], humansim=block)
