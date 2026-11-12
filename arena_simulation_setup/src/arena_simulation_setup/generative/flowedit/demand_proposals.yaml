@@ -1,0 +1,6 @@
+# FLOWEDIT demand proposals: the demand class (`demand_classes.yaml`) of asset models no class rule covers, by model.
+# `flowedit demand <world> --propose --write` asks a model and adds its answers with `by: llm`; `flowedit build --prefill
+# llm` pre-fills them marked `by: llm`. To accept or correct a proposal, set its class and drop `by: llm`: an entry
+# without it is a human's, never replaced, and pre-filled by `--prefill class`.
+format: flowedit-demand-proposals/1
+models: {}

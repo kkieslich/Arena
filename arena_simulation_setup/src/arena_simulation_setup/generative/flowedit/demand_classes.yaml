@@ -1,0 +1,46 @@
+# FLOWEDIT demand classes: what `flowedit build --prefill` gives an object nobody authored demand for. Each class holds the
+# `humansim:` block its objects get, as the hand-written `demand` scenarios author it; a class without one is inert, its
+# objects are decided to have no demand. An asset is of a class by its ASA `kind` tag (`kinds`), else a `hoi` tag (`hoi`),
+# else the longest of the `words` that ends a word of its name, the name split at non-letters and case changes and each
+# two neighbours joined (`SM_WheelChair_01a`: wheel, chair, wheelchair). Kinds no class lists
+# (appliance, equipment, table) stay undecided, for a model's proposal. `desc` is what the model is told the class is.
+# `dwell` is the dwell of a class with a need when no object of the graph serves that need yet.
+format: flowedit-demand-classes/1
+classes:
+  fountain:
+    desc: a drink dispenser, water cooler or vending machine people queue at to drink
+    kinds: [dispenser]
+    words: [dispenser, fountain, cooler, vendingmachine, drinksmachine]
+    humansim: {type: fountain, capacity: 1, satisfies: {thirst: 100.0}, formation: {type: line, params: {base_step: 1.0, front_offset: 0.8}}}
+    dwell: {mean: 5.0, std: 1.5, clip_low: 4.0, clip_high: 6.0}
+  counter:
+    desc: a reception, check-in or kiosk counter people queue at to be served
+    kinds: [counter]
+    words: [counter, kiosk, receptiondesk]
+    humansim: {type: desk, capacity: 3, interaction_radius: 1.0, formation: {type: line, params: {base_step: 0.8, front_offset: 0.6}}}
+  desk:
+    desc: a desk, workstation or work bench one person works at
+    kinds: [desk]
+    words: [desk, workstation, tablework, labbench]
+    humansim: {type: desk, capacity: 1, interaction_radius: 1.2}
+  chair:
+    desc: a chair, armchair or stool one person sits on
+    kinds: [chair, stool]
+    hoi: [sit]
+    words: [chair, stool, seat]
+    humansim: {type: chair, capacity: 1, interaction_radius: 0.8}
+  bed:
+    desc: a bed, stretcher or cot one person lies on
+    kinds: [bed]
+    hoi: [lie]
+    words: [bed, stretcher, cot]
+    humansim: {type: patient_bed, capacity: 1, interaction_radius: 1.2}
+  gathering_area:
+    desc: a sofa, bench or seating group people gather and talk at
+    kinds: [sofa, bench]
+    words: [sofa, couch, bench]
+    humansim: {type: gathering_area, capacity: 0, formation: {type: f_formation, anchor: {kind: object, ref: '{name}'}, params: {base_radius: 0.8, radius_per_member: 0.12}}}
+  inert:
+    desc: storage, decor, sanitary or equipment nobody walks to in the simulation
+    kinds: [bag, barrier, bin, box, cabinet, cart, container, cookware, curtain, decor, food, lamp, mirror, plant, safety, sanitary, shelf, sign, structure, tableware]
+    words: [cabinet, shelf, bookcase, rack, box, bin, trashcan, container, cart, tray, curtain, rail, board, lamp, plant, mirror, toilet, toiletpaper, washbasin, sink, wheelchair, mopset, sidetable]

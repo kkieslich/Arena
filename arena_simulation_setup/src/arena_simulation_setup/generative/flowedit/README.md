@@ -15,6 +15,14 @@ kg.yaml (room purposes, read)  --+                              +-- read --> sce
 
 `flowedit build <world> [<scenario>]`, or `python3 -m arena_simulation_setup.generative.flowedit.cli build ...`. A dry run prints the graph, `--write` writes it to `flowgraph.yaml` next to the scenario's `scenario.yaml` (or `--out`). Worlds resolve as in [generative/scenario](../scenario/README.md#cli).
 
+`flowedit build ... --prefill class[,llm]` [pre-fills](#pre-filled-demand) the demand of the objects nobody authored. `flowedit demand <world> [<scenario>]` prints, per asset model, what its objects are decided as and by whom, and exits 1 while an object is undecided; `--propose` prints the prompt for the models still undecided, `--propose --write` asks the model and stores its proposals.
+
+```bash
+flowedit build hospital_1 queue --prefill class,llm
+flowedit demand hospital_1 queue
+flowedit demand hospital_1 queue --propose --write
+```
+
 `flowedit read <world> [<scenario>]` [reads](#reading-a-site) the site of a shipped world and scenario, or of a world `flowedit edit` saved, into `<world>/scenarios/flowedit_<scenario>/` (or `--name`). A dry run prints the scenario, `--write` writes it and replaces only a scenario carrying the generated marker unless `--force`. `--settings` names a crowd settings file, `--count`, `--scale` and `--local-planner` override it, `--seed` (default 0) keys every draw. `flowedit run` and `flowedit sweep` [record PEDS runs](#recording-runs).
 
 ```bash
@@ -48,6 +56,7 @@ flowedit generate hospital_1 --scenario queue --seed 0 --controls --write
 | `obj` demand | `serves service:<type> {capacity, interaction_radius}`, `satisfies need:<need> {amount}`, `has_formation formation:<type> {<params>, anchor_kind, anchor_ref}` | the object's `humansim:` block |
 | `obj` dwell | `dwells <mean s> {std, clip_low, clip_high, from}` | the `duration` of the first agent type step whose `target` is the object's name, else its type, else of the interaction a `go_to` to it leads into |
 | `obj` use | `affords interaction:<KIND> {from, meet, tag, offer, seek}`, `satisfies need:<need> {amount, from}` | [`interactions.py`](interactions.py): the agent type steps that use the object, else its `humansim:` block against HumanSim's interaction registry |
+| `obj` pre-filled | the demand facts above with `{by: class \| llm, why}`, or `inert true {by, why}` for an object decided to have none | [`demand.py`](demand.py), only under `--prefill`: the class of the object's asset, then a model's proposal |
 | `obj:<name>_demand` | no `model`: only `at` and the demand facts `<name>` had | a `move` with `leave_demand` (the `moved_without_demand` control); its `affords` go with it |
 | `door` access | `gated <locked>`, `authorizes <name>` per authorized name, `unlocks_on regime:<regime>` | the door's `gate` preset |
 | `schedule:<name>` | `asserts regime:<regime> {default}`, `window <start s> {end, value}` per window | the world's `schedules:` |
@@ -73,6 +82,38 @@ Load and save it with `arena_simulation_setup.kg.load` and `write`.
 - {subject: 'obj:gathering_area', verb: affords, object: 'interaction:GROUP_CONVERSATION', params: {from: 'colleague.yaml#chat.hold_conversation', meet: true}}
 - {subject: 'obj:patient_bed_1', verb: affords, object: 'interaction:LIE_ON', params: {from: 'rule:prone'}}
 ```
+
+## Pre-filled demand
+
+`build` reads demand a human authored. [`demand.py`](demand.py) decides the objects nobody authored, in the graph only: `prefill(scene, stages, tags)`, `flowedit build --prefill`. Authored demand is never touched, and without `--prefill` a graph is what it was. Each object is decided once, by the first source that has an answer:
+
+| `by` | Source |
+|---|---|
+| none | authored: the object's `humansim:` block or an agent type step, as `build` reads them |
+| `class` | the class of the object's asset in [`demand_classes.yaml`](demand_classes.yaml): the one a human set for its model in the proposals (`why: reviewed proposal`), else by its ASA `kind` tag (`why: kind::chair`), else a `hoi` tag, else the longest class word that ends a word of its name, the name split at non-letters and case changes and each two neighbours joined (`Lab_Bench`: lab, bench, labbench, so `why: name:labbench`), which also decides an asset that does not resolve |
+| `llm` | a model's proposal for its model in [`demand_proposals.yaml`](demand_proposals.yaml), with its `model`, `prompt_sha` and `why` |
+
+A class holds the `humansim:` block its objects get, in the form of the hand-written `demand` scenarios, and goes through the same code as an authored block, so `affords` comes from the same rules. The class `inert` has no block: its objects get `inert true`, decided to have no demand. That leaves three states, an object with demand facts, an `inert` one, and an undecided one with neither; an object never has both, and a `function` edit that gives an inert object demand drops its `inert`. Only `thirst` is a need so far: a further one is a class with `satisfies`.
+
+One step serves a need in HumanSim, so the [reader](#reading-a-site) wants the objects of one need to share their type, use and dwell. A pre-filled object therefore takes `dwells` and `affords` of the object that already serves its need; without one it takes its class's `dwell` (`from: demand_classes.yaml#<class>`) and the rule's use.
+
+```yaml
+- {subject: 'obj:reception_water_dispenser_1', verb: serves, object: 'service:fountain', params: {capacity: 1, by: class, why: 'name:dispenser'}}
+- {subject: 'obj:reception_water_dispenser_1', verb: satisfies, object: 'need:thirst', params: {amount: 100.0, by: class, why: 'name:dispenser'}}
+- {subject: 'obj:reception_trashcan_1', verb: inert, object: true, params: {by: class, why: 'name:trashcan'}}
+```
+
+**Proposals.** A model never decides while a graph is built. `flowedit demand <world> --propose --write` asks once per world about the models that are undecided after the class stage and have no entry yet ([`demand_propose.py`](demand_propose.py), the client and the checks of [`classify`](../scenario/README.md#zone-roles)): the model picks a class of the table, `inert` or `unknown`, never a number. Answers nobody asked for and classes the table does not have are dropped, `unknown` is not written and leaves the model to a human. Confident answers land in `demand_proposals.yaml`, by model, so they hold in every world:
+
+```yaml
+models:
+  Hospital/Ventilator: {class: inert, by: llm, model: gemini-3.5-flash, prompt_sha: 12a42fdc3c28fdd0, why: staff operate it during a procedure}
+  Hospital/Exam_Table: {class: bed}
+```
+
+An entry without `by: llm` is a human's: `--propose` never replaces it, and it decides before tag and name. To accept or correct a proposal, set its class and drop `by: llm`. `--prefill class` leaves proposals no human accepted out, `--prefill class,llm` takes them.
+
+`generate`, `read` and the runs open a base world without pre-fill, so they see authored demand only.
 
 ## Edits
 
@@ -542,6 +583,10 @@ A map file (`geometry`, `deepflow predict`) has one map per world in the columns
 |---|---|
 | `build.py` | world + scenario to the graph |
 | `interactions.py` | how an object is used, from agent type steps and HumanSim's interaction registry |
+| `demand.py` | pre-filling the demand of objects nobody authored, by class and by proposal; who decided what |
+| `demand_classes.yaml` | the demand classes: their `humansim:` block, and the ASA kinds and name words of their assets |
+| `demand_propose.py` | asking a model for the class of the models no class rule covers |
+| `demand_proposals.yaml` | the proposals, by model |
 | `read.py` | graph + settings + seed to a scenario |
 | `settings.py` | crowd settings and their defaults |
 | `edit.py` | edit operations, sites, saving edited worlds |
@@ -556,4 +601,4 @@ A map file (`geometry`, `deepflow predict`) has one map per world in the columns
 | `splits/` | committed splits, and their test crowds' settings in `splits/crowds/` |
 | `forecast/` | the flow forecasters: `maps.py` (grid, track binning, JSD), `scene.py` (a site as the forecasters read it), `raster.py` (graph and geometry on the grid), `net.py` (GNN and U-Net), `learn.py` (training, forecasts), `selection.py` (which network is the forecaster), `model.py` (the demand model), `evaluate.py` (its fit, recorded maps, transplanting), `validity.py` (scores, baselines, floor, change, tracks seen), `plot.py`, `cli.py` (`flowedit forecast`) |
 | `forecast/` (baselines) | `cliff.py` (online CLiFF-maps), `baselines.py` (track store, leave one seed out, tracks-seen curve, geometry-only prior and simulation, map files), `deepflow.py` (Deep Crowd-Flow), `baseline_cli.py` (`flowedit forecast baseline`) |
-| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast`, `flowedit infra` |
+| `cli.py` | `flowedit build`, `flowedit demand`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast`, `flowedit infra` |
