@@ -6,7 +6,7 @@ import enum
 import math
 import random
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,16 +17,17 @@ from arena_simulation_setup.utils.face import front_angle as annotated_front
 from arena_simulation_setup.utils.geometry import Position
 
 from .build import presets, zones_at
-from .edit import Edit, EditType, LayoutOp, Site, apply, world_object
+from .edit import DEMAND_SUFFIX, Edit, EditType, LayoutOp, Site, apply, world_object
 
 if TYPE_CHECKING:
     import shapely
 
     from arena_simulation_setup.kg import Fact
+    from arena_simulation_setup.metrics.use_points import Finding
     from arena_simulation_setup.shared.world import Door, Schedule
     from arena_simulation_setup.tree.World.model import Level, Zone
 
-GENERATOR_VERSION = 5
+GENERATOR_VERSION = 6
 MANIFEST_FORMAT = "flowedit-generated/1"
 MAX_TRIES = 50
 #: Function fields the generator samples. The reader writes `dwell` into the `duration` of the step at the object; `satisfies` is not drawn yet.
@@ -67,6 +68,8 @@ DECIMALS = 2
 ROUNDING_M = math.sqrt(2.0) * 0.5 * 10.0**-DECIMALS
 #: Inset (m) of the back's ends from the footprint's sides where a wall must stand behind it too.
 BACK_END_INSET_M = 0.1
+#: Turns of an object at a wall spot from front into the room, tried in order: into the room, then along the wall either way
+TURNS = (0.0, math.pi / 2, -math.pi / 2)
 #: Door layout ops and their weights; a door is moved along its wall by `DOOR_SHIFT_M`, an added door spans `DOOR_SPAN_M`.
 DOOR_OPS = ((LayoutOp.MOVE, 0.5), (LayoutOp.ADD, 0.25), (LayoutOp.REMOVE, 0.25))
 DOOR_SHIFT_M = (0.5, 2.0)
@@ -108,6 +111,12 @@ class Generated:
 
     site: Site
     records: tuple[Mapping[str, Any], ...]
+
+
+#: Whether an edit of a type, target and params passes the use-point check (`refusal`), for a sampler trying spots
+Fits = Callable[[EditType, str, Mapping[str, Any]], bool]
+#: Whether a pose x, y, yaw of the object being placed passes
+PoseFits = Callable[[float, float, float], bool]
 
 
 def rng_for(site: Site, seed: int, step: int, edit_type: EditType, index: int, purpose: str = "edit") -> random.Random:
@@ -363,11 +372,12 @@ class Spots:
         """The parts of `zone`'s edges with a wall behind them (`wall_pieces`), in ring order."""
         return wall_pieces(self.shapes[zone.name], self.wall_segments)
 
-    def against_wall(self, rng: random.Random, model: str, zone: Zone, accept: Callable[[float, float], bool], around: tuple[float, float, float] | None = None) -> tuple[float, float, float] | None:
-        """A valid pose in `zone` against one of its walls that `accept` takes: a point drawn along the walled parts of
-        its edges by length (only those within `around` = x, y, radius when given), the model turned so its front points
-        along the edge's normal, its back as close to the wall behind and the zone edge as the wall gap allows, a wall
-        behind the middle and both ends of the back (`backs_onto_wall`)."""
+    def against_wall(self, rng: random.Random, model: str, zone: Zone, accept: Callable[[float, float], bool], around: tuple[float, float, float] | None = None, fits: PoseFits | None = None) -> tuple[float, float, float] | None:
+        """A valid pose in `zone` against one of its walls that `accept` and `fits` take: a point drawn along the walled
+        parts of its edges by length (only those within `around` = x, y, radius when given), the model turned so its
+        front points along the edge's normal, else along the wall either way (`turns`), its back as close to the wall
+        behind and the zone edge as the wall gap allows, a wall behind the middle and both ends of the back
+        (`backs_onto_wall`); the next point only when no turn at this one passes."""
         import shapely
         import shapely.affinity
 
@@ -391,26 +401,27 @@ class Spots:
             offset = piece.offset(p.x, p.y)
             if offset is None:
                 continue
-            yaw = math.atan2(ny, nx) - front_angle(self.site.root, model)
-            yaw = round(math.atan2(math.sin(yaw), math.cos(yaw)), 4) + 0.0
-            turned = shapely.affinity.rotate(local, yaw, origin=(0, 0), use_radians=True)
-            back = max(-(vx * nx + vy * ny) for vx, vy in turned.exterior.coords)
-            # the back stops at the wall gap from both the wall line and the zone edge, whichever lies further in
-            behind = max(offset, 0.0) + WALL_GAP_M + WALL_SLACK_M
-            x, y = _round(p.x + nx * (behind + back)), _round(p.y + ny * (behind + back))
-            if accept(x, y) and backs_onto_wall(piece, turned, x, y) and self.valid(model, zone, x, y, yaw):
-                return x, y, yaw
+            for turn in TURNS:
+                yaw = math.atan2(ny, nx) + turn - front_angle(self.site.root, model)
+                yaw = round(math.atan2(math.sin(yaw), math.cos(yaw)), 4) + 0.0
+                turned = shapely.affinity.rotate(local, yaw, origin=(0, 0), use_radians=True)
+                back = max(-(vx * nx + vy * ny) for vx, vy in turned.exterior.coords)
+                # the back stops at the wall gap from both the wall line and the zone edge, whichever lies further in
+                behind = max(offset, 0.0) + WALL_GAP_M + WALL_SLACK_M
+                x, y = _round(p.x + nx * (behind + back)), _round(p.y + ny * (behind + back))
+                if accept(x, y) and backs_onto_wall(piece, turned, x, y) and self.valid(model, zone, x, y, yaw) and (fits is None or fits(x, y, yaw)):
+                    return x, y, yaw
         return None
 
-    def in_zone(self, rng: random.Random, model: str, zone: Zone) -> tuple[float, float, float] | None:
+    def in_zone(self, rng: random.Random, model: str, zone: Zone, fits: PoseFits | None = None) -> tuple[float, float, float] | None:
         """A valid pose against a wall of `zone`."""
-        return self.against_wall(rng, model, zone, lambda _x, _y: True)
+        return self.against_wall(rng, model, zone, lambda _x, _y: True, fits=fits)
 
-    def near(self, rng: random.Random, model: str, zone: Zone, x: float, y: float) -> tuple[float, float, float] | None:
+    def near(self, rng: random.Random, model: str, zone: Zone, x: float, y: float, fits: PoseFits | None = None) -> tuple[float, float, float] | None:
         """A valid pose against a wall of `zone` `LOCAL_DISTANCE_M` away from `x`, `y`."""
         lo, hi = LOCAL_DISTANCE_M
         # wall points a little beyond reach still give spots within it, the object standing out from the wall
-        return self.against_wall(rng, model, zone, lambda nx, ny: lo <= math.dist((nx, ny), (x, y)) <= hi, around=(x, y, hi + 1.0))
+        return self.against_wall(rng, model, zone, lambda nx, ny: lo <= math.dist((nx, ny), (x, y)) <= hi, around=(x, y, hi + 1.0), fits=fits)
 
 
 def backs_onto_wall(piece: WallPiece, turned: shapely.Polygon, x: float, y: float) -> bool:
@@ -447,7 +458,7 @@ def spots_for(site: Site, level_id: str) -> Spots:
     return hit
 
 
-def _move(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
+def _move(site: Site, rng: random.Random, wide: bool = False, fits: Fits | None = None) -> Sampled:
     """Move an object on the floor, one with demand first: within its own room (`local`) or to another room of its level (`room`)."""
     movable = floor_objects(site)
     target = _prefer(rng, [obj for obj in demand_objects(site) if obj in movable], movable, wide)
@@ -459,14 +470,15 @@ def _move(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
     zones = allowed_zones(spots.level)
     here = sorted(set(zones_at(spots.level, _position(pose))) & {z.name for z in zones})
     model = _model(site, target) or ""
+    placing = None if fits is None else lambda x, y, yaw: fits(EditType.MOVE, target, {"x": x, "y": y, "yaw": yaw})
     if here and rng.random() < LOCAL_SHARE:
         zone = next(z for z in zones if z.name == here[0])
-        spot, scope = spots.near(rng, model, zone, float(pose["x"]), float(pose["y"])), Scope.LOCAL
+        spot, scope = spots.near(rng, model, zone, float(pose["x"]), float(pose["y"]), placing), Scope.LOCAL
     else:
         others = [z for z in zones if z.name not in here]
         if not others:
             raise NoCandidate("no other room to move to")
-        spot, scope = spots.in_zone(rng, model, rng.choice(others)), Scope.ROOM
+        spot, scope = spots.in_zone(rng, model, rng.choice(others), placing), Scope.ROOM
     if spot is None:
         raise Redraw("no valid spot")
     return Sampled(EditType.MOVE, target, {"x": spot[0], "y": spot[1], "yaw": spot[2]}, scope.value)
@@ -481,7 +493,7 @@ def _slug(model: str) -> str:
 
 
 def _clone_demand(site: Site, obj: str) -> dict[str, Any]:
-    """The function params that give a new object the demand of `obj`: its service, needs and dwell, copied rather than sampled."""
+    """The function params that give a new object the demand of `obj`: its service, needs, dwell and formation (anchored at the new object), copied rather than sampled."""
     service = _service(site, obj)
     if service is None:
         return {}
@@ -493,6 +505,9 @@ def _clone_demand(site: Site, obj: str) -> dict[str, Any]:
     dwell = next(iter(_facts(site, obj, "dwells")), None)
     if dwell is not None:
         out["dwell"] = {"mean": float(dwell.object), **{k: v for k, v in dwell.params.items() if k != "from"}}
+    formation = next(iter(_facts(site, obj, "has_formation")), None)
+    if formation is not None:
+        out["formation"] = {"type": str(formation.object).partition(":")[2], "params": {k: v for k, v in formation.params.items() if k not in ("anchor_kind", "anchor_ref")}}
     return out
 
 
@@ -509,7 +524,7 @@ def _clone_dock(site: Site, obj: str) -> dict[str, Any]:
     return out
 
 
-def _insert(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
+def _insert(site: Site, rng: random.Random, wide: bool = False, fits: Fits | None = None) -> Sampled:
     """Insert a copy of an object on the floor, one with demand first, its demand, dock and charge power copied, in a room of its level (`room`)."""
     modelled = floor_objects(site)
     source = _prefer(rng, [obj for obj in demand_objects(site) if obj in modelled], modelled, wide)
@@ -524,10 +539,12 @@ def _insert(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
     zones = allowed_zones(spots.level)
     if not zones:
         raise NoCandidate("no zone to insert into")
-    spot = spots.in_zone(rng, model, rng.choice(zones))
+    copied = {**_clone_demand(site, source), **_clone_dock(site, source)}
+    placing = None if fits is None else lambda x, y, yaw: fits(EditType.INSERT, name, {"model": model, "x": x, "y": y, "yaw": yaw, "level": level_id, **copied})
+    spot = spots.in_zone(rng, model, rng.choice(zones), placing)
     if spot is None:
         raise Redraw("no valid spot")
-    return Sampled(EditType.INSERT, name, {"model": model, "x": spot[0], "y": spot[1], "yaw": spot[2], "level": level_id, **_clone_demand(site, source), **_clone_dock(site, source)}, Scope.ROOM.value)
+    return Sampled(EditType.INSERT, name, {"model": model, "x": spot[0], "y": spot[1], "yaw": spot[2], "level": level_id, **copied}, Scope.ROOM.value)
 
 
 def _door_rooms(site: Site) -> dict[str, set[str]]:
@@ -539,7 +556,7 @@ def _door_rooms(site: Site) -> dict[str, set[str]]:
     return rooms
 
 
-def _layout(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
+def _layout(site: Site, rng: random.Random, wide: bool = False, fits: Fits | None = None) -> Sampled:
     """Move a door along its wall, add one between two rooms, or remove one whose rooms keep another door."""
     ops = [op for op, _ in DOOR_OPS]
     weights = [w for _, w in DOOR_OPS]
@@ -613,12 +630,12 @@ def _add_door(site: Site, rng: random.Random) -> Sampled | None:
     return None
 
 
-def _remove(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
+def _remove(site: Site, rng: random.Random, wide: bool = False, fits: Fits | None = None) -> Sampled:
     """Remove an object, one with demand when the site has any."""
     return Sampled(EditType.REMOVE, _prefer(rng, demand_objects(site), objects(site), wide), {})
 
 
-def _function(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
+def _function(site: Site, rng: random.Random, wide: bool = False, fits: Fits | None = None) -> Sampled:
     """Change the `capacity` of an object with a need, shared service types first, or the `dwell` of a `sole_server`."""
     needy = demand_objects(site)
     served = {obj: service for obj in needy if (service := _service(site, obj)) is not None and service[1].get("capacity", 1) != 0 and _capacities(*service)}
@@ -656,7 +673,7 @@ def _capacities(kind: str, params: Mapping[str, Any]) -> list[int]:
     return [n for n in range(low, high + 1) if n != int(params.get("capacity", 1))]
 
 
-def _access(site: Site, rng: random.Random, wide: bool = False) -> Sampled:
+def _access(site: Site, rng: random.Random, wide: bool = False, fits: Fits | None = None) -> Sampled:
     """Lock a spare door, unlock or ungate a gated one, or give a schedule a window."""
     gated_doors = sorted({f.subject for f in site.graph.facts if f.verb == "gated"})
     doors = sorted(set(spare_doors(site)) | set(gated_doors))
@@ -681,8 +698,9 @@ def _schedule_regime(schedule: Schedule) -> str | None:
     return next((p.get("regime") for p in presets(schedule.semantics, "schedule") if p.get("regime")), None)
 
 
-#: Samplers by type: `(site, rng, wide)`, `wide` set on a retry after a duplicate so a move, insert or remove may take any object.
-SAMPLERS: dict[EditType, Callable[[Site, random.Random, bool], Sampled]] = {
+#: Samplers by type: `(site, rng, wide, fits)`, `wide` set on a retry after a duplicate so a move, insert or remove may
+#: take any object, `fits` the use-point check a move or insert tries its spots with.
+SAMPLERS: dict[EditType, Callable[[Site, random.Random, bool, Fits | None], Sampled]] = {
     EditType.MOVE: _move,
     EditType.INSERT: _insert,
     EditType.REMOVE: _remove,
@@ -703,8 +721,60 @@ def function_carrying(site: Site, sampled: Sampled) -> bool:
     return False
 
 
+_FINDINGS: dict[tuple[Path, str], list[Finding]] = {}
+
+
+def site_findings(site: Site) -> list[Finding]:
+    """The use-point findings of a site as the reader hands it to the runtime, before any crowd is read from it
+    (`metrics.use_points.check`): its world and the graph's objects the world does not hold, kept by the site's key."""
+    from arena_simulation_setup.metrics.use_points import check
+    from arena_simulation_setup.shared.entities import Obstacle
+    from arena_simulation_setup.tree.World.Scenario import Scenario
+    from arena_simulation_setup.tree.World.view import WorldView
+
+    from .read import read_graph
+
+    key = (site.root, site.key)
+    if key not in _FINDINGS:
+        held = {o.name for level in site.world.levels.values() for o in level.objects}
+        things = read_graph(site.graph).objects
+        objects = [Obstacle.parse({"name": name, "model": t.model, "pose": [t.x, t.y, t.yaw], "level": t.floor, "humansim": t.block()}) for name, t in sorted(things.items()) if name not in held]
+        _FINDINGS[key] = check(WorldView(site.root), site.world, Scenario(objects=objects))
+    return _FINDINGS[key]
+
+
+def refusal(site: Site, edited: Site, touched: Collection[str]) -> str | None:
+    """Why `edited` is refused against `site`, its parent: a point finding of an object the edit `touched` (by name), or
+    one `site` did not have. Unresolved models are `resolve_footprints`' to refuse."""
+    before = {(f.object, f.point) for f in site_findings(site)}
+    for finding in site_findings(edited):
+        if finding.point != "model" and (finding.object in touched or (finding.object, finding.point) not in before):
+            return str(finding)
+    return None
+
+
+def _touched(edit_type: EditType, target: str, params: Mapping[str, Any]) -> set[str]:
+    """The objects, by name, whose use points an edit moves, adds or gives demand: its target and a left-behind demand node."""
+    name = target.partition(":")[2]
+    if edit_type not in (EditType.MOVE, EditType.INSERT, EditType.FUNCTION):
+        return set()
+    return {name, f"{name}{DEMAND_SUFFIX}"} if params.get("leave_demand") else {name}
+
+
+def _edit_refusal(site: Site, edit_type: EditType, target: str, params: Mapping[str, Any], step: int) -> tuple[Site, str | None]:
+    """`site` with the edit and why it is refused (`refusal`), its geometry-only controls checked too on a chain's first step (ValueError when `apply` refuses it)."""
+    edited = apply(site, edit_type, target, params)
+    why = refusal(site, edited, _touched(edit_type, target, params))
+    if why is None and step == 0 and function_carrying(site, Sampled(edit_type, target, params)):
+        for control, variant, touched in _control_sites(site, edited.edits[-1]):
+            if (why := refusal(site, variant, touched)) is not None:
+                return edited, f"{control.value} control: {why}"
+    return edited, why
+
+
 def sample_step(site: Site, edit_type: EditType, seed: int, step: int, index: int, notes: list[str], taken: set[str] | None = None) -> tuple[Site, dict[str, Any]] | None:
-    """`site` with one valid edit of `edit_type` whose world is not in `taken` yet, and its manifest record, else None and a note."""
+    """`site` with one valid edit of `edit_type` whose world is not in `taken` yet and whose use points pass (`refusal`),
+    and its manifest record, else None and a note. A move or insert tries the turns of the model at a spot first."""
     sampler = SAMPLERS.get(edit_type)
     if sampler is None:
         notes.append(f"{site.name}: no sampler for {edit_type.value} edits")
@@ -713,18 +783,32 @@ def sample_step(site: Site, edit_type: EditType, seed: int, step: int, index: in
     rng = rng_for(site, seed, step, edit_type, index)
     wide = False
     refused = "no draw gave a proposal"
+
+    def fits(kind: EditType, target: str, params: Mapping[str, Any]) -> bool:
+        nonlocal refused
+        try:
+            why = _edit_refusal(site, kind, target, params, step)[1]
+        except ValueError as exc:
+            why = str(exc)
+        if why is not None:
+            refused = f"last refusal: {why}"
+        return why is None
+
     for _ in range(MAX_TRIES):
         try:
-            sampled = sampler(site, rng, wide)
+            sampled = sampler(site, rng, wide, fits)
         except NoCandidate as exc:
             notes.append(f"{site.name}: no {edit_type.value} edit, {exc}")
             return None
         except Redraw:
             continue
         try:
-            edited = apply(site, sampled.type, sampled.target, sampled.params)
+            edited, why = _edit_refusal(site, sampled.type, sampled.target, sampled.params, step)
         except ValueError as exc:
             refused = f"last refusal: {exc}"
+            continue
+        if why is not None:
+            refused = f"last refusal: {why}"
             continue
         if edited.key in taken:
             wide = True
@@ -789,11 +873,8 @@ def own_edits(site: Site, chain: Site) -> list[Edit]:
     return chain.edits[len(site.edits) :]
 
 
-def controls(site: Site, chain: Generated) -> list[tuple[Control, Site]]:
-    """The geometry-only controls of a chain's first edit when it carries function, applied to `site`, the chain's base."""
-    first = own_edits(site, chain.site)[0]
-    if not chain.records[0]["function_carrying"] or first.type not in (EditType.MOVE, EditType.INSERT):
-        return []
+def _control_sites(site: Site, first: Edit) -> list[tuple[Control, Site, set[str]]]:
+    """The geometry-only controls of a function-carrying first edit, applied to `site`, its base, each with the objects it touches."""
     if first.type is EditType.MOVE:
         model = _model(site, first.target)
         placed = _at(site, first.target)
@@ -804,11 +885,21 @@ def controls(site: Site, chain: Generated) -> list[tuple[Control, Site]]:
         inert = {"model": model, **spot, "level": str(first.params.get("level", level_id)), **_clone_dock(site, first.target)}
         moved = {**{k: v for k, v in first.params.items() if k in ("x", "y", "yaw", "level")}, "leave_demand": True}
         return [
-            (Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}{INERT_SUFFIX}", inert)),
-            (Control.MOVED_WITHOUT_DEMAND, apply(site, EditType.MOVE, first.target, moved)),
+            (Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}{INERT_SUFFIX}", inert), {f"{first.target.partition(':')[2]}{INERT_SUFFIX}"}),
+            (Control.MOVED_WITHOUT_DEMAND, apply(site, EditType.MOVE, first.target, moved), _touched(EditType.MOVE, first.target, moved)),
         ]
-    keep = ("model", "x", "y", "yaw", "level", "dock", "charge_power_w")
-    return [(Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}{INERT_SUFFIX}", {k: v for k, v in first.params.items() if k in keep}))]
+    if first.type is EditType.INSERT:
+        keep = ("model", "x", "y", "yaw", "level", "dock", "charge_power_w")
+        return [(Control.INERT_OBJECT, apply(site, EditType.INSERT, f"{first.target}{INERT_SUFFIX}", {k: v for k, v in first.params.items() if k in keep}), {f"{first.target.partition(':')[2]}{INERT_SUFFIX}"})]
+    return []
+
+
+def controls(site: Site, chain: Generated) -> list[tuple[Control, Site]]:
+    """The geometry-only controls of a chain's first edit when it carries function, applied to `site`, the chain's base."""
+    first = own_edits(site, chain.site)[0]
+    if not chain.records[0]["function_carrying"]:
+        return []
+    return [(control, variant) for control, variant, _ in _control_sites(site, first)]
 
 
 def dump_manifest(site: Site, chains: Sequence[Generated], seed: int, per_type: int, steps: int, worlds: Mapping[str, Path] | None = None, chain_controls: Mapping[str, Sequence[tuple[Control, Site]]] | None = None) -> dict[str, Any]:

@@ -42,7 +42,7 @@ SERVICE_KEYS = ("capacity", "interaction_radius")
 DWELL_KEYS = ("mean", "std", "clip_low", "clip_high")
 #: How an object is used (`affords`) is part of its demand: it moves with a left demand and goes with a cleared one.
 DEMAND_VERBS = ("serves", "satisfies", "has_formation", "dwells", "affords")
-FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "clear")
+FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "formation", "clear")
 #: Params that only switch an operation on: false names the same edit as leaving them out.
 FLAGS = ("leave_demand", "clear", "remove")
 #: Suffix of the demand-only node a `move` with `leave_demand` leaves at the object's old spot.
@@ -406,6 +406,23 @@ def _set_dwell(graph: Scene, obj: str, dwell: Any, origin: str) -> None:  # noqa
         graph.add_fact(obj, "dwells", float(dwell), {"from": origin})
 
 
+def _set_formation(graph: Scene, obj: str, formation: Any, block: dict[str, Any] | None) -> None:  # noqa: ANN401 - YAML input
+    """Replace the `has_formation` fact of `obj` with `{type, params}`, anchored at the object, or drop it for None."""
+    for fact in [f for f in graph.facts if f.subject == obj and f.verb == "has_formation"]:
+        graph.remove_fact(obj, "has_formation", fact.object, fact.params)
+    if block is not None:
+        block.pop("formation", None)
+    if formation is None:
+        return
+    if not isinstance(formation, Mapping) or not formation.get("type"):
+        raise ValueError(f"formation is {{type, params}}, got {formation!r}")
+    _check_params(formation, ("type", "params"))
+    params = {str(k): float(v) for k, v in (formation.get("params") or {}).items()}
+    graph.add_fact(obj, "has_formation", f"formation:{formation['type']}", params)
+    if block is not None:
+        block["formation"] = {"type": str(formation["type"]), "params": params}
+
+
 def _set_demand(site: Site, obj: str, params: Mapping[str, Any], origin: str) -> None:
     """Set the demand of `obj` from `FUNCTION_PARAMS`, its dwell traced to `origin`."""
     _check_params(params, FUNCTION_PARAMS)
@@ -427,13 +444,15 @@ def _set_demand(site: Site, obj: str, params: Mapping[str, Any], origin: str) ->
         _set_satisfies(site.graph, obj, params["satisfies"], block)
     if "dwell" in params:
         _set_dwell(site.graph, obj, params["dwell"], origin)
+    if "formation" in params:
+        _set_formation(site.graph, obj, params["formation"], block)
     if found is not None and block is not None:
         level, i = found
         level.objects[i] = attrs.evolve(level.objects[i], humansim=block)
 
 
 def _function(site: Site, edit: Edit) -> None:
-    """Change an object's demand: `type`, `capacity`, `interaction_radius`, `satisfies`, `dwell`, `clear` to drop it all first."""
+    """Change an object's demand: `type`, `capacity`, `interaction_radius`, `satisfies`, `dwell`, `formation`, `clear` to drop it all first."""
     _set_demand(site, edit.target, edit.params, f"edit:{edit.id}")
 
 
