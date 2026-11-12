@@ -52,7 +52,7 @@ levels:
   - {name: west_entrance, span: [[0.025, 14.25], [0.025, 15.75]]}
   - {name: east_entrance, span: [[47.975, 14.25], [47.975, 15.75]]}
   objects:
-  - {name: reception_table_1, pose: [5.85, 26.88, 1.5708], model: Office/SM_ReceptionTableStraight}
+  - {name: reception_table_1, pose: [5.85, 26.88, 1.5708], model: Office/Reception_Table_Straight}
   - {name: reception_sofa_1, pose: [0.62, 21.09, 3.14159], model: Office/Sofa}
   - {name: reception_plant_1, pose: [11.08, 24.28], model: Office/SM_Plant01}
   - {name: office_a_desk_1, pose: [16.15, 21.97], model: Office/SM_TableWorkingDouble}
