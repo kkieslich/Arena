@@ -63,8 +63,11 @@ WARMUP_S = 420.0
 ROBOT = f"jackal[{len(HOMES)}]"
 #: Launch args of every suite: lockstep for seed pairing, people see the robots (§8: PEDS robot visibility on), and no
 #: pedestrian skeletons on `arena_peds` (`human.skeleton`: no INFRA measure reads them, the crowd and what the robots see
-#: stay the same, and it takes most of the env node's per-pedestrian cost off a run at the study density)
-LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "true", "human.skeleton": "false"}
+#: stay the same, and it takes most of the env node's per-pedestrian cost off a run at the study density), and route
+#: choice over stairs (`humansim.zone_route_choice`: walkers that climb take a stair or escalator of the world where that
+#: is cheaper than walking, by HumanSim's congestion-weighted walking cost, wheelchairs walk; a world without stair halves
+#: is unaffected)
+LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "true", "human.skeleton": "false", "humansim.zone_route_choice": "true"}
 #: The reference runs the layout suites ask the runner for: each stage without robots (the traffic part's reference,
 #: §6); the fleet without pedestrians is never read
 REFERENCES = ["unhindered_peds"]
