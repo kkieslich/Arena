@@ -52,6 +52,7 @@ class TM_Scenario(TM_Obstacles):
             for name, r in scenario.regions.items()
         ]
         await self._ctx.environment_manager.setup_regions(regions)
+        await self._ctx.environment_manager.setup_teleport_zones(scenario.teleport_zones)
 
         self._ctx.episode.register_timeline(scenario.timeline, seed)
         self._ctx.episode.register_conditions(scenario.conditions)

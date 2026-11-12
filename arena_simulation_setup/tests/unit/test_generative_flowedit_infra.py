@@ -561,3 +561,32 @@ def test_an_entrance_walled_off_at_the_walkers_clearance_takes_the_nearest_floor
     assert area.area >= infra.ENTRANCE_MIN_M2
     assert not area.intersects(shapely.box(10.2, 0.2, 13.8, 3.8))
     assert area.distance(shapely.Point(12, 2)) <= infra.ENTRANCE_GROW_M[0] / 2.0 * 2**0.5
+
+
+def _link_half(name: str, to: str, x0: float, facing: float) -> dict:
+    return {"name": name, "kind": "stairs", "destinations": [to] if to else [], "entry": {"x": x0, "y": 5.0, "theta": facing}, "hold": {"x": x0 + (1.5 if facing == 0.0 else -1.5), "y": 5.0, "theta": facing}, "footprint": [{"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 4.0}, {"x": max(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}, {"x": min(x0, x0 + (1.5 if facing == 0.0 else -1.5)), "y": 6.0}]}
+
+
+def test_site_links_reach_the_crowd_scenario_as_teleport_zones() -> None:
+    import shapely
+    from arena_simulation_setup.tree.World.Scenario import parse_scenario
+
+    links = [_link_half("st_top", "st_bottom", 4.0, 0.0), _link_half("st_bottom", "st_top", 16.0, math.pi)]
+    config = _entrance_config(links=links)
+    assert config.record()["links"] == links
+    scenario = infra.entrance_crowd(config, shapely.box(-5, -5, 30, 15))[0]
+    assert scenario["teleport_zones"] == links
+    zones = parse_scenario(scenario).teleport_zones
+    assert [(z.name, z.destinations, z.kind) for z in zones] == [("st_top", ("st_bottom",), "stairs"), ("st_bottom", ("st_top",), "stairs")]
+    assert zones[1].entry == (16.0, 5.0, pytest.approx(math.pi)) and zones[0].wait == zones[0].entry
+    assert "teleport_zones" not in infra.entrance_crowd(_entrance_config(), shapely.box(-5, -5, 30, 15))[0]
+
+
+def test_site_links_are_checked() -> None:
+    with pytest.raises(ValueError, match="links: .*unknown zones"):
+        _entrance_config(links=[_link_half("st_top", "nowhere", 4.0, 0.0)])
+    bare = {k: v for k, v in _link_half("st_top", "", 4.0, 0.0).items() if k != "footprint"}
+    with pytest.raises(ValueError, match="links: .*footprint"):
+        _entrance_config(links=[bare])
+    with pytest.raises(ValueError, match="links: .*kind"):
+        _entrance_config(links=[{**_link_half("st_top", "", 4.0, 0.0), "kind": "ladder"}])

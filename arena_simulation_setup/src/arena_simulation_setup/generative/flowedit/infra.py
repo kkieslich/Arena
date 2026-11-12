@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Any
 
 import attrs
 
+from arena_simulation_setup.tree.World.Scenario import parse_scenario
+
 from . import place
 from . import suite as SU
 from .search import HOMES, LOADING, SEARCHED, Placement, Scored
@@ -168,8 +170,11 @@ class SiteConfig:
     crowd_side: str | None = None
     crowd_density: CrowdDensity | None = None
     path: Path | None = None
+    #: stair and escalator halves that join floor the world lays out on one level (HumanSim teleport zones, as the
+    #: scenario's `teleport_zones`): the crowd's scenario carries them
+    links: tuple[Mapping[str, Any], ...] = ()
 
-    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side", "crowd_density")
+    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side", "crowd_density", "links")
 
     @property
     def placements(self) -> dict[str, Placement]:
@@ -239,8 +244,13 @@ class SiteConfig:
             if min(values.values()) <= 0.0:
                 raise ValueError(f"{where}crowd_density: every value must be > 0, not {block}")
             density = CrowdDensity(**values)
+        links = tuple(dict(z) for z in doc.get("links") or [])
+        try:
+            parse_scenario({"format": "arena-scenario/2", "teleport_zones": list(links)})
+        except ValueError as e:
+            raise ValueError(f"{where}links: {e}") from None
         facts = place.SiteFacts(tuple(entrances), courier, outlets)
-        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, density, path)
+        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, density, path, links)
 
     @classmethod
     def load(cls, path: Path) -> SiteConfig:
@@ -262,6 +272,7 @@ class SiteConfig:
             "flow_split": [{"types": list(types), "share": share} for types, share in self.flow_split],
             "crowd_side": self.crowd_side,
             "crowd_density": None if self.crowd_density is None else attrs.asdict(self.crowd_density),
+            "links": [dict(z) for z in self.links],
             "pins": {name: list(p.pin) for name, p in self.placements.items() if p.pin is not None},
         }
 
@@ -407,6 +418,8 @@ def entrance_crowd(config: SiteConfig, floor: shapely.Geometry, *, walls: shapel
     for e in entrances:
         regions[f"{e.name}_sink"] = {"type": "sink", "polygon": areas[e.name], "config": {"capacity": -1}}
     scenario = {"format": "arena-scenario/2", "robots": [dict(r) for r in robots], "regions": regions}
+    if config.links:
+        scenario["teleport_zones"] = [dict(z) for z in config.links]
     recipients = list(config.facts.recipient_entrances)
     if not recipients:
         return scenario, None, {}
