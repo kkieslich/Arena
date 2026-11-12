@@ -67,6 +67,11 @@ entrances:
   - {name: study_room_1, type: other, at: [152.69, 280.72], placeholder: true}
   - {name: study_room_4, type: other, at: [142.19, 241.47], placeholder: true}
   - {name: study_room_and_lecture_room_2, type: other, at: [143.49, 272.77], placeholder: true}
+  # the toilets (not on the site zone map): the short branch west of the strip's north mouth (x 138.5-147.5, y 139.5-142)
+  # ends in two doors, the women's south and the men's north of the divider; each polygon is the floor in front of its door
+  # 0.4 m clear of the walls (the end wall and the divider keep walkers off the doors themselves)
+  - {name: toilet_women, type: other, polygon: [[140.2, 140.25], [142.4, 140.25], [142.4, 140.9], [140.2, 140.9]]}
+  - {name: toilet_men, type: other, polygon: [[140.2, 141.0], [142.4, 141.0], [142.4, 141.6], [140.2, 141.6]]}
   - {name: bakery, type: shop, at: [132.13, 29.32]}
   - {name: bibimbap, type: shop, at: [138.34, 33.77]}
   - {name: braek, type: shop, at: [118.49, 34.07]}

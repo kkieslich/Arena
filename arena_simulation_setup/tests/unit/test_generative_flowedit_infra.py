@@ -275,9 +275,14 @@ def test_the_v2_twin_config_links_the_t_junction_stairs_and_escalators_in_place_
     facts = config.facts
     assert facts.courier_access == shipped.facts.courier_access and facts.outlets == shipped.facts.outlets
     assert config.flow_split == shipped.flow_split and config.exclude == shipped.exclude
-    # the same entrances but the two the links replace
+    # the same entrances but the two the links replace, and the toilets
     replaced = {"stairs_t_junction", "escalator_t_junction"}
-    assert list(facts.entrances) == [e for e in shipped.facts.entrances if e.name not in replaced] and len(facts.entrances) == 36
+    toilets = {e.name: e for e in facts.entrances if e.name.startswith("toilet_")}
+    assert [e for e in facts.entrances if e.name not in toilets] == [e for e in shipped.facts.entrances if e.name not in replaced] and len(facts.entrances) == 38
+    # the toilets at the west end of the branch west of the strip's north mouth, the women's door south of the men's
+    women, men = toilets["toilet_women"], toilets["toilet_men"]
+    assert women.type == men.type == "other" and max(y for _, y in women.points) < min(y for _, y in men.points)
+    assert all(138.5 <= x <= 147.5 and 139.5 <= y <= 142.0 for e in (women, men) for x, y in e.points)
     links = {z["name"]: z for z in config.links}
     assert len(links) == 8 and {z["kind"] for z in links.values()} == {"stairs", "escalator"}
     # two-way stairs: each half boards and lands, the flight 14.05 s from the seam trigger to the landing
