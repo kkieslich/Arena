@@ -259,8 +259,10 @@ def test_the_shipped_twin_config_holds_site_facts_and_pins_the_courier_handoff_p
     # the T-junction stairs and escalators are links between the deck and the lower concourse, not entrances
     assert not {"stairs_t_junction", "escalator_t_junction"} & {e.name for e in facts.entrances}
     links = {z["name"]: z for z in config.links}
-    assert len(links) == 8 and {z["kind"] for z in links.values()} == {"stairs", "escalator"}
-    assert links["tj_stairs_south_top"]["destinations"] == ["tj_stairs_south_bottom"] and links["tj_stairs_south_top"]["delay"] > 10.0
+    assert len(links) == 12 and {z["kind"] for z in links.values()} == {"stairs", "escalator"}
+    # each stair is two one-way lanes, keep left: down on the north lane, up on the south lane
+    assert links["tj_stairs_south_n_top"]["destinations"] == ["tj_stairs_south_n_bottom"] and links["tj_stairs_south_n_top"]["delay"] > 10.0
+    assert links["tj_stairs_south_n_bottom"]["destinations"] == [] and links["tj_stairs_south_s_bottom"]["destinations"] == ["tj_stairs_south_s_top"]
     assert links["tj_escalator_south_top"]["destinations"] == [] and links["tj_escalator_south_top"]["belt"] < 0.0
     # the rules compile to the search's engine: the courier handoff point pinned at the access point, nothing else
     assert config.placements == {"loading_point": search.Placement(pin=(153.13, 14.99))}
