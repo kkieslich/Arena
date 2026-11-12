@@ -6,7 +6,7 @@ main:
     height: 1.25
     z: 0.75
   - tile:
-      - model: Hospital/SM_Toweldispenser_01a
+      - model: Hospital/Towel_Dispenser
         orientation: 1.5708
         y: 0.1
         z: 1

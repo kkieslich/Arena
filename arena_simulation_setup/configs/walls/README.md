@@ -53,7 +53,7 @@ main:
     height: 0.25
     z: 1.75
   - tile:                     # TilingAsset: repeat every 5 m
-      - model: Hospital/SM_Toweldispenser_01a
+      - model: Hospital/Towel_Dispenser
         orientation: 1.5708
         y: 0.1
         z: 1
