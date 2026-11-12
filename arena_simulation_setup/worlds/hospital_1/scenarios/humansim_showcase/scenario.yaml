@@ -2,15 +2,15 @@ format: arena-scenario/2
 objects:
 - name: reception_desk
   model: Hospital/Reception_Counter
-  pose: reception
-  humansim: {type: desk, capacity: 3, interaction_radius: 1.0, formation: {type: line, params: {base_step: 0.8, front_offset: 0.6}}}
+  pose: [2.16, 0.9, 3.14159]
+  humansim: {type: desk, capacity: 3, interaction_radius: 1.0, formation: {type: line, params: {base_step: 0.8, front_offset: 0.75}}}
 - name: exam_chair_1
   model: Hospital/Patient_Armchair
-  pose: exam_room_1
+  pose: [2.2, 6.6, -1.5708]
   humansim: {type: chair, capacity: 1, interaction_radius: 0.8}
 - name: patient_bed_1
   model: Hospital/Isolation_Bed
-  pose: patient_ward
+  pose: [2.1, 15.0, 3.14159]
   humansim: {type: patient_bed, capacity: 1, interaction_radius: 1.2}
 humans:
 - name: nurse_1
@@ -42,12 +42,12 @@ humans:
   model: Office/office_female_caucasian_young
   pose: {x: 10.0, y: 0.8}
   agent: {agent_type: ./queue_patient.yaml, desired_velocity: 0.9}
-  waypoints: [[4.7, 1.0]]
+  waypoints: [[3.5, 0.55]]
 - name: queue_patient_3
   model: worker_male_african_young
   pose: {x: 10.5, y: 0.5}
   agent: {agent_type: ./queue_patient.yaml, desired_velocity: 1.0}
-  waypoints: [[5.4, 1.0]]
+  waypoints: [[7.0, 1.0]]
 - name: doctor_2
   model: Hospital/nurse_female_caucasian_young
   pose: laboratory

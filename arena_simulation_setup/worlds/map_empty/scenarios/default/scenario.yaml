@@ -12,8 +12,8 @@ humans:
   hunav: {id: 0, type: adult}
 - name: '3'
   model: arenian
-  waypoints: [[30.1, 12.2, 0.0], [8.0, 22.3, 0.0]]
-  pose: [30.1, 12.2, 0.0]
+  waypoints: [[29.5, 12.2, 0.0], [8.0, 22.3, 0.0]]
+  pose: [29.5, 12.2, 0.0]
   hunav: {id: 0, type: adult}
 robots:
 - start: [25.3, 1.25, 0.7]

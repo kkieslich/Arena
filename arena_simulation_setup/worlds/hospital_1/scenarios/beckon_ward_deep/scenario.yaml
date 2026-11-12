@@ -23,11 +23,11 @@ dynamic:
 - name: caller
   model: female_adult_business_02
   pose:
-  - 1.0
+  - 1.8
   - 18.0
   - 0.0
   agent:
     agent_type: ./caller.yaml
   waypoints:
-  - - 1.0
+  - - 1.8
     - 18.0

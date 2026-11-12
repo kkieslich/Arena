@@ -57,9 +57,9 @@ dynamic:
   waypoints: [[28.3, 5.2]]
 - name: shaker_b
   model: Common/casual_female_african_young
-  pose: [29.0, 5.2, 3.14159]
+  pose: [28.3, 5.2, 3.14159]
   agent: {agent_type: ./shaker.yaml}
-  waypoints: [[29.0, 5.2]]
+  waypoints: [[28.3, 5.2]]
 
 - name: waver_a
   model: Hospital/nurse_female_caucasian_young
