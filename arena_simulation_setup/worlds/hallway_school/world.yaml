@@ -51,9 +51,9 @@ levels:
   - {name: classroom_3_table_3, pose: [5.62, 9.54], model: Office/SM_TableD}
   - {name: classroom_3_table_4, pose: [10.28, 9.54], model: Office/SM_TableD}
   - {name: classroom_3_teacher_desk, pose: [18.07, 8.3], model: Office/SM_SecretaryDeskA}
-  - {name: canteen_table_1, pose: [40.79, 25.26], model: Office/Table_Round}
-  - {name: canteen_table_2, pose: [45.91, 25.26], model: Office/Table_Round}
-  - {name: canteen_table_3, pose: [43.35, 29.09], model: Office/Table_Round}
+  - {name: canteen_table_1, pose: [40.79, 25.26], model: Office/SM_TableRound_module}
+  - {name: canteen_table_2, pose: [45.91, 25.26], model: Office/SM_TableRound_module}
+  - {name: canteen_table_3, pose: [43.35, 29.09], model: Office/SM_TableRound_module}
   - {name: canteen_drinks_1, pose: [51.27, 23.35], model: Office/SM_DrinksMachine}
   - {name: staff_desk_1, pose: [23.63, 4.12, -1.5708], model: Office/SM_TableWorkingDouble}
   - {name: staff_bookcase_1, pose: [19.33, 10.09, 3.14159], model: Office/SM_BookcaseA}

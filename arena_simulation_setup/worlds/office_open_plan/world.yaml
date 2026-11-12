@@ -63,9 +63,9 @@ levels:
   - {name: desk_chair_1, pose: [5.6, 6.4, 1.5708], model: Office/Chair_Office}
   - {name: desk_chair_2, pose: [12.6, 6.4, 1.5708], model: Office/Chair_Office}
   - {name: desk_chair_3, pose: [19.6, 6.4, 1.5708], model: Office/Chair_Office}
-  - {name: meeting_1_table, pose: [34.0, 3.5], model: Office/Table_Round}
-  - {name: meeting_2_table, pose: [34.0, 10.5], model: Office/Table_Round}
-  - {name: kitchen_table, pose: [34.0, 17.0], model: Office/Table_Round}
+  - {name: meeting_1_table, pose: [34.0, 3.5], model: Office/SM_TableRound_module}
+  - {name: meeting_2_table, pose: [34.0, 10.5], model: Office/SM_TableRound_module}
+  - {name: kitchen_table, pose: [34.0, 17.0], model: Office/SM_TableRound_module}
   - {name: reception_sofa, pose: [0.6, 24.0, 3.14159], model: Office/Sofa}
   - {name: focus_desk, pose: [16.0, 27.4, 1.5708], model: Office/SM_SecretaryDeskA}
   - {name: wc_toilet_1, pose: [24.0, 27.4, 1.5708], model: Office/SM_Toilet}
