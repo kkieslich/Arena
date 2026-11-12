@@ -76,6 +76,6 @@ levels:
   - {name: cafe_table_2, pose: [23.0, 4.0], model: Office/Table_Round}
   - {name: study_1_table, pose: [29.5, 26.4], model: Office/Table_Round}
   - {name: study_2_table, pose: [36.5, 26.4], model: Office/Table_Round}
-  - {name: office_desk_1, pose: [26.6, 14.0, 3.14159], model: Office/Table_Work_Security}
+  - {name: office_desk_1, pose: [26.6, 14.0, 3.14159], model: Office/SM_TableWorkingDouble}
   - {name: wc_toilet_1, pose: [39.4, 15.0], model: Office/SM_Toilet}
   - {name: storage_rack_1, pose: [39.4, 10.0], model: Office/SM_Rack}

@@ -65,7 +65,7 @@ levels:
   - {name: reception_cabinet_1, pose: [0.6, 6.0, 3.14159], model: Hospital/SM_MedicalCabinet_01a}
   - {name: wc_toilet_1, pose: [15.7, 4.2, -1.5708], model: Hospital/SM_Toilet}
   - {name: wc_washbasin_1, pose: [18.7, 8.0], model: Hospital/SM_Washbasin}
-  - {name: staff_desk_1, pose: [23.4, 5.0], model: Office/Table_Work_Security}
+  - {name: staff_desk_1, pose: [23.4, 5.0], model: Office/SM_TableWorkingDouble}
   - {name: staff_chair_1, pose: [23.4, 6.2, 1.5708], model: Office/Chair_Office}
   - {name: staff_chair_2, pose: [23.4, 3.8, -1.5708], model: Office/Chair_Office}
   - {name: meeting_table_1, pose: [33.5, 7.0], model: Office/Table_Round}

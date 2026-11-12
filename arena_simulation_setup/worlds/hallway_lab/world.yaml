@@ -72,7 +72,7 @@ levels:
   - {name: lab_5_table_1, pose: [24.7, 7.35], model: Hospital/Instrument_Table}
   - {name: lab_6_bench_1, pose: [48.79, 2.93, -1.5708], model: Hospital/Lab_Bench}
   - {name: lab_6_table_1, pose: [50.45, 6.9], model: Hospital/Instrument_Table}
-  - {name: office_d_desk_1, pose: [39.6, 23.17, 1.5708], model: Office/Table_Work_Security}
+  - {name: office_d_desk_1, pose: [39.6, 23.17, 1.5708], model: Office/SM_TableWorkingDouble}
   - {name: break_table_1, pose: [50.05, 19.05], model: Office/Table_Round}
   - {name: break_drinks_1, pose: [55.48, 17.24], model: Office/SM_DrinksMachine}
   - {name: reception_sofa_1, pose: [0.62, 6.55, 3.14159], model: Office/Sofa}
