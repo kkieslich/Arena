@@ -293,132 +293,132 @@ levels:
   - {name: wc1_hand_dryer2, pose: {x: 48.05, y: 18.5, z: 0.8}, model: Office/SM_HandDryer}
   - {name: wc1_trash1, pose: [48.24, 14.25], model: Office/SM_TrashCan}
   - {name: wc1_trash2, pose: [59.8, 14.25], model: Office/SM_TrashCan}
-  - {name: office_desk_1_1, pose: [22.0, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
-  - {name: office_desk_1_2, pose: [23.7, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_1, pose: [22.0, 17.0, 1.5708], model: Office/Table_Work_Security}
+  - {name: office_desk_1_2, pose: [23.7, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_2_a, pose: [23.7, 15.5, 1.4], model: Office/Chair_Office}
   - {name: office_chair_1_2_b, pose: [23.7, 18.5, -2.5], model: Office/Chair_Office}
   - {name: office_monitor_1_2_a, pose: {x: 23.7, y: 16.8, z: 0.74, yaw: -1.041595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_2_a, pose: {x: 23.7, y: 16.4, z: 0.75, yaw: 1.8}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_2_b, pose: {x: 23.7, y: 17.2, z: 0.74, yaw: 0.84159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_2_b, pose: {x: 23.7, y: 17.6, z: 0.75, yaw: -1.9}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_3, pose: [25.4, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_3, pose: [25.4, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_3_a, pose: [25.4, 15.5, 0.7], model: Office/Chair_Office}
   - {name: office_chair_1_3_b, pose: [25.4, 18.5, -1.6], model: Office/Chair_Office}
   - {name: office_monitor_1_3_a, pose: {x: 25.4, y: 16.8, z: 0.74, yaw: -1.841595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_3_a, pose: {x: 25.4, y: 16.4, z: 0.75, yaw: 0.9}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_3_b, pose: {x: 25.4, y: 17.2, z: 0.74, yaw: 1.34159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_3_b, pose: {x: 25.4, y: 17.6, z: 0.75, yaw: -2.4}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_4, pose: [27.1, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_4, pose: [27.1, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_4_a, pose: [27.1, 15.5, 2.6], model: Office/Chair_Office}
   - {name: office_chair_1_4_b, pose: [27.1, 18.5, -0.9], model: Office/Chair_Office}
   - {name: office_monitor_1_4_a, pose: {x: 27.1, y: 16.8, z: 0.74, yaw: -0.441595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_4_a, pose: {x: 27.1, y: 16.4, z: 0.75, yaw: 2.3}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_4_b, pose: {x: 27.1, y: 17.2, z: 0.74, yaw: 1.94159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_4_b, pose: {x: 27.1, y: 17.6, z: 0.75, yaw: -0.8}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_5, pose: [31.0, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
-  - {name: office_desk_1_6, pose: [32.7, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_5, pose: [31.0, 17.0, 1.5708], model: Office/Table_Work_Security}
+  - {name: office_desk_1_6, pose: [32.7, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_6_a, pose: [32.7, 15.5, 1.6], model: Office/Chair_Office}
   - {name: office_chair_1_6_b, pose: [32.7, 18.5, -2.1], model: Office/Chair_Office}
   - {name: office_monitor_1_6_a, pose: {x: 32.7, y: 16.8, z: 0.74, yaw: -1.241595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_6_a, pose: {x: 32.7, y: 16.4, z: 0.75, yaw: 1.5}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_6_b, pose: {x: 32.7, y: 17.2, z: 0.74, yaw: 0.44159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_6_b, pose: {x: 32.7, y: 17.6, z: 0.75, yaw: -2.3}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_7, pose: [34.4, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_7, pose: [34.4, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_7_a, pose: [34.4, 15.5, 2.4], model: Office/Chair_Office}
   - {name: office_chair_1_7_b, pose: [34.4, 18.5, -1.4], model: Office/Chair_Office}
   - {name: office_monitor_1_7_a, pose: {x: 34.4, y: 16.8, z: 0.74, yaw: -0.341595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_7_a, pose: {x: 34.4, y: 16.4, z: 0.75, yaw: 2.4}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_7_b, pose: {x: 34.4, y: 17.2, z: 0.74, yaw: 1.64159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_7_b, pose: {x: 34.4, y: 17.6, z: 0.75, yaw: -1.1}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_8, pose: [36.1, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_8, pose: [36.1, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_8_a, pose: [36.1, 15.5, 1.1], model: Office/Chair_Office}
   - {name: office_chair_1_8_b, pose: [36.1, 18.5, -2.8], model: Office/Chair_Office}
   - {name: office_monitor_1_8_a, pose: {x: 36.1, y: 16.8, z: 0.74, yaw: -1.541595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_8_a, pose: {x: 36.1, y: 16.4, z: 0.75, yaw: 1.2}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_8_b, pose: {x: 36.1, y: 17.2, z: 0.74, yaw: 0.24159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_8_b, pose: {x: 36.1, y: 17.6, z: 0.75, yaw: -2.5}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_9, pose: [37.0, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
-  - {name: office_desk_1_10, pose: [38.7, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_9, pose: [37.0, 17.0, 1.5708], model: Office/Table_Work_Security}
+  - {name: office_desk_1_10, pose: [38.7, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_10_a, pose: [38.7, 15.5, 1.9], model: Office/Chair_Office}
   - {name: office_chair_1_10_b, pose: [38.7, 18.5, -2.6], model: Office/Chair_Office}
   - {name: office_monitor_1_10_a, pose: {x: 38.7, y: 16.8, z: 0.74, yaw: -0.941595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_10_a, pose: {x: 38.7, y: 16.4, z: 0.75, yaw: 1.7}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_10_b, pose: {x: 38.7, y: 17.2, z: 0.74, yaw: 0.54159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_10_b, pose: {x: 38.7, y: 17.6, z: 0.75, yaw: -2.2}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_11, pose: [40.4, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_11, pose: [40.4, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_11_a, pose: [40.4, 15.5, 2.8], model: Office/Chair_Office}
   - {name: office_chair_1_11_b, pose: [40.4, 18.5, -1.5], model: Office/Chair_Office}
   - {name: office_monitor_1_11_a, pose: {x: 40.4, y: 16.8, z: 0.74, yaw: -0.241595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_11_a, pose: {x: 40.4, y: 16.4, z: 0.75, yaw: 2.5}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_11_b, pose: {x: 40.4, y: 17.2, z: 0.74, yaw: 1.74159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_11_b, pose: {x: 40.4, y: 17.6, z: 0.75, yaw: -1.0}, model: Office/SM_Keyboard}
-  - {name: office_desk_1_12, pose: [42.1, 17.0, 1.5708], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_1_12, pose: [42.1, 17.0, 1.5708], model: Office/Table_Work_Security}
   - {name: office_chair_1_12_a, pose: [42.1, 15.5, 0.8], model: Office/Chair_Office}
   - {name: office_chair_1_12_b, pose: [42.1, 18.5, -1.8], model: Office/Chair_Office}
   - {name: office_monitor_1_12_a, pose: {x: 42.1, y: 16.8, z: 0.74, yaw: -1.641595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_12_a, pose: {x: 42.1, y: 16.4, z: 0.75, yaw: 1.1}, model: Office/SM_Keyboard}
   - {name: office_monitor_1_12_b, pose: {x: 42.1, y: 17.2, z: 0.74, yaw: 1.44159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_1_12_b, pose: {x: 42.1, y: 17.6, z: 0.75, yaw: -1.6}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_1, pose: [22.0, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
-  - {name: office_desk_2_2, pose: [23.7, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_1, pose: [22.0, 22.0, -1.570795], model: Office/Table_Work_Security}
+  - {name: office_desk_2_2, pose: [23.7, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_2_a, pose: [23.7, 20.5, 2.2], model: Office/Chair_Office}
   - {name: office_chair_2_2_b, pose: [23.7, 23.5, -1.8], model: Office/Chair_Office}
   - {name: office_monitor_2_2_a, pose: {x: 23.7, y: 21.8, z: 0.74, yaw: -0.641595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_2_a, pose: {x: 23.7, y: 21.4, z: 0.75, yaw: 2.1}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_2_b, pose: {x: 23.7, y: 22.2, z: 0.74, yaw: 1.14159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_2_b, pose: {x: 23.7, y: 22.6, z: 0.75, yaw: -1.6}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_3, pose: [25.4, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_3, pose: [25.4, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_3_a, pose: [25.4, 20.5, 1.3], model: Office/Chair_Office}
   - {name: office_chair_2_3_b, pose: [25.4, 23.5, -2.6], model: Office/Chair_Office}
   - {name: office_monitor_2_3_a, pose: {x: 25.4, y: 21.8, z: 0.74, yaw: -1.441595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_3_a, pose: {x: 25.4, y: 21.4, z: 0.75, yaw: 1.3}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_3_b, pose: {x: 25.4, y: 22.2, z: 0.74, yaw: 0.34159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_3_b, pose: {x: 25.4, y: 22.6, z: 0.75, yaw: -2.4}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_4, pose: [27.1, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_4, pose: [27.1, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_4_a, pose: [27.1, 20.5, 2.9], model: Office/Chair_Office}
   - {name: office_chair_2_4_b, pose: [27.1, 23.5, -1.0], model: Office/Chair_Office}
   - {name: office_monitor_2_4_a, pose: {x: 27.1, y: 21.8, z: 0.74, yaw: -0.141595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_4_a, pose: {x: 27.1, y: 21.4, z: 0.75, yaw: 2.6}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_4_b, pose: {x: 27.1, y: 22.2, z: 0.74, yaw: 1.84159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_4_b, pose: {x: 27.1, y: 22.6, z: 0.75, yaw: -0.9}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_5, pose: [31.0, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
-  - {name: office_desk_2_6, pose: [32.7, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_5, pose: [31.0, 22.0, -1.570795], model: Office/Table_Work_Security}
+  - {name: office_desk_2_6, pose: [32.7, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_6_a, pose: [32.7, 20.5, 2.0], model: Office/Chair_Office}
   - {name: office_chair_2_6_b, pose: [32.7, 23.5, -2.2], model: Office/Chair_Office}
   - {name: office_monitor_2_6_a, pose: {x: 32.7, y: 21.8, z: 0.74, yaw: -0.841595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_6_a, pose: {x: 32.7, y: 21.4, z: 0.75, yaw: 1.9}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_6_b, pose: {x: 32.7, y: 22.2, z: 0.74, yaw: 0.74159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_6_b, pose: {x: 32.7, y: 22.6, z: 0.75, yaw: -2.0}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_7, pose: [34.4, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_7, pose: [34.4, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_7_a, pose: [34.4, 20.5, 1.5], model: Office/Chair_Office}
   - {name: office_chair_2_7_b, pose: [34.4, 23.5, -1.7], model: Office/Chair_Office}
   - {name: office_monitor_2_7_a, pose: {x: 34.4, y: 21.8, z: 0.74, yaw: -1.341595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_7_a, pose: {x: 34.4, y: 21.4, z: 0.75, yaw: 1.4}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_7_b, pose: {x: 34.4, y: 22.2, z: 0.74, yaw: 1.24159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_7_b, pose: {x: 34.4, y: 22.6, z: 0.75, yaw: -1.5}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_8, pose: [36.1, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_8, pose: [36.1, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_8_a, pose: [36.1, 20.5, 2.7], model: Office/Chair_Office}
   - {name: office_chair_2_8_b, pose: [36.1, 23.5, -1.3], model: Office/Chair_Office}
   - {name: office_monitor_2_8_a, pose: {x: 36.1, y: 21.8, z: 0.74, yaw: -0.241595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_8_a, pose: {x: 36.1, y: 21.4, z: 0.75, yaw: 2.5}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_8_b, pose: {x: 36.1, y: 22.2, z: 0.74, yaw: 1.74159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_8_b, pose: {x: 36.1, y: 22.6, z: 0.75, yaw: -1.0}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_9, pose: [37.0, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
-  - {name: office_desk_2_10, pose: [38.7, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_9, pose: [37.0, 22.0, -1.570795], model: Office/Table_Work_Security}
+  - {name: office_desk_2_10, pose: [38.7, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_10_a, pose: [38.7, 20.5, 1.7], model: Office/Chair_Office}
   - {name: office_chair_2_10_b, pose: [38.7, 23.5, -2.4], model: Office/Chair_Office}
   - {name: office_monitor_2_10_a, pose: {x: 38.7, y: 21.8, z: 0.74, yaw: -1.041595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_10_a, pose: {x: 38.7, y: 21.4, z: 0.75, yaw: 1.8}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_10_b, pose: {x: 38.7, y: 22.2, z: 0.74, yaw: 0.84159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_10_b, pose: {x: 38.7, y: 22.6, z: 0.75, yaw: -1.9}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_11, pose: [40.4, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_11, pose: [40.4, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_11_a, pose: [40.4, 20.5, 2.3], model: Office/Chair_Office}
   - {name: office_chair_2_11_b, pose: [40.4, 23.5, -1.2], model: Office/Chair_Office}
   - {name: office_monitor_2_11_a, pose: {x: 40.4, y: 21.8, z: 0.74, yaw: -0.541595}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_11_a, pose: {x: 40.4, y: 21.4, z: 0.75, yaw: 2.2}, model: Office/SM_Keyboard}
   - {name: office_monitor_2_11_b, pose: {x: 40.4, y: 22.2, z: 0.74, yaw: 1.54159}, model: Office/SM_MonitorPC}
   - {name: office_keyboard_2_11_b, pose: {x: 40.4, y: 22.6, z: 0.75, yaw: -1.3}, model: Office/SM_Keyboard}
-  - {name: office_desk_2_12, pose: [42.1, 22.0, -1.570795], model: Office/SM_TableWorkingDouble}
+  - {name: office_desk_2_12, pose: [42.1, 22.0, -1.570795], model: Office/Table_Work_Security}
   - {name: office_chair_2_12_a, pose: [42.1, 20.5, 1.2], model: Office/Chair_Office}
   - {name: office_chair_2_12_b, pose: [42.1, 23.5, -2.9], model: Office/Chair_Office}
   - {name: office_monitor_2_12_a, pose: {x: 42.1, y: 21.8, z: 0.74, yaw: -1.341595}, model: Office/SM_MonitorPC}
