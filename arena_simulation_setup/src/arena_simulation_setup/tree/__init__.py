@@ -453,6 +453,25 @@ class NetResolver(SimplePathResolver[IdentifierT], ResolverBase[IdentifierT], ty
         return self._failures.get(str(identifier.relpath()))
 
     @staticmethod
+    def answers(identifier: Identifier) -> list[str]:
+        """What each bucket of *identifier*'s kind answered when it did not deliver it, as `bucket <name>: <answer>`: that
+        it does not hold it, or why the fetch failed (an expired token, an unreachable host)."""
+        out = []
+        for resolver in type(identifier)._resolvers:
+            if not isinstance(resolver, NetResolver):
+                continue
+            if str(identifier.relpath()) in resolver._absent:
+                out.append(f'bucket {resolver._provider}: does not hold it')
+            elif (failure := resolver.failure(identifier)) is not None:
+                out.append(f'bucket {resolver._provider}: {failure}')
+        return out
+
+    @classmethod
+    def offline(cls) -> bool:
+        """Whether no bucket is asked: the asset network is off or there is no cache directory."""
+        return cls._off()
+
+    @staticmethod
     def _reason(error: Exception) -> str:
         if isinstance(error, subprocess.CalledProcessError):
             lines = (error.stderr or b'').decode(errors='replace').strip().splitlines()

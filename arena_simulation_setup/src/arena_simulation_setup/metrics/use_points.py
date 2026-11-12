@@ -1,7 +1,7 @@
 """Whether HumanSim's crowd can reach what a world and scenario hand it: every model resolves, and every point people
 are walked to (an interactable's use point and first queue slots, seat standing points, the scenario's sources and
 sinks, the humans' starts, waypoints and go_to stops) lies within arrival distance of the floor its walkers reach, no
-wall between a queue's slots, and no room people are sent to is partly shut off.
+wall between a queue's slots, and no room people are sent to is partly shut off by objects or locked doors.
 
 The points are the ones the runtime hands HumanSim: an object's pose turned to its annotated `face` (`queue_theta`),
 HumanSim's own `LineFormation` for the queue slots, the seats and standing points of the runtime's sit slots. The floor
@@ -35,7 +35,7 @@ from arena_simulation_setup.metrics.nav_at_r import CUT_OFF_AREA, RESOLUTION, cl
 from arena_simulation_setup.shared import Obstacle
 from arena_simulation_setup.shared.semantics import authored_semantics
 from arena_simulation_setup.shared.world import CABIN_DOOR_THRESHOLD, Door
-from arena_simulation_setup.tree import Identifier
+from arena_simulation_setup.tree import Identifier, NetResolver
 from arena_simulation_setup.tree.World import Level, World, WorldView, world_assets
 from arena_simulation_setup.tree.World.model import elevator_doorway_pose
 from arena_simulation_setup.tree.World.Scenario import RegionAssignment, Scenario
@@ -89,6 +89,18 @@ class Finding:
             return f"zone {self.object} {self.why} ({self.x:.2f}, {self.y:.2f}) on level {self.level}"
         far = "no floor a walker reaches" if math.isinf(self.distance) else f"{self.distance:.2f} m from the floor a walker reaches"
         return f"{self.object}: {self.point} at ({self.x:.2f}, {self.y:.2f}) on level {self.level} {self.why}, {far} (needs < {self.reach:g} m)"
+
+
+def describe(findings: Sequence[Finding], limit: int = 10) -> str:
+    """The findings in one line: the model findings grouped by model and answer with their objects, then the point findings, each list cut at `limit`."""
+    models: dict[str, list[str]] = {}
+    for finding in findings:
+        if finding.point == "model":
+            models.setdefault(finding.why, []).append(finding.object)
+    lines = [f"model {why}, HumanSim never gets its {len(names)} object(s) and walkers pass through them: {', '.join(names[:limit])}{', ...' if len(names) > limit else ''}" for why, names in models.items()]
+    points = [str(finding) for finding in findings if finding.point != "model"]
+    lines += points[:limit] + ([f"... {len(points) - limit} more"] if len(points) > limit else [])
+    return "; ".join(lines)
 
 
 def region_point(polygon: Sequence[tuple[float, float]]) -> tuple[float, float]:
@@ -259,14 +271,14 @@ class Floor:
         gx, gy = np.meshgrid(self.origin[0] + (np.arange(c0, c1) + 0.5) * self.resolution, self.origin[1] + (rows - 1 - np.arange(r0, r1) + 0.5) * self.resolution)
         return slice(r0, r1), slice(c0, c1), gx, gy, shapely.contains_xy(polygon, gx, gy)
 
-    def cut_off(self, polygon: shapely.Polygon, parts: frozenset[int]) -> tuple[float, float, float] | None:
-        """The walkable floor of a polygon outside `parts`, its area and one of its points, None below `CUT_OFF_AREA`."""
+    def cut_off(self, polygon: shapely.Polygon, parts: frozenset[int], joined: np.ndarray) -> tuple[float, float, float] | None:
+        """The walkable floor of a polygon outside `parts` but among the `joined` cells, its area and one of its points, None below `CUT_OFF_AREA`."""
         window = self._cells(polygon)
         if window is None:
             return None
         rows, cols, gx, gy, inside = window
         labels = self.labels[rows, cols]
-        stranded = inside & (labels > 0) & ~np.isin(labels, list(parts))
+        stranded = inside & (labels > 0) & ~np.isin(labels, list(parts)) & joined[rows, cols]
         area = float(np.count_nonzero(stranded)) * self.resolution**2
         if area < CUT_OFF_AREA:
             return None
@@ -294,21 +306,29 @@ def level_floor(level: Level, boxes: Iterable[tuple[str, shapely.Polygon]], *, r
     return Floor(grid, labels, boxes, origin, resolution)
 
 
+def _unresolved(model: Identifier) -> str:
+    """Why a model does not resolve: what each asset bucket answered (it does not hold it: a stale name; an expired token,
+    an unreachable host: the machine), else that no asset root holds it."""
+    answers = NetResolver.answers(model)
+    if answers:
+        return "; ".join(answers)
+    return "the asset network is off and no asset root holds it" if NetResolver.offline() else "no asset root holds it"
+
+
 async def _annotations(objects: Sequence[Obstacle]) -> list[dict | str]:
-    """Each object's annotation as the runtime reads it, or why it has none (an empty dict for an object without a model)."""
+    """Each object's annotation as the runtime reads it (an empty dict for an object without a model or a model without an
+    annotation.yaml: a target without an obstacle), or why its model does not resolve; each model resolved once."""
 
     async def one(obstacle: Obstacle) -> dict | str:
-        if obstacle.target_only:
-            return {}
         try:
             view = await obstacle.model.resolve()
         except FileNotFoundError:
-            return f"{obstacle.model.name!r} does not resolve: HumanSim never gets the object and walkers pass through it"
-        if view.annotation is None:
-            return f"{obstacle.model.name!r} has no annotation.yaml: HumanSim never gets the object"
-        return view.annotation
+            return f"{obstacle.model.name!r} does not resolve ({_unresolved(obstacle.model)})"
+        return view.annotation or {}
 
-    return list(await asyncio.gather(*(one(obstacle) for obstacle in objects)))
+    models = {str(o.model.relpath()): o for o in objects if not o.target_only}
+    resolved = dict(zip(models, await asyncio.gather(*(one(obstacle) for obstacle in models.values())), strict=True))
+    return [{} if o.target_only else resolved[str(o.model.relpath())] for o in objects]
 
 
 def locked(door: Door) -> bool:
@@ -422,12 +442,15 @@ def check(
             points.setdefault(level_id, []).extend(object_points(obstacle, annotation if isinstance(annotation, dict) else None, stand))
 
     floors: dict[str, Floor] = {}
+    # the floor without objects and with every door open: a pocket the walls close off by themselves is no room cut off
+    bare: dict[str, Floor] = {}
     walls: dict[str, shapely.Geometry] = {}
     for level_id, level in world.levels.items():
         shut = [door for door in level.doors if locked(door)]
         boxes = [(o.name, box) for (lid, o), annotation in zip(placed, annotations, strict=True) if lid == level_id and isinstance(annotation, dict) and (box := object_box(o, annotation)) is not None]
         boxes += [(f"locked door {door.name}", shapely.LineString([(door.start.x, door.start.y), (door.end.x, door.end.y)]).buffer(RESOLUTION)) for door in shut]
         floors[level_id] = level_floor(level, boxes)
+        bare[level_id] = level_floor(level, [])
         walls[level_id] = shapely.union_all([shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in level.all_walls] + [shapely.LineString([(d.start.x, d.start.y), (d.end.x, d.end.y)]) for d in shut])
 
     def at(level_id: str, x: float, y: float) -> set[tuple[str, int]]:
@@ -478,15 +501,18 @@ def check(
                 findings.append(Finding(point.object, point.point, floor.why(point.x, point.y, point.object), level_id, point.x, point.y, distance, point.reach))
             elif point.previous is not None and _crossing(walls[level_id], point.previous, (point.x, point.y)):
                 findings.append(Finding(point.object, point.point, "lies behind a wall from the object or the queue slot before it", level_id, point.x, point.y, distance, point.reach))
-        # the zones people are sent to; with nobody sent anywhere, every zone of a scenario with demand (a crowd read from it later)
+        # the zones people are sent to; with nobody sent anywhere, every zone of a scenario with demand (a crowd read from it later);
+        # only floor that objects, locks or doors cut off counts, floor the crowd's part reaches on the bare floor
         demand = any(p.walker is None and p.point != "sink" for p in here)
+        open_parts = np.unique(bare[level_id].labels[np.isin(floor.labels, list(crowd))])
+        joined = np.isin(bare[level_id].labels, open_parts[open_parts > 0])
         for zone in world.levels[level_id].zones:
             if len(zone.polygon) < 3:
                 continue
             shape = zone.shape()
             if (starts or not demand) and not any(shape.covers(shapely.Point(p.x, p.y)) for p in here):
                 continue
-            if (cut := floor.cut_off(shape, crowd)) is not None:
+            if (cut := floor.cut_off(shape, crowd, joined)) is not None:
                 area, x, y = cut
                 findings.append(Finding(zone.name, "floor", f"has {area:.1f} m2 of floor walkers cannot reach from where they start, around", level_id, x, y, floor.distance(x, y, crowd), 0.0))
     for level_id, point, polygon in sources:
@@ -551,4 +577,4 @@ def check_world(view: WorldView, *, stand: Stand | None = None) -> list[Finding]
     return check(view, view.load(validate=False), stand=stand)
 
 
-__all__ = ["QUEUE_SLOTS", "WALKER_CLEARANCE", "Finding", "Floor", "UsePoint", "check", "check_scenario", "check_world", "level_floor", "line_slots", "agent_type", "locked", "object_box", "object_points", "region_point", "region_points", "targeted"]
+__all__ = ["QUEUE_SLOTS", "WALKER_CLEARANCE", "Finding", "Floor", "UsePoint", "check", "check_scenario", "check_world", "describe", "level_floor", "line_slots", "agent_type", "locked", "object_box", "object_points", "region_point", "region_points", "targeted"]

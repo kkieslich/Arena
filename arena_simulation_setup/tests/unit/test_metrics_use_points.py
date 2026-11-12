@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 import yaml
-from arena_simulation_setup.metrics.use_points import Finding, check_scenario, line_slots, object_points
+from arena_simulation_setup.metrics.use_points import Finding, check_scenario, describe, line_slots, object_points
 from arena_simulation_setup.shared import Obstacle
 from arena_simulation_setup.tree.World import WorldView
 from arena_simulation_setup.utils.face import front_angle, queue_theta
@@ -27,12 +27,15 @@ def _fountain(x: float, y: float, yaw: float, name: str = "fountain") -> dict[st
 
 
 def _world(tmp_path: Path, scenario: dict[str, Any], *, walls: list[list[list[float]]] = (), door: dict[str, Any] | None = None, objects: list[dict[str, Any]] = ()) -> WorldView:
-    """A 6 x 4 m room west of a 8 x 4 m hall, a 1.5 m door between them, the models as world-local assets."""
+    """A 6 x 4 m room west of a 8 x 4 m hall, a 1.5 m door between them, the models as world-local assets (a marker without annotation.yaml)."""
     root = tmp_path / "w"
-    for name, annotation in (("fountain", FOUNTAIN), ("desk", DESK)):
+    for name, annotation in (("fountain", FOUNTAIN), ("desk", DESK), ("marker", None)):
         directory = root / "assets" / "Common" / "Object" / name
         directory.mkdir(parents=True)
-        (directory / "annotation.yaml").write_text(yaml.safe_dump(annotation))
+        if annotation is None:
+            (directory / f"{name}.usdz").write_bytes(b"")
+        else:
+            (directory / "annotation.yaml").write_text(yaml.safe_dump(annotation))
     level = {
         "id": "0",
         "zones": [{"name": "room", "polygon": [[0, 0], [6, 0], [6, 4], [0, 4]]}, {"name": "hall", "polygon": [[6, 0], [14, 0], [14, 4], [6, 4]]}],
@@ -90,10 +93,36 @@ def test_a_counter_across_the_doorway_cuts_off_the_room_behind_it(tmp_path: Path
     assert ("room", "floor") in _points(findings)
 
 
-def test_a_model_that_does_not_resolve_is_named(tmp_path: Path) -> None:
-    lost = {"name": "cooler", "model": "Common/no_such_model", "pose": [3.0, 3.0, 0.0]}
-    (finding,) = check_scenario(_world(tmp_path, {"objects": [lost]}), "s")
-    assert (finding.object, finding.point) == ("cooler", "model") and "does not resolve" in finding.why and math.isnan(finding.distance)
+def test_a_model_that_does_not_resolve_is_named_once_with_what_the_buckets_answered(tmp_path: Path) -> None:
+    lost = [{"name": f"cooler_{i}", "model": "Common/no_such_model", "pose": [3.0, 1.0 + i, 0.0]} for i in range(3)]
+    findings = check_scenario(_world(tmp_path, {"objects": lost}), "s")
+    assert [(f.object, f.point) for f in findings] == [(f"cooler_{i}", "model") for i in range(3)] and all(math.isnan(f.distance) for f in findings)
+    # the test session's asset network is off
+    assert findings[0].why == "'no_such_model' does not resolve (the asset network is off and no asset root holds it)"
+    assert describe(findings, limit=2) == "model 'no_such_model' does not resolve (the asset network is off and no asset root holds it), HumanSim never gets its 3 object(s) and walkers pass through them: cooler_0, cooler_1, ..."
+
+
+def test_a_marker_without_annotation_is_a_target_without_an_obstacle(tmp_path: Path) -> None:
+    exit_sign = {"name": "exit", "model": "Common/marker", "pose": [13.8, 2.0, 0.0], "humansim": {"type": "exit"}}
+    human = {"name": "visitor", "model": "worker_male_asian_middleage", "pose": [10.0, 2.0, 0.0], "agent": {"agent_type": "./leaver.yaml"}}
+    view = _world(tmp_path, {"objects": [exit_sign], "humans": [human]})
+    leaver = {"name": "leaver", "mode": "behavior_tree", "initial_sequence": "leave", "sequences": {"leave": {"steps": {"out": {"kind": "go_to", "target": "exit"}}}}}
+    (view.path / "scenarios" / "s" / "leaver.yaml").write_text(yaml.safe_dump(leaver))
+    assert check_scenario(view, "s") == []
+    exit_sign["pose"] = [16.0, 2.0, 0.0]
+    (view.path / "scenarios" / "s" / "scenario.yaml").write_text(yaml.safe_dump({"format": "arena-scenario/2", "objects": [exit_sign], "humans": [human]}))
+    (finding,) = check_scenario(view, "s")
+    assert (finding.object, finding.point) == ("exit", "target")
+
+
+def test_a_pocket_the_walls_close_off_by_themselves_is_no_room_cut_off(tmp_path: Path) -> None:
+    # a 2.5 x 3.5 m closet in the hall's corner without a door (4.8 m2 of walkable floor) and a sink in the hall: nobody is sent into the closet
+    sink = {"out": {"type": "sink", "polygon": [{"x": 8.0, "y": 2.5}, {"x": 9.0, "y": 2.5}, {"x": 9.0, "y": 3.5}, {"x": 8.0, "y": 3.5}]}}
+    assert check_scenario(_world(tmp_path / "walls", {"regions": sink}, walls=[[[11.5, 0.0], [11.5, 3.5], [14.0, 3.5]]]), "s") == []
+    # the same closet shut by desks across its opening instead of a wall counts
+    desks = [{"name": f"desk_{i}", "model": "Common/desk", "pose": [11.5, y, math.pi / 2]} for i, y in enumerate((0.5, 1.5, 2.5, 3.0))]
+    findings = check_scenario(_world(tmp_path / "desks", {"regions": sink, "objects": desks}, walls=[[[11.5, 3.5], [14.0, 3.5]]]), "s")
+    assert [(f.object, f.point) for f in findings] == [("hall", "floor")]
 
 
 def test_a_walker_reaches_only_the_floor_it_starts_on(tmp_path: Path) -> None:

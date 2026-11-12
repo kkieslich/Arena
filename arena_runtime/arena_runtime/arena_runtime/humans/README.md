@@ -363,7 +363,10 @@ At every episode start of a scenario task, `ArenaHumanSimulator.check_scenario` 
 [`use_points.check`](../../../../arena_simulation_setup/src/arena_simulation_setup/metrics/use_points.py) on the world
 and the loaded scenario and fails the episode (`ScenarioCheckError`) naming every finding: a model that does not
 resolve, or a point the crowd cannot reach (a sought object's use point and first queue slots, a seat's standing point,
-a source, a sink, a human's start, waypoints and go_to stops, a room people are sent to). `human.check:=false` skips it.
+a source, a sink, a human's start, waypoints and go_to stops, a room people are sent to). The error groups the models
+that do not resolve by model, with each bucket's answer (it does not hold the model, or why the fetch failed), and
+lists the points. `human.check:=false` skips the check, `human.check.models:=warn` lets models that do not resolve
+pass with one warning per model. Any other error inside the check fails the reset too.
 
 ```yaml
 objects:

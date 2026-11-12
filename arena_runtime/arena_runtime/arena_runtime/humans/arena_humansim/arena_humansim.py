@@ -491,6 +491,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._seat_slots: dict[str, list[AffordanceSlot]] = {}
         self._seats: dict[str, list[Seat]] = {}
         self._warned_faces: set[str] = set()
+        self._warned_models: set[str] = set()
         self._seat_holds: dict[int, SeatHold] = {}
         self._supports: dict[int, Support] = {}
         self._seat_violation_reported = False
@@ -1220,12 +1221,19 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return use_points.region_point([(p.x, p.y) for p in polygon])
 
     async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
-        """Raise ScenarioCheckError listing what of `scenario` the crowd cannot reach (`use_points.check`), unless `human.check` is off."""
+        """Raise ScenarioCheckError listing what of `scenario` the crowd cannot reach (`use_points.check`), unless `human.check` is
+        off; models that do not resolve only warn, once per model, under `human.check.models:=warn`."""
         if not self.node.conf.Human.CHECK.value:
             return
         findings = await asyncio.to_thread(use_points.check, view, world, scenario, scenario_dir=scenario_dir, origins=origins, stand=seat_stand)
+        if self.node.conf.Human.CHECK_MODELS.value == "warn":
+            models = [f for f in findings if f.point == "model" and f.why not in self._warned_models]
+            self._warned_models.update(f.why for f in models)
+            if models:
+                self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r} (human.check.models:=warn): {use_points.describe(models)}")
+            findings = [f for f in findings if f.point != "model"]
         if findings:
-            raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {len(findings)} finding(s), fix them or launch with human.check:=false: " + "; ".join(map(str, findings)))
+            raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {use_points.describe(findings)}. Fix them, or launch with human.check:=false (human.check.models:=warn lets models that do not resolve pass)")
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
         """Add the regions one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.

@@ -1573,7 +1573,9 @@ for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'defau
 ```
 
 - Every model resolves, else HumanSim never gets the object and walkers walk
-  through it.
+  through it; the finding names what each asset bucket answered. A model that
+  resolves without an annotation.yaml (a marker) is a target without an
+  obstacle, as at runtime, and passes.
 - The points people are walked to lie within arrival distance (HumanSim's
   0.5 m) of floor their walkers reach: the use point and first three queue slots
   of a sought object's `line` formation, from its pose turned to its annotated
@@ -1587,7 +1589,8 @@ for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'defau
   parts elevators, stair halves and the scenario's teleport zones join to it.
 - No room people are sent to (every room of a scenario with demand and no crowd
   of its own, as FLOWEDIT's) has more than 2 m^2 of floor cut off from the
-  parts the crowd starts in.
+  parts the crowd starts in by objects or locked doors; a pocket
+  the walls close off by themselves does not count.
 
 Turn an object so its annotated front faces into the room, or move it along
 the wall, until its findings are gone.
