@@ -17,6 +17,9 @@ EXPECTED = {
     "task.episode.goto_pose.signal",
     "task.episode.node_ping.period",
     "task.episode.node_ping.misses",
+    "task.episode.battery.capacity_wh",
+    "task.episode.battery.soc.min",
+    "task.episode.battery.soc.max",
 }
 
 

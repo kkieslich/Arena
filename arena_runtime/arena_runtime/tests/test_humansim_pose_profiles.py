@@ -13,6 +13,7 @@ from arena_humansim.core.interaction_kinds import InteractionType
 from arena_humansim_msgs.msg import AgentMeta
 from arena_people_msgs.msg import Pedestrian
 
+from arena_runtime.env.realizer import Realizer
 from arena_runtime.humans.arena_humansim.arena_humansim import ArenaHumanSimulator
 from arena_runtime.humans import hands
 from arena_runtime.humans.hands import Grip, grasp, held_pose
@@ -44,6 +45,7 @@ def _adapter() -> ArenaHumanSimulator:
     adapter._pose_profiles = {}
     adapter._agent_types = {}
     adapter._agent_type_paths = {}
+    adapter._realizer = Realizer(Realizer._Configuration(x=0.0, y=0.0, prefix=""))
     return adapter
 
 
