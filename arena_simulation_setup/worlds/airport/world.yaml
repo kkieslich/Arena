@@ -41,9 +41,9 @@ levels:
   - {name: Checkin_Desk_01, pose: [5.0, 6.0], model: Hospital/SM_ReceptionDesk_01a}
   - {name: Checkin_Desk_02, pose: [5.0, 16.0], model: Hospital/SM_ReceptionDesk_01a}
   - {name: Checkin_Desk_03, pose: [5.0, 26.0], model: Hospital/SM_ReceptionDesk_01a}
-  - {name: Checkin_chair_01, pose: [5.5, 4.2], model: Office/SM_ChairOffice}
-  - {name: Checkin_chair_02, pose: [5.5, 14.2], model: Office/SM_ChairOffice}
-  - {name: Checkin_chair_03, pose: [5.5, 24.2], model: Office/SM_ChairOffice}
+  - {name: Checkin_chair_01, pose: [5.5, 4.2], model: Office/Chair_Office}
+  - {name: Checkin_chair_02, pose: [5.5, 14.2], model: Office/Chair_Office}
+  - {name: Checkin_chair_03, pose: [5.5, 24.2], model: Office/Chair_Office}
   - {name: Reception_desk_corner_01, pose: [22.5, 12.0, 3.14], model: Office/SM_ReceptionTableCornerOutside}
   - {name: Reception_desk_corner_02, pose: [22.5, 18.0, -1.57], model: Office/SM_ReceptionTableCornerOutside}
   - {name: Reception_desk_straight_01, pose: [23.5, 14.0, 3.14], model: Office/SM_ReceptionTableStraight}

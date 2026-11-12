@@ -56,13 +56,13 @@ levels:
   - {name: reception_sofa_1, pose: [0.62, 21.09, 3.14159], model: Office/SM_Sofa}
   - {name: reception_plant_1, pose: [11.08, 24.28], model: Office/SM_Plant01}
   - {name: office_a_desk_1, pose: [16.15, 21.97], model: Office/SM_TableWorkingDouble}
-  - {name: office_a_chair_1, pose: [16.15, 23.37, 1.5708], model: Office/SM_ChairOffice}
+  - {name: office_a_chair_1, pose: [16.15, 23.37, 1.5708], model: Office/Chair_Office}
   - {name: office_a_cabinet_1, pose: [16.15, 25.57, 1.5708], model: Office/SM_FileCabinet_01}
   - {name: office_b_desk_1, pose: [24.55, 22.19], model: Office/SM_TableWorkingDouble}
   - {name: office_b_bookcase_1, pose: [22.98, 25.97, 1.5708], model: Office/SM_BookcaseA}
   - {name: meeting_1_table_1, pose: [32.1, 22.02], model: Office/SM_TableRound_module}
-  - {name: meeting_1_chair_1, pose: [32.1, 23.91, 1.5708], model: Office/SM_ChairOffice}
-  - {name: meeting_1_chair_2, pose: [32.1, 20.13, -1.5708], model: Office/SM_ChairOffice}
+  - {name: meeting_1_chair_1, pose: [32.1, 23.91, 1.5708], model: Office/Chair_Office}
+  - {name: meeting_1_chair_2, pose: [32.1, 20.13, -1.5708], model: Office/Chair_Office}
   - {name: kitchen_table_1, pose: [40.62, 22.5], model: Office/SM_TableRound_module}
   - {name: kitchen_drinks_1, pose: [39.4, 27.57, 1.5708], model: Office/SM_DrinksMachine}
   - {name: open_desk_1, pose: [3.34, 6.07], model: Office/SM_TableWorkingDouble}
