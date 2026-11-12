@@ -57,8 +57,8 @@ levels:
   - {name: exam_2_washbasin_1, pose: [21.1, 20.0, 3.14159], model: Hospital/SM_Washbasin}
   - {name: cafeteria_table_1, pose: [33.0, 20.0], model: Office/SM_TableRound_module}
   - {name: cafeteria_table_2, pose: [36.5, 22.5], model: Office/SM_TableRound_module}
-  - {name: cafeteria_chair_1, pose: [33.0, 21.0, 1.5708], model: Office/Chair}
-  - {name: cafeteria_chair_2, pose: [36.5, 23.5, 1.5708], model: Office/Chair}
+  - {name: cafeteria_chair_1, pose: [33.0, 21.0, 1.5708], model: Office/SM_Chair}
+  - {name: cafeteria_chair_2, pose: [36.5, 23.5, 1.5708], model: Office/SM_Chair}
   - {name: cafeteria_drinks_1, pose: [39.4, 19.0], model: Hospital/SM_DrinksMachine}
   - {name: reception_counter_1, pose: [9.5, 3.5], model: Hospital/SM_ReceptionDesk_01a}
   - {name: reception_chair_1, pose: [6.0, 3.0, -1.5708], model: Hospital/SM_Chair_02a}
