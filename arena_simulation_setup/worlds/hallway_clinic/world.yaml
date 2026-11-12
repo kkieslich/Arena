@@ -55,8 +55,8 @@ levels:
   - {name: exam_2_bed_1, pose: [24.5, 23.9, 1.5708], model: Hospital/SM_HospitalBed_02d}
   - {name: exam_2_cabinet_1, pose: [28.1, 20.0], model: Hospital/SM_MedicalCabinet_01a}
   - {name: exam_2_washbasin_1, pose: [21.1, 20.0, 3.14159], model: Hospital/SM_Washbasin}
-  - {name: cafeteria_table_1, pose: [33.0, 20.0], model: Office/SM_TableRound_module}
-  - {name: cafeteria_table_2, pose: [36.5, 22.5], model: Office/SM_TableRound_module}
+  - {name: cafeteria_table_1, pose: [33.0, 20.0], model: Office/Table_Round}
+  - {name: cafeteria_table_2, pose: [36.5, 22.5], model: Office/Table_Round}
   - {name: cafeteria_chair_1, pose: [33.0, 21.0, 1.5708], model: Office/Chair}
   - {name: cafeteria_chair_2, pose: [36.5, 23.5, 1.5708], model: Office/Chair}
   - {name: cafeteria_drinks_1, pose: [39.4, 19.0], model: Hospital/SM_DrinksMachine}
@@ -68,7 +68,7 @@ levels:
   - {name: staff_desk_1, pose: [23.4, 5.0], model: Office/SM_TableWorkingDouble}
   - {name: staff_chair_1, pose: [23.4, 6.2, 1.5708], model: Office/SM_ChairOffice}
   - {name: staff_chair_2, pose: [23.4, 3.8, -1.5708], model: Office/SM_ChairOffice}
-  - {name: meeting_table_1, pose: [33.5, 7.0], model: Office/SM_TableRound_module}
+  - {name: meeting_table_1, pose: [33.5, 7.0], model: Office/Table_Round}
   - {name: meeting_chair_1, pose: [33.5, 8.0, 1.5708], model: Office/SM_ChairOffice}
   - {name: meeting_chair_2, pose: [33.5, 6.0, -1.5708], model: Office/SM_ChairOffice}
   - {name: hallway_plant_1, pose: [20.0, 15.4], model: Office/SM_Plant01}
