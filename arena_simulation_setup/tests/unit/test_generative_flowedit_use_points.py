@@ -46,20 +46,20 @@ def test_a_move_whose_use_point_lands_in_the_reception_counter_is_refused(tmp_pa
     assert refusal(site, apply(site, EditType.MOVE, "obj:fountain", {"x": 11.0, "y": 10.0, "yaw": 1.57}), {"fountain"}) is None
 
 
-def _site(tmp_path: Path, walls: list[list[list[float]]] = (), objects: list[dict[str, Any]] = ()) -> Site:
-    """A 6 x 8 m room west of a 6 x 8 m hall joined by a door, a fountain on the hall's east wall facing west."""
+def _site(tmp_path: Path, walls: list[list[list[float]]] = (), objects: list[dict[str, Any]] = (), *, east: float = 12.0, fountain: tuple[float, float, float] = (11.75, 6.0, math.pi)) -> Site:
+    """A 6 x 8 m room west of a hall up to `east` joined by a door, a fountain (by default on the hall's east wall facing west)."""
     root = tmp_path / "w"
     for name, annotation in (("fountain", DISPENSER), ("desk", DESK)):
         _asset(root / "assets", f"Common/{name}", annotation)
     level = {
         "id": "0",
-        "zones": [{"name": "room", "polygon": [[0, 0], [6, 0], [6, 8], [0, 8]]}, {"name": "hall", "polygon": [[6, 0], [12, 0], [12, 8], [6, 8]]}],
-        "walls": [{"path": [[0, 0], [12, 0], [12, 8], [0, 8]], "closed": True}, {"path": [[6, 0], [6, 8]]}, *({"path": path} for path in walls)],
+        "zones": [{"name": "room", "polygon": [[0, 0], [6, 0], [6, 8], [0, 8]]}, {"name": "hall", "polygon": [[6, 0], [east, 0], [east, 8], [6, 8]]}],
+        "walls": [{"path": [[0, 0], [east, 0], [east, 8], [0, 8]], "closed": True}, {"path": [[6, 0], [6, 8]]}, *({"path": path} for path in walls)],
         "doors": [{"name": "door", "span": [[6, 1.0], [6, 2.5]]}],
         "objects": list(objects),
     }
     (root / "world.yaml").write_text(yaml.safe_dump({"format": "arena-world/2", "levels": [level]}))
-    fountain = {"name": "fountain", "model": "Common/fountain", "pose": [11.75, 6.0, math.pi], "humansim": {"type": "fountain", "capacity": 1, "satisfies": {"thirst": 100.0}, "formation": LINE}}
+    fountain = {"name": "fountain", "model": "Common/fountain", "pose": list(fountain), "humansim": {"type": "fountain", "capacity": 1, "satisfies": {"thirst": 100.0}, "formation": LINE}}
     (root / "scenarios" / "demand").mkdir(parents=True)
     (root / "scenarios" / "demand" / "scenario.yaml").write_text(yaml.safe_dump({"format": "arena-scenario/2", "objects": [fountain]}))
     return open_site(root, "demand")
@@ -112,3 +112,26 @@ def test_a_left_behind_demand_node_is_queued_where_the_model_was(tmp_path: Path)
     node = read_graph(moved.graph).objects["fountain_demand"]
     points = object_points(Obstacle.parse({"name": "fountain_demand", "model": "", "pose": [node.x, node.y, node.yaw], "humansim": node.block()}), None)
     assert [(round(p.x, 3), round(p.y, 3)) for p in points] == [(round(10.95 - k, 3), 6.0) for k in range(4)]
+
+
+def test_a_lock_that_shuts_the_fountains_room_is_refused(tmp_path: Path) -> None:
+    site = _site(tmp_path, east=16.0, fountain=(0.25, 6.0, 0.0))
+    assert site_findings(site) == []
+    why = refusal(site, apply(site, EditType.ACCESS, "door:door", {"locked": True}), set())
+    assert why is not None and why.startswith("fountain: use point")
+
+
+def test_a_door_move_behind_a_desk_is_refused(tmp_path: Path) -> None:
+    desk = {"name": "desk", "model": "Common/desk", "pose": [6.6, 5.75, math.pi / 2]}
+    site = _site(tmp_path, objects=[desk], east=16.0, fountain=(0.25, 6.0, 0.0))
+    assert site_findings(site) == []
+    assert refusal(site, apply(site, EditType.LAYOUT, "door:door", {"op": "move", "offset": [0.0, -0.5]}), set()) is None
+    why = refusal(site, apply(site, EditType.LAYOUT, "door:door", {"op": "move", "offset": [0.0, 4.0]}), set())
+    assert why is not None and why.startswith("fountain: use point")
+
+
+def test_an_inert_copy_in_front_of_the_fountain_is_refused(tmp_path: Path) -> None:
+    site = _site(tmp_path)
+    copy = apply(site, EditType.INSERT, "obj:fountain_inert", {"model": "Common/fountain", "x": 10.95, "y": 6.0, "yaw": 0.0})
+    why = refusal(site, copy, {"fountain_inert"})
+    assert why is not None and why.startswith("fountain: use point at (10.95, 6.00)") and "inside the box of fountain_inert" in why
