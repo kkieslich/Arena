@@ -13,9 +13,13 @@ some walker starts in: a free pocket behind a desk does not count.
 
 Near walls and boxes a walker stops short of the floor's edge: HumanSim routes it `route_clearance` from them (its
 radius plus `CLEARANCE_MARGIN`) where it can, and a walker that stops there (the front of a queue) is up to the
-difference further from a point inside the inflation band. A point that only HumanSim's narrowest routes reach, past
-walls or objects closer than a walker's route clearance, is a detour (`Finding.detour`): HumanSim takes any route that
-keeps the clearance first, outside the building too where the runtime leaves its outside open (`Level.outside_walls`).
+difference further from a point inside the inflation band. A walker whose radius the scenario does not fix gets one
+drawn by HumanSim from its agent type; where it stops, the check takes it `RADIUS_SD` standard deviations above the
+type's mean, so a point holds for the larger walkers too (an adult, drawn 0.25 +- 0.02 m, stops 0.55 m off). A point that
+only HumanSim's narrowest routes reach, past walls or objects closer than a walker's route clearance (at its type's mean
+radius), is a detour (`Finding.detour`): HumanSim takes any route that keeps the clearance first, outside the building
+too where the runtime leaves its outside open (`Level.outside_walls`). A larger walker that has no route at its own
+clearance takes the narrowest one, straight on, inside a building the runtime closes.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from arena_humansim.core.agents.loader import load_agent_type_from_file
 from arena_humansim.core.agents.types import GoToStepDef, StepDef
 from arena_humansim.core.formation import Formation
 from arena_humansim.core.formation.anchor import PoseAnchor
-from arena_humansim.params import GLOBAL_PLANNER_CLEARANCE_MARGIN, GLOBAL_PLANNER_INFLATION_RADIUS
+from arena_humansim.params import GLOBAL_PLANNER_CLEARANCE_MARGIN, GLOBAL_PLANNER_COMFORT_RADIUS, GLOBAL_PLANNER_INFLATION_RADIUS
 from arena_humansim.utils import DISTANCE_TOLERANCE
 from arena_humansim.utils.types import Pose2D
 from scipy import ndimage
@@ -58,8 +62,26 @@ from arena_simulation_setup.utils.geometry import Pose, Position
 WALKER_CLEARANCE = float(GLOBAL_PLANNER_INFLATION_RADIUS.default)  # pyright: ignore[reportArgumentType]
 #: Where a route keeps it, HumanSim routes a walker its radius plus this from walls and boxes (`global_planner.clearance_margin`) [m]
 CLEARANCE_MARGIN = float(GLOBAL_PLANNER_CLEARANCE_MARGIN.default)  # pyright: ignore[reportArgumentType]
-#: The radius of a walker whose agent type does not load: HumanSim's adult [m]
-DEFAULT_RADIUS = float(BUILTIN_AGENTS["adult"].agent_radius.mean) if "adult" in BUILTIN_AGENTS else 0.25
+#: HumanSim routes no walker further than this from walls and boxes: half its navmesh's reach, the larger of its
+#: `global_planner.comfort_radius` and 1.05 times its inflation radius (`NavMeshPlanner.clearance_for`) [m]
+ROUTE_CAP = max(float(GLOBAL_PLANNER_COMFORT_RADIUS.default), 1.05 * WALKER_CLEARANCE)  # pyright: ignore[reportArgumentType]
+#: How many standard deviations above its agent type's mean the check takes the radius of a walker HumanSim draws one
+#: for (no `radius` in the scenario): a larger walker stops and is routed further from walls and boxes
+RADIUS_SD = 1.0
+
+
+def _drawn(definition: AgentType, sd: float) -> float:
+    """The radius of a walker of `definition` HumanSim draws one for, `sd` standard deviations above the mean, within its clip."""
+    dist = definition.agent_radius
+    radius = float(dist.mean) + sd * float(getattr(dist, "std", 0.0) or 0.0)
+    high = getattr(dist, "clip_high", None)
+    return min(radius, float(high)) if high is not None else radius
+
+
+_ADULT = BUILTIN_AGENTS.get("adult")
+#: The radius of a walker whose agent type does not load, and of the crowd a scenario without people gets, where it
+#: stops: HumanSim's adult, drawn 0.25 +- 0.02 m, taken `RADIUS_SD` above its mean [m]
+DEFAULT_RADIUS = _drawn(_ADULT, RADIUS_SD) if _ADULT is not None else 0.27
 #: Raster cells whose clearance lies this close to a threshold get their clearance measured exactly: a wall drawn as a
 #: line of cells, and the level's frame, put a cell's centre up to about a cell off the true distance [m]
 EXACT_BAND = 2 * RESOLUTION
@@ -173,15 +195,21 @@ def _planner() -> object:
 
 def route_clearance(radius: float) -> float:
     """How far from walls and boxes HumanSim routes a walker of `radius` where a route keeps it: its radius plus the
-    clearance margin, rounded up to its planner's step, at least `WALKER_CLEARANCE` (`NavMeshPlanner.clearance_for`)."""
-    return float(_planner().clearance_for(radius))  # pyright: ignore[reportAttributeAccessIssue]
+    clearance margin, rounded up to its planner's step, at least `WALKER_CLEARANCE` and at most `ROUTE_CAP`
+    (`NavMeshPlanner.clearance_for`)."""
+    return min(float(_planner().clearance_for(radius)), ROUTE_CAP)  # pyright: ignore[reportAttributeAccessIssue]
 
 
-def agent_radius(definition: AgentType | None, override: object = None) -> float:
-    """A walker's radius as the runtime hands HumanSim: the scenario's `radius`, else its agent type's mean, else `DEFAULT_RADIUS`."""
+def agent_radius(definition: AgentType | None, override: object = None, *, sd: float = RADIUS_SD) -> float:
+    """A walker's radius as the check takes it: the scenario's `radius`, which HumanSim gets fixed, else its agent type's
+    mean `sd` standard deviations up (HumanSim draws one per walker: `RADIUS_SD` where it stops, 0 for its route), else
+    HumanSim's adult so."""
     if isinstance(override, int | float) and not isinstance(override, bool) and override > 0:
         return float(override)
-    return float(definition.agent_radius.mean) if definition is not None else DEFAULT_RADIUS
+    definition = definition if definition is not None else _ADULT
+    if definition is None:
+        return 0.25 + 0.02 * sd
+    return _drawn(definition, sd)
 
 
 def _target_reach(humansim: Mapping[str, object]) -> float:
@@ -518,11 +546,14 @@ def check(
 
     targets: set[str] = set()
     radii: dict[str, float] = {}
+    #: the walkers' radii at their types' means, for their routes (the detour rule)
+    typical: dict[str, float] = {}
     for human in scenario.humans:
         agent = human.agent.get("agent_type", "adult") if isinstance(human.agent, dict) else human.agent
         definition = agent_type(agent, human.included_from or scenario_dir) if isinstance(agent, str) else None
         targets |= _targets(definition) if definition is not None else set()
-        radii[human.name] = agent_radius(definition, human.agent.get("radius") if isinstance(human.agent, dict) else None)
+        fixed = human.agent.get("radius") if isinstance(human.agent, dict) else None
+        radii[human.name], typical[human.name] = agent_radius(definition, fixed), agent_radius(definition, fixed, sd=0.0)
         add(human.level, UsePoint(human.name, "start", human.pose.position.x, human.pose.position.y, DISTANCE_TOLERANCE, walker=human.name))
         for i, w in enumerate(human.waypoints):
             if w.elevator is None:  # an elevator waypoint is a ride, its cabin's
@@ -535,7 +566,8 @@ def check(
         definition = agent_type(agent, scenario_dir) if isinstance(agent, str) else None
         targets |= _targets(definition) if definition is not None else set()
         if region.type == "source":
-            radii[name] = agent_radius(definition, (region.config.get("agent") or {}).get("radius"))
+            fixed = (region.config.get("agent") or {}).get("radius")
+            radii[name], typical[name] = agent_radius(definition, fixed), agent_radius(definition, fixed, sd=0.0)
         if len(region.polygon) < 3:
             continue
         level_id, _, _ = place("", *region_point([(p.x, p.y) for p in region.polygon]))
@@ -551,11 +583,13 @@ def check(
     for (level_id, obstacle), annotation in zip(placed, annotations, strict=True):
         if targeted(obstacle, targets):
             points.setdefault(level_id, []).extend(object_points(obstacle, annotation if isinstance(annotation, dict) else None, stand))
-    # the crowd's points take the widest walker of the scenario
+    # the crowd's points take the widest walker of the scenario: where it stops one sd above a drawn radius, its route at the mean
     crowd_radius = max(radii.values(), default=DEFAULT_RADIUS)
+    crowd_typical = max(typical.values(), default=agent_radius(None, sd=0.0))
 
-    def route_of(point: UsePoint) -> float:
-        return route_clearance(radii.get(point.walker, crowd_radius) if point.walker is not None else crowd_radius)
+    def route_of(point: UsePoint, of: Mapping[str, float] = radii, crowd: float = crowd_radius) -> float:
+        """The route clearance where a point's walker stops; with `typical` and `crowd_typical`, its route's."""
+        return route_clearance(of.get(point.walker, crowd) if point.walker is not None else crowd)
 
     boxes: dict[str, list[tuple[str, shapely.Geometry]]] = {}
     # the floor without objects and with every door open: a pocket the walls close off by themselves is no room cut off
@@ -637,7 +671,7 @@ def check(
                 findings.append(Finding(point.object, point.point, floor.why(point.x, point.y, point.object), level_id, point.x, point.y, distance, point.reach))
             elif point.previous is not None and _crossing(walls[level_id], point.previous, (point.x, point.y)):
                 findings.append(Finding(point.object, point.point, "lies behind a wall from the object or the queue slot before it", level_id, point.x, point.y, distance, point.reach))
-            elif point.point != "start" and not point.point.startswith("queue slot") and (route := route_of(point)) > WALKER_CLEARANCE:
+            elif point.point != "start" and not point.point.startswith("queue slot") and (route := route_of(point, typical, crowd_typical)) > WALKER_CLEARANCE:
                 # where people are sent, the floor a walker's own route keeps to (its clearance) must reach the spot it stops
                 # at, inside the building: HumanSim takes such a route first, outside the building too, else its narrowest
                 wide = floors_at(route)[level_id]
@@ -724,4 +758,4 @@ def check_world(view: WorldView, *, stand: Stand | None = None) -> list[Finding]
     return check(view, view.load(validate=False), stand=stand)
 
 
-__all__ = ["CLEARANCE_MARGIN", "QUEUE_SLOTS", "WALKER_CLEARANCE", "Finding", "Floor", "UsePoint", "agent_radius", "agent_type", "blocking", "check", "check_scenario", "check_world", "describe", "level_floor", "line_slots", "locked", "object_box", "object_points", "region_point", "region_points", "route_clearance", "targeted"]
+__all__ = ["CLEARANCE_MARGIN", "QUEUE_SLOTS", "RADIUS_SD", "ROUTE_CAP", "WALKER_CLEARANCE", "Finding", "Floor", "UsePoint", "agent_radius", "agent_type", "blocking", "check", "check_scenario", "check_world", "describe", "level_floor", "line_slots", "locked", "object_box", "object_points", "region_point", "region_points", "route_clearance", "targeted"]

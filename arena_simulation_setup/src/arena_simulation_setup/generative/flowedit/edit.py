@@ -661,7 +661,7 @@ def _layout_door(site: Site, edit: Edit) -> None:
         raise ValueError(f"door {name!r} at {[[door.start.x, door.start.y], [door.end.x, door.end.y]]} lies on no wall")
     _open_walls(level, door)
     if any(d.name == name for d in level.walled_doors()):
-        raise ValueError(f"door {name!r} at {[[door.start.x, door.start.y], [door.end.x, door.end.y]]} stays shut: a wall the crowd gets runs across it")
+        raise ValueError(f"door {name!r} at {[[door.start.x, door.start.y], [door.end.x, door.end.y]]} stays shut: a wall the crowd gets runs across or into it")
     _rederive(site.world, site.graph)
 
 

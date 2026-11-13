@@ -57,8 +57,8 @@ _ON_LINE_M = 0.01
 #: How far either side of its line a door passes through a wall [m]: a wall drawn as the outlines of the two rooms it
 #: parts has two lines, and the shipped worlds leave a gap for a door in every wall line up to 0.075 m off the door's
 DOOR_DEPTH_M = 0.1
-#: A walker passes a door when a line across it at a quarter, half and three quarters of its span meets no wall within
-#: this distance of the door's line [m]
+#: A walker passes a door when no wall meets its passage: the strip this far either side of the door's line, from
+#: `DOOR_DEPTH_M` inside one jamb to as far inside the other [m]
 DOOR_PASSAGE_M = 0.15
 #: A door's side lies outside when the point this far off the middle of its span lies in no zone [m]
 _DOOR_SIDE_M = 0.3
@@ -442,8 +442,11 @@ class Level:
         return closers if closers and self.outside_reached(closers) < _OUTSIDE_M2 else []
 
     def walled_doors(self) -> list[Door]:
-        """The doors a wall of `all_walls`, the walls the crowd simulator gets, runs across: a line across the door at a
-        quarter, half or three quarters of its span meets a wall within `DOOR_PASSAGE_M` of the door's line."""
+        """The doors a wall of `all_walls`, the walls the crowd simulator gets, runs across or into: a wall meets the
+        door's passage, the strip `DOOR_PASSAGE_M` either side of its line from `DOOR_DEPTH_M` inside one jamb to as far
+        inside the other (a quarter of the span for a door narrower than four times that). The walls a door sits in end
+        at its jambs; a wall that crosses the door, or one that ends inside its span, such as a partition between two
+        rooms, splits it."""
         import shapely
 
         walls = [shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in self.all_walls]
@@ -456,9 +459,13 @@ class Level:
             length = math.hypot(dx, dy)
             if length == 0.0:
                 continue
-            nx, ny = -dy / length * DOOR_PASSAGE_M, dx / length * DOOR_PASSAGE_M
-            across = [shapely.LineString([(door.start.x + t * dx - nx, door.start.y + t * dy - ny), (door.start.x + t * dx + nx, door.start.y + t * dy + ny)]) for t in (0.25, 0.5, 0.75)]
-            if any(len(tree.query(line, predicate='intersects')) for line in across):
+            ux, uy = dx / length, dy / length
+            nx, ny = -uy * DOOR_PASSAGE_M, ux * DOOR_PASSAGE_M
+            inset = min(DOOR_DEPTH_M, length / 4)
+            ax, ay = door.start.x + ux * inset, door.start.y + uy * inset
+            bx, by = door.end.x - ux * inset, door.end.y - uy * inset
+            passage = shapely.Polygon([(ax - nx, ay - ny), (bx - nx, by - ny), (bx + nx, by + ny), (ax + nx, ay + ny)])
+            if len(tree.query(passage, predicate='intersects')):
                 walled.append(door)
         return walled
 

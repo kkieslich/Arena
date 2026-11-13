@@ -1584,9 +1584,14 @@ for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'defau
   waypoints and agent-type `go_to` poses, and a source holds floor its walkers
   reach. Sought objects are those with `satisfies` or named, or typed, by a step
   `target`. Near walls and boxes a walker stops where HumanSim's route for it
-  ends, its radius plus `global_planner.clearance_margin` from them (0.5 m for
-  an adult, 0.6 m for a wheelchair; the widest walker of the scenario counts
-  for the crowd's points): a use point must lie clear of its own object's box.
+  ends, its radius plus `global_planner.clearance_margin` from them, rounded up
+  to 0.05 m and at most HumanSim's 0.6 m cap (0.5 m for a walker the scenario
+  gives a 0.25 m radius, 0.6 m for a wheelchair; the widest walker of the
+  scenario counts for the crowd's points): a use point must lie clear of its own
+  object's box. A walker without a `radius` gets one drawn by HumanSim from its
+  agent type; where it stops, the check takes it one standard deviation above
+  the type's mean (`RADIUS_SD`): an adult, drawn 0.25 +- 0.02 m, counts as
+  0.27 m and stops 0.55 m off, as does the crowd of a scenario without people.
   A seat's standing point, on its furniture's box edge by design, is measured to
   the floor's edge.
 - Floor is the rooms, door spans and cabins less the walls HumanSim gets
@@ -1597,7 +1602,8 @@ for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'defau
   is shut. A walker reaches the connected part it starts in and the parts
   elevators, stair halves and the scenario's teleport zones join to it.
 - A point that only those narrowest routes reach, past walls or objects closer
-  than a walker's own route clearance (a room behind a 0.9 m door), is a detour:
+  than a walker's own route clearance at its type's mean radius (a room behind
+  a 0.9 m door), is a detour:
   HumanSim takes any route that keeps that clearance first, outside the building
   too where its outside is open. The runtime and `flowedit suite` only report
   detours; the FLOWEDIT generator refuses an edit that makes one.

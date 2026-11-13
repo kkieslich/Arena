@@ -439,3 +439,7 @@ def test_data_v3_is_data_v2_s_design_made_by_generator_version_7() -> None:
     # version 7 refuses what version 6 let through where a walker stops off the use point or gets there only by the
     # crowd's narrowest routes: hospital_1's fountain move b1081bc3, dead in v2 (0 uses, 66 % of walker-time outside)
     assert "hospital_1__move_fountain__b1081bc3" not in {w for p in v3["partitions"].values() for w in p}
+    # and a moved door a partition meets inside its span, or a queue slot an adult drawn one sd above the mean radius stops
+    # off (0.51-0.52 m)
+    refused = {"hospital_1__layout_move_doctors_resting_room_door__5af68761", "hospital_1__layout_move_wc_waiting_stall_3_door__54fbb0eb", "hallway_clinic__layout_move_back_door__73167242", "hallway_lab__insert_gen_sm_waterdispenser_01a_1__23f93739", "hallway_clinic__move_fountain__6d4c7719"}
+    assert not refused & {w for p in v3["partitions"].values() for w in p}

@@ -745,11 +745,29 @@ def site_findings(site: Site) -> list[Finding]:
 
 def refusal(site: Site, edited: Site, touched: Collection[str]) -> str | None:
     """Why `edited` is refused against `site`, its parent: a point finding of an object the edit `touched` (by name), or
-    one `site` did not have. Unresolved models are `resolve_footprints`' to refuse."""
+    one `site` did not have, or a touched object's dock a wall runs into (`dock_in_wall`). Unresolved models are
+    `resolve_footprints`' to refuse."""
     before = {(f.object, f.point) for f in site_findings(site)}
     for finding in site_findings(edited):
         if finding.point != "model" and (finding.object in touched or (finding.object, finding.point) not in before):
             return str(finding)
+    return next((why for name in sorted(touched) if (why := dock_in_wall(edited, name)) is not None), None)
+
+
+def dock_in_wall(site: Site, name: str) -> str | None:
+    """Why the dock of object `name`, where a robot stands to use it, is refused: a wall of `all_walls` runs into it (a
+    copy or move whose dock reaches past a corner or through a wall beside it). None for an object without a dock."""
+    import shapely
+
+    found = world_object(site.world, name)
+    if found is None:
+        return None
+    level, i = found
+    if level.objects[i].dock is None or not (corners := level.lookup_zone_polygon(name)):
+        return None
+    walls = [shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in level.all_walls]
+    if walls and shapely.Polygon([(c.x, c.y) for c in corners]).intersects(shapely.union_all(walls)):
+        return f"{name}: its dock {[[round(c.x, 2), round(c.y, 2)] for c in corners]} on level {level.id} runs into a wall"
     return None
 
 

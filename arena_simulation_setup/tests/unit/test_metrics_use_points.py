@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 import yaml
-from arena_simulation_setup.metrics.use_points import WALKER_CLEARANCE, Finding, blocking, check_scenario, describe, line_slots, object_points, route_clearance
+from arena_simulation_setup.metrics.use_points import WALKER_CLEARANCE, Finding, agent_radius, blocking, check_scenario, describe, line_slots, object_points, route_clearance
 from arena_simulation_setup.shared import Obstacle
 from arena_simulation_setup.tree.World import WorldView
 from arena_simulation_setup.utils.face import front_angle, queue_theta
@@ -213,3 +213,35 @@ def test_a_room_behind_a_door_narrower_than_a_walker_s_route_is_a_detour(tmp_pat
     assert [(f.object, f.point, f.detour) for f in narrow] == [("fountain", "use point", True)] and blocking(narrow) == []
     assert "only by HumanSim's narrowest routes" in str(narrow[0])
     assert check_scenario(_world(tmp_path / "wide", {"objects": [_fountain(0.25, 2.0, 0.0)]}, door={"name": "door", "span": [[6.0, 1.0], [6.0, 2.2]]}), "s") == []
+
+
+def test_a_radius_humansim_draws_is_taken_one_sd_above_its_mean_and_no_route_keeps_more_than_its_cap() -> None:
+    from arena_humansim.core.agents import BUILTIN_AGENTS
+
+    # HumanSim draws an adult's radius from 0.25 +- 0.02 m: about half its adults stop 0.55 m off walls and boxes; their
+    # routes count at the mean (the detour rule)
+    adult = BUILTIN_AGENTS["adult"]
+    assert agent_radius(adult) == pytest.approx(0.27) and route_clearance(agent_radius(adult)) == 0.55
+    assert agent_radius(adult, sd=0.0) == 0.25 and agent_radius(None, sd=0.0) == 0.25
+    # a radius the scenario fixes is the one HumanSim gets
+    assert agent_radius(adult, 0.25) == 0.25 and route_clearance(0.25) == 0.5
+    # its navmesh keeps no route further than 0.6 m off: a wheelchair (0.325 m) and an obese walker (0.34 +- 0.02 m)
+    assert route_clearance(agent_radius(BUILTIN_AGENTS["wheelchair_manual"])) == 0.6 and route_clearance(agent_radius(BUILTIN_AGENTS["obese"])) == 0.6
+
+
+def test_a_point_is_checked_for_the_larger_walkers_humansim_draws(tmp_path: Path) -> None:
+    # the use point 0.025 m clear of the machine: a walker of a fixed 0.25 m radius stops 0.475 m from it, within reach;
+    # an adult whose radius HumanSim draws stops 0.525 m from it when drawn 0.27 m (FLOWEDIT v3's hallway_lab insert
+    # 23f93739 had a queue slot 0.47 m from where a 0.25 m walker stops)
+    fixed = {"name": "visitor", "model": "worker_male_asian_middleage", "pose": [10.0, 2.0, 0.0], "agent": {"agent_type": "adult", "radius": 0.25}}
+    assert check_scenario(_world(tmp_path / "fixed", {"objects": [_machine(0.87)], "humans": [fixed]}), "s") == []
+    drawn = {**fixed, "agent": {"agent_type": "adult"}}
+    assert _points(check_scenario(_world(tmp_path / "drawn", {"objects": [_machine(0.87)], "humans": [drawn]}), "s")) == [("machine", "use point")]
+
+
+def test_a_room_behind_a_door_a_larger_walker_s_route_does_not_pass_is_no_detour(tmp_path: Path) -> None:
+    # a 1.05 m door passes a route 0.5 m off its jambs, not one 0.55 m off: an adult HumanSim draws larger than the mean
+    # has no route at its own clearance and takes the narrowest one, straight through the door, inside a closed building
+    visitor = {"name": "visitor", "model": "worker_male_asian_middleage", "pose": [10.0, 2.0, 0.0], "agent": {"agent_type": "adult"}}
+    door = {"name": "door", "span": [[6.0, 1.0], [6.0, 2.05]]}
+    assert check_scenario(_world(tmp_path, {"objects": [_fountain(0.25, 2.0, 0.0)], "humans": [visitor]}, door=door), "s") == []
