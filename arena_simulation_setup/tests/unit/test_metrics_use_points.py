@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 import yaml
-from arena_simulation_setup.metrics.use_points import Finding, check_scenario, describe, line_slots, object_points
+from arena_simulation_setup.metrics.use_points import WALKER_CLEARANCE, Finding, agent_radius, blocking, check_scenario, describe, line_slots, object_points, route_clearance
 from arena_simulation_setup.shared import Obstacle
 from arena_simulation_setup.tree.World import WorldView
 from arena_simulation_setup.utils.face import front_angle, queue_theta
@@ -19,6 +19,8 @@ pytest.importorskip("scipy")
 FOUNTAIN = {"face": "+x", "bounding_box": [[-0.2, 0.2], [-0.17, 0.17], [0.0, 1.5]]}
 #: a desk 1.0 x 0.8 m without a face
 DESK = {"bounding_box": [[-0.5, 0.5], [-0.4, 0.4], [0.0, 0.8]]}
+#: a vending machine 0.845 m deep from its pose to its front at +x, 1.215 m wide, as Office/SM_DrinksMachine
+MACHINE = {"face": "+x", "bounding_box": [[0.0, 0.845], [-0.6075, 0.6075], [0.0, 1.83]]}
 LINE = {"type": "line", "params": {"base_step": 1.0, "front_offset": 0.8}}
 
 
@@ -29,7 +31,7 @@ def _fountain(x: float, y: float, yaw: float, name: str = "fountain") -> dict[st
 def _world(tmp_path: Path, scenario: dict[str, Any], *, walls: list[list[list[float]]] = (), door: dict[str, Any] | None = None, objects: list[dict[str, Any]] = ()) -> WorldView:
     """A 6 x 4 m room west of a 8 x 4 m hall, a 1.5 m door between them, the models as world-local assets (a marker without annotation.yaml)."""
     root = tmp_path / "w"
-    for name, annotation in (("fountain", FOUNTAIN), ("desk", DESK), ("marker", None)):
+    for name, annotation in (("fountain", FOUNTAIN), ("desk", DESK), ("machine", MACHINE), ("marker", None)):
         directory = root / "assets" / "Common" / "Object" / name
         directory.mkdir(parents=True)
         if annotation is None:
@@ -153,3 +155,93 @@ def test_the_queue_follows_humansims_line_from_the_turned_pose() -> None:
     assert _flat(line_slots(1.0, 2.0, theta, LINE["params"])) == pytest.approx(ahead)
     # without a face the line forms behind the yaw
     assert _flat([(p.x, p.y) for p in object_points(obstacle, {})]) == pytest.approx(_flat([(1.0, 1.2 - k) for k in range(4)]))
+
+
+def _machine(front_offset: float) -> dict[str, Any]:
+    """A vending machine with its back on the room's west wall, facing into the room, its line `front_offset` from its pose."""
+    line = {"type": "line", "params": {"base_step": 1.0, "front_offset": front_offset}}
+    return {"name": "machine", "model": "Common/machine", "pose": [0.05, 2.0, 0.0], "humansim": {"type": "fountain", "capacity": 1, "satisfies": {"thirst": 100.0}, "formation": line}}
+
+
+def test_a_use_point_inside_its_machine_fails_where_the_walker_stops_its_route_clearance_off(tmp_path: Path) -> None:
+    # FLOWEDIT v3's drinks machines: front_offset 0.8 puts the use point 0.045 m inside the 0.845 m deep box. The walker's
+    # route keeps 0.5 m (radius 0.25 + clearance margin 0.25) off the box, 0.545 m from the use point: it holds the machine
+    # without arriving (pilot: 125 s at food_court). The floor's edge, 0.38 m off the box, lies 0.425 m from it.
+    assert route_clearance(0.25) == 0.5 and WALKER_CLEARANCE == 0.38
+    (finding,) = check_scenario(_world(tmp_path / "inside", {"objects": [_machine(0.8)]}), "s")
+    assert (finding.object, finding.point, finding.why) == ("machine", "use point", "lies inside its own box")
+    assert 0.5 <= finding.distance < 0.6 and not finding.detour
+    # 1.1 m: the use point 0.255 m clear of the box, the walker stops 0.245 m from it
+    assert check_scenario(_world(tmp_path / "clear", {"objects": [_machine(1.1)]}), "s") == []
+
+
+def test_a_wider_walker_stops_further_off(tmp_path: Path) -> None:
+    # the use point 0.075 m clear of the box: an adult stops within reach, a walker of a wheelchair's radius (0.325 m,
+    # routed 0.6 m off) does not
+    human = {"name": "visitor", "model": "worker_male_asian_middleage", "pose": [10.0, 2.0, 0.0], "agent": {"agent_type": "adult", "radius": 0.25}}
+    assert route_clearance(0.325) == 0.6
+    assert check_scenario(_world(tmp_path / "adult", {"objects": [_machine(0.92)], "humans": [human]}), "s") == []
+    wide = {**human, "agent": {"agent_type": "adult", "radius": 0.325}}
+    assert _points(check_scenario(_world(tmp_path / "wide", {"objects": [_machine(0.92)], "humans": [wide]}), "s")) == [("machine", "use point")]
+
+
+def test_a_door_off_its_wall_line_is_shut_for_the_crowd(tmp_path: Path) -> None:
+    # the walls the crowd simulator gets (`all_walls`) are cut open only at a door on their line: a door 0.025 m off the
+    # wall leaves it whole, and the room behind it is shut, though the map draws the door open
+    door = {"name": "door", "span": [[6.025, 1.0], [6.025, 2.5]]}
+    findings = check_scenario(_world(tmp_path, {"objects": [_fountain(0.25, 2.0, 0.0)]}, door=door), "s")
+    assert ("fountain", "use point") in _points(findings) and ("room", "floor") in _points(findings)
+    assert next(f for f in findings if f.point == "use point").why == "lies on floor its walkers cannot reach"
+
+
+def _desk_in_the_doorway(tmp_path: Path, opening: float) -> WorldView:
+    """A 1.2 m door with a desk across the wall line covering all of it but `opening` (library_office's desk in FLOWEDIT v3)."""
+    desk = {"name": "desk", "model": "Common/desk", "pose": [6.4, 1.0 + opening + 0.4, 0.0]}
+    return _world(tmp_path, {"objects": [_fountain(0.25, 2.0, 0.0)]}, door={"name": "door", "span": [[6.0, 1.0], [6.0, 2.2]]}, objects=[desk])
+
+
+def test_a_passage_narrower_than_twice_the_inflation_radius_is_shut(tmp_path: Path) -> None:
+    # HumanSim's narrowest routes keep 0.38 m off walls and boxes: 0.75 m is shut, 0.8 m open (a raster cell's error either way is measured away)
+    assert ("room", "floor") in _points(check_scenario(_desk_in_the_doorway(tmp_path / "shut", 0.75), "s"))
+    assert blocking(check_scenario(_desk_in_the_doorway(tmp_path / "open", 0.8), "s")) == []
+
+
+def test_a_room_behind_a_door_narrower_than_a_walker_s_route_is_a_detour(tmp_path: Path) -> None:
+    # a 0.9 m door passes HumanSim's narrowest routes (0.76 m) but not a route 0.5 m off its jambs (1.0 m): HumanSim takes
+    # any route that keeps 0.5 m first, outside the building too; the runtime only reports it, the generator refuses it
+    narrow = check_scenario(_world(tmp_path / "narrow", {"objects": [_fountain(0.25, 2.0, 0.0)]}, door={"name": "door", "span": [[6.0, 1.0], [6.0, 1.9]]}), "s")
+    assert [(f.object, f.point, f.detour) for f in narrow] == [("fountain", "use point", True)] and blocking(narrow) == []
+    assert "only by HumanSim's narrowest routes" in str(narrow[0])
+    assert check_scenario(_world(tmp_path / "wide", {"objects": [_fountain(0.25, 2.0, 0.0)]}, door={"name": "door", "span": [[6.0, 1.0], [6.0, 2.2]]}), "s") == []
+
+
+def test_a_radius_humansim_draws_is_taken_one_sd_above_its_mean_and_no_route_keeps_more_than_its_cap() -> None:
+    from arena_humansim.core.agents import BUILTIN_AGENTS
+
+    # HumanSim draws an adult's radius from 0.25 +- 0.02 m: about half its adults stop 0.55 m off walls and boxes; their
+    # routes count at the mean (the detour rule)
+    adult = BUILTIN_AGENTS["adult"]
+    assert agent_radius(adult) == pytest.approx(0.27) and route_clearance(agent_radius(adult)) == 0.55
+    assert agent_radius(adult, sd=0.0) == 0.25 and agent_radius(None, sd=0.0) == 0.25
+    # a radius the scenario fixes is the one HumanSim gets
+    assert agent_radius(adult, 0.25) == 0.25 and route_clearance(0.25) == 0.5
+    # its navmesh keeps no route further than 0.6 m off: a wheelchair (0.325 m) and an obese walker (0.34 +- 0.02 m)
+    assert route_clearance(agent_radius(BUILTIN_AGENTS["wheelchair_manual"])) == 0.6 and route_clearance(agent_radius(BUILTIN_AGENTS["obese"])) == 0.6
+
+
+def test_a_point_is_checked_for_the_larger_walkers_humansim_draws(tmp_path: Path) -> None:
+    # the use point 0.025 m clear of the machine: a walker of a fixed 0.25 m radius stops 0.475 m from it, within reach;
+    # an adult whose radius HumanSim draws stops 0.525 m from it when drawn 0.27 m (FLOWEDIT v3's hallway_lab insert
+    # 23f93739 had a queue slot 0.47 m from where a 0.25 m walker stops)
+    fixed = {"name": "visitor", "model": "worker_male_asian_middleage", "pose": [10.0, 2.0, 0.0], "agent": {"agent_type": "adult", "radius": 0.25}}
+    assert check_scenario(_world(tmp_path / "fixed", {"objects": [_machine(0.87)], "humans": [fixed]}), "s") == []
+    drawn = {**fixed, "agent": {"agent_type": "adult"}}
+    assert _points(check_scenario(_world(tmp_path / "drawn", {"objects": [_machine(0.87)], "humans": [drawn]}), "s")) == [("machine", "use point")]
+
+
+def test_a_room_behind_a_door_a_larger_walker_s_route_does_not_pass_is_no_detour(tmp_path: Path) -> None:
+    # a 1.05 m door passes a route 0.5 m off its jambs, not one 0.55 m off: an adult HumanSim draws larger than the mean
+    # has no route at its own clearance and takes the narrowest one, straight through the door, inside a closed building
+    visitor = {"name": "visitor", "model": "worker_male_asian_middleage", "pose": [10.0, 2.0, 0.0], "agent": {"agent_type": "adult"}}
+    door = {"name": "door", "span": [[6.0, 1.0], [6.0, 2.05]]}
+    assert check_scenario(_world(tmp_path, {"objects": [_fountain(0.25, 2.0, 0.0)], "humans": [visitor]}, door=door), "s") == []

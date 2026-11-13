@@ -50,4 +50,4 @@ def bucket_models() -> Iterator[None]:
 def test_the_crowd_reaches_every_point_a_shipped_scenario_sends_it_to(world: str, scenario: str | None) -> None:
     view = WorldView(WORLDS / world)
     findings = check_world(view, stand=seat_stand) if scenario is None else check_scenario(view, scenario, stand=seat_stand)
-    assert [str(f) for f in findings if f.point != "model"] == []
+    assert [str(f) for f in findings if f.point != "model" and not f.detour] == []

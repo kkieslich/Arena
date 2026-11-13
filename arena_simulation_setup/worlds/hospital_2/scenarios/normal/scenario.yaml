@@ -17,9 +17,9 @@ humans:
   waypoints: [[24.5, 7.5, 2.35619]]
 - name: hunav_4
   model: Hospital/nurse_female_caucasian_young
-  pose: [4.0, 27.0, 0.0]
+  pose: [3.4, 27.0, 0.0]
   agent: {agent_type: adult, desired_velocity: 1.4}
-  waypoints: [[4.0, 27.0, 0.0]]
+  waypoints: [[3.4, 27.0, 0.0]]
 - name: hunav_5
   model: worker_male_african_young
   pose: [10.0, 27.5, 3.14159]

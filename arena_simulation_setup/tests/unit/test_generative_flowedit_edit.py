@@ -185,6 +185,59 @@ def test_door_off_any_wall_is_refused(queue: Site) -> None:
         apply(queue, "layout", "door:new_door", {"op": "add", "span": [[3.0, 3.0], [4.0, 3.0]]})
 
 
+@pytest.mark.parametrize(
+    ("world", "target", "params"),
+    [
+        # FLOWEDIT v3's hallway_school__layout_move_canteen_door__287692ad: the canteen's outline runs 0.025 m off the door's
+        # line, unbroken where the door moved to, so the crowd never got the door and the canteen was shut
+        ("hallway_school", "door:canteen_door", {"op": "move", "offset": [1.82, 0.0]}),
+        # hallway_clinic__layout_add_gen_door_1__dadd8af9: a door on one outline of a wall drawn as two, 0.055 m apart
+        ("hallway_clinic", "door:gen_door_1", {"op": "add", "level": "0", "span": [[19.27, 7.17], [19.27, 5.67]]}),
+    ],
+)
+def test_a_moved_or_added_door_opens_every_line_of_its_wall(world: str, target: str, params: dict[str, Any]) -> None:
+    site = open_site(WORLDS / world, "demand")
+    edited = apply(site, "layout", target, params)
+    assert [d.name for level in edited.world.levels.values() for d in level.walled_doors()] == []
+    # the other wall paths keep their indices; the cut pieces go to the end
+    before, after = site.world.levels["0"].walls, edited.world.levels["0"].walls
+    assert len(after) > len(before) and all(a.path[0] == b.path[0] for a, b in zip(before, after, strict=False))
+
+
+def test_a_door_another_wall_still_runs_across_is_refused(queue: Site) -> None:
+    # a wall 0.12 m behind the door's line, past the depth a door cuts (0.1 m), still crosses its passage
+    behind = apply(queue, "layout", "wall:0", {"op": "add", "path": [[8.12, 14.9], [8.12, 17.0]]})
+    with pytest.raises(ValueError, match="stays shut"):
+        apply(behind, "layout", "door:new_door", {"op": "add", "span": [[8.0, 15.0], [8.0, 16.2]]})
+
+
+@pytest.mark.parametrize(
+    ("world", "scenario", "target", "offset"),
+    [
+        # FLOWEDIT v3 (generator 7) hospital_1__layout_move_doctors_resting_room_door__5af68761: the partition between the
+        # laboratory and the resting room meets the moved door 0.30 m from its jamb, 0.30 m of it opening into the
+        # laboratory and 1.15 m into the resting room
+        ("hospital_1", "queue", "door:doctors_resting_room_door", [0.0, -1.65]),
+        # hallway_clinic__layout_move_back_door__73167242: the cafeteria's wall meets the exterior door 0.93 m along it
+        ("hallway_clinic", "demand", "door:back_door", [0.0, 1.85]),
+        # hospital_1__layout_move_wc_waiting_stall_3_door__54fbb0eb: a stall partition splits the 0.7 m door 0.28 / 0.42 m
+        ("hospital_1", "queue", "door:wc_waiting_stall_3_door", [0.0, -0.58]),
+    ],
+)
+def test_a_door_moved_across_the_end_of_a_wall_is_refused(world: str, scenario: str, target: str, offset: list[float]) -> None:
+    site = open_site(WORLDS / world, scenario)
+    with pytest.raises(ValueError, match="stays shut"):
+        apply(site, "layout", target, {"op": "move", "offset": offset})
+
+
+def test_walls_that_end_at_a_doors_jambs_leave_it_open(queue: Site) -> None:
+    # partitions that meet the door's line 0.05 m inside its jambs, as the second outline of a wall drawn as two would
+    walled = apply(queue, "layout", "wall:0", {"op": "add", "path": [[8.0, 15.05], [9.5, 15.05]]})
+    walled = apply(walled, "layout", "wall:0", {"op": "add", "path": [[8.0, 16.15], [9.5, 16.15]]})
+    added = apply(walled, "layout", "door:new_door", {"op": "add", "span": [[8.0, 15.0], [8.0, 16.2]]})
+    assert "new_door" not in [d.name for level in added.world.levels.values() for d in level.walled_doors()]
+
+
 def test_wall_paths_are_added_moved_and_removed(queue: Site) -> None:
     walls = len(queue.world.levels["0"].walls)
     added = apply(queue, "layout", "wall:0", {"op": "add", "path": [[18.5, 2.0], [18.5, 4.0]]})

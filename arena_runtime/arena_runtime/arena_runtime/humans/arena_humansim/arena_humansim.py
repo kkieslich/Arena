@@ -440,6 +440,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._prev_agent_states: AgentFrameMsg | None = None
         self._curr_agent_states: AgentFrameMsg | None = None
         self._engine_stamp_ns: int | None = None
+        # sim time of the last reset that removed every agent: an engine frame stamped at or before it is the old episode's
+        self._removed_at_ns: int | None = None
         self._agent_gestures: dict[int, list[EngineGestureMsg]] = {}
         self._agent_types: dict[int, str] = {}
         self._agent_sources: dict[int, AgentSource] = {}
@@ -607,7 +609,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return {object_id: seats for object_id, seats in self._held_seats.items() if object_id in self._seat_slots}
 
     def _agent_states_callback(self, msg: AgentFrameMsg):
-        """Cache prev/curr snapshots from arena_humansim for local interpolation."""
+        """Cache prev/curr snapshots from arena_humansim for local interpolation; drop a frame the engine sent before the
+        last reset that removed every agent, which would put the old episode's walkers back."""
+        stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
+        if self._removed_at_ns is not None and stamp_ns <= self._removed_at_ns:
+            return
         self._prev_agent_states = self._curr_agent_states
         self._curr_agent_states = msg
         self._engine_stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
@@ -1250,7 +1256,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             if models:
                 self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r} (human.check.models:=warn): {use_points.describe(models)}")
             findings = [f for f in findings if f.point != "model"]
-        if findings:
+        if detours := [f for f in findings if f.detour]:
+            self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: walkers may take detours, outside the building too: {use_points.describe(detours)}")
+        if findings := use_points.blocking(findings):
             raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {use_points.describe(findings)}. Fix them, or launch with human.check:=false (human.check.models:=warn lets models that do not resolve pass)")
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
@@ -1807,6 +1815,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             await self._seed_engine()
             response = await self._remove_client.call_timeout(request)
             self._removals += 1
+            now = self.node.sim_time
+            self._removed_at_ns = now.sec * int(1e9) + now.nanosec
             flow = [self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))) for aid in sorted(self._flow_agent_ids)]
             self._next_deferred_id = _DEFERRED_ID_BASE
             self._deferred_spawns.clear()
@@ -1829,7 +1839,10 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._arena_pedestrians = Pedestrians()
             self._arena_pedestrians.header.frame_id = "map"
             if flow:
-                await self._simulator.pedestrian_delete(flow)
+                try:
+                    await self._simulator.pedestrian_delete(flow)
+                except Exception as e:
+                    self._logger.error(f"deleting the simulator bodies of {len(flow)} removed walkers failed: {e}")
             await self._publish_interpolated()
             if response is None:
                 self._logger.error("RemoveAgents timed out")
