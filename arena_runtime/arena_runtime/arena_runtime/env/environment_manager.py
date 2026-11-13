@@ -377,6 +377,8 @@ class EnvironmentManager(NodeInterface):
             lintels.extend(self._realizer.realize(w, fid) for w in await level.door_lintels())
             if detected_walls and detected_walls.get(fid):
                 collision_walls.extend(self._realizer.realize(w, fid) for w in detected_walls[fid])
+            # the crowd only: its exterior doors shut, so walkers do not cut along the outer walls outside the building
+            collision_walls.extend(self._realizer.realize(w, fid) for w in level.outside_walls())
         walls = tuple(walls_list)
         doors_list: list[Door] = []
         for fid, level in _world.levels.items():

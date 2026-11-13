@@ -1256,7 +1256,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             if models:
                 self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r} (human.check.models:=warn): {use_points.describe(models)}")
             findings = [f for f in findings if f.point != "model"]
-        if findings:
+        if detours := [f for f in findings if f.detour]:
+            self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: walkers may take detours, outside the building too: {use_points.describe(detours)}")
+        if findings := use_points.blocking(findings):
             raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {use_points.describe(findings)}. Fix them, or launch with human.check:=false (human.check.models:=warn lets models that do not resolve pass)")
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:

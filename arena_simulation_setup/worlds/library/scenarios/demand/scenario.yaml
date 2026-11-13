@@ -4,7 +4,7 @@ objects:
 - name: fountain
   model: Office/SM_DrinksMachine
   pose: [25.95, 4.8, 3.14159]
-  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 0.8}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
+  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 1.1}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
 - name: reception_desk
   model: Office/SM_ReceptionStandA
   pose: [10.5, 6.6, 1.5708]

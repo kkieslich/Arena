@@ -113,10 +113,13 @@ def build(
         for note in notes:
             log(f"note: {job.label}: {note}")
         if not dry_run and (findings := check_stage(root, prepared.scenario, job.seed)):
-            from arena_simulation_setup.metrics.use_points import describe
+            from arena_simulation_setup.metrics.use_points import blocking, describe
 
-            refused.append(f"{stage_name(job.world, job.seed)}: {describe(findings, limit=3)}")
-            log(f"refused: {job.label}: {describe(findings)}")
+            if detours := [f for f in findings if f.detour]:
+                log(f"note: {job.label}: walkers may take detours, outside the building too: {describe(detours)}")
+            if findings := blocking(findings):
+                refused.append(f"{stage_name(job.world, job.seed)}: {describe(findings, limit=3)}")
+                log(f"refused: {job.label}: {describe(findings)}")
         stages.append(stage(job.world, job.seed, prepared.scenario, duration, robot, task=task is not None))
     if refused:
         raise ValueError(f"{len(refused)} of {len(stages)} stages fail the use-point check the runtime runs at episode start (human.check), no suite written: " + "; ".join(refused[:5]) + ("; ..." if len(refused) > 5 else ""))

@@ -2,9 +2,9 @@ format: arena-scenario/2
 humans:
 - name: hunav_1
   model: Hospital/nurse_female_caucasian_young
-  pose: [4.0, 2.0, 0.0]
+  pose: [3.4, 2.0, 0.0]
   agent: {agent_type: adult, desired_velocity: 1.5}
-  waypoints: [[4.0, 2.0, 0.0]]
+  waypoints: [[3.4, 2.0, 0.0]]
 - name: hunav_2
   model: Hospital/doctor_male_caucasian_middleage
   pose: [2.0, 3.0, 0.0]

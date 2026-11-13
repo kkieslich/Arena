@@ -135,3 +135,26 @@ def test_an_inert_copy_in_front_of_the_fountain_is_refused(tmp_path: Path) -> No
     copy = apply(site, EditType.INSERT, "obj:fountain_inert", {"model": "Common/fountain", "x": 10.95, "y": 6.0, "yaw": 0.0})
     why = refusal(site, copy, {"fountain_inert"})
     assert why is not None and why.startswith("fountain: use point at (10.95, 6.00)") and "inside the box of fountain_inert" in why
+
+
+@pytest.mark.parametrize("world", ["hallway_school", "hallway_clinic"])
+def test_every_door_a_generated_layout_edit_moves_or_adds_is_open_for_the_crowd(tmp_path: Path, world: str) -> None:
+    # FLOWEDIT v3 had 16 such doors walled shut in `all_walls` (the crowd's walls) though the generator took them as on a wall
+    from arena_simulation_setup.generative.flowedit.edit import EditType
+
+    # a copy of its own: the use-point findings are kept by the site's root and key
+    shutil.copytree(Path(__file__).resolve().parents[2] / "worlds" / world, tmp_path / world)
+    notes: list[str] = []
+    chains = generate(open_site(tmp_path / world, "demand"), 0, 5, 1, (EditType.LAYOUT,), notes)
+    assert chains, notes
+    assert {chain.site.name: [d.name for level in chain.site.world.levels.values() for d in level.walled_doors()] for chain in chains} == {chain.site.name: [] for chain in chains}
+
+
+def test_an_insert_whose_queue_slot_the_larger_walkers_stop_off_is_refused(tmp_path: Path) -> None:
+    # queue slot 2 of the inserted copy 0.025 m from a desk: a 0.25 m walker stops 0.475 m from it, an adult drawn one sd
+    # up (0.27 m, routed 0.55 m off) 0.525 m (FLOWEDIT v3's hallway_lab insert 23f93739: a queue slot by a wall, 0.47 m)
+    site = _site(tmp_path, objects=[{"name": "desk", "model": "Common/desk", "pose": [3.05, 4.425, 0.0]}])
+    assert [f for f in site_findings(site) if f.point != "model"] == []
+    params = {"model": "Common/fountain", "x": 0.25, "y": 4.0, "yaw": 0.0, "type": "fountain", "capacity": 1, "satisfies": {"thirst": 100.0}, "formation": LINE}
+    why = refusal(site, apply(site, EditType.INSERT, "obj:fountain_2", params), {"fountain_2"})
+    assert why is not None and why.startswith("fountain_2: queue slot 2 at (3.05, 4.00)") and "stops 0.52 m from it" in why
