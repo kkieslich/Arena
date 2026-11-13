@@ -105,7 +105,7 @@ and an async `done` flag. Shipped modes:
 | `scenario` | [`scenario/`](scenario/) | reads `start`/`goal` pairs from the world's scenario YAML. A robot past the `robots:` entries, or on an entry without `phases`, stays parked, and an episode with only parked robots runs until `task.episode.timeout` |
 | `search` | [`search/`](search/) | `scenario` for a hidden human: each robot gets one goto judged on the human (`task.search.target`, default the scenario's only human) within `task.search.radius` (1.5 m), with `task.search.line_of_sight` also without a wall between them and with `task.search.dwell_s` for that long without a break, judge-only (`dispatch: false`), so neither the human's pose nor any other goal reaches the planner and a search driver owns the robot's navigation. Reads `task.scenario.file`, runs with `task.obstacles:=scenario`, refuses scenario robot phases. Example: [`hospital_1/scenarios/search_caller`](../../../../arena_simulation_setup/worlds/hospital_1/scenarios/search_caller/scenario.yaml) |
 | `characterization` | [`characterization/`](characterization/) | open-loop maneuver sweep: publishes exact `cmd_vel` profiles through the robot's rated envelope (no nav goals), tags each maneuver with `characterization_phase` markers, odom stall watchdog |
-| `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, with charging trips below a battery level, see [Fleet task stream](#fleet-task-stream) |
+| `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, with charging trips below a battery level and top-ups at chargers whose holders are away, see [Fleet task stream](#fleet-task-stream) |
 | `null` | [`composite.py`](composite.py) | idle sink for robots unallocated by the fleet manager |
 | `composite` | [`composite.py`](composite.py) | fan-out: each sub-TM sees a scoped `TaskContext` covering only its allocated robots |
 
@@ -247,6 +247,7 @@ words a goto as walking directions through the world's doors and openings.
 | `rate`, `pickup_share` | 12, 0.3 | jobs released per hour of sim time, share of pickups |
 | `load_s`, `unload_s` | 15, 10 | seconds held where a job loads and unloads |
 | `charge_below`, `charge_until` | 30, 100 | battery percent that sends a free robot to a charger, and that frees it again; `charge_below <= charge_until` |
+| `top_up` | true | opportunistic charging: a free robot under `charge_until` tops up at a charger whose holder is away on a job (see **Top-ups** below); `false` turns it off |
 | `reserve` | 10 | battery percent a job must leave by its energy estimate, else the robot charges first |
 | `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
 | `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
@@ -286,12 +287,28 @@ words a goto as walking directions through the world's doors and openings.
   positions over the last `jam_window_s` all lie within `jam_progress_m` of the first is jammed: its job fails with
   reason `jam` (its charge is abandoned with reason `jam`), its docks are freed and it is teleported to its home,
   where it parks; a robot jammed on its way to a charger goes back to the bay it had before the trip, and the charger
-  to its holder. Within `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
+  to its holder (or, if that holder has taken another charger since, to the robot that has the bay now). Within
+  `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
   Each jam is logged with the distance to the nearest other robot, so robot-robot jams can be told apart.
 - **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
-  a charger lowest battery first: a robot parked on its charger home charges there, any other takes a charger whose
-  holder is away (on a job, or freed) and swaps homes with it. Chargers are the world's objects with
+  a charger lowest battery first (ties by queue time, then name): a robot parked on its charger home charges there,
+  any other takes, in this order, a charger whose holder is away (on a job, or freed), one whose holder yields, or one
+  a robot is still driving to for a top-up (first the one taken from this robot), and swaps homes with the holder. A
+  holder yields when it is parked on the charger, not queued itself, and charged to `charge_until`, or holds the
+  charger by a top-up (below). A holder that yields stays on the charger until the queued robot holds in place within
+  `approach_m` of it, then leaves for its new home, so the two do not meet head-on along the way. A robot driving to
+  top up gives its top-up up at once and heads for its new home. Chargers are the world's objects with
   `charge_power_w`. A robot is free again at `charge_until`.
+- **Top-ups** (`top_up`). Once no robot is queued, a free robot (parked or on its way home) whose battery is under
+  `charge_until` and whose home is no charger takes as its home a charger whose holder is away on a job (on a leg, or
+  holding before a dock), lowest battery first, and the holder gets its old home. A charger that is no robot's home is
+  not topped up at. The trip is a charging trip: the trip timeout and the jam rule apply, and only a jam gives the
+  charger back and resets the robot to its old home; after a timeout, a failed trip or a task from outside the robot
+  keeps the charger as its home and parks there. Docked, the robot is free for jobs again and charges while parked
+  there; if it arrives under `charge_below` it queues and charges at once like any robot at its charger home. Until
+  it has charged there to `charge_until`, it holds the charger by its top-up: parked on it, it yields to a queued
+  robot at once, not only at `charge_until`, and a jam that gives the charger back to it gives it back as such.
+  Top-ups are logged in their own table, so `charge` keeps only the charges the charger queue sent.
 - **Battery.** The charge is `RobotManager.soc`; the mode makes no charging decision on a robot whose charge is
   unknown. A robot whose battery reaches 0 % is logged and counted (it keeps driving: the power publisher clamps at 0).
 - No zone is forbidden at the homes, since a forbidden zone stays in the map for the whole episode. The reset fails
@@ -320,16 +337,24 @@ with 3 decimals; battery charges are percent with 2.
 | `charge.<n>.robot`, `charge.<n>.trigger` | robot, and why it joined the charger queue: `charge_below`, or `job <i>` for a job its battery would not last |
 | `charge.<n>.queued` | when it joined the charger queue |
 | `charge.<n>.charger`, `charge.<n>.dispatched` | charger it was sent to (or charges at, at home), and when |
+| `charge.<n>.yielded_by` | the holder that gave the charger up to it: parked on it (charged to `charge_until`, or holding it by a top-up), or on its way there to top up |
+| `charge.<n>.holder_left`, `charge.<n>.held_s` | when a holder parked on the charger had cleared it, and how long the robot held in place before the charger for it |
 | `charge.<n>.started`, `charge.<n>.soc_start` | when it arrived at the charger, and its charge then |
 | `charge.<n>.ended`, `charge.<n>.outcome`, `charge.<n>.soc_end` | when the charge ended, as `charged` (reached `charge_until`) or `abandoned`, and the charge then |
-| `charge.<n>.reason` | for `abandoned`: the failed trip's reason, `timeout` or `assigned from outside` |
+| `charge.<n>.reason` | for `abandoned`: the failed trip's reason, `timeout`, `jam` or `assigned from outside` |
+| `top_up.<m>.robot`, `top_up.<m>.soc_dispatched` | a top-up: the robot, and its charge when it was sent |
+| `top_up.<m>.charger`, `top_up.<m>.dispatched` | the charger it took as its home, and when it was sent there |
+| `top_up.<m>.started`, `top_up.<m>.soc_start` | when it docked, and its charge then |
+| `top_up.<m>.ended`, `top_up.<m>.outcome`, `top_up.<m>.soc_end` | when the trip ended, as `docked` (at `started`) or `abandoned`, and the charge then |
+| `top_up.<m>.reason` | for `abandoned`: the failed trip's reason, `timeout`, `jam`, `assigned from outside`, or `yielded` (it gave the charger up on its way to a queued robot) |
+| `top_up.<m>.yielded_to` | for `yielded`: the queued robot that took the charger |
 | `empty.<k>.robot`, `empty.<k>.at` | a robot whose battery reached 0 %, and when |
 | `jam.<k>.robot`, `jam.<k>.at`, `jam.<k>.target` | a jammed robot, when, and the dock or charger it was headed for |
-| `jam.<k>.job` or `jam.<k>.charge` | the job that failed, or the charge abandoned, by the jam |
+| `jam.<k>.job`, `jam.<k>.charge` or `jam.<k>.top_up` | the job that failed, the charge or the top-up abandoned, by the jam |
 | `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
 
-`<i>` is the job's index in the stream, `<n>` and `<k>` count from 0 per episode. A job without `ended` was still
-queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures (kkieslich/arena-evaluation `evaluation infra`, its metrics README): task time T is the restricted mean of `ended - released` up to a horizon fixed per study, from the Kaplan-Meier estimate over the jobs released after the warm-up, a job not completed (open at the episode end, failed or abandoned) censored at its elapsed time, so the slow jobs an episode cuts off still count; success rate is completed jobs over ended ones; charger queue time is `dispatched - queued`; tasks per hour count completed jobs per hour of `ended`. The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
+`<i>` is the job's index in the stream, `<n>`, `<m>` and `<k>` count from 0 per episode. A job without `ended` was still
+queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures (kkieslich/arena-evaluation `evaluation infra`, its metrics README): task time T is the restricted mean of `ended - released` up to a horizon fixed per study, from the Kaplan-Meier estimate over the jobs released after the warm-up, a job not completed (open at the episode end, failed or abandoned) censored at its elapsed time, so the slow jobs an episode cuts off still count; success rate is completed jobs over ended ones; charger queue time is `dispatched - queued`; tasks per hour count completed jobs per hour of `ended`; the premise check's fleet capacity is the robots times 3600 over the busy time per completed job plus the time out of service per completed job, counting each `charged` charge from `dispatched` to `ended` and each top-up's trip from `dispatched` to `started` (to `ended` for one abandoned on its way). The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
 
 ## Fleet manager
 

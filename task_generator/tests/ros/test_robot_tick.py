@@ -787,6 +787,181 @@ def test_fleet_a_jammed_top_up_gives_the_charger_back_and_resets_the_robot_to_it
     assert managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
 
 
+def test_fleet_a_jammed_top_up_whose_holder_took_another_charger_since_leaves_one_robot_per_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="dd", jam_window_s=30.0)
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=99.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # r2 and r3 take the jobs, r0 tops up at charger_1 and r2 gets bay_1
+    assert (_job_index(managers["r2"]), _job_index(managers["r3"]), _phase_text(managers["r0"])) == (0, 1, "top up at charger_1")
+    managers["r2"].pose = _pose(*LOADING_XY)
+    _at(node, 10.0)
+    _tick(mode, {"r2": _met()})
+    managers["r2"].pose = _pose(*LOCKER_XY)
+    managers["r3"].pose = _pose(LOADING_XY[0], LOADING_XY[1] + 1.0)
+    _socs(managers, r2=60.0)
+    _at(node, 15.0)
+    _tick(mode, {"r2": _met()})
+    # r2, back at 60 %, tops up at charger_2 while its holder r3 is on job 1: r3 gets bay_1
+    _at(node, 16.0)
+    _tick(mode)
+    assert _phase_text(managers["r2"]) == "top up at charger_2" and mode._home["r3"] == "bay_1"
+    # r0 jams: back to bay_1, and charger_1 goes to r3, who has bay_1 now
+    _at(node, 41.0)
+    _tick(mode)
+    assert (record.log["jam.0.robot"], record.log["top_up.0.reason"]) == ("r0", "jam")
+    assert mode._home == {"r0": "bay_1", "r1": "bay_2", "r2": "charger_2", "r3": "charger_1"}
+    assert managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
+
+
+@pytest.mark.parametrize("end", ["timeout", "failed"])
+def test_fleet_a_top_up_that_times_out_or_fails_keeps_the_charger_as_the_robots_home(monkeypatch: pytest.MonkeyPatch, end: str) -> None:
+    # only a jam gives the charger back: past its timeout, or on a failed trip, the robot parks at the charger it took
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", jam_window_s=0.0, **({"job_timeout": 100.0, "job_timeout_per_m": 0.0} if end == "timeout" else {}))
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=95.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _phase_text(managers["r0"]) == "top up at charger_1"
+    _at(node, 102.0)
+    _tick(mode, {"r0": SimpleNamespace(outcome="failed", reason="planner")} if end == "failed" else {})
+    assert (record.log["top_up.0.outcome"], record.log["top_up.0.reason"]) == ("abandoned", "timeout" if end == "timeout" else "planner")
+    assert (mode._home["r0"], mode._home["r2"]) == ("charger_1", "bay_1")
+    assert _phase_text(managers["r0"]) == "park at charger_1"
+
+
+def _holder_back_low(mode: object, managers: dict[str, _Manager], node: SimpleNamespace, *, at: float = 40.0) -> None:
+    """r2, away from charger_1 on job 0, loads at the loading point at 20 s and unloads at the locker at `at`, at 25 %:
+    under charge_below, it queues to charge."""
+    managers["r2"].pose = _pose(*LOADING_XY)
+    _at(node, 20.0)
+    _tick(mode, {"r2": _met()})
+    managers["r2"].pose = _pose(*LOCKER_XY)
+    _socs(managers, r2=25.0)
+    _at(node, at)
+    _tick(mode, {"r2": _met()})
+
+
+@pytest.mark.parametrize("top_up", [True, False])
+def test_fleet_a_holder_back_low_from_a_job_takes_its_charger_from_a_top_up_on_its_way_there(monkeypatch: pytest.MonkeyPatch, top_up: bool) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", top_up=top_up)
+    # r3 on charger_2 under charge_until keeps it; r2, the fullest, takes the job; r0 tops up at charger_1 (with top_up)
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=85.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _job_index(managers["r2"]) == 0
+    _holder_back_low(mode, managers, node)
+    assert record.log["job.0.outcome"] == "completed"
+    # with or without top-ups, r2 goes to charge at charger_1 at once
+    assert _phase_text(managers["r2"]) == "charge at charger_1" and mode._home["r2"] == "charger_1" and "r2" not in mode._charge_queue
+    assert record.log["charge.0.dispatched"] == "40.001"
+    if not top_up:
+        assert managers["r0"].submitted == [] and not any(field.startswith("top_up.") for field in record.log)
+        return
+    # r0, not docked yet, gives the charger up and goes back to its old home
+    assert (record.log["top_up.0.outcome"], record.log["top_up.0.reason"], record.log["top_up.0.yielded_to"]) == ("abandoned", "yielded", "r2")
+    assert (record.log["top_up.0.ended"], record.log["charge.0.yielded_by"]) == ("40.001", "r0")
+    assert "top_up.0.started" not in record.log
+    assert mode._home["r0"] == "bay_1" and _phase_text(managers["r0"]) == "park at bay_1"
+    # no charger's holder is away: r0 takes no other one
+    _at(node, 41.0)
+    _tick(mode)
+    assert _phase_text(managers["r0"]) == "park at bay_1" and "top_up.1.robot" not in record.log
+
+
+def test_fleet_a_robot_queued_to_charge_takes_a_charger_from_a_top_up_on_its_way_there_its_own_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    # r1 at bay_2 falls under charge_below while r0 drives to top up at charger_1: r1 takes it, r0 gets bay_2
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d")
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=85.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _phase_text(managers["r0"]) == "top up at charger_1"
+    _socs(managers, r1=25.0)
+    _at(node, 10.0)
+    _tick(mode)
+    assert _phase_text(managers["r1"]) == "charge at charger_1"
+    assert (mode._home["r0"], mode._home["r1"], mode._home["r2"]) == ("bay_2", "charger_1", "bay_1")
+    assert (record.log["top_up.0.yielded_to"], record.log["charge.0.yielded_by"]) == ("r1", "r0")
+    assert _phase_text(managers["r0"]) == "park at bay_2"
+
+    # both holders away, both chargers topped up at: r3 back low takes back charger_2, its own, not charger_1
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="dd")
+    _socs(managers, r0=70.0, r1=50.0, r2=100.0, r3=99.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert (_phase_text(managers["r1"]), _phase_text(managers["r0"])) == ("top up at charger_1", "top up at charger_2")
+    _socs(managers, r3=25.0)
+    _at(node, 10.0)
+    _tick(mode, {"r3": SimpleNamespace(outcome="failed", reason="planner")})
+    assert record.log["job.1.outcome"] == "failed"
+    assert _phase_text(managers["r3"]) == "charge at charger_2"
+    assert (record.log["top_up.1.robot"], record.log["top_up.1.yielded_to"]) == ("r0", "r3")
+    assert "top_up.0.outcome" not in record.log and mode._home["r1"] == "charger_1"
+    assert (mode._home["r0"], mode._home["r3"]) == ("bay_1", "charger_2")
+
+
+def test_fleet_a_docked_top_up_gives_its_charger_up_at_once_until_charged_there_to_charge_until(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d")
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=85.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # r0 docks at charger_1 at 40 %, free for jobs, before r2 is back
+    managers["r0"].pose = _pose(1.0, 3.0)
+    _socs(managers, r0=40.0)
+    _at(node, 10.0)
+    _tick(mode, {"r0": _met()})
+    assert record.log["top_up.0.outcome"] == "docked"
+    _holder_back_low(mode, managers, node)
+    # r0, under charge_until, gives charger_1 up at once, and stays on it until r2 holds before it
+    assert _phase_text(managers["r2"]) == "charge at charger_1" and "r2" not in mode._charge_queue
+    assert (record.log["charge.0.dispatched"], record.log["charge.0.yielded_by"]) == ("40.001", "r0")
+    assert (mode._home["r0"], mode._home["r2"]) == ("bay_1", "charger_1")
+    assert _phase_text(managers["r0"]) == "top up at charger_1"
+    managers["r2"].pose = _pose(4.0, 2.0)
+    _at(node, 50.0)
+    _tick(mode)
+    assert _phase_text(managers["r2"]) == "wait for charger_1, r0 leaving it"
+    assert _phase_text(managers["r0"]) == "park at bay_1"
+
+    # charged to charge_until there, r0 holds charger_1 like any holder: under charge_until again it keeps it
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d")
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=85.0)
+    _at(node, 1.0)
+    _tick(mode)
+    managers["r0"].pose = _pose(1.0, 3.0)
+    _at(node, 5.0)
+    _tick(mode, {"r0": _met()})
+    _socs(managers, r0=90.0)
+    _at(node, 10.0)
+    _tick(mode)
+    _socs(managers, r0=60.0)
+    _holder_back_low(mode, managers, node)
+    assert "r2" in mode._charge_queue and _phase_text(managers["r2"]) == "park at bay_1"
+    assert mode._home["r0"] == "charger_1" and "charge.0.dispatched" not in record.log
+
+
+def test_fleet_a_jammed_trip_to_a_charger_taken_from_a_top_up_gives_it_back_as_a_top_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d")
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=85.0)
+    _at(node, 1.0)
+    _tick(mode)
+    _holder_back_low(mode, managers, node)
+    assert _phase_text(managers["r2"]) == "charge at charger_1" and _phase_text(managers["r0"]) == "park at bay_1"
+    # r2 stalls at the locker: jammed, it is reset to bay_1, and charger_1 goes back to r0, which drives back to it
+    for t in (41.0, 102.0):
+        _at(node, t)
+        _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.0.reason"]) == ("abandoned", "jam")
+    assert (mode._home["r0"], mode._home["r2"]) == ("charger_1", "bay_1")
+    assert _phase_text(managers["r0"]) == "park at charger_1"
+    assert record.log["charge.1.robot"] == "r2" and "charge.1.dispatched" not in record.log
+    # back on charger_1 under charge_until, r0 holds it by its top-up still and gives it up to r2 at once
+    managers["r0"].pose = _pose(1.0, 3.0)
+    _at(node, 110.0)
+    _tick(mode, {"r0": _met()})
+    assert _phase_text(managers["r2"]) == "charge at charger_1"
+    assert record.log["charge.1.yielded_by"] == "r0"
+
+
 def _yield_fleet(monkeypatch: pytest.MonkeyPatch, **params: object) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
     """The fleet with no jobs, charge below 30 % until 90 %, approach 2 m, each robot standing at its home: r0 bay_1, r1 bay_2, r2 charger_1, r3 charger_2."""
     mode, managers, node, record = _fleet(monkeypatch, jobs="", charge_below=30.0, charge_until=90.0, approach_m=2.0, **params)

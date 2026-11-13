@@ -78,7 +78,8 @@ class _Charge:
     started_s: float | None = None
     home_before: str | None = None  # the robot's home before the trip took the charger as its home
     swapped_with: str | None = None  # the charger's holder, who got that home
-    leaving: str | None = None  # a charged holder that gives the charger up and has not cleared it yet
+    swapped_top_up: bool = False  # that holder held the charger by a top-up: a revert gives it back as such
+    leaving: str | None = None  # a holder parked on the charger that gives it up (`_yields`) and has not cleared it yet
     holding_since: float | None = None  # when the robot began to hold in place before the charger for `leaving`
 
 
@@ -158,6 +159,7 @@ class TM_Fleet(TM_Robots):
         self._charge: dict[str, _Charge] = {}
         self._charges = itertools.count()
         self._top_ups = itertools.count()
+        self._topping: dict[str, str] = {}  # robot -> the charger it holds by a top-up, until it has charged there to charge_until
         self._empty: set[str] = set()
         self._empties = itertools.count()
         self._tracks: dict[str, deque[tuple[float, float, float]]] = {}
@@ -200,7 +202,7 @@ class TM_Fleet(TM_Robots):
         self._arrived = set(self._home)
         self._state = dict.fromkeys(self._home, _State.PARKED)
         self._run, self._docks, self._dock_queue, self._queue = {}, {}, {}, deque()
-        self._charge_queue, self._charge, self._charges, self._top_ups = {}, {}, itertools.count(), itertools.count()
+        self._charge_queue, self._charge, self._charges, self._top_ups, self._topping = {}, {}, itertools.count(), itertools.count(), {}
         self._empty, self._empties = set(), itertools.count()
         self._tracks, self._jams = {}, itertools.count()
         for robot in robots:
@@ -472,8 +474,14 @@ class TM_Fleet(TM_Robots):
     async def _send_to_chargers(self, now: float) -> None:
         """Queue free robots under `charge_below`, then send queued robots to a charger, lowest battery first (ties by
         queue time, then name): a robot parked at its charger home charges there, any other takes a charger whose holder
-        is away, else one whose holder is parked on it charged to `charge_until`, and swaps homes with the holder. A
-        charged holder leaves for its new home only once the robot holds in place before the charger (`_follow_yield`)."""
+        is away, else one whose holder yields (`_yields`: parked on it charged to `charge_until`, or holding it by a
+        top-up), else the charger of a robot still on its way to top up there (first the one that took it from this
+        robot), and swaps homes with the holder. A holder that yields leaves for its new home only once the robot holds
+        in place before the charger (`_follow_yield`); a robot on its way to top up abandons the top-up and heads for its
+        new home at once."""
+        for name in [name for name, charger in self._topping.items() if (soc := self._soc(name)) is not None and soc >= self._charge_until.value]:
+            # charged to charge_until at the charger it took by a top-up: it holds it like any holder from now on
+            del self._topping[name]
         for name, state in self._state.items():
             soc = self._soc(name)
             if state in (_State.PARKED, _State.FREE) and soc is not None and soc < self._charge_below.value:
@@ -492,29 +500,45 @@ class TM_Fleet(TM_Robots):
                 if charger is None:
                     charger = next((charger for charger in self._chargers if self._yields(charger)), None)
                 if charger is None:
+                    on_the_way = [charger for charger in self._chargers if self._topping_up(charger) is not None]
+                    charger = next((charger for charger in on_the_way if self._charge[typing.cast(str, self._holder(charger))].swapped_with == name), next(iter(on_the_way), None))
+                if charger is None:
                     continue
                 trip_m = math.dist(self._where(name), self._xy[charger]) * self._detour.value
                 if not await self._submit(name, [GoToPhase(target=charger, on_failure="stop_task", text=f"charge at {charger}")]):
                     continue
                 owner = self._holder(charger)
                 leaving = owner if owner is not None and owner != name and self._yields(charger) else None
+                turning = self._topping_up(charger) if owner != name else None
+                if turning is not None:
+                    # on its way to top up there: it gives the charger up at once and goes to the queued robot's home
+                    self._note(f"top_up.{self._charge[turning].index}.yielded_to", name)
+                    self._end_charge(turning, "abandoned", "yielded", now)
+                    self._tracks.pop(turning, None)
+                    self._logger.info(f"{turning} gives {charger} up on its way to top up there to {name} ({_pct(self._soc(name))} %) and takes {home}, {now:.1f} s")
+                swapped_top_up = owner is not None and owner != name and self._topping.pop(owner, None) == charger
                 if owner is not None and owner != name:
                     self._home[owner] = home
                 self._home[name] = charger
+                self._topping.pop(name, None)
                 self._start_charge(name, charger, now, trip_m)
                 charge = self._charge[name]
                 charge.home_before, charge.swapped_with, charge.leaving = home, owner if owner != name else None, leaving
+                charge.swapped_top_up = swapped_top_up
+                if leaving is not None or turning is not None:
+                    self._note(f"{charge.table}.{charge.index}.yielded_by", typing.cast(str, leaving or turning))
                 if leaving is not None:
-                    self._note(f"{charge.table}.{charge.index}.yielded_by", leaving)
                     self._logger.info(f"{leaving} gives {charger} up to {name} ({_pct(self._soc(leaving))} %) and takes {home}, {now:.1f} s")
             self._logger.info(f"{name} charges at {self._home[name]} from {self._soc(name):.1f} %, {now:.1f} s")
 
     async def _top_up_robots(self, now: float) -> None:
         """Opportunistic charging: once no robot waits to charge, a free robot (parked or on its way home, not queued to
         charge) whose battery is below `charge_until` and whose home is no charger takes a charger whose holder is away on
-        a job as its home, lowest battery first, and the holder gets its old home. The trip is a charging trip (the jam
-        rule and the trip timeout apply, and a jam gives the charger back); once docked the robot charges there and is
-        free to take jobs. Off with `top_up`."""
+        a job as its home, lowest battery first, and the holder gets its old home. The trip is a charging trip: the jam
+        rule and the trip timeout apply, and only a jam gives the charger back (a timeout, a failed trip or a task from
+        outside leave it the robot's home). Once docked the robot charges there and is free to take jobs. Until it has
+        charged there to `charge_until` it gives the charger up to a robot queued to charge at once, and on its way there
+        it gives it up too (`_send_to_chargers`). Off with `top_up`."""
         if not self._top_up.value or self._charge_queue:
             return
         takers = [name for name, state in self._state.items() if state is _State.PARKED and self._home[name] not in self._chargers and (soc := self._soc(name)) is not None and soc < self._charge_until.value]
@@ -529,11 +553,13 @@ class TM_Fleet(TM_Robots):
             if not await self._submit(name, [GoToPhase(target=charger, on_failure="stop_task", text=f"top up at {charger}")]):
                 continue
             takers.pop(0)
+            swapped_top_up = self._topping.pop(holder, None) == charger
             self._home[holder], self._home[name] = home, charger
+            self._topping[name] = charger
             self._arrived.discard(name)
             self._start_charge(name, charger, now, trip_m, top_up=True)
             charge = self._charge[name]
-            charge.home_before, charge.swapped_with = home, holder
+            charge.home_before, charge.swapped_with, charge.swapped_top_up = home, holder, swapped_top_up
             self._logger.info(f"{name} tops up at {charger} from {self._soc(name):.1f} %, {holder} away on a job takes {home}, {now:.1f} s")
 
     def _start_charge(self, name: str, charger: str, now: float, trip_m: float = 0.0, *, top_up: bool = False) -> None:
@@ -621,13 +647,20 @@ class TM_Fleet(TM_Robots):
 
     async def _revert_swap(self, name: str, charge: _Charge) -> None:
         """Give the charger of a trip that did not arrive back to its holder and the robot its home before the trip; a
-        parked holder that is not on the charger (it left, or was parked elsewhere) is sent back to it, parked on its
-        way, so the charger is not away for the next queued robot."""
+        holder that has taken another home since (a charger it went to itself) leaves it to the robot that has the old
+        home now, which gets the charger, so every home keeps one robot. A parked holder that is not on the charger (it
+        left, or was parked elsewhere) is sent back to it, parked on its way, so the charger is not away for the next
+        queued robot."""
         if charge.home_before is None or self._home[name] != charge.charger:
             return
-        holder = charge.swapped_with
-        if holder is not None and self._home.get(holder) == charge.home_before:
+        holder, top_up = charge.swapped_with, charge.swapped_top_up
+        self._topping.pop(name, None)
+        if holder is not None and self._home.get(holder) != charge.home_before:
+            holder, top_up = self._holder(charge.home_before), False
+        if holder is not None:
             self._home[holder] = charge.charger
+            if top_up:
+                self._topping[holder] = charge.charger
             if self._state[holder] is _State.PARKED and (holder not in self._arrived or math.dist(self._where(holder), self._xy[charge.charger]) > self._jam_goal_m.value):
                 self._arrived.discard(holder)
                 if not await self._submit(holder, [GoToPhase(target=charge.charger, text=f"park at {charge.charger}")]):
@@ -652,12 +685,22 @@ class TM_Fleet(TM_Robots):
         return holder is None or self._state[holder] in (_State.JOB, _State.DOCK_WAIT, _State.FREE)
 
     def _yields(self, charger: str) -> bool:
-        """Whether the charger's holder gives it up to a queued robot: parked on it (arrived), not queued itself, and charged to `charge_until`."""
+        """Whether the charger's holder gives it up to a queued robot: parked on it (arrived), not queued itself, and charged
+        to `charge_until`, or holding it by a top-up (it took the charger by a top-up and has not charged there to
+        `charge_until` since)."""
         holder = self._holder(charger)
         if holder is None or self._state[holder] is not _State.PARKED or holder not in self._arrived or holder in self._charge_queue:
             return False
         soc = self._soc(holder)
-        return soc is not None and soc >= self._charge_until.value
+        return soc is not None and (soc >= self._charge_until.value or self._topping.get(holder) == charger)
+
+    def _topping_up(self, charger: str) -> str | None:
+        """The charger's holder while it is on its way there to top up (not docked yet), else None."""
+        holder = self._holder(charger)
+        if holder is None or self._state[holder] is not _State.CHARGE:
+            return None
+        charge = self._charge[holder]
+        return holder if charge.table == "top_up" and charge.started_s is None and charge.charger == charger else None
 
     def _soc(self, name: str) -> float | None:
         return self._ctx.robots[name].soc
