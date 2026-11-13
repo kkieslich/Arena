@@ -6,10 +6,10 @@ import math
 import traceback
 import typing
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import attrs
 import numpy as np
-import shapely
 import yaml
 from arena_humansim.core.interaction_kinds import InteractionType, MembershipRole
 from arena_humansim.utils.types import InteractionOutcome
@@ -91,12 +91,15 @@ from arena_rclpy_mixins.Async import ClientWrapper
 from arena_rclpy_mixins.lazy import LazySubscription
 from arena_rclpy_mixins.Time import Time
 from arena_runtime_msgs.msg import LockstepChannel
+from arena_simulation_setup.metrics import use_points
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET, CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, Stairs
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
+from arena_simulation_setup.tree.World import World, WorldView
 from arena_simulation_setup.tree.World.model import elevator_doorway_pose
-from arena_simulation_setup.tree.World.Scenario import TeleportZone
-from arena_simulation_setup.utils.affordance import AffordanceClaims, AffordanceKind, AffordanceSlot, SlotOccupied, conflicts, has_z, max_occupancy, placed_slots
-from arena_simulation_setup.utils.face import front_angle
+from arena_simulation_setup.tree.World.Scenario import Scenario, TeleportZone
+from arena_simulation_setup.utils import affordance
+from arena_simulation_setup.utils.affordance import AffordanceClaims, AffordanceKind, AffordanceSlot, SlotOccupied, conflicts, has_z, max_occupancy, placed_slots, seat_reach, seat_slot
+from arena_simulation_setup.utils.face import front_angle, queue_theta
 from geometry_msgs.msg import (
     Point,
     Point32,
@@ -120,7 +123,7 @@ from visualization_msgs.msg import MarkerArray
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.rng import stable_int
 from arena_runtime.env.realizer import Realizer
-from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, Segment
+from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, ScenarioCheckError, Segment
 from arena_runtime.humans.itinerary import STIMULUS_TELEPORTED, ItineraryDriver, Stop, semantic_atom
 from arena_runtime.humans.support import Support, seat_stand
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
@@ -180,9 +183,8 @@ class _TargetOnly(Exception):
 
 
 def facing_pose(pose: Pose2DMsg, front: float) -> Pose2DMsg:
-    """The pose the engine approaches and queues an object from: it lines people up behind its theta, so theta turns until that side is the front at angle front in the object's frame."""
-    theta = pose.theta + front - math.pi
-    return Pose2DMsg(x=pose.x, y=pose.y, theta=math.atan2(math.sin(theta), math.cos(theta)))
+    """The pose the engine approaches and queues an object from (`queue_theta`)."""
+    return Pose2DMsg(x=pose.x, y=pose.y, theta=queue_theta(pose.theta, front))
 
 
 def seat_capacity(humansim: Mapping[str, typing.Any], slots: Sequence[AffordanceSlot]) -> int:
@@ -199,9 +201,6 @@ def slot_height(slot: AffordanceSlot) -> float:
     return slot.bbox[2][1] if has_z(slot.bbox) else math.nan
 
 
-SEAT_SLOT_REACH = 0.15  # m, a scenario seat this close to a sit slot's footprint takes that slot's height
-
-
 def seat_height(seat: Pose, slots: Sequence[AffordanceSlot]) -> float:
     """Surface height of a scenario seat in the object frame, NaN when unknown.
 
@@ -214,35 +213,9 @@ def seat_height(seat: Pose, slots: Sequence[AffordanceSlot]) -> float:
     return math.nan if slot is None else slot_height(slot)
 
 
-def seat_slot(seat: Pose, slots: Sequence[AffordanceSlot]) -> AffordanceSlot | None:
-    """The sit slot with a z range a scenario seat lies in or next to (within SEAT_SLOT_REACH), the nearest center among overlapping ones."""
-    xy = (seat.position.x, seat.position.y)
-    near = [slot for slot in slots if has_z(slot.bbox) and slot.distance(xy) <= SEAT_SLOT_REACH]
-    return min(near, key=lambda slot: (slot.distance(xy), math.dist(slot.center, xy))) if near else None
-
-
-def box_reach(seat: Pose, box: Sequence[Sequence[float]], behind: bool = False) -> float:
-    """How far ahead of a seat along its facing, or behind it, an object-frame box ends."""
-    yaw = seat.orientation.to_yaw() + (math.pi if behind else 0.0)
-    reach = math.inf
-    for (low, high), at, step in zip(box[:2], (seat.position.x, seat.position.y), (math.cos(yaw), math.sin(yaw)), strict=True):
-        if step > 1e-9:
-            reach = min(reach, (high - at) / step)
-        elif step < -1e-9:
-            reach = min(reach, (low - at) / step)
-    return max(0.0, reach)
-
-
-def seat_reach(seat: Pose, slot: AffordanceSlot, behind: bool = False) -> float:
-    """How far ahead of a seat along its facing, or behind it, its slot's box ends, in the object frame."""
-    return box_reach(seat, slot.bbox, behind)
-
-
 def seat_approach(seat: Pose, front: float | None, bounding_box: Sequence[Sequence[float]] | None) -> float:
     """Where a sitter stands ahead of a seat before it sits (`seat_stand`), never inside the object's bounding box, 0 for a seat outside every slot."""
-    if front is None:
-        return 0.0
-    return max(seat_stand(front), 0.0 if bounding_box is None else box_reach(seat, bounding_box))
+    return affordance.seat_approach(seat, front, bounding_box, seat_stand)
 
 
 @attrs.frozen
@@ -518,6 +491,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._seat_slots: dict[str, list[AffordanceSlot]] = {}
         self._seats: dict[str, list[Seat]] = {}
         self._warned_faces: set[str] = set()
+        self._warned_models: set[str] = set()
         self._seat_holds: dict[int, SeatHold] = {}
         self._supports: dict[int, Support] = {}
         self._seat_violation_reported = False
@@ -1238,24 +1212,28 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return shape
 
     def _polygon_centroid(self, polygon: Sequence[Position]) -> tuple[float, float]:
-        """The point a region is sent around: the mean of its vertices, or a point inside the polygon where that mean is not.
+        """The point a region is sent around (`use_points.region_point`).
 
         arena_humansim takes the pose as the region's goal. A walker bound for a sink heads for the sink's pose and is
         removed only while that waypoint lies inside the sink's polygon, so a sink posed outside its own polygon (the mean of
         a concave region's vertices, e.g. a square cut to the floor along a wall) never removes anyone.
         """
-        if not polygon:
-            return 0.0, 0.0
-        cx = sum(p.x for p in polygon) / len(polygon)
-        cy = sum(p.y for p in polygon) / len(polygon)
-        if len(polygon) < 3:
-            return cx, cy
-        # the polygonal part only: a zero-width spike would otherwise count its line as inside
-        area = shapely.make_valid(shapely.Polygon([(p.x, p.y) for p in polygon]), method="structure", keep_collapsed=False)
-        if area.is_empty or area.contains(shapely.Point(cx, cy)):
-            return cx, cy
-        inner = area.point_on_surface()
-        return float(inner.x), float(inner.y)
+        return use_points.region_point([(p.x, p.y) for p in polygon])
+
+    async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
+        """Raise ScenarioCheckError listing what of `scenario` the crowd cannot reach (`use_points.check`), unless `human.check` is
+        off; models that do not resolve only warn, once per model, under `human.check.models:=warn`."""
+        if not self.node.conf.Human.CHECK.value:
+            return
+        findings = await asyncio.to_thread(use_points.check, view, world, scenario, scenario_dir=scenario_dir, origins=origins, stand=seat_stand)
+        if self.node.conf.Human.CHECK_MODELS.value == "warn":
+            models = [f for f in findings if f.point == "model" and f.why not in self._warned_models]
+            self._warned_models.update(f.why for f in models)
+            if models:
+                self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r} (human.check.models:=warn): {use_points.describe(models)}")
+            findings = [f for f in findings if f.point != "model"]
+        if findings:
+            raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {use_points.describe(findings)}. Fix them, or launch with human.check:=false (human.check.models:=warn lets models that do not resolve pass)")
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
         """Add the regions one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.

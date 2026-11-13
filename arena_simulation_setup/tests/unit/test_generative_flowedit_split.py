@@ -196,6 +196,12 @@ def test_a_sweep_checks_the_generator_still_makes_every_listed_name(doc: dict[st
         SP.verify(controlled, "hospital_1", {"chains": manifest["chains"][:1]})
     with pytest.raises(ValueError, match="no controls of hospital_1__aa"):
         SP.verify(controlled, "hospital_1", {"chains": [{"world": "hospital_1__aa"}, {"world": "hospital_1__bb"}, {"world": "hospital_1__aa_inert"}]})
+    # a source that names the generator version its names come from is refused by another version, by name
+    controlled["sources"]["hospital_1"]["generator_version"] = 5
+    SP.check(controlled)
+    SP.verify(controlled, "hospital_1", {**manifest, "generator_version": 5})
+    with pytest.raises(ValueError, match="come from generator version 5, `flowedit generate` is version 6"):
+        SP.verify(controlled, "hospital_1", {**manifest, "generator_version": 6})
 
 
 def test_a_splits_crowd_settings_reach_every_run_under_a_sweeps_own(doc: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

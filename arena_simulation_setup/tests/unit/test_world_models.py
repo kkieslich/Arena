@@ -24,7 +24,6 @@ KNOWN_UNRESOLVED = {
     'Office/Object/SM_TableWorkingDouble': "NVIDIA office prop, the store's Office/Table_Work_Security is the different prop SM_TableWorkSecurity",
     'Office/Object/SM_MarkerBoard': "NVIDIA office prop, the store's Office/SM_Board is a different prop",
     **{f'Office/Object/SM_{name}': 'NVIDIA desk prop with no copy in the store' for name in _CLUTTER.split()},
-    'Common/Object/vending_machine': "legacy Gazebo model, the store's drinks machines are different assets",
     'Common/Object/shelf': 'legacy Gazebo model, no store asset has its data',
     'Common/Object/chair': 'legacy Gazebo model, no store asset has its data',
     'Common/Human/female_adult_business_': 'truncated pedestrian name, the intended model is not recorded',
