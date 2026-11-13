@@ -1108,11 +1108,20 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
                     if self._removals != removals:
                         continue
-                    await self.relay_pedestrian_update(peds)
+                    await self.relay_pedestrian_update(self._named(peds))
         except asyncio.CancelledError:
             pass
         except Exception as e:
             self._logger.error(f"Error in pedestrian update loop: {e}\n{traceback.format_exc()}")
+
+    def _named(self, peds: Pedestrians) -> Pedestrians:
+        """The roster's pedestrians under the name their simulator body has. An agent the update loop has not taken in
+        yet goes by its bare id in the roster; a body made under that name would never be deleted, it would stay
+        where the agent was first seen, moving on at that velocity, after the agent got its own body."""
+        out = Pedestrians()
+        out.header = peds.header
+        out.pedestrians = [ped for ped in peds.pedestrians if self._agent_names.get(ped.id) == ped.name]
+        return out
 
     async def _feedback_loop(self):
         """Publish dirty robot and possessed pedestrian poses on world_state topic, step delayed spawns and itineraries."""
