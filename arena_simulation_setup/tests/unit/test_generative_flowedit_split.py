@@ -407,10 +407,10 @@ def test_data_v2_holds_out_what_the_design_says_with_entrances_on() -> None:
         assert sorted({j.world for j in crowd_runs if j.baseline}) == ["hospital_1", "office_1"]
 
 
-def test_data_v3_is_data_v2_s_design_made_by_generator_version_6() -> None:
+def test_data_v3_is_data_v2_s_design_made_by_generator_version_7() -> None:
     v2, v3, pilot = SP.load(SPLITS / "peds_v2.yaml"), SP.load(SPLITS / "peds_v3.yaml"), SP.load(SPLITS / "peds_pilot.yaml")
     # v2's sources, each pinned to the generator version its names come from
-    assert v3["sources"] == {w: {**s, "generator_version": 6} for w, s in v2["sources"].items()}
+    assert v3["sources"] == {w: {**s, "generator_version": 7} for w, s in v2["sources"].items()}
     # the same worlds in the same partitions, the same seeds, base crowd and duration
     for part in SP.PARTITIONS:
         assert {SP.base_of(w) for w in v3["partitions"][part]} == {SP.base_of(w) for w in v2["partitions"][part]}
@@ -428,7 +428,7 @@ def test_data_v3_is_data_v2_s_design_made_by_generator_version_6() -> None:
     assert len(held["hospital_1"]) == len(held["office_1"]) == 12 and all(len(v) in (5, 6) for k, v in held.items() if k not in ("hospital_1", "office_1"))
     pilot_edits = {w for p in pilot["partitions"].values() for w in p if not SP.is_base(w)}
     assert not pilot_edits & set(v3["partitions"]["held_out_edits"]) and not pilot_edits & set(v3["partitions"]["held_out_worlds"])
-    # version 6 refuses library's two door locks that shut a room people are sent to and office_open_plan's locked kitchen,
+    # version 7, as version 6, refuses library's two door locks that shut a room people are sent to and office_open_plan's locked kitchen,
     # and reception's fourth move is a chair's (its spot taken): 14 stages fewer than v2's 1540
     runs = SP.jobs(v3)
     assert len(runs) == 1526 and len({(j.world, j.seed) for j in runs}) == 1526
@@ -436,3 +436,6 @@ def test_data_v3_is_data_v2_s_design_made_by_generator_version_6() -> None:
     for crowd in v3["crowds"]:
         crowd_runs = SP.jobs(v3, crowd=crowd)
         assert len(crowd_runs) == 66 and {j.seed for j in crowd_runs if not j.baseline} == {6, 7, 8}
+    # version 7 refuses what version 6 let through where a walker stops off the use point or gets there only by the
+    # crowd's narrowest routes: hospital_1's fountain move b1081bc3, dead in v2 (0 uses, 66 % of walker-time outside)
+    assert "hospital_1__move_fountain__b1081bc3" not in {w for p in v3["partitions"].values() for w in p}

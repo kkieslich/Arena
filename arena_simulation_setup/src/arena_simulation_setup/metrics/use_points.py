@@ -1,19 +1,27 @@
 """Whether HumanSim's crowd can reach what a world and scenario hand it: every model resolves, and every point people
 are walked to (an interactable's use point and first queue slots, seat standing points, the scenario's sources and
-sinks, the humans' starts, waypoints and go_to stops) lies within arrival distance of the floor its walkers reach, no
-wall between a queue's slots, and no room people are sent to is partly shut off by objects or locked doors.
+sinks, the humans' starts, waypoints and go_to stops) lies where a walker stops within arrival distance of it, no wall
+between a queue's slots, and no room people are sent to is partly shut off by objects or locked doors.
 
 The points are the ones the runtime hands HumanSim: an object's pose turned to its annotated `face` (`queue_theta`),
 HumanSim's own `LineFormation` for the queue slots, the seats and standing points of the runtime's sit slots. The floor
-is the level's rooms, door spans and cabins, less the walls, the doors locked to everyone and the bounding box of every
-object whose model resolves, kept `WALKER_CLEARANCE` from them. A walker reaches the connected part of it that it
-starts in, and an interactable or a sink must lie by a part some walker starts in: a free pocket behind a desk does not
-count.
+is the level's rooms, door spans and cabins, less the walls HumanSim gets (`Level.all_walls`: a door is open only where
+they leave a gap for it), the doors locked to everyone and the bounding box of every object whose model resolves, kept
+`WALKER_CLEARANCE` (HumanSim's inflation radius, its narrowest routes) from them, measured exactly where a raster cell
+could err. A walker reaches the connected part of it that it starts in, and an interactable or a sink must lie by a part
+some walker starts in: a free pocket behind a desk does not count.
+
+Near walls and boxes a walker stops short of the floor's edge: HumanSim routes it `route_clearance` from them (its
+radius plus `CLEARANCE_MARGIN`) where it can, and a walker that stops there (the front of a queue) is up to the
+difference further from a point inside the inflation band. A point that only HumanSim's narrowest routes reach, past
+walls or objects closer than a walker's route clearance, is a detour (`Finding.detour`): HumanSim takes any route that
+keeps the clearance first, outside the building too where the runtime leaves its outside open (`Level.outside_walls`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -27,6 +35,7 @@ from arena_humansim.core.agents.loader import load_agent_type_from_file
 from arena_humansim.core.agents.types import GoToStepDef, StepDef
 from arena_humansim.core.formation import Formation
 from arena_humansim.core.formation.anchor import PoseAnchor
+from arena_humansim.params import GLOBAL_PLANNER_CLEARANCE_MARGIN, GLOBAL_PLANNER_INFLATION_RADIUS
 from arena_humansim.utils import DISTANCE_TOLERANCE
 from arena_humansim.utils.types import Pose2D
 from scipy import ndimage
@@ -37,14 +46,26 @@ from arena_simulation_setup.shared.semantics import authored_semantics
 from arena_simulation_setup.shared.world import CABIN_DOOR_THRESHOLD, Door
 from arena_simulation_setup.tree import Identifier, NetResolver
 from arena_simulation_setup.tree.World import Level, World, WorldView, world_assets
+from arena_simulation_setup.tree.World.Map import Map
 from arena_simulation_setup.tree.World.model import elevator_doorway_pose
 from arena_simulation_setup.tree.World.Scenario import RegionAssignment, Scenario
 from arena_simulation_setup.utils.affordance import placed_slots, seat_approach, seat_reach, seat_slot
 from arena_simulation_setup.utils.face import front_angle, queue_theta
 from arena_simulation_setup.utils.geometry import Pose, Position
 
-#: HumanSim's planner keeps walkers this far from walls and object boxes (its `global_planner.inflation_radius`) [m]
-WALKER_CLEARANCE = 0.38
+#: HumanSim's planner keeps walkers at least this far from walls and object boxes, on the narrowest routes it takes where
+#: no wider one is left (its `global_planner.inflation_radius`): a passage narrower than twice this is shut [m]
+WALKER_CLEARANCE = float(GLOBAL_PLANNER_INFLATION_RADIUS.default)  # pyright: ignore[reportArgumentType]
+#: Where a route keeps it, HumanSim routes a walker its radius plus this from walls and boxes (`global_planner.clearance_margin`) [m]
+CLEARANCE_MARGIN = float(GLOBAL_PLANNER_CLEARANCE_MARGIN.default)  # pyright: ignore[reportArgumentType]
+#: The radius of a walker whose agent type does not load: HumanSim's adult [m]
+DEFAULT_RADIUS = float(BUILTIN_AGENTS["adult"].agent_radius.mean) if "adult" in BUILTIN_AGENTS else 0.25
+#: Raster cells whose clearance lies this close to a threshold get their clearance measured exactly: a wall drawn as a
+#: line of cells, and the level's frame, put a cell's centre up to about a cell off the true distance [m]
+EXACT_BAND = 2 * RESOLUTION
+#: How much further than its route clearance allows a walker's own floor may lie from a point before it counts as a
+#: detour: the raster's error and the extra reach into a corner [m]
+DETOUR_SLACK = 2 * RESOLUTION
 #: Queue slots behind a line's use point that must be reachable too
 QUEUE_SLOTS = 3
 #: How close a walker must come to a sink's point to be absorbed, without an `absorption_radius` (the adapter's default) [m]
@@ -81,13 +102,23 @@ class Finding:
     y: float = math.nan
     distance: float = math.nan
     reach: float = math.nan
+    #: a point walkers reach only by HumanSim's narrowest routes, or outside an open building: the generator refuses an
+    #: edit that makes one, the runtime and the suite only report it
+    detour: bool = False
 
     def __str__(self) -> str:
         if math.isnan(self.distance):
             return f"{self.object}: {self.point} {self.why}"
         if self.point == "floor":
             return f"zone {self.object} {self.why} ({self.x:.2f}, {self.y:.2f}) on level {self.level}"
-        far = "no floor a walker reaches" if math.isinf(self.distance) else f"{self.distance:.2f} m from the floor a walker reaches"
+        if self.detour:
+            return f"{self.object}: {self.point} at ({self.x:.2f}, {self.y:.2f}) on level {self.level} {self.why}"
+        if math.isinf(self.distance):
+            far = "no floor a walker reaches"
+        elif self.point == "start":
+            far = f"{self.distance:.2f} m from the floor a walker reaches"
+        else:
+            far = f"a walker stops {self.distance:.2f} m from it"
         return f"{self.object}: {self.point} at ({self.x:.2f}, {self.y:.2f}) on level {self.level} {self.why}, {far} (needs < {self.reach:g} m)"
 
 
@@ -101,6 +132,11 @@ def describe(findings: Sequence[Finding], limit: int = 10) -> str:
     points = [str(finding) for finding in findings if finding.point != "model"]
     lines += points[:limit] + ([f"... {len(points) - limit} more"] if len(points) > limit else [])
     return "; ".join(lines)
+
+
+def blocking(findings: Sequence[Finding]) -> list[Finding]:
+    """The findings that stop an episode at the runtime's check: all but the detours."""
+    return [finding for finding in findings if not finding.detour]
 
 
 def region_point(polygon: Sequence[tuple[float, float]]) -> tuple[float, float]:
@@ -126,6 +162,26 @@ def line_slots(x: float, y: float, theta: float, params: Mapping[str, float], co
         line.on_join(agent)
     targets = line.tick(0.0)
     return [(targets[agent].x, targets[agent].y) for agent in range(count)]
+
+
+@functools.cache
+def _planner() -> object:
+    from arena_humansim.global_planner.navmesh import NavMeshPlanner
+
+    return NavMeshPlanner(inflation_radius=WALKER_CLEARANCE, clearance_margin=CLEARANCE_MARGIN)
+
+
+def route_clearance(radius: float) -> float:
+    """How far from walls and boxes HumanSim routes a walker of `radius` where a route keeps it: its radius plus the
+    clearance margin, rounded up to its planner's step, at least `WALKER_CLEARANCE` (`NavMeshPlanner.clearance_for`)."""
+    return float(_planner().clearance_for(radius))  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def agent_radius(definition: AgentType | None, override: object = None) -> float:
+    """A walker's radius as the runtime hands HumanSim: the scenario's `radius`, else its agent type's mean, else `DEFAULT_RADIUS`."""
+    if isinstance(override, int | float) and not isinstance(override, bool) and override > 0:
+        return float(override)
+    return float(definition.agent_radius.mean) if definition is not None else DEFAULT_RADIUS
 
 
 def _target_reach(humansim: Mapping[str, object]) -> float:
@@ -200,6 +256,8 @@ class Floor:
     boxes: tuple[tuple[str, shapely.Polygon], ...]
     origin: tuple[float, float]
     resolution: float
+    #: each cell's distance to the nearest wall, box or edge of the floor, exact near the floor's clearance [m]
+    clearance: np.ndarray | None = None
     _to: dict[frozenset[int], np.ndarray] = attrs.field(factory=dict)
 
     def cell(self, x: float, y: float) -> tuple[int, int] | None:
@@ -246,6 +304,17 @@ class Floor:
             assert isinstance(to, np.ndarray)
             self._to[parts] = to
         return float(self._to[parts][cell])
+
+    def stop(self, x: float, y: float, parts: frozenset[int], route: float) -> float:
+        """How far from a point a walker routed `route` from walls and boxes stops: its distance from the walkable
+        `parts`, plus how much further out than the floor's edge the walker's route keeps it where the point lies closer
+        to a wall or box than `route` (at most `route - WALKER_CLEARANCE`)."""
+        distance = self.distance(x, y, parts)
+        cell = self.cell(x, y)
+        if math.isinf(distance) or cell is None:
+            return distance
+        near = float(self.clearance[cell]) if self.clearance is not None else 0.0
+        return distance + min(max(route - WALKER_CLEARANCE, 0.0), max(route - near, 0.0))
 
     def why(self, x: float, y: float, own: str) -> str:
         """Why a point lies off the floor a walker reaches."""
@@ -296,14 +365,52 @@ def object_box(obstacle: Obstacle, annotation: Mapping[str, object] | None) -> s
     return shapely.affinity.translate(polygon, xoff=obstacle.pose.position.x, yoff=obstacle.pose.position.y)
 
 
-def level_floor(level: Level, boxes: Iterable[tuple[str, shapely.Polygon]], *, resolution: float = RESOLUTION, clearance: float = WALKER_CLEARANCE) -> Floor:
-    """The floor of `level` among `boxes` (name, level-frame polygon): its rooms, door spans and cabins, walls and boxes
-    occupied, walkable `clearance` from them (less half a cell, the raster's error at a wall line), in connected parts."""
+def level_floor(level: Level, boxes: Iterable[tuple[str, shapely.Polygon]], *, resolution: float = RESOLUTION, clearance: float = WALKER_CLEARANCE, open_doors: bool = False, exact: bool = True) -> Floor:
+    """The floor of `level` among `boxes` (name, level-frame polygon): its rooms, door spans and cabins, the walls HumanSim
+    gets (`all_walls`) and the boxes occupied, walkable `clearance` from them, in connected parts. A door is floor only
+    where `all_walls` leaves it open, or everywhere with `open_doors` (the doors drawn over the walls). `exact` decides
+    the cells near `clearance` by the shapes themselves (`_exact`); without it the raster's clearance counts, less half a
+    cell, which lets a passage up to a cell narrower than twice `clearance` through."""
     boxes = tuple(boxes)
-    grid, origin = level.render_grid(resolution=resolution, asset_color="black", asset_name_color=None, static_objects=boxes)
-    walkable = clearance_of(grid, resolution) >= clearance - resolution / 2
+    shapes = level.grid_shapes(asset_color="black", asset_name_color=None, static_objects=boxes, open_doors=open_doors)
+    grid, origin = Map.rasterize(resolution=resolution, **shapes)
+    near = clearance_of(grid, resolution)
+    walkable = _exact(near, grid, shapes, origin, resolution, clearance) if exact else near >= clearance - resolution / 2
     labels, _, _ = components(walkable, walkable)
-    return Floor(grid, labels, boxes, origin, resolution)
+    return Floor(grid, labels, boxes, origin, resolution, near)
+
+
+def _exact(near: np.ndarray, grid: np.ndarray, shapes: Mapping[str, object], origin: tuple[float, float], resolution: float, clearance: float) -> np.ndarray:
+    """The cells walkable `clearance` from the walls, the occupied shapes and the edge of the free rooms, doors and cabins
+    that `shapes` draws (`Level.grid_shapes`), the raster's clearance `near` of the cells within `EXACT_BAND` of
+    `clearance` replaced by their centres' distance to those shapes. A wall drawn as a line of cells, and the frame, put a
+    cell's raster clearance up to about a cell off, and a passage's middle can fall between two cell centres: a cell
+    counts where the floor walkable `clearance` from the shapes reaches it, so a passage just twice `clearance` wide
+    stays open and one just narrower stays shut."""
+    walkable = near >= clearance + EXACT_BAND
+    band = (grid == 255) & (near >= clearance - EXACT_BAND) & ~walkable
+    if not band.any():
+        return walkable
+    free = shapely.union_all([shapely.force_2d(shapes[key]) for key in ("rooms", "doors", "cabins") if key in shapes])  # pyright: ignore[reportArgumentType]
+    walls = shapes["walls"]
+    if shapely.get_num_geometries(shapes["doors"]) > 0:  # pyright: ignore[reportArgumentType]
+        walls = shapely.difference(walls, shapes["doors"])  # pyright: ignore[reportArgumentType]  # the doors drawn over the walls
+    occupied = [*shapely.get_parts(walls), *(polygon for _, polygon in shapes.get("static_objects") or ())]  # pyright: ignore[reportGeneralTypeIssues, reportAttributeAccessIssue]
+    rows, cols = np.nonzero(band)
+    xs = origin[0] + (cols + 0.5) * resolution
+    ys = origin[1] + (grid.shape[0] - 1 - rows + 0.5) * resolution
+    edges = [*occupied, *shapely.get_parts(shapely.boundary(free))]
+    if edges:
+        (index, _), distance = shapely.STRtree(edges).query_nearest(shapely.points(xs, ys), return_distance=True, all_matches=False)
+        near[rows[index], cols[index]] = distance
+    room = shapely.buffer(free, -clearance)
+    if occupied:
+        room = shapely.difference(room, shapely.buffer(shapely.union_all(occupied), clearance))
+    # every cell the walkable floor touches: within half a cell's diagonal of it
+    reached = shapely.buffer(room, resolution * 0.71)
+    shapely.prepare(reached)
+    walkable[rows, cols] = shapely.contains_xy(reached, xs, ys)
+    return walkable
 
 
 def _unresolved(model: Identifier) -> str:
@@ -410,10 +517,12 @@ def check(
         points.setdefault(level_id, []).append(attrs.evolve(point, x=x, y=y))
 
     targets: set[str] = set()
+    radii: dict[str, float] = {}
     for human in scenario.humans:
         agent = human.agent.get("agent_type", "adult") if isinstance(human.agent, dict) else human.agent
         definition = agent_type(agent, human.included_from or scenario_dir) if isinstance(agent, str) else None
         targets |= _targets(definition) if definition is not None else set()
+        radii[human.name] = agent_radius(definition, human.agent.get("radius") if isinstance(human.agent, dict) else None)
         add(human.level, UsePoint(human.name, "start", human.pose.position.x, human.pose.position.y, DISTANCE_TOLERANCE, walker=human.name))
         for i, w in enumerate(human.waypoints):
             if w.elevator is None:  # an elevator waypoint is a ride, its cabin's
@@ -425,6 +534,8 @@ def check(
         agent = (region.config.get("agent") or {}).get("agent_type", "adult") if region.type == "source" else None
         definition = agent_type(agent, scenario_dir) if isinstance(agent, str) else None
         targets |= _targets(definition) if definition is not None else set()
+        if region.type == "source":
+            radii[name] = agent_radius(definition, (region.config.get("agent") or {}).get("radius"))
         if len(region.polygon) < 3:
             continue
         level_id, _, _ = place("", *region_point([(p.x, p.y) for p in region.polygon]))
@@ -440,46 +551,68 @@ def check(
     for (level_id, obstacle), annotation in zip(placed, annotations, strict=True):
         if targeted(obstacle, targets):
             points.setdefault(level_id, []).extend(object_points(obstacle, annotation if isinstance(annotation, dict) else None, stand))
+    # the crowd's points take the widest walker of the scenario
+    crowd_radius = max(radii.values(), default=DEFAULT_RADIUS)
 
-    floors: dict[str, Floor] = {}
+    def route_of(point: UsePoint) -> float:
+        return route_clearance(radii.get(point.walker, crowd_radius) if point.walker is not None else crowd_radius)
+
+    boxes: dict[str, list[tuple[str, shapely.Geometry]]] = {}
     # the floor without objects and with every door open: a pocket the walls close off by themselves is no room cut off
     bare: dict[str, Floor] = {}
     walls: dict[str, shapely.Geometry] = {}
     for level_id, level in world.levels.items():
         shut = [door for door in level.doors if locked(door)]
-        boxes = [(o.name, box) for (lid, o), annotation in zip(placed, annotations, strict=True) if lid == level_id and isinstance(annotation, dict) and (box := object_box(o, annotation)) is not None]
-        boxes += [(f"locked door {door.name}", shapely.LineString([(door.start.x, door.start.y), (door.end.x, door.end.y)]).buffer(RESOLUTION)) for door in shut]
-        floors[level_id] = level_floor(level, boxes)
-        bare[level_id] = level_floor(level, [])
+        boxes[level_id] = [(o.name, box) for (lid, o), annotation in zip(placed, annotations, strict=True) if lid == level_id and isinstance(annotation, dict) and (box := object_box(o, annotation)) is not None]
+        boxes[level_id] += [(f"locked door {door.name}", shapely.LineString([(door.start.x, door.start.y), (door.end.x, door.end.y)]).buffer(RESOLUTION)) for door in shut]
+        bare[level_id] = level_floor(level, [], open_doors=True)
         walls[level_id] = shapely.union_all([shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in level.all_walls] + [shapely.LineString([(d.start.x, d.start.y), (d.end.x, d.end.y)]) for d in shut])
+    by_clearance: dict[float, dict[str, Floor]] = {}
 
-    def at(level_id: str, x: float, y: float) -> set[tuple[str, int]]:
-        return {(level_id, label) for label in floors[level_id].parts_at(x, y)}
+    def floors_at(clearance: float) -> dict[str, Floor]:
+        """Every level's floor walkable `clearance` from walls and boxes, made once."""
+        if clearance not in by_clearance:
+            by_clearance[clearance] = {level_id: level_floor(level, boxes[level_id], clearance=clearance) for level_id, level in world.levels.items()}
+        return by_clearance[clearance]
 
-    starts: dict[str, set[tuple[str, int]]] = {}
-    for level_id, here in points.items():
-        for p in here:
-            if p.point == "start" and p.walker is not None:
-                starts.setdefault(p.walker, set()).update(at(level_id, p.x, p.y))
-    for level_id, point, polygon in sources:
-        starts.setdefault(point.object, set()).update((level_id, label) for label in floors[level_id].parts_in(polygon))
-    links = _links(world, scenario, place, at)
+    reached: dict[float, tuple[dict[str, set[tuple[str, int]]], set[tuple[str, int]]]] = {}
 
-    def closure(nodes: set[tuple[str, int]]) -> set[tuple[str, int]]:
-        seen, todo = set(nodes), list(nodes)
-        while todo:
-            for node in links.get(todo.pop(), ()):
-                if node not in seen:
-                    seen.add(node)
-                    todo.append(node)
-        return seen
+    def reach_at(clearance: float) -> tuple[dict[str, set[tuple[str, int]]], set[tuple[str, int]]]:
+        """The floor parts each walker reaches at `clearance` from where it starts, joined by elevators, stairs and
+        teleport zones, and the parts any walker reaches."""
+        if clearance not in reached:
+            floors = floors_at(clearance)
 
-    reach = {walker: closure(nodes) for walker, nodes in starts.items()}
-    everyone = set().union(*reach.values()) if reach else set()
+            def at(level_id: str, x: float, y: float) -> set[tuple[str, int]]:
+                return {(level_id, label) for label in floors[level_id].parts_at(x, y)}
+
+            starts: dict[str, set[tuple[str, int]]] = {}
+            for level_id, here in points.items():
+                for p in here:
+                    if p.point == "start" and p.walker is not None:
+                        starts.setdefault(p.walker, set()).update(at(level_id, p.x, p.y))
+            for level_id, point, polygon in sources:
+                starts.setdefault(point.object, set()).update((level_id, label) for label in floors[level_id].parts_in(polygon))
+            links = _links(world, scenario, place, at)
+
+            def closure(nodes: set[tuple[str, int]]) -> set[tuple[str, int]]:
+                seen, todo = set(nodes), list(nodes)
+                while todo:
+                    for node in links.get(todo.pop(), ()):
+                        if node not in seen:
+                            seen.add(node)
+                            todo.append(node)
+                return seen
+
+            reach = {walker: closure(nodes) for walker, nodes in starts.items()}
+            reached[clearance] = reach, set().union(*reach.values()) if reach else set()
+        return reached[clearance]
 
     def parts(level_id: str, nodes: set[tuple[str, int]]) -> frozenset[int]:
         return frozenset(label for lid, label in nodes if lid == level_id)
 
+    floors = floors_at(WALKER_CLEARANCE)
+    reach, everyone = reach_at(WALKER_CLEARANCE)
     for level_id, here in sorted(points.items()):
         floor = floors[level_id]
         crowd = parts(level_id, everyone) or floor.largest()
@@ -490,17 +623,30 @@ def check(
             seen_points.add((point.object, point.point))
             if point.point == "start":
                 # a start in a pocket smaller than a room reaches nothing a walker is sent to
-                reached = parts(level_id, reach.get(point.walker or "", set()))
-                distance = 0.0 if floor.area(reached) >= CUT_OFF_AREA else floor.distance(point.x, point.y, floor.largest())
+                reached_here = parts(level_id, reach.get(point.walker or "", set()))
+                distance = 0.0 if floor.area(reached_here) >= CUT_OFF_AREA else floor.distance(point.x, point.y, floor.largest())
             else:
                 own = reach.get(point.walker or "")
                 if own is not None and not own:
                     continue  # the walker's start already fails
-                distance = floor.distance(point.x, point.y, (parts(level_id, own) if own else frozenset()) or crowd)
+                walkable = (parts(level_id, own) if own else frozenset()) or crowd
+                floor_distance = floor.distance(point.x, point.y, walkable)
+                # a seat's standing point lies on its furniture's box edge (`seat_approach`): measured to the floor's edge, as before
+                distance = floor_distance if " standing point" in point.point else floor.stop(point.x, point.y, walkable, route_of(point))
             if distance >= point.reach:
                 findings.append(Finding(point.object, point.point, floor.why(point.x, point.y, point.object), level_id, point.x, point.y, distance, point.reach))
             elif point.previous is not None and _crossing(walls[level_id], point.previous, (point.x, point.y)):
                 findings.append(Finding(point.object, point.point, "lies behind a wall from the object or the queue slot before it", level_id, point.x, point.y, distance, point.reach))
+            elif point.point != "start" and not point.point.startswith("queue slot") and (route := route_of(point)) > WALKER_CLEARANCE:
+                # where people are sent, the floor a walker's own route keeps to (its clearance) must reach the spot it stops
+                # at, inside the building: HumanSim takes such a route first, outside the building too, else its narrowest
+                wide = floors_at(route)[level_id]
+                wide_reach, wide_everyone = reach_at(route)
+                own = wide_reach.get(point.walker or "")
+                detour = wide.distance(point.x, point.y, (parts(level_id, own) if own else frozenset()) or parts(level_id, wide_everyone) or wide.largest())
+                if detour - floor_distance > route - WALKER_CLEARANCE + DETOUR_SLACK:
+                    why = f"lies where walkers get only by HumanSim's narrowest routes ({WALKER_CLEARANCE:g} m from walls and objects), or outside an open building: the floor their own routes keep to ({route:g} m off) ends {detour:.2f} m from it"
+                    findings.append(Finding(point.object, point.point, why, level_id, point.x, point.y, detour, point.reach, detour=True))
         # the zones people are sent to; with nobody sent anywhere, every zone of a scenario with demand (a crowd read from it later);
         # only floor that objects, locks or doors cut off counts, floor the crowd's part reaches on the bare floor
         demand = any(p.walker is None and p.point != "sink" for p in here)
@@ -510,7 +656,7 @@ def check(
             if len(zone.polygon) < 3:
                 continue
             shape = zone.shape()
-            if (starts or not demand) and not any(shape.covers(shapely.Point(p.x, p.y)) for p in here):
+            if (reach or not demand) and not any(shape.covers(shapely.Point(p.x, p.y)) for p in here):
                 continue
             if (cut := floor.cut_off(shape, crowd, joined)) is not None:
                 area, x, y = cut
@@ -557,7 +703,8 @@ def check_scenario(view: WorldView, scenario: str, *, stand: Stand | None = None
     origins = view.level_origins() or dict.fromkeys(world.levels, (0.0, 0.0))
     with world_assets(view, world):
         annotations = {level_id: Identifier._run_sync(_annotations(level.objects)) for level_id, level in world.levels.items()}
-    floors = {level_id: level_floor(level, [(o.name, box) for o, a in zip(level.objects, annotations[level_id], strict=True) if isinstance(a, dict) and (box := object_box(o, a)) is not None]) for level_id, level in world.levels.items()}
+    # where the runtime draws them: clear of its map, whose doors are drawn open
+    floors = {level_id: level_floor(level, [(o.name, box) for o, a in zip(level.objects, annotations[level_id], strict=True) if isinstance(a, dict) and (box := object_box(o, a)) is not None], open_doors=True, exact=False) for level_id, level in world.levels.items()}
 
     def walkable(point: Position) -> bool:
         for level_id, floor in floors.items():
@@ -577,4 +724,4 @@ def check_world(view: WorldView, *, stand: Stand | None = None) -> list[Finding]
     return check(view, view.load(validate=False), stand=stand)
 
 
-__all__ = ["QUEUE_SLOTS", "WALKER_CLEARANCE", "Finding", "Floor", "UsePoint", "check", "check_scenario", "check_world", "describe", "level_floor", "line_slots", "agent_type", "locked", "object_box", "object_points", "region_point", "region_points", "targeted"]
+__all__ = ["CLEARANCE_MARGIN", "QUEUE_SLOTS", "WALKER_CLEARANCE", "Finding", "Floor", "UsePoint", "agent_radius", "agent_type", "blocking", "check", "check_scenario", "check_world", "describe", "level_floor", "line_slots", "locked", "object_box", "object_points", "region_point", "region_points", "route_clearance", "targeted"]

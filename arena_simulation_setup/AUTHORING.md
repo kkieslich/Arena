@@ -1576,17 +1576,31 @@ for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'defau
   through it; the finding names what each asset bucket answered. A model that
   resolves without an annotation.yaml (a marker) is a target without an
   obstacle, as at runtime, and passes.
-- The points people are walked to lie within arrival distance (HumanSim's
-  0.5 m) of floor their walkers reach: the use point and first three queue slots
-  of a sought object's `line` formation, from its pose turned to its annotated
-  `face` (no wall between two slots), a seat's standing point, the object itself
-  within its interaction radius when it has neither, a sink, each human's start,
-  waypoints and agent-type `go_to` poses, and a source holds such floor. Sought
-  objects are those with `satisfies` or named, or typed, by a step `target`.
-- Floor is the rooms, door spans and cabins less the walls, doors locked to
-  everyone and the bounding box of every object, kept HumanSim's 0.38 m planner
-  clearance from them. A walker reaches the connected part it starts in and the
-  parts elevators, stair halves and the scenario's teleport zones join to it.
+- A walker stops within arrival distance (HumanSim's 0.5 m) of every point
+  people are walked to: the use point and first three queue slots of a sought
+  object's `line` formation, from its pose turned to its annotated `face` (no
+  wall between two slots), a seat's standing point, the object itself within
+  its interaction radius when it has neither, a sink, each human's start,
+  waypoints and agent-type `go_to` poses, and a source holds floor its walkers
+  reach. Sought objects are those with `satisfies` or named, or typed, by a step
+  `target`. Near walls and boxes a walker stops where HumanSim's route for it
+  ends, its radius plus `global_planner.clearance_margin` from them (0.5 m for
+  an adult, 0.6 m for a wheelchair; the widest walker of the scenario counts
+  for the crowd's points): a use point must lie clear of its own object's box.
+  A seat's standing point, on its furniture's box edge by design, is measured to
+  the floor's edge.
+- Floor is the rooms, door spans and cabins less the walls HumanSim gets
+  (`all_walls`: a door is open only where they leave a gap for it), doors locked
+  to everyone and the bounding box of every object, kept HumanSim's narrowest
+  route clearance (`global_planner.inflation_radius`, 0.38 m) from them,
+  decided by the shapes themselves near that clearance: a passage under 0.76 m
+  is shut. A walker reaches the connected part it starts in and the parts
+  elevators, stair halves and the scenario's teleport zones join to it.
+- A point that only those narrowest routes reach, past walls or objects closer
+  than a walker's own route clearance (a room behind a 0.9 m door), is a detour:
+  HumanSim takes any route that keeps that clearance first, outside the building
+  too where its outside is open. The runtime and `flowedit suite` only report
+  detours; the FLOWEDIT generator refuses an edit that makes one.
 - No room people are sent to (every room of a scenario with demand and no crowd
   of its own, as FLOWEDIT's) has more than 2 m^2 of floor cut off from the
   parts the crowd starts in by objects or locked doors; a pocket

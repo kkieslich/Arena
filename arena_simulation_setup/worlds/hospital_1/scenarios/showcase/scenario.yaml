@@ -37,17 +37,17 @@ humans:
   model: worker_male_asian_middleage
   pose: {x: 9.5, y: 0.5}
   agent: {agent_type: ./queue_patient.yaml, desired_velocity: 1.1}
-  waypoints: [[4.0, 1.0]]
+  waypoints: [[3.4, 1.0]]
 - name: queue_patient_2
   model: Office/office_female_caucasian_young
   pose: {x: 10.0, y: 0.8}
   agent: {agent_type: ./queue_patient.yaml, desired_velocity: 0.9}
-  waypoints: [[4.0, 1.0]]
+  waypoints: [[3.4, 1.0]]
 - name: queue_patient_3
   model: worker_male_african_young
   pose: {x: 10.5, y: 0.5}
   agent: {agent_type: ./queue_patient.yaml, desired_velocity: 1.0}
-  waypoints: [[4.0, 1.0]]
+  waypoints: [[3.4, 1.0]]
 - name: doctor_2
   model: Hospital/nurse_female_caucasian_young
   pose: laboratory

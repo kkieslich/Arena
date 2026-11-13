@@ -185,6 +185,32 @@ def test_door_off_any_wall_is_refused(queue: Site) -> None:
         apply(queue, "layout", "door:new_door", {"op": "add", "span": [[3.0, 3.0], [4.0, 3.0]]})
 
 
+@pytest.mark.parametrize(
+    ("world", "target", "params"),
+    [
+        # FLOWEDIT v3's hallway_school__layout_move_canteen_door__287692ad: the canteen's outline runs 0.025 m off the door's
+        # line, unbroken where the door moved to, so the crowd never got the door and the canteen was shut
+        ("hallway_school", "door:canteen_door", {"op": "move", "offset": [1.82, 0.0]}),
+        # hallway_clinic__layout_add_gen_door_1__dadd8af9: a door on one outline of a wall drawn as two, 0.055 m apart
+        ("hallway_clinic", "door:gen_door_1", {"op": "add", "level": "0", "span": [[19.27, 7.17], [19.27, 5.67]]}),
+    ],
+)
+def test_a_moved_or_added_door_opens_every_line_of_its_wall(world: str, target: str, params: dict[str, Any]) -> None:
+    site = open_site(WORLDS / world, "demand")
+    edited = apply(site, "layout", target, params)
+    assert [d.name for level in edited.world.levels.values() for d in level.walled_doors()] == []
+    # the other wall paths keep their indices; the cut pieces go to the end
+    before, after = site.world.levels["0"].walls, edited.world.levels["0"].walls
+    assert len(after) > len(before) and all(a.path[0] == b.path[0] for a, b in zip(before, after, strict=False))
+
+
+def test_a_door_another_wall_still_runs_across_is_refused(queue: Site) -> None:
+    # a wall 0.12 m behind the door's line, past the depth a door cuts (0.1 m), still crosses its passage
+    behind = apply(queue, "layout", "wall:0", {"op": "add", "path": [[8.12, 14.9], [8.12, 17.0]]})
+    with pytest.raises(ValueError, match="stays shut"):
+        apply(behind, "layout", "door:new_door", {"op": "add", "span": [[8.0, 15.0], [8.0, 16.2]]})
+
+
 def test_wall_paths_are_added_moved_and_removed(queue: Site) -> None:
     walls = len(queue.world.levels["0"].walls)
     added = apply(queue, "layout", "wall:0", {"op": "add", "path": [[18.5, 2.0], [18.5, 4.0]]})

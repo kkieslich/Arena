@@ -4,11 +4,11 @@ objects:
 - name: fountain
   model: Office/SM_DrinksMachine
   pose: [37.95, 11.4, 3.14159]
-  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 0.8}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
+  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 1.1}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
 - name: fountain_2
   model: Office/SM_DrinksMachine
   pose: [11.0, 6.05, 1.5708]
-  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 0.8}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
+  humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 1.1}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
 - name: reception_desk
   model: Hospital/Reception_Counter
   pose: [18.0, 28.4, 1.5708]

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from arena_simulation_setup.shared.world import Door, Schedule
     from arena_simulation_setup.tree.World.model import Level, Zone
 
-GENERATOR_VERSION = 6
+GENERATOR_VERSION = 7
 MANIFEST_FORMAT = "flowedit-generated/1"
 MAX_TRIES = 50
 #: Function fields the generator samples. The reader writes `dwell` into the `duration` of the step at the object; `satisfies` is not drawn yet.
