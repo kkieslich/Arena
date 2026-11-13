@@ -20,8 +20,10 @@ ROBOT = "jackal"
 #: The contestant of a crowd-only run: the parked robot comes up with the no-op mobile adapter (`robot.mobile:=none`),
 #: not the sim's default navstack (Nav2 in flatsim, ~12 % of a core and ~0.4 GB per lane for a robot that never moves)
 CONTEST = "[{name: peds_only, mobile: none}]"
-#: Launch args of the whole run: lockstep for runs that pair by seed, people blind to the parked robot
-LAUNCH = {"sim": "flatsim", "headless": "true", "lockstep": "true", "human.robots.visible": "false"}
+#: Launch args of the whole run: lockstep for runs that pair by seed, people blind to the parked robot, and flatsim on
+#: Box2D on every machine: `auto` takes Warp where a CUDA device is visible, whose tracks differ from Box2D's, so runs on a
+#: machine with a GPU would not pair with runs on one without
+LAUNCH = {"sim": "flatsim", "sim.flatsim.physics": "box2d", "headless": "true", "lockstep": "true", "human.robots.visible": "false"}
 #: What the recorder leaves out of every run (arena_evaluation's suite `record` block): the pedestrians' skeleton frames on
 #: `<env>/humans/tf`. Nothing FLOWEDIT scores reads them, and the recorder is the topic's only subscriber in a headless
 #: run, so leaving it out also keeps `hri_producer` from computing them (about 40 % of a core per lane).
@@ -83,7 +85,11 @@ def build(
 ) -> dict[str, Any]:
     """The suite of crowd `crowd_name` of split `doc`, `crowd` its settings: the edited worlds made again, the crowd read
     into every job's world (none written on a dry run), one stage per job of that crowd. With the split's robot task the
-    robot drives it in every stage and the people see it."""
+    robot drives it in every stage and the people see it.
+
+    Every scenario written is checked as the runtime checks it at episode start (`check_stage`); ValueError naming every
+    stage that fails, so a suite is never written with a stage whose episode would fail or whose crowd waits at a point
+    nobody reaches."""
     import tempfile
 
     from ..scenario.cli import world_root
@@ -96,6 +102,7 @@ def build(
     duration = duration_of(doc)
     task = robot_task_of(doc)
     stages = []
+    refused = []
     for job in jobs(doc, partitions, crowd_name):
         root = world_root(worlds, job.world)
         notes: list[str] = []
@@ -105,8 +112,29 @@ def build(
         prepared = prepare(site, base_site(worlds, site), [], crowd, job.seed, notes, robot=task, dry_run=dry_run)
         for note in notes:
             log(f"note: {job.label}: {note}")
+        if not dry_run and (findings := check_stage(root, prepared.scenario, job.seed)):
+            from arena_simulation_setup.metrics.use_points import describe
+
+            refused.append(f"{stage_name(job.world, job.seed)}: {describe(findings, limit=3)}")
+            log(f"refused: {job.label}: {describe(findings)}")
         stages.append(stage(job.world, job.seed, prepared.scenario, duration, robot, task=task is not None))
+    if refused:
+        raise ValueError(f"{len(refused)} of {len(stages)} stages fail the use-point check the runtime runs at episode start (human.check), no suite written: " + "; ".join(refused[:5]) + ("; ..." if len(refused) > 5 else ""))
     return suite_doc(stages, LAUNCH_TASK if task is not None else None)
+
+
+def check_stage(root: Path, scenario: str, seed: int) -> list[Any]:
+    """What the runtime's check at episode start (`human.check`, `metrics.use_points`) finds in the stage scenario
+    `scenario` written into the world at `root`: points the crowd does not reach and models that do not resolve (a model
+    a fetch failed to bring is one). Seats are checked where arena_runtime, which knows how a sitter stands, is installed."""
+    from arena_simulation_setup.metrics.use_points import check_scenario
+    from arena_simulation_setup.tree.World import WorldView
+
+    try:
+        from arena_runtime.humans.support import seat_stand
+    except ImportError:
+        seat_stand = None
+    return check_scenario(WorldView(root), scenario, stand=seat_stand, seed=seed)
 
 
 def pairs(doc: Mapping[str, Any]) -> dict[str, str]:
@@ -173,4 +201,4 @@ def benchmark_command(name: str, lanes: int | None = None, contest: str = CONTES
     return shlex.join(["arena", "evaluation", "benchmark", "--suite", name, "--contest", contest, *(["--lanes", str(lanes)] if lanes else [])])
 
 
-__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "RECORD", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "contest_doc", "contest_out", "default_out", "imported_for", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]
+__all__ = ["CONTEST", "LAUNCH", "LAUNCH_TASK", "MARKER", "PARK", "RECORD", "ROBOT", "STAGE_SEP", "benchmark_command", "build", "check_stage", "contest_doc", "contest_out", "default_out", "imported_for", "pairs", "parse_stage_name", "stage", "stage_name", "suite_doc", "suite_name", "write"]

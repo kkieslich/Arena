@@ -20,6 +20,14 @@ CROWD = {"count": 2, "entrances": {"rate": 0}}
 STAGE_KEYS = {"name", "map", "robot", "modes", "episodes", "seed", "timeout", "config"}
 
 
+@pytest.fixture(autouse=True)
+def offline_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stage check without its model findings: unit tests run with the asset network off, so bucket models do not
+    resolve here; the point checks run as on a recording machine."""
+    real = SU.check_stage
+    monkeypatch.setattr(SU, "check_stage", lambda root, scenario, seed: [f for f in real(root, scenario, seed) if f.point != "model"])
+
+
 @pytest.fixture
 def worlds(local_root: Path) -> Path:
     root = local_root / "worlds"
@@ -93,6 +101,8 @@ def test_stages_park_an_unseen_robot_and_last_the_split_s_duration(split: tuple[
     path, _ = split
     suite = _suite(path, worlds, tmp_path / "s.yaml", "--robot", "mpo700")
     assert suite["references"] is False and suite["launch"]["human.robots.visible"] == "false" and suite["launch"]["lockstep"] == "true"
+    # Box2D on every machine, also where a GPU would make flatsim take Warp
+    assert suite["launch"]["sim.flatsim.physics"] == "box2d"
     # the recorder leaves the skeleton frames out, so hri_producer stays idle
     assert suite["record"] == {"exclude": ["tf_humans"]}
     for s in suite["stages"]:
@@ -270,3 +280,26 @@ def test_the_printed_benchmark_call_finds_the_suite_where_it_was_written(split: 
     _suite(path, worlds, tmp_path / "loose.yaml")
     out = capsys.readouterr()
     assert "note: `--suite loose` resolves under" in out.err and f"not {tmp_path}" in out.err
+
+
+def test_a_stage_the_runtime_check_would_fail_refuses_the_suite(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from arena_simulation_setup.metrics.use_points import Finding
+
+    path, _ = split
+    real = SU.check_stage
+    checked: list[str] = []
+
+    def check(root: Path, scenario: str, seed: int) -> list[Finding]:
+        checked.append(f"{root.name}__s{seed}")
+        found = real(root, scenario, seed)
+        if root.name == "hospital_1" and seed == 2:
+            found.append(Finding("flow_1", "start", "lies inside the box of reception_desk", "0", 2.0, 1.0, 0.8, 0.5))
+        return found
+
+    monkeypatch.setattr(SU, "check_stage", check)
+    out = tmp_path / "s.yaml"
+    assert main(["suite", str(path), "--worlds", str(worlds), "--no-generate", "--out", str(out)]) == 1
+    err = capsys.readouterr().err
+    # every stage is checked, the real check finds nothing in hospital_1, and the one failing stage is named
+    assert len(checked) == len(SP.jobs(yaml.safe_load(path.read_text())))
+    assert "1 of" in err and "hospital_1__s2: flow_1: start at (2.00, 1.00)" in err and not out.exists()
