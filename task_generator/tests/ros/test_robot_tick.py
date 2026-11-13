@@ -285,7 +285,7 @@ def _fleet(monkeypatch: pytest.MonkeyPatch | None = None, jobs: str | None = Non
         conf=SimpleNamespace(RNG=rng),
         episode=SimpleNamespace(publish_task_entity=publish),
     )
-    node = SimpleNamespace(ROSParam={str: param, float: param, list[str]: param}, sim_time=Time(sec=FLEET_T0), get_logger=lambda: SimpleNamespace(get_child=lambda name: logger))
+    node = SimpleNamespace(ROSParam={str: param, float: param, bool: param, list[str]: param}, sim_time=Time(sec=FLEET_T0), get_logger=lambda: SimpleNamespace(get_child=lambda name: logger))
     return impl.TM_Fleet(ctx=ctx, namespace=Namespace("task.fleet").ParamNamespace(), node=node), managers, node, record
 
 
@@ -699,6 +699,92 @@ def test_fleet_abandons_a_jammed_charging_trip_and_the_rule_can_be_turned_off(mo
             assert managers["r0"].navigation_resets == 1
             # still under charge_below, it queues for a charger again from there
             assert record.log["charge.1.robot"] == "r0"
+
+
+def _top_up_fleet(monkeypatch: pytest.MonkeyPatch, jobs: str, **params: object) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
+    """The fleet with the given jobs, charge below 30 % until 90 %, each robot standing at its home: r0 bay_1, r1 bay_2,
+    r2 charger_1, r3 charger_2."""
+    mode, managers, node, record = _fleet(monkeypatch, jobs=jobs, charge_below=30.0, charge_until=90.0, **params)
+    asyncio.run(mode.reset())
+    for name, xy in (("r0", (0.5, 0.5)), ("r1", (2.5, 0.5)), ("r2", (1.0, 3.0)), ("r3", (4.0, 3.0))):
+        managers[name].pose = _pose(*xy)
+    return mode, managers, node, record
+
+
+def test_fleet_tops_up_a_free_robot_under_charge_until_at_a_charger_whose_holder_is_away_and_frees_it_once_docked(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="ddd")
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=100.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # the charger robots, fullest, take jobs 0 and 1, r1 job 2; r0 under charge_until takes charger_1, whose holder r2
+    # is away, and r2 gets bay_1
+    assert (_job_index(managers["r2"]), _job_index(managers["r3"]), _job_index(managers["r1"])) == (0, 1, 2)
+    assert _phase_text(managers["r0"]) == "top up at charger_1"
+    assert _phase(managers["r0"]).on_failure == "stop_task"
+    assert (mode._home["r0"], mode._home["r2"]) == ("charger_1", "bay_1")
+    assert (record.log["top_up.0.robot"], record.log["top_up.0.charger"], record.log["top_up.0.soc_dispatched"]) == ("r0", "charger_1", "60.00")
+    # the top-up is no charge in the log's charge table, which the capacity reads as time out of service
+    assert not any(field.startswith("charge.") for field in record.log)
+    # while it drives there it is on a charging trip and takes no job
+    assert "r0" not in mode._takers()
+
+    # docked: it charges there and is free for jobs again
+    managers["r0"].pose = _pose(1.0, 3.0)
+    _socs(managers, r0=61.0)
+    _tick(mode, {"r0": _met()})
+    assert (record.log["top_up.0.outcome"], record.log["top_up.0.soc_start"]) == ("docked", "61.00")
+    assert "top_up.0.started" in record.log and "top_up.0.ended" in record.log
+    assert "r0" in mode._takers()
+
+
+def test_fleet_tops_up_nobody_while_a_robot_waits_to_charge_or_no_holder_is_away_and_never_over_charge_until(monkeypatch: pytest.MonkeyPatch) -> None:
+    # r0 must charge (under charge_below) and gets charger_1, whose holder is away; r1 under charge_until waits, no
+    # charger being free for it: charger_2's holder r3 is parked on it
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d")
+    _socs(managers, r0=20.0, r1=60.0, r2=100.0, r3=80.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _job_index(managers["r2"]) == 0
+    assert _phase_text(managers["r0"]) == "charge at charger_1"
+    assert managers["r1"].submitted == [] and "top_up.0.robot" not in record.log
+    # a robot at charge_until or over takes no charger
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d")
+    _socs(managers, r0=90.0, r1=95.0, r2=100.0, r3=80.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert managers["r0"].submitted == managers["r1"].submitted == [] and "top_up.0.robot" not in record.log
+
+
+def test_fleet_tops_up_the_lowest_first_one_robot_per_charger_and_the_rule_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    for top_up in (True, False):
+        mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="dd", top_up=top_up)
+        _socs(managers, r0=70.0, r1=50.0, r2=100.0, r3=99.0)
+        _at(node, 1.0)
+        _tick(mode)
+        assert (_job_index(managers["r2"]), _job_index(managers["r3"])) == (0, 1)
+        if top_up:
+            # both holders away: r1, the lowest, takes charger_1, and r0 charger_2
+            assert (_phase_text(managers["r1"]), _phase_text(managers["r0"])) == ("top up at charger_1", "top up at charger_2")
+            assert (mode._home["r2"], mode._home["r3"]) == ("bay_2", "bay_1")
+            assert [record.log[f"top_up.{index}.robot"] for index in range(2)] == ["r1", "r0"]
+        else:
+            assert managers["r0"].submitted == managers["r1"].submitted == [] and "top_up.0.robot" not in record.log
+
+
+def test_fleet_a_jammed_top_up_gives_the_charger_back_and_resets_the_robot_to_its_old_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d")
+    _socs(managers, r0=60.0, r1=95.0, r2=100.0, r3=95.0)
+    managers["r0"].pose = _pose(8.0, 8.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _phase_text(managers["r0"]) == "top up at charger_1"
+    for t in (62.0, 123.0):
+        _at(node, t)
+        _tick(mode)
+    assert (record.log["top_up.0.outcome"], record.log["top_up.0.reason"], record.log["jam.0.top_up"]) == ("abandoned", "jam", "0")
+    # the charger goes back to r2, and r0 to bay_1, where it is reset to
+    assert (mode._home["r0"], mode._home["r2"]) == ("bay_1", "charger_1")
+    assert managers["r0"].moved[-1].position.x == pytest.approx(float(FLEET_SPOTS.index("bay_1")))
 
 
 def _yield_fleet(monkeypatch: pytest.MonkeyPatch, **params: object) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
