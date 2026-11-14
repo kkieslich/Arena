@@ -370,6 +370,34 @@ def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, mon
         main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(held_out), "--out", str(out)])
 
 
+def test_the_strength_scores_do_not_depend_on_scoring_one_world_at_a_time() -> None:
+    # the per-strength loop over worlds with a shared track cache gave these values; scoring every strength in one curve
+    # call per world (one world's track maps held at a time) must give the same
+    rng = np.random.default_rng(5)
+    worlds = {"w": [_walk(f"p{i}", (0.3, 0.4 + 0.3 * i), (1.0, 0.1 * i), n=40) for i in range(6)], "v": [_walk(f"q{i}", (5.5, 0.5 + 0.4 * i), (-0.8, 0.0), n=30) for i in range(5)]}
+    tracks = {(w, s): pl.concat(ws[s - 1 :] + ws[: s - 1]) for w, ws in worlds.items() for s in (1, 2, 3)}
+    runs = _runs({key: M.counts(t, GRID) + rng.uniform(0, 0.1, (GRID.ny, GRID.nx, M.BINS)) for key, t in tracks.items()})
+    prior = {"w": M.counts(tracks[("w", 1)], GRID) + 0.05, "v": V.uniform(GRID.room_cells())}
+    grid = (10.0, 100.0, 1000.0)
+    old = {}
+    cache: dict = {}
+    for c in grid:
+        vals = []
+        for w in worlds:
+            res = V.curve(w, [1, 2, 3], lambda w, s: tracks[(w, s)], runs, GRID, {"p": (prior[w], c)}, counts=(1, 4, 16), orders=4, cache=cache)
+            vals.extend(v for v in res["p"] if v is not None)
+        old[c] = float(np.mean(vals))
+    assert V.fit_strength([(w, [1, 2, 3]) for w in worlds], lambda w, s: tracks[(w, s)], runs, lambda base: GRID, lambda w: prior[w], grid=grid) == min(grid, key=lambda c: (old[c], grid.index(c)))
+    folds_old: dict = {c: [] for c in grid}
+    cache = {}
+    for w in worlds:
+        res = V.curve(w, [1, 2], lambda w, s: tracks[(w, s)], runs, GRID, {str(c): (prior[w], c) for c in grid}, counts=V.STRENGTH_COUNTS, orders=10, cache=cache)
+        for c in grid:
+            folds_old[c].extend(v for v in res[str(c)] if v is not None)
+    new = V.fold_strengths(list(worlds), (1, 2), lambda w, s: tracks[(w, s)], runs, lambda base: GRID, lambda w: prior[w], strengths=grid)
+    assert new == pytest.approx({c: float(np.mean(v)) for c, v in folds_old.items()}, abs=1e-12)
+
+
 def test_a_strength_file_belongs_to_one_network() -> None:
     import types
 
