@@ -341,17 +341,18 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
         return [robot, joint, random]
 
     rate, (robot, joint, random) = space.settle_rate(args, pick)
-    _log(f"travel model: {search.mix.top_ups_per_job:g} top-up round trips bay - charger per job; travel pre-filter: at most {args.travel_slack:g} x the robot-only pick's {robot.travel_m:.1f} m = {state['cap']:.1f} m per job: {state['within']} of {len(search.candidates)} candidate layouts (valid or not); the joint search ranks every one of them")
+    _log(f"travel model: {search.mix.top_ups_per_job:g} top-up drives bay - charger per job; travel pre-filter: at most {args.travel_slack:g} x the robot-only pick's {robot.travel_m:.1f} m = {state['cap']:.1f} m per job: {state['within']} of {len(search.candidates)} candidate layouts (valid or not); the joint search ranks every one of them")
     guide = SE.guideline(search) if args.guideline else None
     runs = [("robot_only", robot), *(("joint", s) for s in joint), *(("random", s) for s in random)]
     exposure: dict[str, dict[str, float]] = {}
+    traffic: dict[str, dict[str, float]] = {}
     if groups is None:
         _log("no group or flow-cell occupancy: the joint top 10 is left out of this dry run (the occupancy comes from the reference runs)")
     else:
         if len(joint) < args.top:
             _log(f"the travel pre-filter keeps only {len(joint)} distinct valid layouts, fewer than the top {args.top}")
         for _, s in [*runs, *([("guideline", guide)] if guide is not None else [])]:
-            exposure[s.layout_id] = s.exposure if s.exposure is not None else SE.exposure_of(search, groups, s.index, rate_per_h=rate, band_m=args.band, speed_mps=args.speed)
+            exposure[s.layout_id], traffic[s.layout_id] = SE.exposure_of(search, groups, s.index, rate_per_h=rate, band_m=args.band, speed_mps=args.speed)
     ranking = {layout_id: max(values.values()) for layout_id, values in exposure.items()} or None
     _print_runs(runs, args.speed, ranking, exposure)
     if guide is not None:
@@ -366,19 +367,22 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
         return 0
     header = [
         f"INFRA Stage 1 selection (§5, §10) on {space.site.key}: {len(unique)} layouts x seeds {', '.join(map(str, seeds))}, {args.duration:g} s each, warm-up {IN.WARMUP_S:g} s cut in the analysis",
-        f"layouts: robot-only {robot.layout_id} (travel model with {search.mix.top_ups_per_job:g} top-ups per job); joint top {len(joint)} distinct ({args.distinct:g} m) by predicted conflict exposure ({args.band:g} m band, worst group), among the layouts within {args.travel_slack:g} x the robot-only travel ({state['cap']:.1f} m per job); {len(random)} random valid",
+        f"layouts: robot-only {robot.layout_id} (travel model with {search.mix.top_ups_per_job:g} top-up drives per job); joint top {len(joint)} distinct ({args.distinct:g} m) by predicted conflict exposure ({args.band:g} m band, worst group), among the layouts within {args.travel_slack:g} x the robot-only travel ({state['cap']:.1f} m per job); {len(random)} random valid",
         f"the layouts' runs without robots pair with suite {IN.REFERENCE_SUITE} (the site as is) at the same seed; the pick: `evaluation infra pick`",
     ]
 
+    def predicted(layout_id: str) -> dict[str, Any]:
+        return {"exposure": exposure[layout_id], "exposure_traffic": traffic[layout_id]} if layout_id in exposure else {}
+
     def record(scored: SE.Scored) -> dict[str, Any]:
-        return {**IN.picks_record({"guideline": scored}, ranking)[0], **({"exposure": exposure[scored.layout_id]} if scored.layout_id in exposure else {})}
+        return {**IN.picks_record({"guideline": scored}, ranking)[0], **predicted(scored.layout_id)}
 
     extra = {
         "occupancy": None if args.occupancy is None else str(args.occupancy),
         "group_occupancy": [str(p) for p in args.group_occupancy or []],
-        "joint_ranking": {"score": "predicted conflict exposure, worst group (s per h per member)", "groups": sorted(groups or {}), "band_m": args.band, "rate_per_h": rate, "speed_mps": args.speed, "hold_s": list(SE.HOLD_S), "distinct_m": args.distinct, "top_ups_per_job": search.mix.top_ups_per_job},
+        "joint_ranking": {"score": "predicted conflict exposure, worst group (s per h per member)", "groups": sorted(groups or {}), "band_m": args.band, "rate_per_h": rate, "speed_mps": args.speed, "distinct_m": args.distinct, "top_ups_per_job": search.mix.top_ups_per_job, "top_up_leg": "one way, bay to charger"},
         "travel_prefilter": {"slack": args.travel_slack, "max_travel_m": round(state["cap"], 3), "candidates_within": state["within"], "candidates": len(search.candidates)},
-        "runs": [{**r, **({"exposure": exposure[r["layout_id"]]} if r["layout_id"] in exposure else {})} for r in IN.picks_record({"robot_only": robot, "joint": joint, "random": random}, ranking)],
+        "runs": [{**r, **predicted(r["layout_id"])} for r in IN.picks_record({"robot_only": robot, "joint": joint, "random": random}, ranking)],
         "joint_top": IN.picks_record({"joint": joint}, ranking),
     }
     kept = {"guideline": (guide, {k: v for k, v in record(guide).items() if k != "role"} | {"role": "guideline"})} if guide is not None else None
@@ -543,7 +547,7 @@ def add_parser(verbs: Any) -> None:
     searched.add_argument("--visitor-rate", type=float, default=None, help=f"locker visitors per hour in all (default the scenario's {IN.VISITORS})")
     searched.add_argument("--soc-min", type=float, default=IN.SOC_MIN, help=f"lowest start charge each robot draws per seed, %% (default {IN.SOC_MIN:g})")
     searched.add_argument("--soc-max", type=float, default=IN.SOC_MAX, help=f"highest start charge, %% (default {IN.SOC_MAX:g})")
-    searched.add_argument("--top-ups", type=float, default=0.0, help="top-up round trips bay - charger per job in the robot travel model (the task-rate run's top-ups dispatched after the warm-up per completed job released after it; default 0)")
+    searched.add_argument("--top-ups", type=float, default=0.0, help="top-up drives bay - charger per job in the robot travel model, one way each (the task-rate run's top-ups dispatched after the warm-up per completed job released after it; default 0)")
     parts_help = "also split the suite by layout copy into one suite per weight, <suite>_p1, <suite>_p2, ..., in proportion to the weights (e.g. 4,6: the lanes of two machines); the manifest lists the parts; each part runs as its own run on its own machine, and `evaluation infra` reads their run dirs together (repeated --layouts)"
     searched.add_argument("--parts", type=_weights, default=None, metavar="W1,W2[,...]", help=parts_help)
 

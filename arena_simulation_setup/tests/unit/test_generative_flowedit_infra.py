@@ -210,6 +210,8 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     joint_scores = [r["ranking_score"] for r in manifest["runs"] if r["role"] == "joint"]
     assert joint_scores == sorted(joint_scores)
     assert all(set(r["exposure"]) == {"all"} and r["ranking_score"] == pytest.approx(max(r["exposure"].values()), abs=1e-3) for r in manifest["runs"])
+    assert all(0.0 <= r["exposure_traffic"]["all"] <= r["exposure"]["all"] + 1e-9 for r in manifest["runs"])
+    assert ranking["top_up_leg"] == "one way, bay to charger"
     assert "guideline" not in manifest
     assert manifest["episodes"] == 2 * len(doc["stages"]) and manifest["site_config"] is None
     rate = manifest["rate_per_h"]
