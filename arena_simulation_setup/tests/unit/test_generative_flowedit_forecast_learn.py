@@ -364,6 +364,18 @@ def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, mon
     assert doc["net"]["chosen"] == 100.0 and doc["demand_model"] == params.dump()
     with pytest.raises(SystemExit, match="cannot combine with --no-demand"):
         main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(params_file), "--no-demand", "--out", str(out)])
+    no_fit = tmp_path / "params_no_fit.yaml"
+    no_fit.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump()}))
+    assert main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(no_fit), "--folds", "1", "--out", str(out)]) == 0
+    assert "records no fit" in yaml.safe_load(out.read_text())["note"]
+    other_split = tmp_path / "params_other_split.yaml"
+    other_split.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train", "split": "/x/peds_pilot.yaml", "per_world": {"w": 0.4, "pilot_world": 0.5}}}))
+    with pytest.raises(SystemExit, match="fitted on 1 world.s. outside the train partition"):
+        main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(other_split), "--out", str(out)])
+    with pytest.raises(SystemExit, match="train: --demand-model-input .* was fitted on the held_out_edits partition"):
+        held = tmp_path / "params_held.yaml"
+        held.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "held_out_edits"}}))
+        main(["forecast", "train", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(held), "--out", str(tmp_path / "net.pt")])
     held_out = tmp_path / "params_held_out.yaml"
     held_out.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "held_out_edits"}}))
     with pytest.raises(SystemExit, match="fitted on the held_out_edits partition"):
@@ -374,7 +386,7 @@ def test_the_strength_scores_do_not_depend_on_scoring_one_world_at_a_time() -> N
     # the per-strength loop over worlds with a shared track cache gave these values; scoring every strength in one curve
     # call per world (one world's track maps held at a time) must give the same
     rng = np.random.default_rng(5)
-    worlds = {"w": [_walk(f"p{i}", (0.3, 0.4 + 0.3 * i), (1.0, 0.1 * i), n=40) for i in range(6)], "v": [_walk(f"q{i}", (5.5, 0.5 + 0.4 * i), (-0.8, 0.0), n=30) for i in range(5)]}
+    worlds = {"w": [_walk(f"p{i}", (0.3, 0.2 + 0.17 * i), (1.0, 0.0), n=40) for i in range(20)], "v": [_walk(f"q{i}", (5.5, 0.2 + 0.18 * i), (-0.8, 0.0), n=30) for i in range(18)]}
     tracks = {(w, s): pl.concat(ws[s - 1 :] + ws[: s - 1]) for w, ws in worlds.items() for s in (1, 2, 3)}
     runs = _runs({key: M.counts(t, GRID) + rng.uniform(0, 0.1, (GRID.ny, GRID.nx, M.BINS)) for key, t in tracks.items()})
     prior = {"w": M.counts(tracks[("w", 1)], GRID) + 0.05, "v": V.uniform(GRID.room_cells())}
@@ -386,7 +398,11 @@ def test_the_strength_scores_do_not_depend_on_scoring_one_world_at_a_time() -> N
         for w in worlds:
             res = V.curve(w, [1, 2, 3], lambda w, s: tracks[(w, s)], runs, GRID, {"p": (prior[w], c)}, counts=(1, 4, 16), orders=4, cache=cache)
             vals.extend(v for v in res["p"] if v is not None)
-        old[c] = float(np.mean(vals))
+        old[c] = vals
+    scores = V.strength_scores([(w, [1, 2, 3]) for w in worlds], lambda w, s: tracks[(w, s)], runs, lambda base: GRID, lambda w: prior[w], grid)
+    # every count is scored in both worlds (the runs hold more than 16 tracks), and the scores are the old ones exactly
+    assert all(len(v) == 2 * 3 for v in old.values()) and scores == old
+    old = {c: float(np.mean(v)) for c, v in old.items()}
     assert V.fit_strength([(w, [1, 2, 3]) for w in worlds], lambda w, s: tracks[(w, s)], runs, lambda base: GRID, lambda w: prior[w], grid=grid) == min(grid, key=lambda c: (old[c], grid.index(c)))
     folds_old: dict = {c: [] for c in grid}
     cache = {}
@@ -396,6 +412,42 @@ def test_the_strength_scores_do_not_depend_on_scoring_one_world_at_a_time() -> N
             folds_old[c].extend(v for v in res[str(c)] if v is not None)
     new = V.fold_strengths(list(worlds), (1, 2), lambda w, s: tracks[(w, s)], runs, lambda base: GRID, lambda w: prior[w], strengths=grid)
     assert new == pytest.approx({c: float(np.mean(v)) for c, v in folds_old.items()}, abs=1e-12)
+
+
+def test_params_are_checked_by_the_worlds_and_seeds_they_were_fitted_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit import split as SP
+    from arena_simulation_setup.generative.flowedit.cli import main
+    from arena_simulation_setup.generative.flowedit.forecast import cli
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    doc = {"partitions": {"train": ["w", "w__e__1"], "held_out_edits": ["w__e__2"]}, "seeds": {"train": {"bases": [1, 2, 3], "edits": [1, 2]}, "held_out_edits": [6, 7]}, "duration": 60}
+    monkeypatch.setattr(SP, "load", lambda path: doc)
+
+    def params_file(name: str, **fit: object) -> Path:
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": Params(sigma=0.3).dump(), **({"fit": fit} if fit else {})}))
+        return path
+
+    # valid params under another name and path (a copy, a link, another machine's checkout) are accepted
+    valid = params_file("copied.yaml", partition="train", split="/elsewhere/renamed_split.yaml", seeds=[1, 2, 3], per_world={"w": 0.4, "w__e__1": 0.5})
+    assert cli.checked_params(valid, tmp_path / "split.yaml", "strength") == (Params(sigma=0.3), "train")
+    # a hand-written file records no fit and is not checked
+    assert cli.checked_params(params_file("hand.yaml"), tmp_path / "split.yaml", "strength") == (Params(sigma=0.3), None)
+    other_worlds = params_file("older.yaml", partition="train", split="split.yaml", seeds=[1, 2, 3], per_world={"w": 0.4, "w__e__9": 0.5})
+    with pytest.raises(SystemExit, match="fitted on 1 world.s. outside the train partition .*w__e__9"):
+        cli.checked_params(other_worlds, tmp_path / "split.yaml", "strength")
+    other_seeds = params_file("seeds.yaml", partition="train", seeds=[1, 2], per_world={"w": 0.4})
+    with pytest.raises(SystemExit, match="fitted at seeds .1, 2., the train partition .* runs at .1, 2, 3."):
+        cli.checked_params(other_seeds, tmp_path / "split.yaml", "strength")
+    # every verb that takes params refuses them before any work
+    with pytest.raises(SystemExit, match="train: --demand-model-input .* outside the train partition"):
+        main(["forecast", "train", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(other_worlds), "--out", str(tmp_path / "net.pt")])
+    with pytest.raises(SystemExit, match="select: --params .* outside the train partition"):
+        main(["forecast", "select", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(other_worlds), "--out", str(tmp_path / "select.yaml")])
+    with pytest.raises(SystemExit, match="score: --params .* fitted at seeds"):
+        main(["forecast", "score", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(other_seeds), "--out", str(tmp_path / "score.yaml")])
 
 
 def test_a_strength_file_belongs_to_one_network() -> None:
@@ -412,10 +464,59 @@ def test_a_strength_file_belongs_to_one_network() -> None:
     assert strength_mismatch(plain_file, plain) is None and strength_mismatch(variant_file, variant) is None and strength_mismatch(ablation_file, ablation) is None
     # a file from before strength recorded its demand model is a plain network's
     assert strength_mismatch({"demand": True}, plain) is None
-    assert "demand model input" in strength_mismatch(plain_file, variant)
-    assert "plain" in strength_mismatch(variant_file, plain)
-    assert "ablation" in strength_mismatch(ablation_file, plain)
-    assert "params" in strength_mismatch({"demand": True, "demand_model": Params(sigma=0.5).dump()}, variant)
+    assert strength_mismatch(plain_file, variant) == "the file is the plain network's, the network is the one with the demand model input"
+    assert strength_mismatch(variant_file, plain) == "the file is the network with the demand model input's, the network is plain"
+    assert strength_mismatch(ablation_file, plain) == "the file is the demand ablation's, the network is a network with demand"
+    assert strength_mismatch(ablation_file, variant) == "the file is the demand ablation's, the network is a network with demand"
+    assert strength_mismatch(plain_file, ablation) == "the file is the network with demand's, the network is the demand ablation"
+    assert strength_mismatch({"demand": True, "demand_model": Params(sigma=0.5).dump()}, variant).startswith("its demand model params")
+
+
+def test_a_strength_file_from_before_the_params_were_recorded_is_a_variants_when_it_names_a_demand_model_input(tmp_path: Path) -> None:
+    import types
+
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit.forecast import cli
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": Params(sigma=0.3).dump()}))
+    old_variant = {"demand": True, "demand_model_input": str(params_file)}
+    plain = types.SimpleNamespace(demand=True, demand_model=None)
+    assert "network is plain" in cli.strength_mismatch(old_variant, plain)
+    assert cli.strength_mismatch(old_variant, types.SimpleNamespace(demand=True, demand_model=Params(sigma=0.3))) is None
+    assert cli.strength_mismatch(old_variant, types.SimpleNamespace(demand=True, demand_model=Params(sigma=0.5))).startswith("its demand model params")
+    params_file.unlink()
+    assert "run strength again" in cli.strength_mismatch(old_variant, types.SimpleNamespace(demand=True, demand_model=Params(sigma=0.3)))
+
+
+def test_curve_refuses_a_strength_file_of_another_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit import split as SP
+    from arena_simulation_setup.generative.flowedit.cli import main
+    from arena_simulation_setup.generative.flowedit.forecast import cli, learn
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    monkeypatch.setattr(SP, "load", lambda path: {"partitions": {"train": ["w"], "held_out_edits": ["w__e__1"]}, "duration": 60})
+    monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
+    monkeypatch.setattr(learn.Rasters, "of", classmethod(lambda cls, doc, settings, worlds=None: types.SimpleNamespace(sites=types.SimpleNamespace(grid=lambda base: GRID))))
+    monkeypatch.setattr(cli, "_recorded", lambda benchmarks, grid_of, planner: (None, None))
+
+    def variant_method(world):  # noqa: ANN001, ANN202
+        return np.ones((GRID.ny, GRID.nx, M.BINS))
+
+    variant_method.model = types.SimpleNamespace(demand=True, demand_model=Params(sigma=0.3))
+    monkeypatch.setattr(cli, "_net_methods", lambda nets, rasters, device, chosen=None: {"forecaster": variant_method})
+    plain_file = tmp_path / "strength_plain.yaml"
+    plain_file.write_text(yaml.safe_dump({"demand": True, "demand_model": None, "net": {"chosen": 1000.0}, "uniform": {"chosen": 100.0}}))
+    net = tmp_path / "net.pt"
+    net.touch()
+    with pytest.raises(SystemExit, match="not this network's weight: the file is the plain network's"):
+        main(["forecast", "curve", "split.yaml", "--benchmark", str(tmp_path), "--net", str(net), "--strength-file", f"forecaster={plain_file}", "--out", str(tmp_path / "curve.yaml")])
 
 
 def test_tracks_come_from_the_newest_track_store_version_that_holds_them(tmp_path: Path) -> None:
