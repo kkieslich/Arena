@@ -381,3 +381,189 @@ def test_a_pinned_element_in_the_keep_out_is_refused(hospital: Site, loading: pl
     locker = space.spots["locker"][2]
     with pytest.raises(ValueError, match="the pinned locker"):
         Search(hospital, loading=loading, base=base, pins={"locker": locker}, keep_out=[shapely.Point(locker.objects[0].goto).buffer(0.3)])
+
+
+# --- conflict exposure, top-up trips, distinct top, guideline ----------------------------------------------------------
+
+
+def test_path_integrals_sum_the_values_along_the_shortest_paths(tmp_path: Path) -> None:
+    from arena_simulation_setup.metrics.navr_filter import NavrBase
+
+    paths = search.RobotPaths.from_base(NavrBase(_corridor_level(tmp_path)))
+    sources, targets = [(2.5, 1.0), (7.5, 1.0)], [(7.5, 1.0), (2.5, 3.0), (20.0, 1.0)]
+    ones = np.ones((1, paths.cells))
+    lengths, integrals = paths.integrals(sources, targets, ones)
+    assert np.allclose(lengths[np.isfinite(lengths)], paths.lengths(sources, targets)[np.isfinite(lengths)])
+    assert np.allclose(integrals[0][np.isfinite(lengths)], lengths[np.isfinite(lengths)])  # a value of 1 integrates to the length
+    assert np.isinf(lengths[:, 2]).all() and np.isinf(integrals[0][:, 2]).all()  # off the floor
+    # the right half of the room holds the value: the path round the wall's end spends about half its length there
+    right = (paths.centres[:, 0] > 5.0).astype(float)[None, :]
+    _, part = paths.integrals([(2.5, 1.0)], [(7.5, 1.0)], np.vstack([right, 2.0 * right]))
+    assert 0.4 * lengths[0, 0] < part[0, 0, 0] < 0.6 * lengths[0, 0] and part[1, 0, 0] == pytest.approx(2.0 * part[0, 0, 0])
+    with pytest.raises(ValueError, match="cells per row"):
+        paths.integrals(sources, targets, np.ones((1, 3)))
+
+
+def test_the_band_counts_the_walkers_within_its_radius() -> None:
+    occ = Occupancy(0.0, 0.0, 0.5, np.full((80, 80), 0.2))  # 0.2 walkers per m^2 on 40 x 40 m
+    assert occ.present == pytest.approx(0.2 * 40 * 40)
+    band = occ.band(2.0)
+    assert band[40, 40] == pytest.approx(0.2 * math.pi * 4.0, rel=1e-9)
+    assert band[0, 0] < band[40, 40] / 2  # a corner cell sees little more than a quarter disc
+    assert occ.sample(band, np.array([[20.1, 20.1], [-5.0, 3.0]])).tolist() == [pytest.approx(band[40, 40]), 0.0]
+
+
+def test_group_cells_give_an_occupancy_per_group(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    rows = [
+        {"world": "site", "stage": "site__s1", "planner": "peds_only", "group": "adult", "x": 0.25, "y": 0.25, "cell_m": 0.5, "ped_seconds": 40.0},
+        {"world": "site", "stage": "site__s2", "planner": "peds_only", "group": "adult", "x": 0.75, "y": 0.25, "cell_m": 0.5, "ped_seconds": 20.0},
+        {"world": "site", "stage": "site__s1", "planner": "peds_only", "group": "wheelchair", "x": 0.25, "y": 0.25, "cell_m": 0.5, "ped_seconds": 10.0},
+        {"world": "site", "stage": "site__s1", "planner": "peds_only", "group": "long_cane", "x": 0.25, "y": 0.25, "cell_m": 0.5, "ped_seconds": 0.0},
+        {"world": "other", "stage": "other__s1", "planner": "peds_only", "group": "adult", "x": 0.25, "y": 0.25, "cell_m": 0.5, "ped_seconds": 99.0},
+    ]
+    pd.DataFrame(rows).to_parquet(tmp_path / "infra_occupancy.parquet")
+    groups = Occupancy.from_group_cells(tmp_path, "site", episode_s=20.0)
+    assert sorted(groups) == ["adult", "wheelchair"]  # no walker time, no group
+    assert groups["adult"].present == pytest.approx(60.0 / (2 * 20.0)) and groups["wheelchair"].present == pytest.approx(10.0 / 40.0)
+    with pytest.raises(ValueError, match="no group cells"):
+        Occupancy.from_group_cells([tmp_path / "infra_occupancy.parquet"], "nowhere", episode_s=20.0)
+
+
+def test_top_ups_add_one_way_drives_from_bays_to_chargers(hospital: Site, loading: place.Spot, base) -> None:  # noqa: ANN001
+    plain = Search(hospital, loading=loading, base=base, mix=TaskMix(rate_per_h=6.0))
+    topped = Search(hospital, loading=loading, base=base, mix=TaskMix(rate_per_h=6.0, top_ups_per_job=0.5))
+    rows = plain.candidates
+    # one top-up drives bay -> charger once (the robot keeps the charger as its home): one leg per top-up
+    assert np.allclose(topped.travel() - plain.travel(), 0.5 * plain.bay_charger[rows[:, 0], rows[:, 1]])
+    index = len(rows) // 3
+    chargers = [o.goto for o in plain.spots[SEARCHED[0]][rows[index, 0]].objects]
+    bays = [o.goto for o in plain.spots[SEARCHED[1]][rows[index, 1]].objects]
+    assert plain.bay_charger[rows[index, 0], rows[index, 1]] == pytest.approx(plain.paths.lengths(chargers, bays).mean())
+    with pytest.raises(ValueError, match="top_ups_per_job"):
+        TaskMix(top_ups_per_job=-1.0)
+
+
+def test_conflict_exposure_on_a_uniform_crowd_follows_robot_travel(hospital: Site, loading: place.Spot, base) -> None:  # noqa: ANN001
+    space = Search(hospital, loading=loading, base=base, mix=TaskMix(rate_per_h=6.0, top_ups_per_job=0.3))
+    occ = Occupancy(-20.0, -20.0, 0.5, np.full((200, 200), 0.1))  # 0.1 walkers per m^2 everywhere on the level
+    per_metre = 0.1 * math.pi * search.CONFLICT_BAND_M**2
+    jobs = space.job_exposure({"adult": occ})["adult"]
+    travel = space.travel()
+    finite = np.isfinite(travel)
+    expected = per_metre * travel / search.ROBOT_SPEED_MPS  # driving robots only: no hold term
+    assert np.allclose(jobs[finite], expected[finite], rtol=1e-6)
+    scores = space.conflict({"adult": occ, "wheelchair": occ}, rate_per_h=6.0)
+    elements = space.element_people(occ)
+    assert np.allclose(scores["adult"][finite], (6.0 * jobs[finite] + 3600.0 * elements[finite]) / occ.present)
+    traffic, element = space.conflict_parts({"adult": occ}, rate_per_h=6.0)
+    assert np.allclose(traffic["adult"][finite], 6.0 * jobs[finite] / occ.present) and np.allclose((traffic["adult"] + element["adult"])[finite], scores["adult"][finite])
+    assert np.allclose(scores["adult"], scores["wheelchair"], equal_nan=True)
+    index = int(np.flatnonzero(finite)[0])
+    assert elements[index] == pytest.approx(space.occupancy(occ, index))
+    with pytest.raises(ValueError, match="no walker time"):
+        space.conflict({"adult": Occupancy(0.0, 0.0, 0.5, np.zeros((4, 4)))}, rate_per_h=6.0)
+
+
+def test_the_joint_exposure_ranking_returns_distinct_valid_layouts_best_first(space: Search) -> None:
+    crowded = space.spots["locker"][0]
+    x0, y0, x1, y1 = search.approach_area(crowded).bounds
+    xs, ys = np.meshgrid(np.arange(math.floor(x0 * 2) / 2 + 0.25, x1 + 4.0, 0.5), np.arange(math.floor(y0 * 2) / 2 + 0.25, y1 + 4.0, 0.5))
+    groups = {"adult": Occupancy.from_cells(xs.ravel(), ys.ravel(), np.full(xs.size, 100.0), 0.5, 100.0)}
+    robot = search.robot_only(space)
+    cap = 1.5 * robot.travel_m
+    ranked = search.joint_exposure(space, groups, rate_per_h=6.0, top=5, max_travel_m=cap)
+    assert ranked and len(ranked) <= 5 and all(space.valid(r.index) and r.travel_m <= cap + 1e-9 for r in ranked)
+    assert [r.score for r in ranked] == sorted(r.score for r in ranked)
+    scores = space.conflict(groups, rate_per_h=6.0)
+    traffic, _ = space.conflict_parts(groups, rate_per_h=6.0)
+    for r in ranked:
+        assert r.exposure is not None and r.score == pytest.approx(max(r.exposure.values()))
+        assert r.score == pytest.approx(scores["adult"][r.index])  # no floor-loss term
+        assert r.exposure_traffic == pytest.approx({"adult": traffic["adult"][r.index]})
+        assert (r.exposure, r.exposure_traffic) == pytest.approx(search.exposure_of(space, groups, r.index, rate_per_h=6.0))
+    centres = space.spot_centres()
+    for a, b in itertools.combinations(ranked, 2):
+        far = [float(np.linalg.norm(centres[n][space.candidates[a.index, i]] - centres[n][space.candidates[b.index, i]])) for i, n in enumerate(SEARCHED)]
+        assert max(far) >= search.DISTINCT_M
+    # the best valid layout within the cap leads, whatever the distinct rule
+    within = space.within_travel(cap)
+    valid = [int(i) for i in within if space.valid(int(i))]
+    assert ranked[0].score == pytest.approx(min(float(scores["adult"][i]) for i in valid))
+    # exact greedy over the whole ranking of valid layouts
+    travel = space.travel()
+    full = sorted(valid, key=lambda i: (float(scores["adult"][i]), float(travel[i]), i))
+    assert [r.index for r in ranked] == search.distinct(space, full, 5)
+    # with no distance rule the top is the plain best by score
+    loose = search.joint_exposure(space, groups, rate_per_h=6.0, top=3, max_travel_m=cap, distinct_m=0.0)
+    assert [r.score for r in loose] == sorted(r.score for r in loose) and loose[0].score == pytest.approx(ranked[0].score)
+    record = json.loads(json.dumps(ranked[0].record()))
+    assert record["exposure"] == pytest.approx(ranked[0].exposure, abs=1e-3) and record["exposure_traffic"] == pytest.approx(ranked[0].exposure_traffic, abs=1e-3)
+
+
+def test_the_distinct_top_is_the_greedy_over_the_whole_ranking_and_ignores_floor_loss() -> None:
+    """Chargers at x 0, 3, 6, 20, 30; bays and locker shared. Scores 1 < 2 < 2.5 < 11 < 12, floor losses that would have
+    reordered them (9, 1, 0, 0, 0 m2) do not enter the score: the greedy keeps 0, drops 3 (3 m from 0), keeps 6."""
+    from types import SimpleNamespace
+
+    xs = [0.0, 3.0, 6.0, 20.0, 30.0]
+    worst = np.array([1.0, 2.0, 2.5, 11.0, 12.0])
+    floor = [9.0, 1.0, 0.0, 0.0, 0.0]
+
+    class Fake(Search):
+        def __init__(self) -> None:
+            pass
+
+        candidates = np.array([[i, 0, 0] for i in range(5)])
+
+        def conflict_parts(self, *a, **k):  # noqa: ANN002, ANN003, ANN202
+            return {"adult": worst}, {"adult": np.zeros(5)}
+
+        def travel(self, index=None):  # noqa: ANN001, ANN202
+            return np.zeros(5)
+
+        def within_travel(self, cap):  # noqa: ANN001, ANN202
+            return np.arange(5)
+
+        def spot_centres(self):  # noqa: ANN202
+            return {"charger_pair": np.array([[x, 0.0] for x in xs]), "bay_pair": np.array([[0.0, 50.0]]), "locker": np.array([[0.0, 80.0]])}
+
+        def valid(self, index):  # noqa: ANN001, ANN202
+            return True
+
+        def check(self, index):  # noqa: ANN001, ANN202
+            return SimpleNamespace(navr=SimpleNamespace(floor_loss_m2=floor[index]))
+
+        def layout(self, index):  # noqa: ANN001, ANN202
+            return SimpleNamespace(layout_id=f"{index:08d}")
+
+        def scored(self, index, score, occupancy=None, exposure=None, exposure_traffic=None):  # noqa: ANN001, ANN202
+            return SimpleNamespace(index=index, score=score)
+
+    got = search.joint_exposure(Fake(), {"adult": None}, rate_per_h=6.0, top=3, max_travel_m=1.0)
+    assert [r.index for r in got] == [0, 2, 3] == search.distinct(Fake(), list(range(5)), 3)
+    assert [r.score for r in got] == [1.0, 2.5, 11.0]
+
+
+def test_the_guideline_places_bays_locker_and_chargers_by_walking_distance(hospital: Site, loading: place.Spot, base) -> None:  # noqa: ANN001
+    facts = place.SiteFacts((place.Entrance("main", "building", ((2.0, 1.5),), recipients=True),))
+    space = Search(hospital, loading=loading, base=base, facts=facts)
+    pick = search.guideline(space)
+    assert space.valid(pick.index) and pick.score == pytest.approx(pick.travel_m)
+    walk = place.walking_paths(hospital, loading.level)
+    centres = space.spot_centres()
+    rows = space.candidates
+    bay_d = walk.lengths([loading.objects[0].goto], centres[SEARCHED[1]])[0]
+    lockers = [s.objects[0].goto for s in space.spots[SEARCHED[2]]]
+    locker_d = walk.lengths([(2.0, 1.5)], lockers)[0]
+    c, b, k = (int(v) for v in rows[pick.index])
+    charger_d = walk.lengths([tuple(centres[SEARCHED[1]][b])], centres[SEARCHED[0]])[0]
+    # lexicographic in the rule order: no valid layout has a nearer bay, or as near a bay and a nearer locker, or
+    # both as near and a charger nearer those bays
+    for index in range(len(rows)):
+        cc, bb, kk = (int(v) for v in rows[index])
+        if (bay_d[bb], locker_d[kk]) < (bay_d[b], locker_d[k]) or (bb == b and kk == k and charger_d[cc] < charger_d[c]):
+            assert not space.valid(index)
+    with pytest.raises(ValueError, match="recipient entrances"):
+        search.guideline(Search(hospital, loading=loading, base=base))
