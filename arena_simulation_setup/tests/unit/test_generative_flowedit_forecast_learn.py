@@ -332,7 +332,7 @@ def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, mon
 
     params = Params(sigma=0.3)
     params_file = tmp_path / "params.yaml"
-    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train"}}))
+    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train", "per_world": {"w": 0.4}, "seeds": [0]}}))
     monkeypatch.setattr(SP, "load", lambda path: {"partitions": {"train": ["w"]}, "duration": 60})
     monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
     monkeypatch.setattr(learn.Rasters, "of", classmethod(lambda cls, doc, settings, worlds=None: types.SimpleNamespace(sites=types.SimpleNamespace(grid=lambda base: GRID))))
@@ -369,15 +369,15 @@ def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, mon
     assert main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(no_fit), "--folds", "1", "--out", str(out)]) == 0
     assert "records no fit" in yaml.safe_load(out.read_text())["note"]
     other_split = tmp_path / "params_other_split.yaml"
-    other_split.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train", "split": "/x/peds_pilot.yaml", "per_world": {"w": 0.4, "pilot_world": 0.5}}}))
+    other_split.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train", "split": "/x/peds_pilot.yaml", "per_world": {"w": 0.4, "pilot_world": 0.5}, "seeds": [0]}}))
     with pytest.raises(SystemExit, match="fitted on 1 world.s. outside the train partition"):
         main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(other_split), "--out", str(out)])
     with pytest.raises(SystemExit, match="train: --demand-model-input .* was fitted on the held_out_edits partition"):
         held = tmp_path / "params_held.yaml"
-        held.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "held_out_edits"}}))
+        held.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "held_out_edits", "per_world": {"w": 0.4}, "seeds": [0]}}))
         main(["forecast", "train", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(held), "--out", str(tmp_path / "net.pt")])
     held_out = tmp_path / "params_held_out.yaml"
-    held_out.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "held_out_edits"}}))
+    held_out.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "held_out_edits", "per_world": {"w": 0.4}, "seeds": [0]}}))
     with pytest.raises(SystemExit, match="fitted on the held_out_edits partition"):
         main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(held_out), "--out", str(out)])
 
@@ -414,7 +414,7 @@ def test_the_strength_scores_do_not_depend_on_scoring_one_world_at_a_time() -> N
     assert new == pytest.approx({c: float(np.mean(v)) for c, v in folds_old.items()}, abs=1e-12)
 
 
-def test_params_are_checked_by_the_worlds_and_seeds_they_were_fitted_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_params_are_checked_by_the_worlds_and_seeds_they_were_fitted_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     import yaml
 
     from arena_simulation_setup.generative.flowedit import split as SP
@@ -433,8 +433,14 @@ def test_params_are_checked_by_the_worlds_and_seeds_they_were_fitted_on(tmp_path
     # valid params under another name and path (a copy, a link, another machine's checkout) are accepted
     valid = params_file("copied.yaml", partition="train", split="/elsewhere/renamed_split.yaml", seeds=[1, 2, 3], per_world={"w": 0.4, "w__e__1": 0.5})
     assert cli.checked_params(valid, tmp_path / "split.yaml", "strength") == (Params(sigma=0.3), "train")
-    # a hand-written file records no fit and is not checked
+    # seeds compare as a set
+    assert cli.checked_params(params_file("reordered.yaml", partition="train", seeds=[3, 1, 2], per_world={"w": 0.4}), tmp_path / "split.yaml", "strength")[1] == "train"
+    # a hand-written file records no fit: not checked, and it says so
     assert cli.checked_params(params_file("hand.yaml"), tmp_path / "split.yaml", "strength") == (Params(sigma=0.3), None)
+    assert "records no fit, so where its params come from is not checked" in capsys.readouterr().err
+    # an incomplete fit record is refused
+    with pytest.raises(SystemExit, match="incomplete fit record .no per_world, seeds."):
+        cli.checked_params(params_file("partial.yaml", partition="train"), tmp_path / "split.yaml", "strength")
     other_worlds = params_file("older.yaml", partition="train", split="split.yaml", seeds=[1, 2, 3], per_world={"w": 0.4, "w__e__9": 0.5})
     with pytest.raises(SystemExit, match="fitted on 1 world.s. outside the train partition .*w__e__9"):
         cli.checked_params(other_worlds, tmp_path / "split.yaml", "strength")
@@ -448,6 +454,30 @@ def test_params_are_checked_by_the_worlds_and_seeds_they_were_fitted_on(tmp_path
         main(["forecast", "select", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(other_worlds), "--out", str(tmp_path / "select.yaml")])
     with pytest.raises(SystemExit, match="score: --params .* fitted at seeds"):
         main(["forecast", "score", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(other_seeds), "--out", str(tmp_path / "score.yaml")])
+
+
+def test_score_writes_whether_its_params_were_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit import split as SP
+    from arena_simulation_setup.generative.flowedit.cli import main
+    from arena_simulation_setup.generative.flowedit.forecast import cli, evaluate, learn
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    doc = {"partitions": {"train": ["w"], "held_out_edits": ["w__e__1"]}, "seeds": {"train": [1, 2], "held_out_edits": [6]}, "duration": 60}
+    monkeypatch.setattr(SP, "load", lambda path: doc)
+    monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
+    monkeypatch.setattr(learn.Rasters, "of", classmethod(lambda cls, doc, settings, worlds=None: types.SimpleNamespace(sites=types.SimpleNamespace(grid=lambda base: GRID), scenario_of={})))
+    monkeypatch.setattr(evaluate.Runs, "load", classmethod(lambda cls, paths, grid_of, planner=None: types.SimpleNamespace(maps={})))
+    monkeypatch.setattr(V, "truths", lambda runs, doc, partition, log: [])
+    for name, fit in (("hand.yaml", None), ("fitted.yaml", {"partition": "train", "per_world": {"w": 0.4}, "seeds": [1, 2]})):
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": Params().dump(), **({"fit": fit} if fit else {})}))
+        out = tmp_path / f"score_{name}"
+        assert main(["forecast", "score", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(path), "--partition", "held_out_edits", "--out", str(out)]) == 0
+        assert yaml.safe_load(out.read_text())["params_checked"] is (fit is not None)
 
 
 def test_a_strength_file_belongs_to_one_network() -> None:

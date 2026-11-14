@@ -40,22 +40,27 @@ def checked_params(path: Path, split: Path, verb: str, flag: str = "--demand-mod
     other machines' paths are fine):
     - its partition must be train (otherwise the forecast would carry what the scores test);
     - every world it scored (`fit.per_world`) must be in `split`'s train partition, and its seeds (`fit.seeds`) must be
-      that partition's: params of another split, or of an older version of this one, are refused.
-    A file without these records (written by hand) is not checked."""
+      that partition's (as a set): params of another split, or of an older version of this one, are refused.
+    A fit record without any of the three is refused as incomplete. A file without a fit record (written by hand) is not
+    checked: the partition comes back None, a line on stderr says so, and the verbs write `params_checked: false`."""
     doc = yaml.safe_load(Path(path).read_text()) or {}
     fit_info = doc.get("fit") or {}
-    partition = fit_info.get("partition")
-    if partition not in (None, "train"):
+    if not fit_info:
+        _log(f"{verb}: warning: {flag} {path} records no fit, so where its params come from is not checked")
+        return load_params(Path(path)), None
+    missing = [k for k in ("partition", "per_world", "seeds") if fit_info.get(k) is None]
+    if missing:
+        raise SystemExit(f"{verb}: {flag} {path} has an incomplete fit record (no {', '.join(missing)}): fit the params again with `forecast fit`")
+    partition, worlds, seeds = fit_info["partition"], fit_info["per_world"], fit_info["seeds"]
+    if partition != "train":
         raise SystemExit(f"{verb}: {flag} {path} was fitted on the {partition} partition: the demand model may only see the train partition")
-    worlds, seeds = fit_info.get("per_world"), fit_info.get("seeds")
-    if worlds is not None or seeds is not None:
-        split_doc = SP.load(split)
-        train = set(split_doc["partitions"].get("train") or [])
-        stray = sorted(set(worlds or {}) - train)
-        if stray:
-            raise SystemExit(f"{verb}: {flag} {path} was fitted on {len(stray)} world(s) outside the train partition of {split} (e.g. {', '.join(stray[:3])}): params of another split or of another version of it")
-        if seeds is not None and [int(x) for x in seeds] != SP.seeds_of(split_doc, "train"):
-            raise SystemExit(f"{verb}: {flag} {path} was fitted at seeds {list(seeds)}, the train partition of {split} runs at {SP.seeds_of(split_doc, 'train')}")
+    split_doc = SP.load(split)
+    train = set(split_doc["partitions"].get("train") or [])
+    stray = sorted(set(worlds) - train)
+    if stray:
+        raise SystemExit(f"{verb}: {flag} {path} was fitted on {len(stray)} world(s) outside the train partition of {split} (e.g. {', '.join(stray[:3])}): params of another split or of another version of it")
+    if {int(x) for x in seeds} != set(SP.seeds_of(split_doc, "train")):
+        raise SystemExit(f"{verb}: {flag} {path} was fitted at seeds {list(seeds)}, the train partition of {split} runs at {SP.seeds_of(split_doc, 'train')}")
     return load_params(Path(path)), partition
 
 
@@ -114,7 +119,7 @@ def _named(values: list[str] | None, what: str) -> list[tuple[str | None, Path]]
 def _cmd_train(args: argparse.Namespace) -> int:
     from .learn import Rasters, pick, samples, save, train
 
-    demand_model = None if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "train")[0]
+    demand_model, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "train")
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -128,6 +133,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
     model, summary = train(rasters, found, demand=args.demand, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device, demand_model=demand_model, log=_log)
     meta = {
         "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input),
+        "params_checked": None if demand_model is None else fitted_on is not None,
         "split": str(args.split),
         "cells": listed(args.cells),
         "partition": args.partition,
@@ -208,7 +214,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
     from . import validity as V
     from .learn import Rasters
 
-    params = None if args.params is None else checked_params(args.params, args.split, "score", "--params")[0]
+    params, fitted_on = (None, None) if args.params is None else checked_params(args.params, args.split, "score", "--params")
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -219,7 +225,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
         forecasters["demand model"] = lambda world: sites.predict(world, params, rasters.scenario_of.get(SP.base_of(world)))
     for name, path in _named(args.predicted, "--predicted"):
         forecasters[name or path.stem] = V.Predicted.load(path, sites.grid)
-    report: dict[str, Any] = {"format": FORMAT, "cells": listed(args.cells), "nets": [str(p) for _, p in _named(args.net, "--net")], "params": str(args.params) if args.params else None, "partitions": {}}
+    report: dict[str, Any] = {"format": FORMAT, "cells": listed(args.cells), "nets": [str(p) for _, p in _named(args.net, "--net")], "params": str(args.params) if args.params else None, "params_checked": None if params is None else fitted_on is not None, "partitions": {}}
     for partition in args.partition or [p for p in SP.PARTITIONS if p != "train"]:
         seeds = SP.seeds_of(doc, partition)
         found = V.truths(runs, doc, partition, _log)
@@ -375,7 +381,7 @@ def _cmd_select(args: argparse.Namespace) -> int:
     from .learn import Rasters
     from .validity import world_seeds
 
-    given = None if args.params is None else checked_params(args.params, args.split, "select", "--params")[0]
+    given, fitted_on = (None, None) if args.params is None else checked_params(args.params, args.split, "select", "--params")
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -393,7 +399,7 @@ def _cmd_select(args: argparse.Namespace) -> int:
         return params
 
     result = SE.select(rasters, runs, doc, params=given, fit_params=fit_params, seeds=args.seeds, steps=args.steps, device=args.device, log=_log)
-    result.update({"split": str(args.split), "cells": listed(args.cells), "params": None if args.params is None else str(args.params)})
+    result.update({"split": str(args.split), "cells": listed(args.cells), "params": None if args.params is None else str(args.params), "params_checked": None if given is None else fitted_on is not None})
     arms = SE.ARMS
     lines = ["| held-out training world | worlds | " + " | ".join(SE.ARM_LABELS[a] for a in arms) + " |", "|---|---|" + "---|" * len(arms)]
     for f in result["folds"]:
