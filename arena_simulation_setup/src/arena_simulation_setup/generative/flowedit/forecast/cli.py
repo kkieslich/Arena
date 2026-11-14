@@ -152,8 +152,24 @@ def _net_methods(nets: list[tuple[str | None, Path]], rasters: Any, device: str 
                 cache[world] = forecast(model, rasters, world)
             return cache[world]
 
+        method.model = model  # type: ignore[attr-defined]
         methods[label] = method
     return methods
+
+
+def strength_mismatch(doc: dict[str, Any], model: Any) -> str | None:  # noqa: ANN401 - net.Forecaster
+    """Why a `forecast strength` output does not belong to `model`, None when it does: the demand ablation's weight is
+    not the forecaster's, and the variant's (`--demand-model-input`) not the plain network's. A file written before
+    strength recorded its demand model counts as a plain network's."""
+    if bool(doc.get("demand", True)) != bool(getattr(model, "demand", True)):
+        return f"the file is the {'demand ablation' if not doc.get('demand', True) else 'network with demand'}'s, the network is {'the demand ablation' if not getattr(model, 'demand', True) else 'a network with demand'}"
+    theirs = doc.get("demand_model")
+    ours = None if getattr(model, "demand_model", None) is None else model.demand_model.dump()
+    if (theirs is None) != (ours is None):
+        return f"the file is {'the plain network' if theirs is None else 'the network with the demand model input'}'s, the network is {'plain' if ours is None else 'the one with the demand model input'}"
+    if theirs is not None and (set(theirs) != set(ours) or any(abs(float(theirs[k]) - float(ours[k])) > 1e-9 * max(1.0, abs(float(ours[k]))) for k in ours)):
+        return f"its demand model params {theirs} are not the network's {ours}"
+    return None
 
 
 def _cmd_score(args: argparse.Namespace) -> int:
@@ -263,6 +279,9 @@ def _cmd_curve(args: argparse.Namespace) -> int:
         if args.strength is not None:
             strengths[name], how[name] = args.strength, "given"
         elif name in files:
+            model = getattr(prior, "model", None)
+            if model is not None and (why := strength_mismatch(files[name], model)):
+                raise SystemExit(f"curve: --strength-file {name}=...: not this network's weight: {why}")
             strengths[name], how[name] = float(files[name]["net"]["chosen"]), "cross-validated"
         elif name == uniform and files:
             strengths[name], how[name] = float(next(iter(files.values()))["uniform"]["chosen"]), "cross-validated"
@@ -363,6 +382,11 @@ def _cmd_strength(args: argparse.Namespace) -> int:
     if args.demand_model_input is not None and not args.demand:
         raise SystemExit("strength: --demand-model-input gives the network the demand model's forecast, which carries the demand: it cannot combine with --no-demand")
     demand_model = None if args.demand_model_input is None else load_params(args.demand_model_input)
+    fitted_on = None
+    if demand_model is not None:
+        fitted_on = ((yaml.safe_load(args.demand_model_input.read_text()) or {}).get("fit") or {}).get("partition")
+        if fitted_on not in (None, "train"):
+            raise SystemExit(f"strength: --demand-model-input {args.demand_model_input} was fitted on the {fitted_on} partition: the prior's demand model may only see the train partition")
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -388,9 +412,20 @@ def _cmd_strength(args: argparse.Namespace) -> int:
         uni = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells()))
         rows.append({"held_out": list(fold), "net": net, "uniform": uni, "train": summary})
         _log(f"strength: fold {k + 1}: {label} best {min(net, key=net.__getitem__):g}, uniform best {min(uni, key=uni.__getitem__):g}")
-    out: dict[str, Any] = {"format": FORMAT, "split": str(args.split), "benchmark": listed(args.benchmark), "prior": label, "demand": args.demand, "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input), "steps": args.steps, "counts": list(V.STRENGTH_COUNTS), "folds": rows}
+    out: dict[str, Any] = {
+        "format": FORMAT,
+        "split": str(args.split),
+        "benchmark": listed(args.benchmark),
+        "prior": label,
+        "demand": args.demand,
+        "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input),
+        "demand_model": None if demand_model is None else demand_model.dump(),
+        "steps": args.steps,
+        "counts": list(V.STRENGTH_COUNTS),
+        "folds": rows,
+    }
     if demand_model is not None:
-        out["note"] = "one demand model params file for every fold: its six parameters were fitted on the train partition, the fold's held-out seeds included"
+        out["note"] = f"one demand model params file for every fold ({args.demand_model_input}): " + ("its six parameters were fitted on the train partition, the fold's held-out seeds included" if fitted_on == "train" else "its file records no fit, so where its six parameters come from is not checked")
     for key in ("net", "uniform"):
         chosen, spread = V.choose_strength([r[key] for r in rows])
         out[key] = {"chosen": chosen, **spread}
