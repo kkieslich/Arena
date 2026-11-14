@@ -556,7 +556,7 @@ def add_parser(verbs: Any) -> None:
     q.add_argument("--group-occupancy", type=Path, action="append", default=None, help="the reference runs' walker-group cells (`evaluation infra occupancy`: infra_occupancy.parquet or the benchmark dir holding it); repeatable, read as one")
     q.add_argument("--band", type=float, default=SE.CONFLICT_BAND_M, help=f"the conflict band: walkers within this distance of a driving robot count as exposed, m (default {SE.CONFLICT_BAND_M:g})")
     q.add_argument("--distinct", type=float, default=SE.DISTINCT_M, help=f"a joint layout enters the top only if one of its elements sits at least this far from that element's spot in every better-ranked one, m (default {SE.DISTINCT_M:g})")
-    q.add_argument("--guideline", action="store_true", help="also place the guideline layout (search.guideline), save its copy and record it in the manifest for `flowedit infra evaluation` (the selection does not run it)")
+    q.add_argument("--guideline", action="store_true", help="also place the guideline layout (search.guideline, a practice-based baseline, not held to the travel pre-filter), save its copy and record it in the manifest for `flowedit infra evaluation` (the selection does not run it)")
     q.add_argument("--top", type=int, default=SE.JOINT_TOP, help=f"joint layouts that run in full (default {SE.JOINT_TOP})")
     q.add_argument("--random", type=int, default=SE.RANDOM_LAYOUTS, help=f"random valid layouts (default {SE.RANDOM_LAYOUTS})")
     q.add_argument("--travel-slack", type=float, default=SE.TRAVEL_SLACK, help=f"the travel pre-filter: robot travel per job at most this times the robot-only pick's (default {SE.TRAVEL_SLACK:g})")

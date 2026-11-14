@@ -1012,9 +1012,10 @@ def exposure_of(search: Search, groups: Mapping[str, Occupancy], index: int, *, 
 
 
 def guideline(site: Site | Search, **kwargs: Any) -> Scored:
-    """The guideline placement (the practice baseline): on the same rule-valid spots and with the same pinned loading
-    point as the searches, by walking distance on the floor a wheelchair reaches (`place.walking_paths`, what the
-    catalog's distance rules measure):
+    """The guideline placement, a practice-based baseline (its sources are analogies: courier waiting bays and lockers,
+    cleaning-robot docks): on the same rule-valid spots and with the same pinned loading point as the searches, by
+    walking distance on the floor a wheelchair reaches (`place.walking_paths`, what the catalog's distance rules
+    measure):
 
     - G2 the waiting bays at the bay spot nearest the loading point (LTA and URA, Last-Mile Delivery Guide for
       Developments, 2026, p. 10: delivery waiting bays close to delivery routes, where couriers park);
