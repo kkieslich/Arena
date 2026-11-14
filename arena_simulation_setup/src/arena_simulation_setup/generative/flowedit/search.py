@@ -79,8 +79,8 @@ GROUPS = ("adult", "wheelchair", "long_cane")
 CONFLICT_BAND_M = 2.0
 #: The robots' speed while they drive a route, for the time they spend on it (the jackal's planner limit) [m/s]
 ROBOT_SPEED_MPS = 0.5
-#: The joint top 10 are distinct layouts: one enters only if one of its elements sits at least this far from that
-#: element's spot in every better-ranked layout [m]
+#: The joint top 10 are distinct layouts: one enters only if, against every better-ranked layout, at least one of its
+#: elements sits at least this far from that element's spot there [m]
 DISTINCT_M = 5.0
 #: Candidates the exposure ranking checks at most before it gives up filling its top (each takes the full check)
 MAX_RANKED_CHECKS = 50_000
@@ -930,8 +930,9 @@ def ranking_score(search: Search, occupancy: Occupancy, index: int, floor_weight
 
 
 def distinct(search: Search, ranked: Sequence[int], top: int, distinct_m: float = DISTINCT_M) -> list[int]:
-    """The first `top` of `ranked` (candidate indices, best first) that are distinct layouts: one enters only if one of
-    its elements sits at least `distinct_m` from that element's spot in every layout already in (spot centres)."""
+    """The first `top` of `ranked` (candidate indices, best first) that are distinct layouts: one enters only if,
+    against every layout already in (each better-ranked), at least one of its elements sits at least `distinct_m` from
+    that element's spot there (spot centres)."""
     import numpy as np
 
     centres = search.spot_centres()
