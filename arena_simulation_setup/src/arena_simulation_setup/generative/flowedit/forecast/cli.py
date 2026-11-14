@@ -34,6 +34,20 @@ def load_params(path: Path | None) -> Params:
     return Params.load(doc.get("params") or {})
 
 
+def demand_model_input(path: Path, split: Path, verb: str) -> tuple[Params, str | None]:
+    """The params of a `--demand-model-input` file and the partition its file says they were fitted on (None when it
+    records no fit). Refused: params fitted on another partition than train (the network's input would carry what the
+    scores test), or on another split (its file names one by another name)."""
+    doc = yaml.safe_load(Path(path).read_text()) or {}
+    fit_info = doc.get("fit") or {}
+    partition = fit_info.get("partition")
+    if partition not in (None, "train"):
+        raise SystemExit(f"{verb}: --demand-model-input {path} was fitted on the {partition} partition: the demand model may only see the train partition")
+    if fit_info.get("split") and Path(str(fit_info["split"])).name != Path(split).name:
+        raise SystemExit(f"{verb}: --demand-model-input {path} was fitted on the split {fit_info['split']}, not on {split}")
+    return load_params(Path(path)), partition
+
+
 def _forecaster(doc: dict[str, Any], args: argparse.Namespace) -> Forecaster:
     return Forecaster(SP.crowd(doc, args.settings), SP.duration_of(doc), worlds=args.worlds)
 
@@ -89,6 +103,7 @@ def _named(values: list[str] | None, what: str) -> list[tuple[str | None, Path]]
 def _cmd_train(args: argparse.Namespace) -> int:
     from .learn import Rasters, pick, samples, save, train
 
+    demand_model = None if args.demand_model_input is None else demand_model_input(args.demand_model_input, args.split, "train")[0]
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -97,7 +112,6 @@ def _cmd_train(args: argparse.Namespace) -> int:
     found = samples(runs, worlds, doc, args.partition)
     seeds = sorted({s.seed for s in found})
     _log(f"train: {len(found)} runs of {len(worlds)} worlds at seeds {seeds} ({args.partition}, {'all' if args.fraction >= 1 else format(args.fraction, '.0%')} of its edit chains), demand {'on' if args.demand else 'off (demand ablation)'}")
-    demand_model = None if args.demand_model_input is None else load_params(args.demand_model_input)
     if demand_model is not None:
         _log(f"train: the demand model's forecast ({args.demand_model_input}) is an input layer of every world")
     model, summary = train(rasters, found, demand=args.demand, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device, demand_model=demand_model, log=_log)
@@ -160,10 +174,17 @@ def _net_methods(nets: list[tuple[str | None, Path]], rasters: Any, device: str 
 def strength_mismatch(doc: dict[str, Any], model: Any) -> str | None:  # noqa: ANN401 - net.Forecaster
     """Why a `forecast strength` output does not belong to `model`, None when it does: the demand ablation's weight is
     not the forecaster's, and the variant's (`--demand-model-input`) not the plain network's. A file written before
-    strength recorded its demand model counts as a plain network's."""
+    strength recorded its demand model params counts as a plain network's, unless it names a `demand_model_input` file
+    (#121's variant files): then it is a variant's, with that file's params, and without the file it cannot be checked."""
     if bool(doc.get("demand", True)) != bool(getattr(model, "demand", True)):
         return f"the file is the {'demand ablation' if not doc.get('demand', True) else 'network with demand'}'s, the network is {'the demand ablation' if not getattr(model, 'demand', True) else 'a network with demand'}"
     theirs = doc.get("demand_model")
+    if "demand_model" not in doc and doc.get("demand_model_input"):
+        if getattr(model, "demand_model", None) is None:
+            return "the file is the network with the demand model input's (it names a demand model input file), the network is plain"
+        if not Path(str(doc["demand_model_input"])).is_file():
+            return f"the file names the demand model input {doc['demand_model_input']} but records no params, and that file is gone: run strength again"
+        theirs = load_params(Path(str(doc["demand_model_input"]))).dump()
     ours = None if getattr(model, "demand_model", None) is None else model.demand_model.dump()
     if (theirs is None) != (ours is None):
         return f"the file is {'the plain network' if theirs is None else 'the network with the demand model input'}'s, the network is {'plain' if ours is None else 'the one with the demand model input'}"
@@ -381,12 +402,7 @@ def _cmd_strength(args: argparse.Namespace) -> int:
 
     if args.demand_model_input is not None and not args.demand:
         raise SystemExit("strength: --demand-model-input gives the network the demand model's forecast, which carries the demand: it cannot combine with --no-demand")
-    demand_model = None if args.demand_model_input is None else load_params(args.demand_model_input)
-    fitted_on = None
-    if demand_model is not None:
-        fitted_on = ((yaml.safe_load(args.demand_model_input.read_text()) or {}).get("fit") or {}).get("partition")
-        if fitted_on not in (None, "train"):
-            raise SystemExit(f"strength: --demand-model-input {args.demand_model_input} was fitted on the {fitted_on} partition: the prior's demand model may only see the train partition")
+    demand_model, fitted_on = (None, None) if args.demand_model_input is None else demand_model_input(args.demand_model_input, args.split, "strength")
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
