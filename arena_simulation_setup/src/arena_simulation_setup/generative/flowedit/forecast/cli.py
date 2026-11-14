@@ -357,8 +357,12 @@ def _cmd_select(args: argparse.Namespace) -> int:
 
 def _cmd_strength(args: argparse.Namespace) -> int:
     from . import validity as V
-    from .learn import Rasters, predict, samples, train
+    from .learn import Rasters, forecast, samples, train
+    from .selection import ARM_LABELS, DEMAND_MODEL_INPUT
 
+    if args.demand_model_input is not None and not args.demand:
+        raise SystemExit("strength: --demand-model-input gives the network the demand model's forecast, which carries the demand: it cannot combine with --no-demand")
+    demand_model = None if args.demand_model_input is None else load_params(args.demand_model_input)
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -367,24 +371,26 @@ def _cmd_strength(args: argparse.Namespace) -> int:
     worlds = list(doc["partitions"].get("train") or [])
     every = samples(runs, worlds, doc)
     folds = V.seed_folds(sorted({s.seed for s in every}))[: args.folds]
-    label = "forecaster" if args.demand else "demand ablation"
+    label = "demand ablation" if not args.demand else ("forecaster" if demand_model is None else ARM_LABELS[DEMAND_MODEL_INPUT])
     rows = []
     for k, fold in enumerate(folds):
         found = [s for s in every if s.seed not in fold]
         _log(f"strength: fold {k + 1}/{len(folds)}, seeds {list(fold)} held out, {len(found)} training runs")
-        model, summary = train(rasters, found, demand=args.demand, steps=args.steps, seed=args.seed, device=args.device, log=_log)
+        model, summary = train(rasters, found, demand=args.demand, steps=args.steps, seed=args.seed, device=args.device, demand_model=demand_model, log=_log)
         cache: dict[str, Any] = {}
 
         def prior(world: str, model: Any = model, cache: dict[str, Any] = cache) -> Any:  # noqa: ANN401
             if world not in cache:
-                cache[world] = predict(model, rasters(world, model.demand))
+                cache[world] = forecast(model, rasters, world)
             return cache[world]
 
         net = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, prior)
         uni = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells()))
         rows.append({"held_out": list(fold), "net": net, "uniform": uni, "train": summary})
         _log(f"strength: fold {k + 1}: {label} best {min(net, key=net.__getitem__):g}, uniform best {min(uni, key=uni.__getitem__):g}")
-    out: dict[str, Any] = {"format": FORMAT, "split": str(args.split), "benchmark": listed(args.benchmark), "prior": label, "demand": args.demand, "steps": args.steps, "counts": list(V.STRENGTH_COUNTS), "folds": rows}
+    out: dict[str, Any] = {"format": FORMAT, "split": str(args.split), "benchmark": listed(args.benchmark), "prior": label, "demand": args.demand, "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input), "steps": args.steps, "counts": list(V.STRENGTH_COUNTS), "folds": rows}
+    if demand_model is not None:
+        out["note"] = "one demand model params file for every fold: its six parameters were fitted on the train partition, the fold's held-out seeds included"
     for key in ("net", "uniform"):
         chosen, spread = V.choose_strength([r[key] for r in rows])
         out[key] = {"chosen": chosen, **spread}
@@ -576,6 +582,7 @@ def register(verbs: argparse._SubParsersAction) -> None:
     device(q)
     q.add_argument("--out", type=Path, required=True, help="YAML file of the folds and the chosen weights (`curve --strength-file NAME=FILE`)")
     q.add_argument("--no-demand", dest="demand", action="store_false", help="the demand ablation's network")
+    q.add_argument("--demand-model-input", type=Path, default=None, metavar="PARAMS", help="a params file from `fit`: the fold networks take the demand model's forecast as input layers (`train --demand-model-input`), with these params in every fold")
     q.add_argument("--folds", type=int, default=None, help="the first FOLDS folds only (default every one: as many as training seeds)")
     q.add_argument("--steps", type=int, default=3000, help="optimizer steps per fold network (default 3000)")
     q.add_argument("--seed", type=int, default=0, help="training seed (default 0)")

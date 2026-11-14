@@ -319,6 +319,53 @@ def test_a_prior_that_matches_the_held_out_truth_wants_a_heavy_weight_and_a_unif
     assert perfect[1000.0] <= perfect[10.0] and flat[10.0] < flat[1000.0]
 
 
+def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit import split as SP
+    from arena_simulation_setup.generative.flowedit.cli import main
+    from arena_simulation_setup.generative.flowedit.forecast import cli, learn
+    from arena_simulation_setup.generative.flowedit.forecast.learn import Sample
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    params = Params(sigma=0.3)
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump()}))
+    monkeypatch.setattr(SP, "load", lambda path: {"partitions": {"train": ["w"]}, "duration": 60})
+    monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
+    monkeypatch.setattr(learn.Rasters, "of", classmethod(lambda cls, doc, settings, worlds=None: types.SimpleNamespace(sites=types.SimpleNamespace(grid=lambda base: GRID))))
+    monkeypatch.setattr(cli, "_recorded", lambda benchmarks, grid_of, planner: (None, None))
+    monkeypatch.setattr(learn, "samples", lambda runs, worlds, doc: [Sample("w", s, None) for s in (1, 2, 3)])
+    trained, forecast_with = [], []
+
+    def fake_train(rasters, found, *, demand, steps, seed, device, demand_model, log):  # noqa: ANN001, ANN202
+        trained.append(demand_model)
+        return types.SimpleNamespace(demand=demand, demand_model=demand_model), {"steps": steps}
+
+    def fake_forecast(model, rasters, world):  # noqa: ANN001, ANN202
+        forecast_with.append(model.demand_model)
+        return np.ones((GRID.ny, GRID.nx, M.BINS))
+
+    def fake_fold(worlds, fold, tracks, runs, grid_of, prior):  # noqa: ANN001, ANN202
+        prior("w")
+        return {100.0: 0.2, 1000.0: 0.3}
+
+    monkeypatch.setattr(learn, "train", fake_train)
+    monkeypatch.setattr(learn, "forecast", fake_forecast)
+    monkeypatch.setattr(V, "fold_strengths", fake_fold)
+    out = tmp_path / "strength.yaml"
+    assert main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(params_file), "--folds", "1", "--out", str(out)]) == 0
+    # the fold network takes the demand model's forecast, and the prior it scores is that network's forecast with it
+    assert trained == [params] and forecast_with == [params]
+    doc = yaml.safe_load(out.read_text())
+    assert doc["prior"] == "network + demand model input" and doc["demand_model_input"] == str(params_file) and "held-out seeds included" in doc["note"]
+    assert doc["net"]["chosen"] == 100.0
+    with pytest.raises(SystemExit, match="cannot combine with --no-demand"):
+        main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(params_file), "--no-demand", "--out", str(out)])
+
+
 def test_tracks_come_from_the_newest_track_store_version_that_holds_them(tmp_path: Path) -> None:
     from arena_simulation_setup.generative.flowedit.forecast.cli import track_file
 
