@@ -1,7 +1,8 @@
 """INFRA layout searches (study design §4, §5): the valid layouts of the catalog's elements on a site, the robot-only
-pick (the shortest expected robot travel for the §8 task stream, as in Kundu and Saha's charger placement), the joint
-search's fallback ranking (pedestrian occupancy under each element's footprint and approach zone, from the site-as-is
-reference runs, plus the NAV@r floor loss) and random valid layouts.
+pick (the shortest expected robot travel for the §8 task stream and the robots' top-up trips, as in Kundu and Saha's
+charger placement), the joint search's ranking by predicted conflict exposure per walker group (`joint_exposure`: the
+time a group's member spends near the robots' routes or on the elements' floor, from the site-as-is reference runs;
+the older occupancy fallback `joint` beside it), the guideline placement (`guideline`) and random valid layouts.
 
 A layout places the charger pair, the bay pair and the locker on valid candidate spots (`place.candidate_spots`), with
 the loading point pinned to one spot (route end A on the twin, §8). Each element may go where its function puts it
@@ -71,6 +72,20 @@ MAX_CANDIDATES = 50_000_000
 TRAVEL_SLACK = 1.05
 #: Seed streams, so the joint sample and the random control are independent draws for the same seed
 _JOINT, _RANDOM = 1, 2
+#: The walker groups the joint ranking scores (§6, §9; arena-evaluation's `infra.GROUPS`)
+GROUPS = ("adult", "wheelchair", "long_cane")
+#: The joint ranking's conflict band: a walker within this distance of a driving robot counts as exposed to it, a band
+#: about the robots' routes, since nav2 does not drive the exact shortest line [m]
+CONFLICT_BAND_M = 2.0
+#: The robots' speed while they drive a route, for the time they spend on it (the jackal's planner limit) [m/s]
+ROBOT_SPEED_MPS = 0.5
+#: The holds at a job's ends, at the loading point and at the locker (the fleet mode's load_s and unload_s) [s]
+HOLD_S = (15.0, 10.0)
+#: The joint top 10 are distinct layouts: one enters only if one of its elements sits at least this far from that
+#: element's spot in every better-ranked layout [m]
+DISTINCT_M = 5.0
+#: Candidates the exposure ranking checks at most before it gives up filling its top (each takes the full check)
+MAX_RANKED_CHECKS = 50_000
 
 
 @attrs.frozen
@@ -102,13 +117,23 @@ class TaskMix:
     often. After `charges_per_job` of the jobs the robot drives to a charger instead of home and keeps it as its home
     (the fleet mode's swap). Each robot charges `charges_per_robot` times per episode of `episode_s` (§8 sizes the battery
     for about once), so `charges_per_job` is robots x charges over the jobs of an episode, at most 1. Chained jobs (a
-    robot that takes the next job where the last ended) are not modelled: the home legs are an upper bound."""
+    robot that takes the next job where the last ended) are not modelled: the home legs are an upper bound.
+
+    `top_ups_per_job` adds the charging trips idle robots make between a bay slot and a charger (the fleet mode's
+    top-ups, from standby drain while parked): that many round trips bay - charger per job, at the mean bay-charger
+    path length (`Search.travel`). The study takes it from the task-rate run's fleet log: top-ups dispatched after the
+    warm-up per completed job released after it."""
 
     rate_per_h: float = 12.0
     pickup_share: float = 0.3
     robots: int = len(HOMES)
     episode_s: float = 1500.0
     charges_per_robot: float = 1.0
+    top_ups_per_job: float = 0.0
+
+    def __attrs_post_init__(self) -> None:
+        if self.top_ups_per_job < 0:
+            raise ValueError(f"top_ups_per_job must not be negative, got {self.top_ups_per_job}")
 
     @property
     def charges_per_job(self) -> float:
@@ -200,6 +225,46 @@ class RobotPaths:
         out[:, dst_d > PATH_SNAP_M] = np.inf
         return out
 
+    def integrals(self, sources: Sequence[Point], targets: Sequence[Point], values: np.ndarray, chunk: int = 8) -> tuple[np.ndarray, np.ndarray]:
+        """Along the shortest path from each of `sources` to each of `targets` (the paths `lengths` measures): its length
+        and the path integral of each row of `values` (one value per path cell, shape (K, cells)): the sum over the
+        path's steps of the step's length times the value at the cell it enters, plus each snap distance times the value
+        at the snapped cell. Returns (lengths (S, T), integrals (K, S, T)), inf where no path. Each source's shortest
+        path tree is summed by pointer jumping (log2 of the path's cells passes over every cell)."""
+        import numpy as np
+        from scipy.sparse.csgraph import dijkstra
+
+        values = np.atleast_2d(np.asarray(values, dtype=float))
+        if values.shape[1] != self.cells:
+            raise ValueError(f"values hold {values.shape[1]} cells per row, the paths have {self.cells}")
+        src_d, src_i = self.tree.query(np.asarray(sources, dtype=float).reshape(-1, 2))
+        dst_d, dst_i = self.tree.query(np.asarray(targets, dtype=float).reshape(-1, 2))
+        src_d, src_i, dst_d, dst_i = np.atleast_1d(src_d), np.atleast_1d(src_i), np.atleast_1d(dst_d), np.atleast_1d(dst_i)
+        lengths = np.full((len(src_i), len(dst_i)), np.inf)
+        out = np.full((values.shape[0], len(src_i), len(dst_i)), np.inf)
+        every = np.arange(self.cells)
+        for start in range(0, len(src_i), chunk):
+            dist, pred = dijkstra(self.graph, directed=False, indices=src_i[start : start + chunk], return_predecessors=True)
+            dist, pred = np.atleast_2d(dist), np.atleast_2d(pred)
+            for row in range(dist.shape[0]):
+                parent = pred[row].astype(np.int64)
+                root = parent < 0  # the source and the cells no path reaches point at themselves
+                parent[root] = every[root]
+                acc = values * np.linalg.norm(self.centres - self.centres[parent], axis=1)[None, :]
+                pointer = parent
+                for _ in range(64):
+                    acc = acc + acc[:, pointer]
+                    pointer = pointer[pointer]
+                    if np.array_equal(pointer[pointer], pointer):
+                        break
+                s = start + row
+                lengths[s] = dist[row, dst_i] + src_d[s] + dst_d
+                out[:, s, :] = acc[:, dst_i] + values[:, [src_i[s]]] * src_d[s] + values[:, dst_i] * dst_d[None, :]
+        far = (src_d > PATH_SNAP_M)[:, None] | (dst_d > PATH_SNAP_M)[None, :]
+        lengths[far] = np.inf
+        out[:, ~np.isfinite(lengths)] = np.inf
+        return lengths, out
+
 
 @attrs.frozen(eq=False)
 class Occupancy:
@@ -252,6 +317,34 @@ class Occupancy:
         runs = len(cells[["planner", "stage"]].drop_duplicates())
         return cls.from_cells(cells["x"], cells["y"], cells["ped_seconds"], sizes[0], runs * episode_s)
 
+    @classmethod
+    def from_group_cells(cls, paths: Path | Sequence[Path], world: str, episode_s: float) -> dict[str, Occupancy]:
+        """The occupancy of each walker group of `world`'s runs in arena-evaluation's group cells (`evaluation infra
+        occupancy`: `infra_occupancy.parquet`, or a benchmark run directory holding it; several are read as one): per
+        group every run (stage and planner) of `world`, each `episode_s` long, warm-up included, as `from_flow_cells`.
+        Groups by name (`GROUPS`); a group with no walker time gets no entry."""
+        import pandas as pd
+
+        frames = []
+        for path in [paths] if isinstance(paths, (str, Path)) else list(paths):
+            path = Path(path)
+            if path.is_dir():
+                path = path / "infra_occupancy.parquet"
+            frames.append(pd.read_parquet(path))
+        cells = pd.concat(frames, ignore_index=True)
+        cells = cells[cells["world"] == world]
+        if cells.empty:
+            raise ValueError(f"{paths}: no group cells of world {world!r}")
+        sizes = sorted(set(cells["cell_m"]))
+        if len(sizes) != 1:
+            raise ValueError(f"{paths}: group cells of {world!r} come in sizes {sizes}")
+        runs = len(cells[["planner", "stage"]].drop_duplicates())
+        out = {}
+        for group, rows in cells.groupby("group", sort=True):
+            if float(rows["ped_seconds"].sum()) > 0:
+                out[str(group)] = cls.from_cells(rows["x"], rows["y"], rows["ped_seconds"], sizes[0], runs * episode_s)
+        return out
+
     @property
     def mean_density(self) -> float:
         """The mean density over the cells that hold any pedestrian time: the walked floor's."""
@@ -259,6 +352,35 @@ class Occupancy:
 
         walked = self.density[self.density > 0]
         return float(walked.mean()) if len(walked) else 0.0
+
+    @property
+    def present(self) -> float:
+        """The mean number of pedestrians on the site at a time: the density integrated over every cell."""
+        return float(self.density.sum()) * self.cell_m * self.cell_m
+
+    def band(self, radius: float) -> np.ndarray:
+        """Per cell, the mean number of pedestrians within `radius` of its centre: the density times the cell area,
+        summed over the cells whose centres lie in that disc, scaled so the disc counts its exact area pi r^2."""
+        import numpy as np
+        from scipy import ndimage
+
+        k = int(math.ceil(radius / self.cell_m))
+        yy, xx = np.mgrid[-k : k + 1, -k : k + 1]
+        disc = ((xx * self.cell_m) ** 2 + (yy * self.cell_m) ** 2 <= radius * radius).astype(float)
+        disc *= math.pi * radius * radius / (disc.sum() * self.cell_m * self.cell_m)
+        return ndimage.convolve(self.density * self.cell_m * self.cell_m, disc, mode="constant")
+
+    def sample(self, field: np.ndarray, points: np.ndarray) -> np.ndarray:
+        """`field` (one value per cell of this grid) at world-frame `points` (N, 2): each point's cell, 0 off the grid."""
+        import numpy as np
+
+        points = np.asarray(points, dtype=float).reshape(-1, 2)
+        j = np.floor((points[:, 0] - self.x0) / self.cell_m).astype(np.int64)
+        i = np.floor((points[:, 1] - self.y0) / self.cell_m).astype(np.int64)
+        inside = (i >= 0) & (i < field.shape[0]) & (j >= 0) & (j < field.shape[1])
+        out = np.zeros(len(points))
+        out[inside] = field[i[inside], j[inside]]
+        return out
 
     def people(self, geometry: shapely.Geometry) -> float:
         """The mean number of pedestrians on `geometry` at a time: the density integrated over it, cell by cell."""
@@ -306,7 +428,8 @@ class Checked:
 class Scored:
     """One layout a search returns: its candidate `index` in `Search.candidates`, the expected robot travel per job
     (`travel_m`, under the search's task mix), the pedestrians under its elements (`occupancy`, without an occupancy
-    None), its NAV@r floor loss, and the `score` its search ranked it by (lower is better)."""
+    None), its NAV@r floor loss, the `score` its search ranked it by (lower is better), and, where the exposure ranking
+    scored it, its predicted conflict exposure per walker group (`exposure`, seconds per hour per member)."""
 
     layout: Layout
     index: int
@@ -315,6 +438,7 @@ class Scored:
     floor_loss_m2: float
     score: float
     navr: NavrVerdict
+    exposure: Mapping[str, float] | None = None
 
     @property
     def layout_id(self) -> str:
@@ -328,6 +452,7 @@ class Scored:
             "travel_m": _num(self.travel_m),
             "occupancy": None if self.occupancy is None else _num(self.occupancy),
             "floor_loss_m2": _num(self.floor_loss_m2),
+            **({"exposure": {group: _num(value) for group, value in self.exposure.items()}} if self.exposure is not None else {}),
             "spots": [
                 {"element": s.element.name, "spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "objects": [{"name": o.name, "model": o.model, "x": o.x, "y": o.y, "yaw": o.yaw, "goto": list(o.goto)} for o in s.objects]}
                 for s in self.layout.spots
@@ -431,6 +556,8 @@ class Search:
         self._lengths: dict[str, np.ndarray] | None = None
         self._checked: dict[int, Checked] = {}
         self._people: dict[Occupancy, tuple[dict[str, list[float]], float]] = {}
+        self._bay_charger: np.ndarray | None = None
+        self._exposure: dict[Any, dict[str, np.ndarray]] = {}
 
     # --- spots and candidates --------------------------------------------------------------------------------------
 
@@ -603,21 +730,140 @@ class Search:
         c, b, k = rows[:, 0], rows[:, 1], rows[:, 2]
         d, w = self.lengths, self.mix.weights()
         ch, bay = SEARCHED[0], SEARCHED[1]
-        return d["LK"][k] + w["L_bay"] * d[f"L_{bay}"][b] + w["L_charger"] * d[f"L_{ch}"][c] + w["K_bay"] * d[f"K_{bay}"][k, b] + w["K_charger"] * d[f"K_{ch}"][k, c]
+        out = d["LK"][k] + w["L_bay"] * d[f"L_{bay}"][b] + w["L_charger"] * d[f"L_{ch}"][c] + w["K_bay"] * d[f"K_{bay}"][k, b] + w["K_charger"] * d[f"K_{ch}"][k, c]
+        if self.mix.top_ups_per_job > 0:
+            out = out + 2.0 * self.mix.top_ups_per_job * self.bay_charger[c, b]
+        return out
+
+    @property
+    def bay_charger(self) -> np.ndarray:
+        """Mean path length (m) between each charger spot's goto points (rows) and each bay spot's (columns): the
+        top-up round trip's leg (`TaskMix.top_ups_per_job`)."""
+        if self._bay_charger is None:
+            import numpy as np
+
+            chargers = [o.goto for s in self.spots[SEARCHED[0]] for o in s.objects]
+            bays = [o.goto for s in self.spots[SEARCHED[1]] for o in s.objects]
+            width_c, width_b = len(place.CATALOG[SEARCHED[0]].members), len(place.CATALOG[SEARCHED[1]].members)
+            if not chargers or not bays:
+                self._bay_charger = np.zeros((len(self.spots[SEARCHED[0]]), len(self.spots[SEARCHED[1]])))
+            else:
+                d = self.paths.lengths(chargers, bays)
+                self._bay_charger = d.reshape(len(self.spots[SEARCHED[0]]), width_c, len(self.spots[SEARCHED[1]]), width_b).mean(axis=(1, 3))
+        return self._bay_charger
+
+    # --- conflict exposure (the joint ranking) -----------------------------------------------------------------------
+
+    def leg_exposure(self, values: np.ndarray) -> dict[str, np.ndarray]:
+        """The path integrals of each row of `values` (one value per path cell, shape (K, cells)) over the legs of the
+        job cycle, by spot index as `lengths` (each with a leading axis of length K): `L_<element>` from the loading
+        point, `K_<element>` from each locker spot (axis 1), `LK` from the loading point to each locker spot, and `BC`
+        from each charger spot to each bay spot (as `bay_charger`)."""
+        import numpy as np
+
+        values = np.atleast_2d(values)
+        lockers = [s.objects[0].goto for s in self.spots[SEARCHED[2]]]
+        sources = [self.loading.objects[0].goto, *lockers]
+        members = {name: [o.goto for s in self.spots[name] for o in s.objects] for name in SEARCHED[:2]}
+        targets = [p for name in SEARCHED[:2] for p in members[name]] + lockers
+        n = values.shape[0]
+        _, e = self.paths.integrals(sources, targets, values) if targets else (None, np.zeros((n, len(sources), 0)))
+        out: dict[str, np.ndarray] = {}
+        at = 0
+        for name in SEARCHED[:2]:
+            width = len(place.CATALOG[name].members)
+            block = e[:, :, at : at + len(members[name])].reshape(n, len(sources), len(self.spots[name]), width).mean(axis=3)
+            out[f"L_{name}"], out[f"K_{name}"] = block[:, 0], block[:, 1:]
+            at += len(members[name])
+        out["LK"] = e[:, 0, at:]
+        if members[SEARCHED[0]] and members[SEARCHED[1]]:
+            _, bc = self.paths.integrals(members[SEARCHED[0]], members[SEARCHED[1]], values)
+            wc, wb = len(place.CATALOG[SEARCHED[0]].members), len(place.CATALOG[SEARCHED[1]].members)
+            out["BC"] = bc.reshape(n, len(self.spots[SEARCHED[0]]), wc, len(self.spots[SEARCHED[1]]), wb).mean(axis=(2, 4))
+        else:
+            out["BC"] = np.zeros((n, len(self.spots[SEARCHED[0]]), len(self.spots[SEARCHED[1]])))
+        return out
+
+    def job_exposure(self, groups: Mapping[str, Occupancy], band_m: float = CONFLICT_BAND_M, speed_mps: float = ROBOT_SPEED_MPS, hold_s: tuple[float, float] = HOLD_S) -> dict[str, np.ndarray]:
+        """Per walker group and candidate, the walker-seconds of the group within `band_m` of a robot per job: the
+        job-cycle legs weighed as in `travel` (the top-up round trips included), driven at `speed_mps`, plus the holds
+        at the loading point and the locker (`hold_s`). Walkers per path cell come from each group's occupancy (the
+        site as is). Cached per groups, band, speed and holds."""
+        import numpy as np
+
+        key = (tuple((name, id(occ)) for name, occ in groups.items()), float(band_m), float(speed_mps), tuple(hold_s), self.mix)
+        if key in self._exposure:
+            return self._exposure[key]
+        names = list(groups)
+        bands = {name: groups[name].band(band_m) for name in names}
+        legs = self.leg_exposure(np.stack([groups[name].sample(bands[name], self.paths.centres) for name in names]))
+        rows = self.candidates
+        c, b, k = rows[:, 0], rows[:, 1], rows[:, 2]
+        w = self.mix.weights()
+        ch, bay = SEARCHED[0], SEARCHED[1]
+        lockers = np.array([s.objects[0].goto for s in self.spots[SEARCHED[2]]], dtype=float).reshape(-1, 2)
+        out: dict[str, np.ndarray] = {}
+        for i, name in enumerate(names):
+            driven = legs["LK"][i][k] + w["L_bay"] * legs[f"L_{bay}"][i][b] + w["L_charger"] * legs[f"L_{ch}"][i][c] + w["K_bay"] * legs[f"K_{bay}"][i][k, b] + w["K_charger"] * legs[f"K_{ch}"][i][k, c]
+            if self.mix.top_ups_per_job > 0:
+                driven = driven + 2.0 * self.mix.top_ups_per_job * legs["BC"][i][c, b]
+            at_loading = float(groups[name].sample(bands[name], np.asarray([self.loading.objects[0].goto]))[0])
+            at_locker = groups[name].sample(bands[name], lockers) if len(lockers) else np.zeros(0)
+            out[name] = driven / speed_mps + hold_s[0] * at_loading + hold_s[1] * at_locker[k]
+        self._exposure[key] = out
+        return out
+
+    def element_people(self, occupancy: Occupancy) -> np.ndarray:
+        """Per candidate, the pedestrians under its elements and the loading point (`occupancy` of every candidate)."""
+        import numpy as np
+
+        per, loading = self._spot_people(occupancy)
+        rows = self.candidates
+        return loading + np.asarray(per[SEARCHED[0]])[rows[:, 0]] + np.asarray(per[SEARCHED[1]])[rows[:, 1]] + np.asarray(per[SEARCHED[2]])[rows[:, 2]]
+
+    def conflict(self, groups: Mapping[str, Occupancy], rate_per_h: float, band_m: float = CONFLICT_BAND_M, speed_mps: float = ROBOT_SPEED_MPS, hold_s: tuple[float, float] = HOLD_S) -> dict[str, np.ndarray]:
+        """The joint ranking's predicted conflict exposure (§5) per walker group and candidate: the seconds per hour an
+        average member of the group spends within `band_m` of a driving robot (`job_exposure` times `rate_per_h` jobs
+        per hour) or on an element's footprint, dock or approach zone (`element_people` times 3600), over the group's
+        walkers present. Lower is better. The NAV@r floor loss is added per checked layout (`conflict_floor`)."""
+        jobs = self.job_exposure(groups, band_m, speed_mps, hold_s)
+        out = {}
+        for name, occ in groups.items():
+            present = occ.present
+            if present <= 0:
+                raise ValueError(f"group {name!r} has no walker time in its occupancy")
+            out[name] = (rate_per_h * jobs[name] + 3600.0 * self.element_people(occ)) / present
+        return out
+
+    @staticmethod
+    def conflict_floor(groups: Mapping[str, Occupancy], floor_loss_m2: float) -> dict[str, float]:
+        """Per group, the seconds per hour a member would spend on the floor a layout cuts off (the NAV@r floor loss at
+        the group's mean walked density, over its walkers present), the floor-loss term of `conflict`."""
+        return {name: 3600.0 * occ.mean_density * floor_loss_m2 / occ.present for name, occ in groups.items()}
+
+    def spot_centres(self) -> dict[str, np.ndarray]:
+        """Per searched element, each spot's centre (the mean of its objects' goto points), by spot index."""
+        import numpy as np
+
+        return {name: np.array([np.mean([o.goto for o in s.objects], axis=0) for s in self.spots[name]], dtype=float).reshape(-1, 2) for name in SEARCHED}
 
     # --- scoring ---------------------------------------------------------------------------------------------------
 
     def occupancy(self, occupancy: Occupancy, index: int) -> float:
         """The pedestrians under candidate `index`'s elements and the loading point (`approach_area`)."""
-        if occupancy not in self._people:
-            self._people[occupancy] = ({name: [occupancy.people(approach_area(s)) for s in spots] for name, spots in self.spots.items()}, occupancy.people(approach_area(self.loading)))
-        per, loading = self._people[occupancy]
+        per, loading = self._spot_people(occupancy)
         c, b, k = (int(v) for v in self.candidates[index])
         return loading + per[SEARCHED[0]][c] + per[SEARCHED[1]][b] + per[SEARCHED[2]][k]
 
-    def scored(self, index: int, score: float, occupancy: Occupancy | None = None) -> Scored:
+    def _spot_people(self, occupancy: Occupancy) -> tuple[dict[str, list[float]], float]:
+        """The pedestrians under each spot's approach area by element, and under the loading point's; cached."""
+        if occupancy not in self._people:
+            self._people[occupancy] = ({name: [occupancy.people(approach_area(s)) for s in spots] for name, spots in self.spots.items()}, occupancy.people(approach_area(self.loading)))
+        return self._people[occupancy]
+
+    def scored(self, index: int, score: float, occupancy: Occupancy | None = None, exposure: Mapping[str, float] | None = None) -> Scored:
         checked = self.check(index)
-        return Scored(self.layout(index), index, float(self.travel(index)[0]), None if occupancy is None else self.occupancy(occupancy, index), checked.navr.floor_loss_m2, float(score), checked.navr)
+        return Scored(self.layout(index), index, float(self.travel(index)[0]), None if occupancy is None else self.occupancy(occupancy, index), checked.navr.floor_loss_m2, float(score), checked.navr, None if exposure is None else dict(exposure))
 
     def counts(self) -> dict[str, Any]:
         """The search space's size: spots per element (and why others dropped), pair checks run, candidates."""
@@ -682,6 +928,130 @@ def ranking_score(search: Search, occupancy: Occupancy, index: int, floor_weight
     return search.occupancy(occupancy, index) + weight * search.check(index).navr.floor_loss_m2
 
 
+def distinct(search: Search, ranked: Sequence[int], top: int, distinct_m: float = DISTINCT_M) -> list[int]:
+    """The first `top` of `ranked` (candidate indices, best first) that are distinct layouts: one enters only if one of
+    its elements sits at least `distinct_m` from that element's spot in every layout already in (spot centres)."""
+    import numpy as np
+
+    centres = search.spot_centres()
+    rows = search.candidates
+    picked: list[int] = []
+    for index in ranked:
+        if len(picked) >= top:
+            break
+        here = [centres[name][rows[index, i]] for i, name in enumerate(SEARCHED)]
+        if all(max(float(np.linalg.norm(here[i] - centres[name][rows[other, i]])) for i, name in enumerate(SEARCHED)) >= distinct_m for other in picked):
+            picked.append(int(index))
+    return picked
+
+
+def joint_exposure(
+    site: Site | Search,
+    groups: Mapping[str, Occupancy],
+    *,
+    rate_per_h: float,
+    top: int = JOINT_TOP,
+    band_m: float = CONFLICT_BAND_M,
+    distinct_m: float = DISTINCT_M,
+    max_travel_m: float | None = None,
+    speed_mps: float = ROBOT_SPEED_MPS,
+    hold_s: tuple[float, float] = HOLD_S,
+    max_checks: int = MAX_RANKED_CHECKS,
+    **kwargs: Any,
+) -> list[Scored]:
+    """The joint search's ranking by predicted conflict exposure (§5): every candidate whose expected robot travel per
+    job is at most `max_travel_m` (the travel pre-filter, `travel_cap`; None: all), scored per walker group by
+    `Search.conflict` plus the floor-loss term of its full check (`Search.conflict_floor`); the ranking score is the
+    largest group's value (the worst-off group, as C_worst). Returns the `top` best valid layouts that are distinct
+    (`distinct`), best first, ties by robot travel then layout id; each carries its per-group exposure. Candidates are
+    checked in order of their score without the floor term, a lower bound, until no unchecked one can enter the top."""
+    import numpy as np
+
+    search = _search(site, kwargs)
+    scores = search.conflict(groups, rate_per_h, band_m, speed_mps, hold_s)
+    names = list(scores)
+    worst = np.max(np.stack([scores[name] for name in names]), axis=0)
+    travel = search.travel()
+    among = np.arange(len(search.candidates)) if max_travel_m is None else search.within_travel(max_travel_m)
+    order = among[np.lexsort((travel[among], worst[among]))]
+    centres = search.spot_centres()
+    rows = search.candidates
+    full: dict[int, tuple[float, dict[str, float]]] = {}
+
+    def near(index: int, other: int) -> bool:
+        return all(float(np.linalg.norm(centres[name][rows[index, i]] - centres[name][rows[other, i]])) < distinct_m for i, name in enumerate(SEARCHED))
+
+    def key(index: int) -> tuple[float, float, str]:
+        return (full[index][0], float(travel[index]), search.layout(index).layout_id)
+
+    picked: list[int] = []
+    for checks, index in enumerate(order):
+        index = int(index)
+        if not math.isfinite(worst[index]) or checks >= max_checks:
+            break
+        # the score without the floor term is a lower bound: nothing later can enter a full top
+        if len(picked) >= top and worst[index] >= max(full[i][0] for i in picked) - 1e-12:
+            break
+        # a layout near one already in can only enter by displacing it, which takes a floor loss on that one
+        if any(near(index, other) and full[other][0] <= worst[index] for other in picked):
+            continue
+        if not search.valid(index):
+            continue
+        floor = Search.conflict_floor(groups, search.check(index).navr.floor_loss_m2)
+        exposure = {name: float(scores[name][index] + floor[name]) for name in names}
+        full[index] = (max(exposure.values()), exposure)
+        picked = distinct(search, sorted([*picked, index], key=key), top, distinct_m)
+    return [search.scored(i, full[i][0], exposure=full[i][1]) for i in picked]
+
+
+def exposure_of(search: Search, groups: Mapping[str, Occupancy], index: int, *, rate_per_h: float, band_m: float = CONFLICT_BAND_M, speed_mps: float = ROBOT_SPEED_MPS, hold_s: tuple[float, float] = HOLD_S) -> dict[str, float]:
+    """The predicted conflict exposure per group of candidate `index` (`joint_exposure`'s, the floor term included)."""
+    scores = search.conflict(groups, rate_per_h, band_m, speed_mps, hold_s)
+    floor = Search.conflict_floor(groups, search.check(index).navr.floor_loss_m2)
+    return {name: float(scores[name][index] + floor[name]) for name in scores}
+
+
+def guideline(site: Site | Search, **kwargs: Any) -> Scored:
+    """The guideline placement (the practice baseline): on the same rule-valid spots and with the same pinned loading
+    point as the searches, by walking distance on the floor a wheelchair reaches (`place.walking_paths`, what the
+    catalog's distance rules measure):
+
+    - G2 the waiting bays at the bay spot nearest the loading point (LTA and URA, Last-Mile Delivery Guide for
+      Developments, 2026, p. 10: delivery waiting bays close to delivery routes, where couriers park);
+    - G3 the parcel locker at the locker spot nearest a recipient entrance (same guide, p. 9: lockers near entrances);
+    - G4 the charger dock at the charger spot nearest the waiting bays, one robot station (Restroom Association
+      Singapore, Designing Future-Ready Restrooms, 2025, §2.4 and §4.1: docking zones adjacent to the facilities they
+      serve, at power points, out of the way; the catalog's clearance rules keep docks off the walkways).
+
+    In that order each element takes the best spot by its rule that is compatible with the ones placed before it, and
+    the layout must pass the full check, else the next spot of the last element, then of the one before (lexicographic
+    in the rule order). Scored by travel. ValueError without recipient entrances in the site facts or a valid layout."""
+    import numpy as np
+
+    search = _search(site, kwargs)
+    level = search.loading.level
+    recipients = [e for e in (search.facts.recipient_entrances if search.facts is not None else ()) if e.level in (None, level)]
+    if not recipients:
+        raise ValueError("the guideline placement needs the site facts' recipient entrances (the locker's rule)")
+    walk = place.walking_paths(search.site, level)
+    centres = search.spot_centres()
+    loading = search.loading.objects[0].goto
+    bay_order = np.argsort(walk.lengths([loading], centres[SEARCHED[1]])[0], kind="stable") if len(centres[SEARCHED[1]]) else np.zeros(0, dtype=int)
+    lockers = np.array([s.objects[0].goto for s in search.spots[SEARCHED[2]]], dtype=float).reshape(-1, 2)
+    locker_order = np.argsort(walk.lengths([e.anchor for e in recipients], lockers).min(axis=0), kind="stable") if len(lockers) else np.zeros(0, dtype=int)
+    rows = search.candidates
+    for b in bay_order:
+        charger_order = np.argsort(walk.lengths([tuple(centres[SEARCHED[1]][b])], centres[SEARCHED[0]])[0], kind="stable")
+        rank = np.empty(len(charger_order), dtype=np.int64)
+        rank[charger_order] = np.arange(len(charger_order))
+        for k in locker_order:
+            matches = np.flatnonzero((rows[:, 1] == b) & (rows[:, 2] == k))
+            for index in matches[np.argsort(rank[rows[matches, 0]], kind="stable")]:
+                if search.valid(int(index)):
+                    return search.scored(int(index), float(search.travel(int(index))[0]))
+    raise ValueError("no valid guideline layout")
+
+
 def premise_pair(site: Site | Search, **kwargs: Any) -> tuple[Scored, Scored]:
     """The premise check's two most different layouts (§10): the valid layout with every searched element at the
     narrowest section (the smallest widest remaining corridor over its elements) and the one with every element at the
@@ -711,6 +1081,9 @@ def random_valid(site: Site | Search, k: int = RANDOM_LAYOUTS, seed: int = 0, *,
 
 
 __all__ = [
+    "CONFLICT_BAND_M",
+    "DISTINCT_M",
+    "GROUPS",
     "HOMES",
     "JOINT_SAMPLES",
     "JOINT_TOP",
@@ -728,7 +1101,11 @@ __all__ = [
     "Search",
     "TaskMix",
     "approach_area",
+    "distinct",
+    "exposure_of",
+    "guideline",
     "joint",
+    "joint_exposure",
     "premise_pair",
     "random_valid",
     "ranking_score",

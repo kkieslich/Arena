@@ -126,7 +126,7 @@ class _Space:
         placements = dict(self.config.placements) if self.config is not None else {}
         exclude = self.config.exclude if self.config is not None else SE.EXCLUDED_ZONES
         loading = args.loading if args.loading is not None else (None if SE.LOADING in placements else SE.TWIN_LOADING_XY)
-        self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration)
+        self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration, top_ups_per_job=args.top_ups)
         self.rate_from: dict[str, Any] | None = None
         facts = self.config.facts if self.config is not None else None
         self.search = SE.Search(self.site, loading=loading, pins=dict(args.pin or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts)
@@ -166,12 +166,14 @@ class _Space:
         return rate, pick()
 
 
-def _print_runs(runs: list[tuple[str, SE.Scored]], speed: float, ranking: dict[str, float] | None = None) -> None:
+def _print_runs(runs: list[tuple[str, SE.Scored]], speed: float, ranking: dict[str, float] | None = None, exposure: dict[str, dict[str, float]] | None = None) -> None:
     for role, s in runs:
         job_s = s.travel_m / speed + IN.LOAD_S + IN.UNLOAD_S
         occ = "" if s.occupancy is None else f", {s.occupancy:.3f} pedestrians under it"
         rank = "" if not ranking or s.layout_id not in ranking else f", ranking score {ranking[s.layout_id]:.3f}"
-        _log(f"{role:10s} {s.layout_id}: {s.travel_m:7.1f} m per job (about {job_s / 60:.1f} min at {speed:g} m/s){occ}{rank}, floor loss {s.floor_loss_m2:.2f} m2, {' / '.join(sp.zone for sp in s.layout.spots)}")
+        groups = (exposure or {}).get(s.layout_id)
+        exp = "" if not groups else ", exposure s/h " + " ".join(f"{g} {v:.2f}" for g, v in groups.items())
+        _log(f"{role:10s} {s.layout_id}: {s.travel_m:7.1f} m per job (about {job_s / 60:.1f} min at {speed:g} m/s){occ}{rank}{exp}, floor loss {s.floor_loss_m2:.2f} m2, {' / '.join(sp.zone for sp in s.layout.spots)}")
 
 
 def _plan_parts(args: argparse.Namespace, layout_ids: Iterable[str]) -> list[list[str]] | None:
@@ -220,22 +222,25 @@ def _write_parts(args: argparse.Namespace, out: Path, plan: list[list[str]] | No
     return records
 
 
-def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs: list[tuple[str, SE.Scored]], seeds: list[int], rate: float, header: list[str], extra: dict[str, Any]) -> int:
-    """Save the copies of `runs`, write their fleet suite `name` on `seeds` and its manifest."""
+def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs: list[tuple[str, SE.Scored]], seeds: list[int], rate: float, header: list[str], extra: dict[str, Any], kept: dict[str, tuple[SE.Scored, dict[str, Any]]] | None = None) -> int:
+    """Save the copies of `runs`, write their fleet suite `name` on `seeds` and its manifest. `kept` (by role: the layout
+    and its manifest record) are saved as copies too and recorded in the manifest under their role, but run in no stage
+    of this suite (the guideline layout, which only the evaluation runs)."""
     import attrs
 
     from . import place
 
     unique = list({s.layout_id: s for _, s in runs}.values())
     plan = _plan_parts(args, [s.layout_id for s in unique])
-    worlds = IN.save_layouts(space.site, [s.layout for s in unique], space.scenario, visitor_rate_per_h=args.visitor_rate)
+    also = [scored for scored, _ in (kept or {}).values() if scored.layout_id not in {s.layout_id for s in unique}]
+    worlds = IN.save_layouts(space.site, [s.layout for s in [*unique, *also]], space.scenario, visitor_rate_per_h=args.visitor_rate)
     fleet = IN.fleet_config(rate, pickup_share=args.pickup_share, charge_below=args.charge_below, charge_until=args.charge_until)
     doc = IN.layout_suite([worlds[s.layout_id].name for s in unique], fleet, seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
-    contest = IN.contest_literal(IN.contest(args.capacity_wh))
+    contest = IN.contest_literal(IN.contest(args.capacity_wh, soc_min=args.soc_min, soc_max=args.soc_max))
     out = _out(args, name)
     header = [
         *header,
-        f"fleet: {IN.ROBOT}, rate {rate:g} jobs/h, charge below {args.charge_below:g} % until {args.charge_until:g} %; battery {args.capacity_wh:g} Wh and start charge {IN.SOC_MIN:g}-{IN.SOC_MAX:g} % through the contest, chargers {place.CHARGE_POWER_W:g} W in the worlds",
+        f"fleet: {IN.ROBOT}, rate {rate:g} jobs/h, charge below {args.charge_below:g} % until {args.charge_until:g} %; battery {args.capacity_wh:g} Wh and start charge {args.soc_min:g}-{args.soc_max:g} % through the contest, chargers {place.CHARGE_POWER_W:g} W in the worlds",
         f"references: {IN.REFERENCES} adds per stage the layout without robots, the traffic part's reference (§6)",
         f"{_summary(doc)}",
         f"run: {SU.benchmark_command(out.stem, args.lanes, contest)}",
@@ -264,7 +269,8 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
         "episodes": IN.episodes(doc),
         "sim_hours": IN.sim_hours(doc),
         **extra,
-        "worlds": {layout_id: str(path) for layout_id, path in worlds.items()},
+        **{role: {**record, "world": str(worlds[scored.layout_id])} for role, (scored, record) in (kept or {}).items()},
+        "worlds": {layout_id: str(path) for layout_id, path in worlds.items() if layout_id in {s.layout_id for s in unique}},
         **({"parts": parts} if parts else {}),
     }
     manifest = IN.manifest_path(out)
@@ -298,12 +304,28 @@ def _cmd_premise(args: argparse.Namespace) -> int:
     return _write_layout_suite(args, space, IN.PREMISE_SUITE, runs, seeds, rate, header, extra)
 
 
+def _groups(args: argparse.Namespace, space: _Space, occupancy: SE.Occupancy | None) -> dict[str, SE.Occupancy] | None:
+    """The walker groups' occupancy the joint ranking scores: `--group-occupancy` (arena-evaluation's group cells),
+    else the flow cells' occupancy of all walkers as one group, else None (a dry run without either)."""
+    if args.group_occupancy:
+        groups = SE.Occupancy.from_group_cells(args.group_occupancy, space.site.key, args.duration)
+        missing = [g for g in SE.GROUPS if g not in groups]
+        if missing:
+            _log(f"the group cells hold no walker time of {missing}: the joint ranking scores {sorted(groups)}")
+        return groups
+    if occupancy is not None:
+        _log("no --group-occupancy: the joint ranking scores all walkers as one group (the flow cells' occupancy)")
+        return {"all": occupancy}
+    return None
+
+
 def _cmd_layouts(args: argparse.Namespace) -> int:
     space = _Space(args)
     search = space.search
-    if args.occupancy is None and not args.dry_run:
-        raise ValueError("--occupancy (the reference runs' flow cells) is needed for the joint ranking; --dry-run searches without it")
+    if args.occupancy is None and not args.group_occupancy and not args.dry_run:
+        raise ValueError("--group-occupancy (the reference runs' group cells, `evaluation infra occupancy`) or --occupancy is needed for the joint ranking; --dry-run searches without them")
     occupancy = None if args.occupancy is None else SE.Occupancy.from_flow_cells(args.occupancy, space.site.key, args.duration)
+    groups = _groups(args, space, occupancy)
     seeds = args.seeds or list(IN.SELECTION_SEEDS)
     state: dict[str, Any] = {}
 
@@ -311,21 +333,30 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
         robot = SE.robot_only(search)
         cap = SE.travel_cap(robot, args.travel_slack)
         within = search.within_travel(cap)
-        joint = [] if occupancy is None else [search.scored(s.index, s.score, occupancy) for s in SE.joint(search, occupancy, n=args.samples, top=args.top, seed=args.seed, max_travel_m=cap)]
+        rate = search.mix.rate_per_h
+        joint = [] if groups is None else SE.joint_exposure(search, groups, rate_per_h=rate, top=args.top, band_m=args.band, distinct_m=args.distinct, max_travel_m=cap, speed_mps=args.speed)
         chosen = {robot.layout_id, *(s.layout_id for s in joint)}
         random = SE.random_valid(search, args.random, seed=args.seed, exclude=chosen, occupancy=occupancy)
         state.update(cap=cap, within=len(within))
         return [robot, joint, random]
 
     rate, (robot, joint, random) = space.settle_rate(args, pick)
-    _log(f"travel pre-filter: at most {args.travel_slack:g} x the robot-only pick's {robot.travel_m:.1f} m = {state['cap']:.1f} m per job: {state['within']} of {len(search.candidates)} candidate layouts (valid or not); the joint search draws up to {args.samples} valid ones among them")
-    if occupancy is None:
-        _log("no --occupancy: the joint top 10 is left out of this dry run (the occupancy comes from the reference runs)")
-    elif len(joint) < args.top:
-        _log(f"the travel pre-filter keeps only {len(joint)} valid layouts, fewer than the top {args.top}")
-    ranking = None if occupancy is None else {s.layout_id: SE.ranking_score(search, occupancy, s.index) for s in [robot, *joint, *random]}
+    _log(f"travel model: {search.mix.top_ups_per_job:g} top-up round trips bay - charger per job; travel pre-filter: at most {args.travel_slack:g} x the robot-only pick's {robot.travel_m:.1f} m = {state['cap']:.1f} m per job: {state['within']} of {len(search.candidates)} candidate layouts (valid or not); the joint search ranks every one of them")
+    guide = SE.guideline(search) if args.guideline else None
     runs = [("robot_only", robot), *(("joint", s) for s in joint), *(("random", s) for s in random)]
-    _print_runs(runs, args.speed, ranking)
+    exposure: dict[str, dict[str, float]] = {}
+    if groups is None:
+        _log("no group or flow-cell occupancy: the joint top 10 is left out of this dry run (the occupancy comes from the reference runs)")
+    else:
+        if len(joint) < args.top:
+            _log(f"the travel pre-filter keeps only {len(joint)} distinct valid layouts, fewer than the top {args.top}")
+        for _, s in [*runs, *([("guideline", guide)] if guide is not None else [])]:
+            exposure[s.layout_id] = s.exposure if s.exposure is not None else SE.exposure_of(search, groups, s.index, rate_per_h=rate, band_m=args.band, speed_mps=args.speed)
+    ranking = {layout_id: max(values.values()) for layout_id, values in exposure.items()} or None
+    _print_runs(runs, args.speed, ranking, exposure)
+    if guide is not None:
+        _print_runs([("guideline", guide)], args.speed, ranking, exposure)
+        _log(f"guideline {guide.layout_id}: saved as a copy and recorded in the manifest; the selection does not run it, `flowedit infra evaluation` does")
     unique = {s.layout_id for _, s in runs}
     doc = IN.layout_suite(sorted(unique), IN.fleet_config(rate), seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
     _log(f"selection suite: {len(unique)} layouts, {_summary(doc)}; with the site as is at seeds {', '.join(map(str, seeds))} from {IN.REFERENCE_SUITE}: {IN.episodes(doc) + len(seeds)} episodes")
@@ -335,16 +366,23 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
         return 0
     header = [
         f"INFRA Stage 1 selection (§5, §10) on {space.site.key}: {len(unique)} layouts x seeds {', '.join(map(str, seeds))}, {args.duration:g} s each, warm-up {IN.WARMUP_S:g} s cut in the analysis",
-        f"layouts: robot-only {robot.layout_id}; joint top {len(joint)} by the occupancy fallback from {args.occupancy}, among the layouts within {args.travel_slack:g} x the robot-only travel ({state['cap']:.1f} m per job); {len(random)} random valid",
+        f"layouts: robot-only {robot.layout_id} (travel model with {search.mix.top_ups_per_job:g} top-ups per job); joint top {len(joint)} distinct ({args.distinct:g} m) by predicted conflict exposure ({args.band:g} m band, worst group), among the layouts within {args.travel_slack:g} x the robot-only travel ({state['cap']:.1f} m per job); {len(random)} random valid",
         f"the layouts' runs without robots pair with suite {IN.REFERENCE_SUITE} (the site as is) at the same seed; the pick: `evaluation infra pick`",
     ]
+
+    def record(scored: SE.Scored) -> dict[str, Any]:
+        return {**IN.picks_record({"guideline": scored}, ranking)[0], **({"exposure": exposure[scored.layout_id]} if scored.layout_id in exposure else {})}
+
     extra = {
-        "occupancy": str(args.occupancy),
+        "occupancy": None if args.occupancy is None else str(args.occupancy),
+        "group_occupancy": [str(p) for p in args.group_occupancy or []],
+        "joint_ranking": {"score": "predicted conflict exposure, worst group (s per h per member)", "groups": sorted(groups or {}), "band_m": args.band, "rate_per_h": rate, "speed_mps": args.speed, "hold_s": list(SE.HOLD_S), "distinct_m": args.distinct, "top_ups_per_job": search.mix.top_ups_per_job},
         "travel_prefilter": {"slack": args.travel_slack, "max_travel_m": round(state["cap"], 3), "candidates_within": state["within"], "candidates": len(search.candidates)},
-        "runs": IN.picks_record({"robot_only": robot, "joint": joint, "random": random}, ranking),
+        "runs": [{**r, **({"exposure": exposure[r["layout_id"]]} if r["layout_id"] in exposure else {})} for r in IN.picks_record({"robot_only": robot, "joint": joint, "random": random}, ranking)],
         "joint_top": IN.picks_record({"joint": joint}, ranking),
     }
-    return _write_layout_suite(args, space, IN.LAYOUT_SUITE, runs, seeds, rate, header, extra)
+    kept = {"guideline": (guide, {k: v for k, v in record(guide).items() if k != "role"} | {"role": "guideline"})} if guide is not None else None
+    return _write_layout_suite(args, space, IN.LAYOUT_SUITE, runs, seeds, rate, header, extra, kept)
 
 
 def _cmd_crowd(args: argparse.Namespace) -> int:
@@ -417,11 +455,15 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     pick = json.loads(Path(args.pick).read_text())
     selection = Path(args.selection) if args.selection else IN.manifest_path(IN.default_out(IN.LAYOUT_SUITE))
     manifest = json.loads(selection.read_text())
-    worlds = manifest["worlds"]
+    worlds = dict(manifest["worlds"])
     chosen = {"joint": pick.get("joint_pick"), "robot_only": pick.get("robot_only")}
     missing = [role for role, layout_id in chosen.items() if not layout_id]
     if missing:
         raise ValueError(f"{args.pick}: no {', '.join(missing)} layout (`evaluation infra pick` writes joint_pick and robot_only)")
+    guide = manifest.get("guideline") if not args.no_guideline else None
+    if guide is not None:
+        chosen["guideline"] = guide["layout_id"]
+        worlds.setdefault(guide["layout_id"], guide["world"])
     unknown = [layout_id for layout_id in chosen.values() if layout_id not in worlds]
     if unknown:
         raise ValueError(f"{args.pick}: layouts {unknown} are not in {selection}")
@@ -437,7 +479,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     doc = IN.layout_suite(names, fleet, seeds, scenario=scenario, duration=duration, side=side)
     site_doc = IN.reference_suite(manifest["site"], seeds, scenario=scenario, duration=duration, side=side)
     total = IN.episodes(doc) + IN.episodes(site_doc)
-    _log(f"evaluation: joint pick {chosen['joint']}, robot-only pick {chosen['robot_only']}; {_summary(doc)}, the site as is {_summary(site_doc)}: {total} episodes, {IN.sim_hours(doc) + IN.sim_hours(site_doc):g} sim-hours")
+    _log(f"evaluation: joint pick {chosen['joint']}, robot-only pick {chosen['robot_only']}" + (f", guideline {chosen['guideline']}" if "guideline" in chosen else "") + f"; {_summary(doc)}, the site as is {_summary(site_doc)}: {total} episodes, {IN.sim_hours(doc) + IN.sim_hours(site_doc):g} sim-hours")
     if chosen["joint"] == chosen["robot_only"]:
         _log("the joint pick is the robot-only pick: the comparison's differences are 0 by construction")
     plan = _plan_parts(args, chosen.values())
@@ -448,7 +490,8 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     out = args.out or IN.default_out(IN.EVALUATION_SUITE)
     site_out = out.with_name(f"{IN.EVALUATION_SITE_SUITE}.yaml") if args.out is None else out.with_name(f"{out.stem}_site.yaml")
     common = f"seeds {', '.join(map(str, seeds))}, {duration:g} s each, warm-up {float(manifest['warmup_s']):g} s cut in the analysis"
-    IN.write(doc, out, [f"INFRA Stage 1 evaluation (§10, §12): the joint pick {chosen['joint']} and the robot-only pick {chosen['robot_only']} from {selection}, with the fleet and without robots, {common}", f"{_summary(doc)}", f"run: {SU.benchmark_command(out.stem, args.lanes, contest)}"], force=args.force)
+    arms = f"the joint pick {chosen['joint']}, the robot-only pick {chosen['robot_only']}" + (f" and the guideline layout {chosen['guideline']}" if "guideline" in chosen else "")
+    IN.write(doc, out, [f"INFRA Stage 1 evaluation (§10, §12): {arms} from {selection}, with the fleet and without robots, {common}", f"{_summary(doc)}", f"run: {SU.benchmark_command(out.stem, args.lanes, contest)}"], force=args.force)
     parts = _write_parts(args, out, plan, {layout_id: Path(worlds[layout_id]).name for layout_id in dict.fromkeys(chosen.values())}, lambda names: IN.layout_suite(names, fleet, seeds, scenario=scenario, duration=duration, side=side), contest)
     IN.write(site_doc, site_out, [f"INFRA Stage 1 evaluation reference: {manifest['site']} as is without robots, {common}", f"{_summary(site_doc)}", f"run: {SU.benchmark_command(site_out.stem, args.lanes)}"], force=args.force)
     record = {
@@ -461,7 +504,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
         "seeds": seeds,
         "episodes": total,
         "sim_hours": round(IN.sim_hours(doc) + IN.sim_hours(site_doc), 2),
-        "runs": [{**next(r for r in manifest["runs"] if r["layout_id"] == layout_id), "role": role} for role, layout_id in chosen.items()],
+        "runs": [{**(next(r for r in manifest["runs"] if r["layout_id"] == layout_id) if role != "guideline" else {k: v for k, v in guide.items() if k != "world"}), "role": role} for role, layout_id in chosen.items()],
         "worlds": {layout_id: worlds[layout_id] for layout_id in chosen.values()},
         **({"parts": parts} if parts else {}),
     }
@@ -498,6 +541,9 @@ def add_parser(verbs: Any) -> None:
     searched.add_argument("--charge-until", type=float, default=IN.CHARGE_UNTIL, help=f"battery percent that frees a charging robot (default {IN.CHARGE_UNTIL:g})")
     searched.add_argument("--capacity-wh", type=float, default=IN.CAPACITY_WH, help=f"battery capacity of every robot, Wh (default {IN.CAPACITY_WH:g})")
     searched.add_argument("--visitor-rate", type=float, default=None, help=f"locker visitors per hour in all (default the scenario's {IN.VISITORS})")
+    searched.add_argument("--soc-min", type=float, default=IN.SOC_MIN, help=f"lowest start charge each robot draws per seed, %% (default {IN.SOC_MIN:g})")
+    searched.add_argument("--soc-max", type=float, default=IN.SOC_MAX, help=f"highest start charge, %% (default {IN.SOC_MAX:g})")
+    searched.add_argument("--top-ups", type=float, default=0.0, help="top-up round trips bay - charger per job in the robot travel model (the task-rate run's top-ups dispatched after the warm-up per completed job released after it; default 0)")
     parts_help = "also split the suite by layout copy into one suite per weight, <suite>_p1, <suite>_p2, ..., in proportion to the weights (e.g. 4,6: the lanes of two machines); the manifest lists the parts; each part runs as its own run on its own machine, and `evaluation infra` reads their run dirs together (repeated --layouts)"
     searched.add_argument("--parts", type=_weights, default=None, metavar="W1,W2[,...]", help=parts_help)
 
@@ -505,13 +551,16 @@ def add_parser(verbs: Any) -> None:
     q.set_defaults(fn=_cmd_reference)
     q = infra.add_parser("premise", parents=[common, searched], help="the premise check: the two most different layouts with and without the fleet", description=f"write suite {IN.PREMISE_SUITE} (§10): the valid layout with every element at the narrowest section and the one with every element at the widest, saved as world copies with the crowd, each with the fleet and without robots on seeds {IN.PREMISE_SEEDS[0]}-{IN.PREMISE_SEEDS[-1]}; with the site as is from {IN.REFERENCE_SUITE}, §10's 15 episodes")
     q.set_defaults(fn=_cmd_premise)
-    q = infra.add_parser("layouts", parents=[common, searched], help="the selection: robot-only pick, joint top 10, 5 random layouts", description=f"search the site's layouts (generative/flowedit/search.py): the robot-only pick, the joint top {SE.JOINT_TOP} by the occupancy fallback among the layouts within {SE.TRAVEL_SLACK:g} x the robot-only travel per job, and {SE.RANDOM_LAYOUTS} random valid layouts; save them as world copies with the crowd and write suite {IN.LAYOUT_SUITE}: each with the fleet and without robots on the selection seeds; writes <suite>.layouts.json beside it")
-    q.add_argument("--occupancy", type=Path, default=None, help="the reference runs' flow cells: flow_cells.parquet or the benchmark dir holding it")
-    q.add_argument("--samples", type=int, default=SE.JOINT_SAMPLES, help=f"layouts the joint search draws among those the travel pre-filter keeps (default {SE.JOINT_SAMPLES})")
+    q = infra.add_parser("layouts", parents=[common, searched], help="the selection: robot-only pick, joint top 10, 5 random layouts", description=f"search the site's layouts (generative/flowedit/search.py): the robot-only pick, the joint top {SE.JOINT_TOP} distinct layouts by predicted conflict exposure (worst walker group) among the layouts within {SE.TRAVEL_SLACK:g} x the robot-only travel per job, and {SE.RANDOM_LAYOUTS} random valid layouts; save them as world copies with the crowd and write suite {IN.LAYOUT_SUITE}: each with the fleet and without robots on the selection seeds; writes <suite>.layouts.json beside it")
+    q.add_argument("--occupancy", type=Path, default=None, help="the reference runs' flow cells: flow_cells.parquet or the benchmark dir holding it (all walkers: the joint ranking's one group without --group-occupancy; the random control's occupancy column)")
+    q.add_argument("--group-occupancy", type=Path, action="append", default=None, help="the reference runs' walker-group cells (`evaluation infra occupancy`: infra_occupancy.parquet or the benchmark dir holding it); repeatable, read as one")
+    q.add_argument("--band", type=float, default=SE.CONFLICT_BAND_M, help=f"the conflict band: walkers within this distance of a driving robot count as exposed, m (default {SE.CONFLICT_BAND_M:g})")
+    q.add_argument("--distinct", type=float, default=SE.DISTINCT_M, help=f"a joint layout enters the top only if one of its elements sits at least this far from that element's spot in every better-ranked one, m (default {SE.DISTINCT_M:g})")
+    q.add_argument("--guideline", action="store_true", help="also place the guideline layout (search.guideline), save its copy and record it in the manifest for `flowedit infra evaluation` (the selection does not run it)")
     q.add_argument("--top", type=int, default=SE.JOINT_TOP, help=f"joint layouts that run in full (default {SE.JOINT_TOP})")
     q.add_argument("--random", type=int, default=SE.RANDOM_LAYOUTS, help=f"random valid layouts (default {SE.RANDOM_LAYOUTS})")
     q.add_argument("--travel-slack", type=float, default=SE.TRAVEL_SLACK, help=f"the travel pre-filter: robot travel per job at most this times the robot-only pick's (default {SE.TRAVEL_SLACK:g})")
-    q.add_argument("--seed", type=int, default=0, help="seed of the joint sample and the random draw (default 0)")
+    q.add_argument("--seed", type=int, default=0, help="seed of the random draw (default 0)")
     q.set_defaults(fn=_cmd_layouts)
     q = infra.add_parser("crowd", parents=[common], help="the study crowd from the site config's entrances", description="write a scenario directory <out>/<name>: every entrance of the site config a PEDS source and sink, the inflow split by entrance type (flow_split), through-walkers between entrances and locker visitors from the recipient entrances")
     q.add_argument("--name", default="study_entrances", help="scenario name (default %(default)s)")
@@ -519,8 +568,9 @@ def add_parser(verbs: Any) -> None:
     q.add_argument("--density", type=float, default=None, help="the crowd density [ped/m2] the inflow keeps, in place of the site config's (crowd_density: its area and mean time set the rate)")
     q.add_argument("--visitor-rate", type=float, default=12.0, help="locker visitors per hour in all (default %(default)s)")
     q.set_defaults(fn=_cmd_crowd)
-    q = infra.add_parser("evaluation", parents=[common], help="the evaluation: the two picks and the site as is on fresh seeds", description=f"write suites {IN.EVALUATION_SUITE} (the joint pick and the robot-only pick, each with the fleet and without robots) and {IN.EVALUATION_SITE_SUITE} (the site as is) on seeds {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]}, from the pick `evaluation infra pick` wrote and the selection's manifest")
+    q = infra.add_parser("evaluation", parents=[common], help="the evaluation: the picks, the guideline layout and the site as is on fresh seeds", description=f"write suites {IN.EVALUATION_SUITE} (the joint pick, the robot-only pick and the guideline layout the selection recorded, each with the fleet and without robots) and {IN.EVALUATION_SITE_SUITE} (the site as is) on seeds {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]}, from the pick `evaluation infra pick` wrote and the selection's manifest")
     q.add_argument("--pick", type=Path, required=True, help="the pick file `evaluation infra pick` writes (joint_pick, robot_only)")
+    q.add_argument("--no-guideline", action="store_true", help="leave out the guideline layout the selection's manifest records (`layouts --guideline`)")
     q.add_argument("--parts", type=_weights, default=None, metavar="W1,W2", help=parts_help)
     q.add_argument("--selection", type=Path, default=None, help=f"the selection's manifest (default <imported assets root>/suites/{IN.LAYOUT_SUITE}.layouts.json)")
     q.set_defaults(fn=_cmd_evaluation)

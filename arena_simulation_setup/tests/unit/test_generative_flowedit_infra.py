@@ -116,7 +116,7 @@ def test_the_rate_asks_for_three_quarters_of_the_layouts_capacity() -> None:
 
 def test_the_contest_scales_the_battery_and_reads_back_from_its_literal() -> None:
     entries = infra.contest()
-    assert entries == [{"name": "fleet_dwb", "mobile": infra.PLANNER, "task.episode.battery.capacity_wh": 36.0, "task.episode.battery.soc.min": 40.0, "task.episode.battery.soc.max": 100.0}]
+    assert entries == [{"name": "fleet_dwb", "mobile": infra.PLANNER, "task.episode.battery.capacity_wh": 36.0, "task.episode.battery.soc.min": 60.0, "task.episode.battery.soc.max": 100.0}]
     with pytest.raises(ValueError, match="soc_min"):
         infra.contest(soc_min=80.0, soc_max=50.0)
     literal = infra.contest_literal(entries)
@@ -184,7 +184,7 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     pd.DataFrame(cells).to_parquet(tmp_path / "flow_cells.parquet")
     out = tmp_path / "suites" / "infra_h1.yaml"
     x, y = loading.objects[0].goto
-    args = ["infra", "layouts", "--site", str(hospital_copy), "--scenario", "mix", "--occupancy", str(tmp_path), "--loading", f"{x},{y}", "--seeds", "1-2", "--samples", "20", "--random", "2", "--out", str(out), "--parts", "1,2"]
+    args = ["infra", "layouts", "--site", str(hospital_copy), "--scenario", "mix", "--occupancy", str(tmp_path), "--loading", f"{x},{y}", "--seeds", "1-2", "--random", "2", "--out", str(out), "--parts", "1,2", "--top-ups", "0.5", "--soc-min", "70"]
     assert cli.main([*args, "--dry-run"]) == 0
     assert not out.exists() and not out.with_name("infra_h1_p1.yaml").exists()
     assert cli.main(args) == 0
@@ -203,6 +203,14 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     assert prefilter["max_travel_m"] == pytest.approx(search.TRAVEL_SLACK * robot["travel_m"], abs=1e-3)
     assert all(r["travel_m"] <= prefilter["max_travel_m"] + 1e-6 for r in manifest["runs"] if r["role"] == "joint")
     assert all(r["ranking_score"] is not None for r in manifest["runs"])
+    # without group cells the joint ranking scores all walkers as one group; its top is distinct and sorted
+    ranking = manifest["joint_ranking"]
+    assert ranking["groups"] == ["all"] and ranking["band_m"] == search.CONFLICT_BAND_M and ranking["distinct_m"] == search.DISTINCT_M and ranking["top_ups_per_job"] == 0.5
+    assert manifest["mix"]["top_ups_per_job"] == 0.5
+    joint_scores = [r["ranking_score"] for r in manifest["runs"] if r["role"] == "joint"]
+    assert joint_scores == sorted(joint_scores)
+    assert all(set(r["exposure"]) == {"all"} and r["ranking_score"] == pytest.approx(max(r["exposure"].values()), abs=1e-3) for r in manifest["runs"])
+    assert "guideline" not in manifest
     assert manifest["episodes"] == 2 * len(doc["stages"]) and manifest["site_config"] is None
     rate = manifest["rate_per_h"]
     # without --rate, the estimate in the wide premise layout of the same search at the settled rate, not in the
@@ -220,7 +228,7 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     assert manifest["loading"]["spot"] == loading.id
     assert len(manifest["joint_top"]) <= search.JOINT_TOP
     printed = capsys.readouterr().out
-    assert "--suite infra_h1 --contest" in printed and "task.episode.battery.capacity_wh: 36.0" in printed
+    assert "--suite infra_h1 --contest" in printed and "task.episode.battery.capacity_wh: 36.0" in printed and "task.episode.battery.soc.min: 70.0" in printed
     # --parts 1,2: the same stages split by layout copy into two suites, a third and two thirds of the copies
     parts = manifest["parts"]
     assert [p["suite"] for p in parts] == ["infra_h1_p1", "infra_h1_p2"] and [p["weight"] for p in parts] == [1, 2]
@@ -477,6 +485,28 @@ def test_cli_evaluation_writes_the_two_picks_and_the_site_on_fresh_seeds(tmp_pat
     assert cli.main(args) == 1
     pick.write_text(json.dumps({"joint_pick": "bbbb2222", "robot_only": "aaaa1111"}))
     assert cli.main([*args, "--seeds", "5-12", "--force"]) == 1
+
+
+def test_cli_evaluation_runs_the_guideline_layout_the_selection_recorded(tmp_path: Path) -> None:
+    worlds = {"aaaa1111": str(tmp_path / "site__layout_aaaa1111"), "bbbb2222": str(tmp_path / "site__layout_bbbb2222")}
+    runs = [{"role": "robot_only", "rank": 1, "layout_id": "aaaa1111", "travel_m": 1.0}, {"role": "joint", "rank": 1, "layout_id": "bbbb2222", "travel_m": 1.0}]
+    guide = {"role": "guideline", "rank": 1, "layout_id": "eeee5555", "travel_m": 2.0, "ranking_score": 12.0, "world": str(tmp_path / "site__layout_eeee5555")}
+    selection = tmp_path / "infra_h1.layouts.json"
+    selection.write_text(json.dumps({"site": "site", "site_root": "/x", "scenario": "/x/scenarios/study_peak", "seeds": [1, 2, 3, 4, 5], "episode_s": 1500.0, "warmup_s": 420.0, "rate_per_h": 6.46, "fleet": infra.fleet_config(6.46), "contest": "[{name: fleet_dwb}]", "runs": runs, "worlds": worlds, "guideline": guide}))
+    pick = tmp_path / "pick.json"
+    pick.write_text(json.dumps({"joint_pick": "bbbb2222", "robot_only": "aaaa1111"}))
+    out = tmp_path / "suites" / "infra_h1_eval.yaml"
+    args = ["infra", "evaluation", "--pick", str(pick), "--selection", str(selection), "--out", str(out)]
+    assert cli.main(args) == 0
+    doc = yaml.safe_load(out.read_text())
+    assert [s["name"] for s in doc["stages"]] == [f"site__layout_{i}__s{seed}" for i in ("bbbb2222", "aaaa1111", "eeee5555") for seed in infra.EVALUATION_SEEDS]
+    manifest = json.loads(infra.manifest_path(out).read_text())
+    assert manifest["picks"] == {"joint": "bbbb2222", "robot_only": "aaaa1111", "guideline": "eeee5555"}
+    assert manifest["episodes"] == (3 * 2 + 1) * len(infra.EVALUATION_SEEDS)  # three arms with and without robots, the site
+    assert manifest["worlds"]["eeee5555"] == guide["world"] and [r["role"] for r in manifest["runs"]] == ["joint", "robot_only", "guideline"]
+    assert "world" not in manifest["runs"][2] and manifest["runs"][2]["ranking_score"] == 12.0
+    assert cli.main([*args, "--no-guideline", "--force"]) == 0
+    assert json.loads(infra.manifest_path(out).read_text())["picks"] == {"joint": "bbbb2222", "robot_only": "aaaa1111"}
 
 
 # --- the crowd from the entrances ---------------------------------------------------------------------------------------
