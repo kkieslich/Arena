@@ -549,6 +549,55 @@ def test_curve_refuses_a_strength_file_of_another_network(tmp_path: Path, monkey
         main(["forecast", "curve", "split.yaml", "--benchmark", str(tmp_path), "--net", str(net), "--strength-file", f"forecaster={plain_file}", "--out", str(tmp_path / "curve.yaml")])
 
 
+def test_scaling_trains_the_demand_model_input_arm_and_refits_the_demand_model_on_a_smaller_share(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit import split as SP
+    from arena_simulation_setup.generative.flowedit.cli import main
+    from arena_simulation_setup.generative.flowedit.forecast import cli, evaluate, learn
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    given, refitted = Params(sigma=0.3), Params(sigma=0.7)
+    params_file = tmp_path / "params.yaml"
+    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": given.dump()}))
+    doc = {"partitions": {"train": ["w", "w__move_a__1", "w__move_b__2"], "held_out_edits": ["w__move_c__3"]}, "seeds": {"train": {"bases": [1, 2, 3], "edits": [1, 2]}, "held_out_edits": [6, 7]}, "duration": 60}
+    monkeypatch.setattr(SP, "load", lambda path: doc)
+    monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
+    sites = types.SimpleNamespace(grid=lambda base: GRID, layers=lambda world, scenario=None: f"layers of {world}")
+    monkeypatch.setattr(learn.Rasters, "of", classmethod(lambda cls, doc, settings, worlds=None: types.SimpleNamespace(sites=sites, scenario_of={})))
+    truth = np.ones((GRID.ny, GRID.nx, M.BINS))
+    runs = types.SimpleNamespace(seeds=lambda world, seeds: list(seeds), pooled=lambda world, seeds: truth)
+    monkeypatch.setattr(evaluate.Runs, "load", classmethod(lambda cls, paths, grid_of, planner=None: runs))
+    monkeypatch.setattr(V, "truths", lambda runs, doc, partition, log: [V.Truth("w__move_c__3", (6, 7), truth)])
+    shares = {0.5: ["w", "w__move_a__1"], 1.0: ["w", "w__move_a__1", "w__move_b__2"]}
+    monkeypatch.setattr(learn, "pick", lambda doc, partition, fraction, seed: shares[fraction])
+    monkeypatch.setattr(learn, "samples", lambda runs, worlds, doc: list(worlds))
+    fitted, trained = [], []
+
+    def fake_fit(targets, init=None, max_evals=400, log=print):  # noqa: ANN001, ANN202
+        fitted.append(([t.world for t in targets], max_evals))
+        return refitted, 0.4
+
+    def fake_train(rasters, found, *, steps, seed, device, demand_model, log):  # noqa: ANN001, ANN202
+        trained.append((list(found), demand_model))
+        return types.SimpleNamespace(demand=True, demand_model=demand_model), {"steps": steps}
+
+    monkeypatch.setattr(evaluate, "fit", fake_fit)
+    monkeypatch.setattr(learn, "train", fake_train)
+    monkeypatch.setattr(learn, "save", lambda path, model, meta: None)
+    monkeypatch.setattr(learn, "forecast", lambda model, rasters, world: truth)
+    out = tmp_path / "scaling"
+    assert main(["forecast", "scaling", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(params_file), "--fractions", "0.5", "1", "--repeats", "1", "--max-evals", "7", "--partition", "held_out_edits", "--out-dir", str(out)]) == 0
+    # the half share refits the demand model on its own worlds only; the full share takes the given params
+    assert fitted == [(["w", "w__move_a__1"], 7)]
+    assert trained == [(["w", "w__move_a__1"], refitted), (["w", "w__move_a__1", "w__move_b__2"], given)]
+    result = yaml.safe_load((out / "scaling.yaml").read_text())
+    assert result["arm"] == "demand_model_input" and [r["demand_model"] for r in result["runs"]] == ["refitted", "given"]
+    assert (out / "scaling.png").exists()
+
+
 def test_tracks_come_from_the_newest_track_store_version_that_holds_them(tmp_path: Path) -> None:
     from arena_simulation_setup.generative.flowedit.forecast.cli import track_file
 
