@@ -369,8 +369,8 @@ def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, mon
     assert main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(no_fit), "--folds", "1", "--out", str(out)]) == 0
     assert "records no fit" in yaml.safe_load(out.read_text())["note"]
     other_split = tmp_path / "params_other_split.yaml"
-    other_split.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train", "split": "/x/peds_pilot.yaml"}}))
-    with pytest.raises(SystemExit, match="fitted on the split /x/peds_pilot.yaml"):
+    other_split.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train", "split": "/x/peds_pilot.yaml", "per_world": {"w": 0.4, "pilot_world": 0.5}}}))
+    with pytest.raises(SystemExit, match="fitted on 1 world.s. outside the train partition"):
         main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(other_split), "--out", str(out)])
     with pytest.raises(SystemExit, match="train: --demand-model-input .* was fitted on the held_out_edits partition"):
         held = tmp_path / "params_held.yaml"
@@ -412,6 +412,42 @@ def test_the_strength_scores_do_not_depend_on_scoring_one_world_at_a_time() -> N
             folds_old[c].extend(v for v in res[str(c)] if v is not None)
     new = V.fold_strengths(list(worlds), (1, 2), lambda w, s: tracks[(w, s)], runs, lambda base: GRID, lambda w: prior[w], strengths=grid)
     assert new == pytest.approx({c: float(np.mean(v)) for c, v in folds_old.items()}, abs=1e-12)
+
+
+def test_params_are_checked_by_the_worlds_and_seeds_they_were_fitted_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit import split as SP
+    from arena_simulation_setup.generative.flowedit.cli import main
+    from arena_simulation_setup.generative.flowedit.forecast import cli
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    doc = {"partitions": {"train": ["w", "w__e__1"], "held_out_edits": ["w__e__2"]}, "seeds": {"train": {"bases": [1, 2, 3], "edits": [1, 2]}, "held_out_edits": [6, 7]}, "duration": 60}
+    monkeypatch.setattr(SP, "load", lambda path: doc)
+
+    def params_file(name: str, **fit: object) -> Path:
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": Params(sigma=0.3).dump(), **({"fit": fit} if fit else {})}))
+        return path
+
+    # valid params under another name and path (a copy, a link, another machine's checkout) are accepted
+    valid = params_file("copied.yaml", partition="train", split="/elsewhere/renamed_split.yaml", seeds=[1, 2, 3], per_world={"w": 0.4, "w__e__1": 0.5})
+    assert cli.checked_params(valid, tmp_path / "split.yaml", "strength") == (Params(sigma=0.3), "train")
+    # a hand-written file records no fit and is not checked
+    assert cli.checked_params(params_file("hand.yaml"), tmp_path / "split.yaml", "strength") == (Params(sigma=0.3), None)
+    other_worlds = params_file("older.yaml", partition="train", split="split.yaml", seeds=[1, 2, 3], per_world={"w": 0.4, "w__e__9": 0.5})
+    with pytest.raises(SystemExit, match="fitted on 1 world.s. outside the train partition .*w__e__9"):
+        cli.checked_params(other_worlds, tmp_path / "split.yaml", "strength")
+    other_seeds = params_file("seeds.yaml", partition="train", seeds=[1, 2], per_world={"w": 0.4})
+    with pytest.raises(SystemExit, match="fitted at seeds .1, 2., the train partition .* runs at .1, 2, 3."):
+        cli.checked_params(other_seeds, tmp_path / "split.yaml", "strength")
+    # every verb that takes params refuses them before any work
+    with pytest.raises(SystemExit, match="train: --demand-model-input .* outside the train partition"):
+        main(["forecast", "train", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(other_worlds), "--out", str(tmp_path / "net.pt")])
+    with pytest.raises(SystemExit, match="select: --params .* outside the train partition"):
+        main(["forecast", "select", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(other_worlds), "--out", str(tmp_path / "select.yaml")])
+    with pytest.raises(SystemExit, match="score: --params .* fitted at seeds"):
+        main(["forecast", "score", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(other_seeds), "--out", str(tmp_path / "score.yaml")])
 
 
 def test_a_strength_file_belongs_to_one_network() -> None:

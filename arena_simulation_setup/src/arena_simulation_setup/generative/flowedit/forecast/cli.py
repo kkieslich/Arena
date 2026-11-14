@@ -34,17 +34,28 @@ def load_params(path: Path | None) -> Params:
     return Params.load(doc.get("params") or {})
 
 
-def demand_model_input(path: Path, split: Path, verb: str) -> tuple[Params, str | None]:
-    """The params of a `--demand-model-input` file and the partition its file says they were fitted on (None when it
-    records no fit). Refused: params fitted on another partition than train (the network's input would carry what the
-    scores test), or on another split (its file names one by another name)."""
+def checked_params(path: Path, split: Path, verb: str, flag: str = "--demand-model-input") -> tuple[Params, str | None]:
+    """The params of a `fit` output given to `verb` (`flag`) and the partition its file says they were fitted on (None
+    when it records no fit). The file is checked by what it was fitted on, not by its split's path (copies, links and
+    other machines' paths are fine):
+    - its partition must be train (otherwise the forecast would carry what the scores test);
+    - every world it scored (`fit.per_world`) must be in `split`'s train partition, and its seeds (`fit.seeds`) must be
+      that partition's: params of another split, or of an older version of this one, are refused.
+    A file without these records (written by hand) is not checked."""
     doc = yaml.safe_load(Path(path).read_text()) or {}
     fit_info = doc.get("fit") or {}
     partition = fit_info.get("partition")
     if partition not in (None, "train"):
-        raise SystemExit(f"{verb}: --demand-model-input {path} was fitted on the {partition} partition: the demand model may only see the train partition")
-    if fit_info.get("split") and Path(str(fit_info["split"])).name != Path(split).name:
-        raise SystemExit(f"{verb}: --demand-model-input {path} was fitted on the split {fit_info['split']}, not on {split}")
+        raise SystemExit(f"{verb}: {flag} {path} was fitted on the {partition} partition: the demand model may only see the train partition")
+    worlds, seeds = fit_info.get("per_world"), fit_info.get("seeds")
+    if worlds is not None or seeds is not None:
+        split_doc = SP.load(split)
+        train = set(split_doc["partitions"].get("train") or [])
+        stray = sorted(set(worlds or {}) - train)
+        if stray:
+            raise SystemExit(f"{verb}: {flag} {path} was fitted on {len(stray)} world(s) outside the train partition of {split} (e.g. {', '.join(stray[:3])}): params of another split or of another version of it")
+        if seeds is not None and [int(x) for x in seeds] != SP.seeds_of(split_doc, "train"):
+            raise SystemExit(f"{verb}: {flag} {path} was fitted at seeds {list(seeds)}, the train partition of {split} runs at {SP.seeds_of(split_doc, 'train')}")
     return load_params(Path(path)), partition
 
 
@@ -103,7 +114,7 @@ def _named(values: list[str] | None, what: str) -> list[tuple[str | None, Path]]
 def _cmd_train(args: argparse.Namespace) -> int:
     from .learn import Rasters, pick, samples, save, train
 
-    demand_model = None if args.demand_model_input is None else demand_model_input(args.demand_model_input, args.split, "train")[0]
+    demand_model = None if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "train")[0]
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -197,14 +208,14 @@ def _cmd_score(args: argparse.Namespace) -> int:
     from . import validity as V
     from .learn import Rasters
 
+    params = None if args.params is None else checked_params(args.params, args.split, "score", "--params")[0]
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
     sites = rasters.sites
     runs = Runs.load(args.cells, sites.grid, planner=args.planner)
     forecasters = _net_methods(_named(args.net, "--net"), rasters, args.device, _chosen(args.select))
-    if args.params is not None:
-        params = load_params(args.params)
+    if params is not None:
         forecasters["demand model"] = lambda world: sites.predict(world, params, rasters.scenario_of.get(SP.base_of(world)))
     for name, path in _named(args.predicted, "--predicted"):
         forecasters[name or path.stem] = V.Predicted.load(path, sites.grid)
@@ -364,6 +375,7 @@ def _cmd_select(args: argparse.Namespace) -> int:
     from .learn import Rasters
     from .validity import world_seeds
 
+    given = None if args.params is None else checked_params(args.params, args.split, "select", "--params")[0]
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -380,7 +392,6 @@ def _cmd_select(args: argparse.Namespace) -> int:
         _log(f"select: demand model refitted on {len(targets)} worlds, mean JSD {value:.4f}")
         return params
 
-    given = None if args.params is None else load_params(args.params)
     result = SE.select(rasters, runs, doc, params=given, fit_params=fit_params, seeds=args.seeds, steps=args.steps, device=args.device, log=_log)
     result.update({"split": str(args.split), "cells": listed(args.cells), "params": None if args.params is None else str(args.params)})
     arms = SE.ARMS
@@ -402,7 +413,7 @@ def _cmd_strength(args: argparse.Namespace) -> int:
 
     if args.demand_model_input is not None and not args.demand:
         raise SystemExit("strength: --demand-model-input gives the network the demand model's forecast, which carries the demand: it cannot combine with --no-demand")
-    demand_model, fitted_on = (None, None) if args.demand_model_input is None else demand_model_input(args.demand_model_input, args.split, "strength")
+    demand_model, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "strength")
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
