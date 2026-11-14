@@ -357,14 +357,15 @@ def seed_folds(seeds: Sequence[int]) -> list[tuple[int, int]]:
 
 def fold_strengths(worlds: Sequence[str], fold: Sequence[int], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, grid_of: Callable[[str], FlowGrid], prior_of: Callable[[str], np.ndarray], strengths: Sequence[float] = STRENGTHS) -> dict[float, float]:
     """Per strength, the mean curve (STRENGTH_COUNTS) over `worlds` with tracks from one seed of `fold` and the truth at the
-    other: the fold's score of each strength for a prior that saw neither seed."""
+    other: the fold's score of each strength for a prior that saw neither seed. One curve call scores every strength of a
+    world, so only that world's track maps are held (a run's maps take tens of MB; kept for every world of a train
+    partition, they outgrow the memory)."""
     import numpy as np
 
-    cache: dict[tuple[str, int], dict[str, np.ndarray]] = {}
     scores: dict[float, list[float]] = {c: [] for c in strengths}
     for world in worlds:
         prior = prior_of(world)
-        res = curve(world, list(fold), tracks_of, runs, grid_of(SP.base_of(world)), {str(c): (prior, c) for c in strengths}, counts=STRENGTH_COUNTS, orders=10, cache=cache)
+        res = curve(world, list(fold), tracks_of, runs, grid_of(SP.base_of(world)), {str(c): (prior, c) for c in strengths}, counts=STRENGTH_COUNTS, orders=10)
         for c in strengths:
             scores[c].extend(v for v in res[str(c)] if v is not None)
     return {c: float(np.mean(v)) for c, v in scores.items() if v}
@@ -388,17 +389,18 @@ def fit_strength(world_seeds: Sequence[tuple[str, Sequence[int]]], tracks_of: Ca
     cross-validated `forecast strength` (`seed_folds`, `fold_strengths`, `choose_strength`)."""
     import numpy as np
 
+    # one curve call per world scores every strength (the track orders depend on the world's tracks alone, not on the
+    # strength), so only that world's track maps are held
+    scores: dict[float, list[float]] = {c: [] for c in grid}
+    for world, seeds in world_seeds:
+        prior = prior_of(world)
+        res = curve(world, seeds, tracks_of, runs, grid_of(SP.base_of(world)), {str(c): (prior, c) for c in grid}, counts=(1, 4, 16), orders=4)
+        for c in grid:
+            scores[c].extend(v for v in res[str(c)] if v is not None)
     best, value = grid[0], np.inf
-    cache: dict[tuple[str, int], dict[str, np.ndarray]] = {}
-    priors = {world: prior_of(world) for world, _ in world_seeds}
     for c in grid:
-        scores = []
-        for world, seeds in world_seeds:
-            g = grid_of(SP.base_of(world))
-            res = curve(world, seeds, tracks_of, runs, g, {"p": (priors[world], c)}, counts=(1, 4, 16), orders=4, cache=cache)
-            scores.extend(v for v in res["p"] if v is not None)
-        if scores and float(np.mean(scores)) < value:
-            best, value = c, float(np.mean(scores))
+        if scores[c] and float(np.mean(scores[c])) < value:
+            best, value = c, float(np.mean(scores[c]))
     return best
 
 
