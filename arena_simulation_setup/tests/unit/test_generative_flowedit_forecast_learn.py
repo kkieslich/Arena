@@ -332,7 +332,7 @@ def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, mon
 
     params = Params(sigma=0.3)
     params_file = tmp_path / "params.yaml"
-    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump()}))
+    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "train"}}))
     monkeypatch.setattr(SP, "load", lambda path: {"partitions": {"train": ["w"]}, "duration": 60})
     monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
     monkeypatch.setattr(learn.Rasters, "of", classmethod(lambda cls, doc, settings, worlds=None: types.SimpleNamespace(sites=types.SimpleNamespace(grid=lambda base: GRID))))
@@ -361,9 +361,33 @@ def test_strength_cross_validates_the_demand_model_input_arm(tmp_path: Path, mon
     assert trained == [params] and forecast_with == [params]
     doc = yaml.safe_load(out.read_text())
     assert doc["prior"] == "network + demand model input" and doc["demand_model_input"] == str(params_file) and "held-out seeds included" in doc["note"]
-    assert doc["net"]["chosen"] == 100.0
+    assert doc["net"]["chosen"] == 100.0 and doc["demand_model"] == params.dump()
     with pytest.raises(SystemExit, match="cannot combine with --no-demand"):
         main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(params_file), "--no-demand", "--out", str(out)])
+    held_out = tmp_path / "params_held_out.yaml"
+    held_out.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": params.dump(), "fit": {"partition": "held_out_edits"}}))
+    with pytest.raises(SystemExit, match="fitted on the held_out_edits partition"):
+        main(["forecast", "strength", "split.yaml", "--benchmark", str(tmp_path), "--demand-model-input", str(held_out), "--out", str(out)])
+
+
+def test_a_strength_file_belongs_to_one_network() -> None:
+    import types
+
+    from arena_simulation_setup.generative.flowedit.forecast.cli import strength_mismatch
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    plain = types.SimpleNamespace(demand=True, demand_model=None)
+    variant = types.SimpleNamespace(demand=True, demand_model=Params(sigma=0.3))
+    ablation = types.SimpleNamespace(demand=False, demand_model=None)
+    plain_file, ablation_file = {"demand": True, "demand_model": None}, {"demand": False, "demand_model": None}
+    variant_file = {"demand": True, "demand_model": Params(sigma=0.3).dump()}
+    assert strength_mismatch(plain_file, plain) is None and strength_mismatch(variant_file, variant) is None and strength_mismatch(ablation_file, ablation) is None
+    # a file from before strength recorded its demand model is a plain network's
+    assert strength_mismatch({"demand": True}, plain) is None
+    assert "demand model input" in strength_mismatch(plain_file, variant)
+    assert "plain" in strength_mismatch(variant_file, plain)
+    assert "ablation" in strength_mismatch(ablation_file, plain)
+    assert "params" in strength_mismatch({"demand": True, "demand_model": Params(sigma=0.5).dump()}, variant)
 
 
 def test_tracks_come_from_the_newest_track_store_version_that_holds_them(tmp_path: Path) -> None:
