@@ -485,6 +485,7 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
     from .learn import Rasters, forecast, pick, samples, save, train
     from .selection import DEMAND_MODEL_INPUT, PLAIN
 
+    given, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "scaling")
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
     rasters = Rasters.of(doc, settings, args.worlds)
@@ -492,7 +493,6 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     parts = args.partition or [p for p in SP.PARTITIONS if p != "train"]
     found = {p: V.truths(runs, doc, p, _log) for p in parts}
-    given, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "scaling")
     arm = PLAIN if given is None else DEMAND_MODEL_INPUT
 
     def params_for(worlds: list[str], fraction: float) -> Params | None:

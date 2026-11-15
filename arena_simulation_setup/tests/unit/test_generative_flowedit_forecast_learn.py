@@ -608,12 +608,16 @@ def test_scaling_trains_the_demand_model_input_arm_and_refits_the_demand_model_o
     monkeypatch.setattr(learn, "samples", lambda runs, worlds, doc: list(worlds))
     fitted, trained = [], []
 
+    refit_seeds, train_seeds = [], []
+
     def fake_fit(targets, init=None, max_evals=400, log=print):  # noqa: ANN001, ANN202
         fitted.append(([t.world for t in targets], max_evals))
+        refit_seeds.append({t.world: t.seeds for t in targets})
         return refitted, 0.4
 
     def fake_train(rasters, found, *, steps, seed, device, demand_model, log):  # noqa: ANN001, ANN202
         trained.append((list(found), demand_model))
+        train_seeds.append(seed)
         return types.SimpleNamespace(demand=True, demand_model=demand_model), {"steps": steps}
 
     monkeypatch.setattr(evaluate, "fit", fake_fit)
@@ -622,15 +626,30 @@ def test_scaling_trains_the_demand_model_input_arm_and_refits_the_demand_model_o
     monkeypatch.setattr(learn, "forecast", lambda model, rasters, world: truth)
     out = tmp_path / "scaling"
     assert main(["forecast", "scaling", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(params_file), "--fractions", "0.5", "1", "--repeats", "1", "--max-evals", "7", "--partition", "held_out_edits", "--out-dir", str(out)]) == 0
-    # the half share refits the demand model on its own worlds only; the full share takes the given params
+    # the half share refits the demand model on its own worlds only, each at its own train seeds (base 1-3, edit 1-2);
+    # the full share takes the given params
     assert fitted == [(["w", "w__move_a__1"], 7)]
+    assert refit_seeds == [{"w": (1, 2, 3), "w__move_a__1": (1, 2)}]
     assert trained == [(["w", "w__move_a__1"], refitted), (["w", "w__move_a__1", "w__move_b__2"], given)]
     result = yaml.safe_load((out / "scaling.yaml").read_text())
     assert result["arm"] == "demand_model_input" and result["params_checked"] is True and [r["demand_model"] for r in result["runs"]] == ["refitted", "given"]
+    # the variant trains at the same seeds as the plain network: one per repeat
+    variant_seeds = list(train_seeds)
+    train_seeds.clear()
+    assert main(["forecast", "scaling", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--fractions", "0.5", "1", "--repeats", "1", "--partition", "held_out_edits", "--out-dir", str(tmp_path / "plain")]) == 0
+    assert variant_seeds == train_seeds == [0, 0]
+    assert yaml.safe_load((tmp_path / "plain" / "scaling.yaml").read_text())["params_checked"] is None
+    # a hand-written params file is used, but not checked, and the output says so
+    hand = tmp_path / "params_hand.yaml"
+    hand.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": given.dump()}))
+    assert main(["forecast", "scaling", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(hand), "--fractions", "1", "--repeats", "1", "--partition", "held_out_edits", "--out-dir", str(tmp_path / "hand")]) == 0
+    assert yaml.safe_load((tmp_path / "hand" / "scaling.yaml").read_text())["params_checked"] is False
     held = tmp_path / "params_held.yaml"
     held.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": given.dump(), "fit": {"partition": "held_out_edits", "per_world": {"w": 0.4}, "seeds": [1, 2, 3]}}))
     with pytest.raises(SystemExit, match="scaling: --demand-model-input .* was fitted on the held_out_edits partition"):
-        main(["forecast", "scaling", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(held), "--out-dir", str(out)])
+        main(["forecast", "scaling", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(held), "--out-dir", str(tmp_path / "held")])
+    # the check comes before any work: the refused run made no output directory
+    assert not (tmp_path / "held").exists()
     assert (out / "scaling.png").exists()
 
 
