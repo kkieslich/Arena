@@ -337,7 +337,7 @@ Two forecasters read the same inputs:
   - Leave-one-seed-out: the tracks come from one scored seed's run, and the score is against the pooled map of the partition's other seeds, averaged over which seed is seen and over 20 random track orders.
   - Zero tracks is the forecast itself (the flat line). The same update from a uniform prior over the rooms is the online-only reference.
 - `scaling`: the learned forecaster trained on 25/50/100 % of the training edit chains (an edit with its controls; the base world always kept), 3 draws each, scored on the held-out partitions.
-  - `scaling --demand-model-input PARAMS` draws it for the network with the demand model's forecast as input: the full share takes PARAMS, a smaller share refits the demand model on its own training worlds, as `select` does per fold.
+  - `scaling --demand-model-input PARAMS` draws it for the network with the demand model's forecast as input: the full share takes PARAMS, a smaller share refits the demand model on its own training worlds, as `select` does per fold. The refit starts from `fit`'s defaults (not from PARAMS) and runs `--max-evals` evaluations, as `fit` and `select` do, while the 100 % share uses PARAMS as given.
 
 ```bash
 S=splits/peds_pilot.yaml; C=<benchmark dir>/flow_cells.parquet
