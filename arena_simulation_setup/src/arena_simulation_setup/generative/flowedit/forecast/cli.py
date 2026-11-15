@@ -480,7 +480,10 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
     import numpy as np
 
     from . import validity as V
+    from .evaluate import Target
+    from .evaluate import fit as fit_demand_model
     from .learn import Rasters, forecast, pick, samples, save, train
+    from .selection import DEMAND_MODEL_INPUT, PLAIN
 
     doc = SP.load(args.split)
     settings = SP.crowd(doc, args.settings)
@@ -489,13 +492,33 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     parts = args.partition or [p for p in SP.PARTITIONS if p != "train"]
     found = {p: V.truths(runs, doc, p, _log) for p in parts}
-    result: dict[str, Any] = {"format": FORMAT, "fractions": list(args.fractions), "repeats": args.repeats, "runs": [], "mean": {}}
+    given, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "scaling")
+    arm = PLAIN if given is None else DEMAND_MODEL_INPUT
+
+    def params_for(worlds: list[str], fraction: float) -> Params | None:
+        """The demand model of the variant at this share: refitted on the share's training worlds, so a smaller share
+        does not see the left-out chains through its six parameters; the full share takes the given file."""
+        if given is None or fraction >= 1:
+            return given
+        targets = []
+        for w in worlds:
+            have = runs.seeds(w, V.world_seeds(doc, "train", w))
+            if have:
+                targets.append(Target(w, rasters.sites.layers(w, rasters.scenario_of.get(SP.base_of(w))), runs.pooled(w, have), tuple(have)))
+        params, value = fit_demand_model(targets, max_evals=args.max_evals, log=_log)
+        _log(f"scaling: demand model refitted on {len(targets)} worlds of share {fraction:g}, mean JSD {value:.4f}")
+        return params
+
+    result: dict[str, Any] = {"format": FORMAT, "arm": arm, "demand_model_input": None if given is None else str(args.demand_model_input), "params_checked": None if given is None else fitted_on is not None, "fractions": list(args.fractions), "repeats": args.repeats, "runs": [], "mean": {}}
     for fraction in args.fractions:
         for r in range(args.repeats):
             worlds = pick(doc, "train", fraction, r)
-            model, summary = train(rasters, samples(runs, worlds, doc), steps=args.steps, seed=r, device=args.device, log=_log)
-            save(args.out_dir / f"net_f{fraction:g}_r{r}.pt", model, {"fraction": fraction, "pick_seed": r, "worlds": worlds, **summary})
+            params = params_for(worlds, fraction)
+            model, summary = train(rasters, samples(runs, worlds, doc), steps=args.steps, seed=r, device=args.device, demand_model=params, log=_log)
+            save(args.out_dir / f"net_f{fraction:g}_r{r}.pt", model, {"fraction": fraction, "pick_seed": r, "worlds": worlds, "demand_model": None if params is None else params.dump(), **summary})
             entry: dict[str, Any] = {"fraction": fraction, "repeat": r, "edits": sum(not SP.is_base(w) for w in worlds)}
+            if params is not None:
+                entry["demand_model"] = "given" if fraction >= 1 else "refitted"
             for p in parts:
                 vals = [V.jsd(forecast(model, rasters, t.world), t.map) for t in found[p] if not SP.is_base(t.world)]
                 entry[p] = float(np.mean(vals)) if vals else None
@@ -519,7 +542,7 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
         ax.plot(list(args.fractions), [result["mean"][p][f"{f:g}"] for f in args.fractions], marker="o", label=p)
     ax.set_xlabel("share of the training edit chains")
     ax.set_ylabel("mean pooled JSD (bits)")
-    ax.set_title("learned forecaster: data scaling")
+    ax.set_title("learned forecaster: data scaling" + ("" if given is None else " (network + demand model input)"))
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
     fig.savefig(args.out_dir / "scaling.png", dpi=120, bbox_inches="tight")
@@ -662,6 +685,8 @@ def register(verbs: argparse._SubParsersAction) -> None:
     q.add_argument("--out-dir", type=Path, required=True, help="directory for the networks, scaling.yaml and scaling.png")
     q.add_argument("--fractions", type=float, nargs="+", default=[0.25, 0.5, 1.0], help="shares of the edit chains (default 0.25 0.5 1)")
     q.add_argument("--repeats", type=int, default=3, help="draws per share (default 3)")
+    q.add_argument("--demand-model-input", type=Path, default=None, metavar="PARAMS", help="train the variant with the demand model's forecast as input (`train --demand-model-input`): the full share takes these params, a smaller share refits the demand model on its own training worlds (--max-evals)")
+    q.add_argument("--max-evals", type=int, default=400, help="forecasts per world each demand model refit of a smaller share may run (default 400)")
     q.add_argument("--steps", type=int, default=3000, help="optimizer steps per network (default 3000)")
     q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to score; repeatable (default: held_out_edits and held_out_worlds)")
     q.set_defaults(fn=_cmd_scaling)

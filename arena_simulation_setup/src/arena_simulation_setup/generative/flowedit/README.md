@@ -337,6 +337,7 @@ Two forecasters read the same inputs:
   - Leave-one-seed-out: the tracks come from one scored seed's run, and the score is against the pooled map of the partition's other seeds, averaged over which seed is seen and over 20 random track orders.
   - Zero tracks is the forecast itself (the flat line). The same update from a uniform prior over the rooms is the online-only reference.
 - `scaling`: the learned forecaster trained on 25/50/100 % of the training edit chains (an edit with its controls; the base world always kept), 3 draws each, scored on the held-out partitions.
+  - `scaling --demand-model-input PARAMS` draws it for the network with the demand model's forecast as input: the full share takes PARAMS, a smaller share refits the demand model on its own training worlds, as `select` does per fold.
 
 ```bash
 S=splits/peds_pilot.yaml; C=<benchmark dir>/flow_cells.parquet
@@ -407,7 +408,7 @@ Six parameters are fitted on the train partition (`forecast fit`): σ (kernel, m
 | `score` | per world of each partition (default the held-out ones): JSD of each `--net`, the demand model (`--params`), each `--predicted` map, stale and transplanted at other seeds; the across-seed floor; recorded vs predicted change; a PNG per world with `--plots` |
 | `curve` | forecast error against post-edit tracks seen, leave-one-seed-out, beside the uniform-prior reference |
 | `strength` | the tracks-seen prior weight by leave-two-seeds-out over the train partition, with the fold spread (`--no-demand`: the demand ablation's; `--demand-model-input`: the variant's) |
-| `scaling` | the learned forecaster on 25/50/100 % of the training edits, scored on the held-out partitions |
+| `scaling` | the learned forecaster on 25/50/100 % of the training edits, scored on the held-out partitions (`--demand-model-input`: the variant) |
 | `fit` | the demand model's params on a partition |
 | `predict` | one world's forecast (`--net`, else the demand model), as cell rows in the map file format or a PNG |
 
