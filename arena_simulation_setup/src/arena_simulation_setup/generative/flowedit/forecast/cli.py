@@ -492,9 +492,7 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     parts = args.partition or [p for p in SP.PARTITIONS if p != "train"]
     found = {p: V.truths(runs, doc, p, _log) for p in parts}
-    given = None if args.demand_model_input is None else load_params(args.demand_model_input)
-    if given is not None and (fitted_on := ((yaml.safe_load(args.demand_model_input.read_text()) or {}).get("fit") or {}).get("partition")) not in (None, "train"):
-        raise SystemExit(f"scaling: --demand-model-input {args.demand_model_input} was fitted on the {fitted_on} partition: the full share's demand model may only see the train partition")
+    given, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "scaling")
     arm = PLAIN if given is None else DEMAND_MODEL_INPUT
 
     def params_for(worlds: list[str], fraction: float) -> Params | None:
@@ -511,7 +509,7 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
         _log(f"scaling: demand model refitted on {len(targets)} worlds of share {fraction:g}, mean JSD {value:.4f}")
         return params
 
-    result: dict[str, Any] = {"format": FORMAT, "arm": arm, "demand_model_input": None if given is None else str(args.demand_model_input), "fractions": list(args.fractions), "repeats": args.repeats, "runs": [], "mean": {}}
+    result: dict[str, Any] = {"format": FORMAT, "arm": arm, "demand_model_input": None if given is None else str(args.demand_model_input), "params_checked": None if given is None else fitted_on is not None, "fractions": list(args.fractions), "repeats": args.repeats, "runs": [], "mean": {}}
     for fraction in args.fractions:
         for r in range(args.repeats):
             worlds = pick(doc, "train", fraction, r)

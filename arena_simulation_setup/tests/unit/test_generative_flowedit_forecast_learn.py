@@ -480,6 +480,38 @@ def test_score_writes_whether_its_params_were_checked(tmp_path: Path, monkeypatc
         assert yaml.safe_load(out.read_text())["params_checked"] is (fit is not None)
 
 
+def test_select_and_train_write_whether_their_params_were_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+
+    import yaml
+
+    from arena_simulation_setup.generative.flowedit import split as SP
+    from arena_simulation_setup.generative.flowedit.cli import main
+    from arena_simulation_setup.generative.flowedit.forecast import cli, evaluate, learn, selection
+    from arena_simulation_setup.generative.flowedit.forecast.model import Params
+
+    doc = {"partitions": {"train": ["w", "v"]}, "seeds": {"train": [1, 2]}, "duration": 60}
+    monkeypatch.setattr(SP, "load", lambda path: doc)
+    monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
+    monkeypatch.setattr(learn.Rasters, "of", classmethod(lambda cls, doc, settings, worlds=None: types.SimpleNamespace(sites=types.SimpleNamespace(grid=lambda base: GRID), scenario_of={})))
+    monkeypatch.setattr(evaluate.Runs, "load", classmethod(lambda cls, paths, grid_of, planner=None: types.SimpleNamespace(maps={})))
+    monkeypatch.setattr(selection, "train_runs", lambda runs, doc: runs)
+    monkeypatch.setattr(selection, "select", lambda *a, **k: {"chosen": "plain", "folds": [], "mean": {"plain": 0.4, "demand_model_input": 0.5}})
+    monkeypatch.setattr(learn, "pick", lambda doc, partition, fraction, seed: ["w"])
+    monkeypatch.setattr(learn, "samples", lambda runs, worlds, doc, partition="train": [learn.Sample("w", 1, None)])
+    monkeypatch.setattr(learn, "train", lambda *a, **k: (types.SimpleNamespace(demand=True, demand_model=k.get("demand_model")), {"steps": 1}))
+    metas = []
+    monkeypatch.setattr(learn, "save", lambda path, model, meta: metas.append(meta))
+    for name, fit in (("hand.yaml", None), ("fitted.yaml", {"partition": "train", "per_world": {"w": 0.4}, "seeds": [1, 2]})):
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": Params().dump(), **({"fit": fit} if fit else {})}))
+        out = tmp_path / f"select_{name}"
+        assert main(["forecast", "select", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--params", str(path), "--out", str(out)]) == 0
+        assert yaml.safe_load(out.read_text())["params_checked"] is (fit is not None)
+        assert main(["forecast", "train", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(path), "--out", str(tmp_path / "net.pt")]) == 0
+        assert metas[-1]["params_checked"] is (fit is not None)
+
+
 def test_a_strength_file_belongs_to_one_network() -> None:
     import types
 
@@ -561,7 +593,7 @@ def test_scaling_trains_the_demand_model_input_arm_and_refits_the_demand_model_o
 
     given, refitted = Params(sigma=0.3), Params(sigma=0.7)
     params_file = tmp_path / "params.yaml"
-    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": given.dump()}))
+    params_file.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": given.dump(), "fit": {"partition": "train", "per_world": {"w": 0.4, "w__move_a__1": 0.5}, "seeds": [1, 2, 3]}}))
     doc = {"partitions": {"train": ["w", "w__move_a__1", "w__move_b__2"], "held_out_edits": ["w__move_c__3"]}, "seeds": {"train": {"bases": [1, 2, 3], "edits": [1, 2]}, "held_out_edits": [6, 7]}, "duration": 60}
     monkeypatch.setattr(SP, "load", lambda path: doc)
     monkeypatch.setattr(SP, "crowd", lambda doc, over=None: {})
@@ -594,7 +626,11 @@ def test_scaling_trains_the_demand_model_input_arm_and_refits_the_demand_model_o
     assert fitted == [(["w", "w__move_a__1"], 7)]
     assert trained == [(["w", "w__move_a__1"], refitted), (["w", "w__move_a__1", "w__move_b__2"], given)]
     result = yaml.safe_load((out / "scaling.yaml").read_text())
-    assert result["arm"] == "demand_model_input" and [r["demand_model"] for r in result["runs"]] == ["refitted", "given"]
+    assert result["arm"] == "demand_model_input" and result["params_checked"] is True and [r["demand_model"] for r in result["runs"]] == ["refitted", "given"]
+    held = tmp_path / "params_held.yaml"
+    held.write_text(yaml.safe_dump({"format": cli.FORMAT, "params": given.dump(), "fit": {"partition": "held_out_edits", "per_world": {"w": 0.4}, "seeds": [1, 2, 3]}}))
+    with pytest.raises(SystemExit, match="scaling: --demand-model-input .* was fitted on the held_out_edits partition"):
+        main(["forecast", "scaling", "split.yaml", "--cells", str(tmp_path / "cells.parquet"), "--demand-model-input", str(held), "--out-dir", str(out)])
     assert (out / "scaling.png").exists()
 
 
