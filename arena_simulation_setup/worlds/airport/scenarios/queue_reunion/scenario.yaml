@@ -113,7 +113,7 @@ dynamic:
   agent: {agent_type: adult, desired_velocity: 1.0}
   waypoints:
   - [20.0, 29.0]
-  - [22.0, 2.0]
+  - [22.0, 1.4]
 - name: walker_4
   model: Office/office_female_asian_young
   pose: [40.0, 3.0, 0.0]

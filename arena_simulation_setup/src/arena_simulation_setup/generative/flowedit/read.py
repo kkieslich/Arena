@@ -312,10 +312,23 @@ def _floor(root: Path, world: World, graph: Graph) -> Floor:
     level_id = str(level["id"])
     held = {o.name for lv in world.levels.values() for o in lv.objects}
     statics = list(world_statics(root, world))
-    for t in sorted(graph.objects.values(), key=lambda t: t.name):
-        # a demand-only node (no model) is a HumanSim target, not an obstacle
-        if t.name not in held and t.floor == level_id and t.model:
-            statics.append({"name": t.name, "model": t.model, "pose": [t.x, t.y], "radius": OBJECT_STAMP, "resolved": False})
+    # a demand-only node (no model) is a HumanSim target, not an obstacle; the others are stamped with their true footprint,
+    # as the runtime and the use-point check see them, an OBJECT_STAMP box only where the model does not resolve
+    extra = [t for t in sorted(graph.objects.values(), key=lambda t: t.name) if t.name not in held and t.floor == level_id and t.model]
+    if extra:
+        from arena_simulation_setup.shared.entities import Obstacle
+        from arena_simulation_setup.tree.World.view import WorldView
+
+        from ..scenario.occupancy import _footprints
+
+        prints = _footprints(WorldView(Path(root).resolve()), world, [Obstacle.parse({"name": t.name, "model": t.model, "pose": [t.x, t.y, t.yaw]}) for t in extra])
+        for t, footprint in zip(extra, prints, strict=True):
+            if footprint is not None and footprint.is_empty:
+                continue
+            entry: dict[str, Any] = {"name": t.name, "model": t.model, "pose": [t.x, t.y], "radius": OBJECT_STAMP, "resolved": footprint is not None}
+            if footprint is not None:
+                entry["polygon"] = list(footprint.exterior.coords)[:-1]
+            statics.append(entry)
     loaded = level_grid(root, statics, world)
     grid = None if loaded is None else Grid(occupied=loaded[0], res=loaded[1], ox=loaded[2], oy=loaded[3])
     return Floor(root, world, level_id, list(level.get("zones") or []), _origins(root, world).get(level_id, (0.0, 0.0)), grid, statics)
@@ -439,9 +452,9 @@ def _base(site: Site, base: Site | None, settings: Mapping[str, Any], robot_spec
     return Base(site.base, floor, graph, homes, crowd)
 
 
-def _start_in(floor: Floor, start: Point, name: str, notes: list[str]) -> Point:
+def _start_in(floor: Floor, start: Point, name: str, notes: list[str], what: str = "starts at") -> Point:
     """`start`, drawn in the base world, as the edited `floor` lets a person stand there: unchanged while it is free, else
-    the nearest free point, so only the people an edit's footprint or wall covers start elsewhere."""
+    the nearest free point, so only the people an edit's footprint or wall covers start (or stop) elsewhere."""
     if floor.grid is None:
         return start
     local = (start[0] - floor.origin[0], start[1] - floor.origin[1])
@@ -449,10 +462,10 @@ def _start_in(floor: Floor, start: Point, name: str, notes: list[str]) -> Point:
         return start
     near = floor.grid.nearest_free(local, PERSON_CLEAR, 3.0)
     if near is None:
-        notes.append(f"people: {name} starts at ({start[0]}, {start[1]}), not free in this world and no free point within 3 m, left there")
+        notes.append(f"people: {name} {what} ({start[0]}, {start[1]}), not free in this world and no free point within 3 m, left there")
         return start
     moved = floor.to_map(near)
-    notes.append(f"people: {name} starts at ({start[0]}, {start[1]}), not free in this world, moved to ({moved[0]}, {moved[1]})")
+    notes.append(f"people: {name} {what} ({start[0]}, {start[1]}), not free in this world, moved to ({moved[0]}, {moved[1]})")
     return moved
 
 
@@ -466,6 +479,8 @@ def _people(base: Base, settings: Mapping[str, Any], needs: Mapping[str, NeedPla
         name = f"flow_{i + 1}"
         point_rng = random.Random(f"flowedit:{base.name}:{seed}:{name}")
         points = [pt for room in person.rooms if (pt := base.floor.point(room, point_rng)) is not None]
+        if floor is not None:
+            points = [_start_in(floor, pt, name, notes, "stops at") for pt in points]
         ref = f"./{TYPES_DIR}/flow__{name}.yaml"
         types[ref] = _type_doc(f"flow__{name}", person.kind, settings, needs, "idle", {"idle": {"steps": _walk(points, settings["idle"]["stand"]), "then": "idle", "on_failure": "idle"}})
         # a start point drawn here, not the home zone's name: the runtime draws a zone's point per world, so the base and
@@ -531,7 +546,7 @@ def _entrances(floor: Floor, graph: Graph, base: Base, settings: Mapping[str, An
         rng = random.Random(f"flowedit:{base.name}:{seed}:visitor:{name}")
         rooms = [r for r in base.crowd.destinations if r != room]
         stops = rng.sample(rooms, min(int(cfg["stops"]), len(rooms))) if rooms else []
-        points = [pt for r in stops if (pt := base.floor.point(r, rng)) is not None]
+        points = [_start_in(floor, pt, f"visitor of {name}", notes, "stops at") for r in stops if (pt := base.floor.point(r, rng)) is not None]
         ref = f"./{TYPES_DIR}/visitor__{name}.yaml"
         leave = {"leave": {"steps": {"exit": {"kind": "go_to", "target_pose": {"x": leave_at[0], "y": leave_at[1], "theta": 0.0}, "patience": dict(WALK_PATIENCE)}}, "then": "leave", "on_failure": "leave"}}
         visit = {"steps": _walk(points, settings["idle"]["stand"]), "then": "leave", "on_failure": "leave"} if points else {"steps": {"look": {"duration": dict(settings["idle"]["stand"])}}, "then": "leave"}

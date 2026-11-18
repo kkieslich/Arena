@@ -528,8 +528,8 @@ def docked_locker(tmp_path: Path) -> Site:
 
 @pytest.fixture
 def docked_charger(tmp_path: Path) -> Site:
-    """hospital_1 without scenario plus a docked charger against a wall, given the only need so the generator draws it."""
-    return _docked_site(tmp_path, CHARGER, {"type": "robot_charger", "capacity": 1, "satisfies": {"charge": 50.0}}, charge_power_w=CHARGE_POWER_W)
+    """hospital_1 without scenario plus a docked charger against a wall, given the only need so the generator draws it, and the reach to be used from beside its box."""
+    return _docked_site(tmp_path, CHARGER, {"type": "robot_charger", "capacity": 1, "interaction_radius": 1.0, "satisfies": {"charge": 50.0}}, charge_power_w=CHARGE_POWER_W)
 
 
 def _dock(site: Site, obj: str) -> list[Position] | None:

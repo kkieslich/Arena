@@ -21,7 +21,7 @@ class FleetParams(ParamGroup):
     LOAD_S = Param[float]("load_s", 15.0, "Seconds a robot holds where it loads.", constraint=Range(0.0, 3600.0))
     UNLOAD_S = Param[float]("unload_s", 10.0, "Seconds a robot holds where it unloads.", constraint=Range(0.0, 3600.0))
     CHARGE_BELOW = Param[float]("charge_below", 30.0, "Battery percent under which a free robot goes to a charger instead of taking a job.", constraint=Range(0.0, 100.0))
-    CHARGE_UNTIL = Param[float]("charge_until", 100.0, "Battery percent at which a charging robot is free again, at least charge_below.", constraint=Range(0.0, 100.0))
+    CHARGE_UNTIL = Param[float]("charge_until", 100.0, "Battery percent at which a charging robot is free again, at least charge_below; with top_up, a free robot under it takes a charger whose holder is away.", constraint=Range(0.0, 100.0))
     RESERVE = Param[float]("reserve", 10.0, "Battery percent a job must leave by its energy estimate, else the robot charges first.", constraint=Range(0.0, 100.0))
     WH_PER_M = Param[float]("wh_per_m", 0.046, "Wh a robot uses per metre driven, standby while driving included, for the job energy estimate; 0 derives it from the robot's power profile at 0.4 m/s and 0.2 rad/s.", constraint=Range(0.0, 10.0))
     DETOUR = Param[float]("detour", 1.2, "Route length over straight-line distance assumed for the job energy estimate.", constraint=Range(1.0, 10.0))
@@ -30,6 +30,7 @@ class FleetParams(ParamGroup):
     JAM_WINDOW_S = Param[float]("jam_window_s", 60.0, "A robot on a job leg or a charging trip that moves less than jam_progress_m in this many seconds is jammed: its job fails (reason jam), its charge is abandoned, and it is reset to its home; 0 for no jam rule.", constraint=Range(0.0, 3600.0))
     JAM_PROGRESS_M = Param[float]("jam_progress_m", 0.5, "Metres a robot must move within jam_window_s, away from where the window started, not to count as jammed.", constraint=Range(0.0, 100.0))
     JAM_GOAL_M = Param[float]("jam_goal_m", 1.0, "Within this many metres of its leg's dock or its charger a robot is docking or holding, not jammed, and its jam window starts again.", constraint=Range(0.0, 100.0))
+    TOP_UP = Param[bool]("top_up", True, "Opportunistic charging: once no robot waits to charge, a free robot under charge_until whose home is no charger takes a charger whose holder is away on a job as its home; a robot queued to charge takes it from it on the way, or docked until it has charged to charge_until.")
     JOB_TIMEOUT_PER_M = Param[float]("job_timeout_per_m", 5.0, "Seconds the timeout grows by per metre of the route estimate (straight line times detour): from where a job leg starts to its dock, to the charger for a charging trip.", constraint=Range(0.0, 3600.0))
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 import math
 import typing
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 import attrs
 import numpy as np
@@ -144,6 +144,40 @@ class AffordanceSlot:
 def placed_slots(affordances: Affordances | Mapping[str, Iterable[typing.Any]]) -> list[AffordanceSlot]:
     """Placed slots of an annotation's affordances block, every kind."""
     return [slot.placed(kind, index) for kind, slots in structure_affordances(affordances).items() for index, slot in enumerate(slots) if slot.bbox is not None]
+
+
+SEAT_SLOT_REACH = 0.15  # m, a scenario seat this close to a sit slot's footprint takes that slot's height
+
+
+def seat_slot(seat: Pose, slots: Sequence[AffordanceSlot]) -> AffordanceSlot | None:
+    """The sit slot with a z range a scenario seat lies in or next to (within SEAT_SLOT_REACH), the nearest center among overlapping ones."""
+    xy = (seat.position.x, seat.position.y)
+    near = [slot for slot in slots if has_z(slot.bbox) and slot.distance(xy) <= SEAT_SLOT_REACH]
+    return min(near, key=lambda slot: (slot.distance(xy), math.dist(slot.center, xy))) if near else None
+
+
+def box_reach(seat: Pose, box: Sequence[Sequence[float]], behind: bool = False) -> float:
+    """How far ahead of a seat along its facing, or behind it, an object-frame box ends."""
+    yaw = seat.orientation.to_yaw() + (math.pi if behind else 0.0)
+    reach = math.inf
+    for (low, high), at, step in zip(box[:2], (seat.position.x, seat.position.y), (math.cos(yaw), math.sin(yaw)), strict=True):
+        if step > 1e-9:
+            reach = min(reach, (high - at) / step)
+        elif step < -1e-9:
+            reach = min(reach, (low - at) / step)
+    return max(0.0, reach)
+
+
+def seat_reach(seat: Pose, slot: AffordanceSlot, behind: bool = False) -> float:
+    """How far ahead of a seat along its facing, or behind it, its slot's box ends, in the object frame."""
+    return box_reach(seat, slot.bbox, behind)
+
+
+def seat_approach(seat: Pose, front: float | None, bounding_box: Sequence[Sequence[float]] | None, stand: Callable[[float], float]) -> float:
+    """Where a sitter stands ahead of a seat before it sits, `stand` of its slot's front edge `front` ahead, never inside the object's bounding box, 0 for a seat outside every slot."""
+    if front is None:
+        return 0.0
+    return max(stand(front), 0.0 if bounding_box is None else box_reach(seat, bounding_box))
 
 
 def max_occupancy(slots: Sequence[AffordanceSlot]) -> int:

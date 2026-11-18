@@ -3,11 +3,11 @@ format: arena-scenario/2
 objects:
 - name: fountain
   model: Hospital/SM_WaterDispenser_01a
-  pose: [18.0, 21.2, 1.5708]
+  pose: [19.6, 21.75, -1.5708]
   humansim: {capacity: 1, formation: {params: {base_step: 1.0, front_offset: 0.8}, type: line}, satisfies: {thirst: 100.0}, type: fountain}
 - name: reception_desk
   model: Hospital/Reception_Counter
-  pose: [6.6, 10.0, 0.0]
+  pose: [5.6, 10.0, 0.0]
   humansim: {capacity: 3, formation: {params: {base_step: 0.8, front_offset: 0.6}, type: line}, interaction_radius: 1.0, type: desk}
 - name: gathering_area
   model: Hospital/Waiting_Room_Bench

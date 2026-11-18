@@ -147,6 +147,8 @@ def generate_launch_description() -> launch.LaunchDescription:
     )
     LaunchArgument.from_param(HumanParams.ROBOTS_VISIBLE)
     LaunchArgument.from_param(HumanParams.SKELETON)
+    LaunchArgument.from_param(HumanParams.CHECK)
+    LaunchArgument.from_param(HumanParams.CHECK_MODELS)
     acoustics = LaunchArgument.from_param(ArenaParams.ACOUSTICS, keep_default=True)
     auditory_static_sounds = LaunchArgument(
         name="auditory.static_sounds",
@@ -443,7 +445,7 @@ def generate_launch_description() -> launch.LaunchDescription:
             parameters=[
                 {
                     "use_sim_time": True,
-                    **forwarded(context, (HumanParams.ROBOTS_VISIBLE, HumanParams.SKELETON)),
+                    **forwarded(context, (HumanParams.ROBOTS_VISIBLE, HumanParams.SKELETON, HumanParams.CHECK, HumanParams.CHECK_MODELS)),
                     "sim": arena_sim,
                     "human": human_val,
                     "acoustics": acoustics_val,

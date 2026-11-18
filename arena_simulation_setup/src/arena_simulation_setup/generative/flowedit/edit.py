@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import enum
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -44,7 +45,7 @@ DWELL_KEYS = ("mean", "std", "clip_low", "clip_high")
 DEMAND_VERBS = ("serves", "satisfies", "has_formation", "dwells", "affords")
 #: The fact of an object decided to have no demand. An object has demand facts or this one, never both.
 INERT = "inert"
-FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "clear")
+FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "formation", "clear")
 #: Params that only switch an operation on: false names the same edit as leaving them out.
 FLAGS = ("leave_demand", "clear", "remove")
 #: Suffix of the demand-only node a `move` with `leave_demand` leaves at the object's old spot.
@@ -408,6 +409,23 @@ def _set_dwell(graph: Scene, obj: str, dwell: Any, origin: str) -> None:  # noqa
         graph.add_fact(obj, "dwells", float(dwell), {"from": origin})
 
 
+def _set_formation(graph: Scene, obj: str, formation: Any, block: dict[str, Any] | None) -> None:  # noqa: ANN401 - YAML input
+    """Replace the `has_formation` fact of `obj` with `{type, params}`, anchored at the object, or drop it for None."""
+    for fact in [f for f in graph.facts if f.subject == obj and f.verb == "has_formation"]:
+        graph.remove_fact(obj, "has_formation", fact.object, fact.params)
+    if block is not None:
+        block.pop("formation", None)
+    if formation is None:
+        return
+    if not isinstance(formation, Mapping) or not formation.get("type"):
+        raise ValueError(f"formation is {{type, params}}, got {formation!r}")
+    _check_params(formation, ("type", "params"))
+    params = {str(k): float(v) for k, v in (formation.get("params") or {}).items()}
+    graph.add_fact(obj, "has_formation", f"formation:{formation['type']}", params)
+    if block is not None:
+        block["formation"] = {"type": str(formation["type"]), "params": params}
+
+
 def _set_demand(site: Site, obj: str, params: Mapping[str, Any], origin: str) -> None:
     """Set the demand of `obj` from `FUNCTION_PARAMS`, its dwell traced to `origin`."""
     _check_params(params, FUNCTION_PARAMS)
@@ -429,6 +447,9 @@ def _set_demand(site: Site, obj: str, params: Mapping[str, Any], origin: str) ->
         _set_satisfies(site.graph, obj, params["satisfies"], block)
     if "dwell" in params:
         _set_dwell(site.graph, obj, params["dwell"], origin)
+    if "formation" in params:
+        _set_formation(site.graph, obj, params["formation"], block)
+    # after every demand part, a formation-only edit included: an object with demand is no longer inert
     if any(f.subject == obj and f.verb in DEMAND_VERBS for f in site.graph.facts):
         for fact in [f for f in site.graph.facts if f.subject == obj and f.verb == INERT]:
             site.graph.remove_fact(fact.subject, fact.verb, fact.object, fact.params)
@@ -438,7 +459,7 @@ def _set_demand(site: Site, obj: str, params: Mapping[str, Any], origin: str) ->
 
 
 def _function(site: Site, edit: Edit) -> None:
-    """Change an object's demand: `type`, `capacity`, `interaction_radius`, `satisfies`, `dwell`, `clear` to drop it all first."""
+    """Change an object's demand: `type`, `capacity`, `interaction_radius`, `satisfies`, `dwell`, `formation`, `clear` to drop it all first."""
     _set_demand(site, edit.target, edit.params, f"edit:{edit.id}")
 
 
@@ -537,6 +558,60 @@ def _fill_gap(level: Level, door: Door) -> None:
         level.walls.append(WallPath(path=[door.start, door.end], kind=first.kind, material=first.material))
 
 
+def _open_walls(level: Level, door: Door) -> None:
+    """Leave a gap for `door` in every wall path it passes through, as the shipped worlds draw their doors: a segment
+    parallel to the door within `DOOR_DEPTH_M` of its line (both outlines of a wall drawn per room) is cut open over the
+    door's span, unless it lies on the door's line, where `Level.all_walls` cuts it already. A path's first piece keeps
+    its index in `level.walls` and the others go to the end, so the other paths keep theirs (`wall:<level>/<index>`)."""
+    from arena_simulation_setup.tree.World.model import _MIN_PIECE_M, _ON_LINE_M, DOOR_DEPTH_M
+
+    a, b = door.start, door.end
+    length = math.hypot(b.x - a.x, b.y - a.y)
+    if length == 0.0:
+        return
+    ux, uy = (b.x - a.x) / length, (b.y - a.y) / length
+
+    def cut(p: Position, q: Position) -> tuple[float, float] | None:
+        dx, dy = q.x - p.x, q.y - p.y
+        span2 = dx * dx + dy * dy
+        off = [abs((r.x - a.x) * uy - (r.y - a.y) * ux) for r in (p, q)]
+        if span2 == 0.0 or max(off) > DOOR_DEPTH_M or max(off) <= _ON_LINE_M:
+            return None
+        t0, t1 = sorted(((e.x - p.x) * dx + (e.y - p.y) * dy) / span2 for e in (a, b))
+        lo, hi = max(t0, 0.0), min(t1, 1.0)
+        return (lo, hi) if (hi - lo) * math.sqrt(span2) > _MIN_PIECE_M else None
+
+    def at(p: Position, q: Position, t: float) -> Position:
+        return Position(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y), p.z + t * (q.z - p.z))
+
+    extra, gone = [], []
+    for i, path in enumerate(level.walls):
+        points = [*path.path, path.path[0]] if path.closed and len(path.path) > 2 else list(path.path)
+        pieces: list[list[Position]] = [[points[0]]]
+        for p, q in zip(points, points[1:], strict=False):
+            gap = cut(p, q)
+            if gap is None:
+                pieces[-1].append(q)
+                continue
+            lo, hi = gap
+            if lo > 0.0:
+                pieces[-1].append(at(p, q, lo))
+            pieces.append([at(p, q, hi), q] if hi < 1.0 else [q])
+        if len(pieces) == 1:
+            continue
+        if path.closed and len(path.path) > 2 and len(pieces[0]) > 1 and pieces[-1] and pieces[-1][-1] == pieces[0][0]:
+            pieces[0] = [*pieces.pop()[:-1], *pieces[0]]  # the ring opens at the gap: its last piece runs on into its first
+        kept = [piece for piece in pieces if len(piece) >= 2 and sum(math.hypot(v.x - u.x, v.y - u.y) for u, v in itertools.pairwise(piece)) > _MIN_PIECE_M]
+        if not kept:
+            gone.append(i)  # a path all within the door's span
+            continue
+        level.walls[i] = attrs.evolve(path, path=kept[0], closed=False)
+        extra += [attrs.evolve(path, path=piece, closed=False) for piece in kept[1:]]
+    for i in reversed(gone):
+        del level.walls[i]
+    level.walls.extend(extra)
+
+
 def _shifted(points: list[Position], offset: Any) -> list[Position]:  # noqa: ANN401 - YAML input
     d = _point(offset, "offset")
     return [Position(p.x + d.x, p.y + d.y) for p in points]
@@ -590,6 +665,9 @@ def _layout_door(site: Site, edit: Edit) -> None:
         level.doors[i] = door
     if not _on_wall(level, door):
         raise ValueError(f"door {name!r} at {[[door.start.x, door.start.y], [door.end.x, door.end.y]]} lies on no wall")
+    _open_walls(level, door)
+    if any(d.name == name for d in level.walled_doors()):
+        raise ValueError(f"door {name!r} at {[[door.start.x, door.start.y], [door.end.x, door.end.y]]} stays shut: a wall the crowd gets runs across or into it")
     _rederive(site.world, site.graph)
 
 

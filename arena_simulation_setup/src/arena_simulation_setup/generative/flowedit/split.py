@@ -74,7 +74,7 @@ import yaml
 
 SPLIT_FORMAT = "flowedit-split/1"
 PARTITIONS = ("train", "held_out_edits", "held_out_worlds")
-SOURCE_KEYS = ("scenario", "seed", "per_type", "steps", "controls")
+SOURCE_KEYS = ("scenario", "seed", "per_type", "steps", "controls", "generator_version")
 CROWD_KEYS = ("settings", "partitions")
 #: Keys a test crowd may add to CROWD_KEYS: a subset of its partitions' worlds, and seeds of baseline runs of their base worlds
 CROWD_OPTIONAL = ("worlds", "baseline_seeds")
@@ -416,14 +416,19 @@ def generate_argv(base: str, source: Mapping[str, Any], manifest: Path | None = 
 
 def verify(doc: Mapping[str, Any], base: str, manifest: Mapping[str, Any]) -> None:
     """Raise ValueError unless the generate manifest of `base` made every edited world the split lists for it, with the
-    controls `control_worlds` gives them: a name the generator no longer makes (its edits changed) would not resolve."""
+    controls `control_worlds` gives them: a name the generator no longer makes (its edits changed) would not resolve. A
+    source's `generator_version`, when given, must be the manifest's."""
+    version = manifest.get("generator_version")
+    wanted = (doc.get("sources") or {}).get(base, {}).get("generator_version")
+    if wanted is not None and wanted != version:
+        raise ValueError(f"{base}: the split's names come from generator version {wanted}, `flowedit generate` is version {version}: regenerate the split's names")
     made: dict[str, list[str]] = {}
     for chain in manifest.get("chains") or []:
         made[chain["world"]] = [c["world"] for c in chain.get("controls") or []]
     controls = {c for cs in made.values() for c in cs}
     listed = {w for worlds in (doc.get("partitions") or {}).values() for w in worlds or [] if base_of(w) == base and w != base}
     if missing := sorted(listed - set(made) - controls):
-        raise ValueError(f"{base}: `flowedit generate` did not make {missing}, regenerate the split's names")
+        raise ValueError(f"{base}: `flowedit generate` (generator version {version}) did not make {missing}, regenerate the split's names")
     for edit, worlds in (doc.get("control_worlds") or {}).items():
         if base_of(edit) == base and (wrong := sorted(set(worlds or []) - set(made.get(edit, [])))):
             raise ValueError(f"{base}: {wrong} are no controls of {edit} in the generate manifest")

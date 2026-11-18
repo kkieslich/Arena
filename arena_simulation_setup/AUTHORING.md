@@ -1557,6 +1557,64 @@ keeps the base's components, less the removed cells, plus the pockets.
 Otherwise it relabels the whole level. `navr_check(..., relabel=True)` always
 relabels, the reference the tests compare the incremental result against.
 
+### Pedestrian reach
+
+`metrics/use_points.py` checks what HumanSim's crowd gets from a world and a
+scenario, as the runtime hands it over. The runtime runs it at every episode
+start of a scenario task and fails the episode naming each finding
+(`human.check:=false` skips it); the FLOWEDIT generator refuses edits by it.
+
+```python
+from arena_simulation_setup.metrics.use_points import check_scenario
+from arena_simulation_setup.tree.World import WorldIdentifier
+
+for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'default'):
+    print(finding)
+```
+
+- Every model resolves, else HumanSim never gets the object and walkers walk
+  through it; the finding names what each asset bucket answered. A model that
+  resolves without an annotation.yaml (a marker) is a target without an
+  obstacle, as at runtime, and passes.
+- A walker stops within arrival distance (HumanSim's 0.5 m) of every point
+  people are walked to: the use point and first three queue slots of a sought
+  object's `line` formation, from its pose turned to its annotated `face` (no
+  wall between two slots), a seat's standing point, the object itself within
+  its interaction radius when it has neither, a sink, each human's start,
+  waypoints and agent-type `go_to` poses, and a source holds floor its walkers
+  reach. Sought objects are those with `satisfies` or named, or typed, by a step
+  `target`. Near walls and boxes a walker stops where HumanSim's route for it
+  ends, its radius plus `global_planner.clearance_margin` from them, rounded up
+  to 0.05 m and at most HumanSim's 0.6 m cap (0.5 m for a walker the scenario
+  gives a 0.25 m radius, 0.6 m for a wheelchair; the widest walker of the
+  scenario counts for the crowd's points): a use point must lie clear of its own
+  object's box. A walker without a `radius` gets one drawn by HumanSim from its
+  agent type; where it stops, the check takes it one standard deviation above
+  the type's mean (`RADIUS_SD`): an adult, drawn 0.25 +- 0.02 m, counts as
+  0.27 m and stops 0.55 m off, as does the crowd of a scenario without people.
+  A seat's standing point, on its furniture's box edge by design, is measured to
+  the floor's edge.
+- Floor is the rooms, door spans and cabins less the walls HumanSim gets
+  (`all_walls`: a door is open only where they leave a gap for it), doors locked
+  to everyone and the bounding box of every object, kept HumanSim's narrowest
+  route clearance (`global_planner.inflation_radius`, 0.38 m) from them,
+  decided by the shapes themselves near that clearance: a passage under 0.76 m
+  is shut. A walker reaches the connected part it starts in and the parts
+  elevators, stair halves and the scenario's teleport zones join to it.
+- A point that only those narrowest routes reach, past walls or objects closer
+  than a walker's own route clearance at its type's mean radius (a room behind
+  a 0.9 m door), is a detour:
+  HumanSim takes any route that keeps that clearance first, outside the building
+  too where its outside is open. The runtime and `flowedit suite` only report
+  detours; the FLOWEDIT generator refuses an edit that makes one.
+- No room people are sent to (every room of a scenario with demand and no crowd
+  of its own, as FLOWEDIT's) has more than 2 m^2 of floor cut off from the
+  parts the crowd starts in by objects or locked doors; a pocket
+  the walls close off by themselves does not count.
+
+Turn an object so its annotated front faces into the room, or move it along
+the wall, until its findings are gone.
+
 ### Navigation mesh
 
 MeshNav plans on a triangle mesh of every walkable surface, built from the

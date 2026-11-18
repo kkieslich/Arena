@@ -103,8 +103,57 @@ def test_a_start_an_edit_covers_moves_to_the_nearest_free_point(queue: Site, hos
         # covered starts move to a free point with their heading, free ones stay to the centimetre
         assert (before["name"] in moved) == (not free(before["pose"]))
         assert free(after["pose"]) and after["pose"][2] == before["pose"][2]
-    assert {n.split()[1] for n in notes if n.startswith("people: ") and "moved to" in n} == moved
+    assert {n.split()[1] for n in notes if n.startswith("people: ") and "starts at" in n and "moved to" in n} == moved
     assert not any(n.startswith("people: ") and "starts at" in n for n in hospital.notes)
+
+
+def _stops(result: Result) -> dict[tuple[str, str, str], tuple[float, float]]:
+    """Every go_to stop of the people's and visitors' types, by type, sequence and step."""
+    return {(ref, seq, name): (step["target_pose"]["x"], step["target_pose"]["y"]) for ref, doc in result.types.items() for seq, spec in doc["sequences"].items() for name, step in (spec.get("steps") or {}).items() if "target_pose" in step}
+
+
+def test_a_stop_an_edit_covers_moves_to_the_nearest_free_point(queue: Site, hospital: Result) -> None:
+    # stops are drawn in the base world like the starts: an object an edit puts over one moves that stop only
+    from arena_simulation_setup.generative.flowedit.read import PERSON_CLEAR
+
+    stops = _stops(hospital)
+    key, (x, y) = next((k, v) for k, v in stops.items() if "/flow__" in k[0])
+    origin = _floor(queue.root, queue.world, read_graph(queue.graph)).origin
+    covered = apply(queue, "insert", "obj:crate_1", {"model": "Hospital/SM_WaterDispenser_01a", "x": x - origin[0], "y": y - origin[1]})
+    notes: list[str] = []
+    edited = _stops(read(covered, notes=notes, base=queue))
+    floor = _floor(covered.root, covered.world, read_graph(covered.graph))
+
+    def free(pt: tuple[float, float]) -> bool:
+        return floor.grid.free((pt[0] - floor.origin[0], pt[1] - floor.origin[1]), PERSON_CLEAR)
+
+    moved = {k for k in stops if stops[k] != edited[k]}
+    assert key in moved and len(moved) < len(stops)
+    assert all((k in moved) == (not free(stops[k])) and free(edited[k]) for k in stops)
+    assert any(n.startswith("people: ") and "stops at" in n and "moved to" in n for n in notes)
+
+
+def test_people_start_and_stop_off_the_footprint_of_every_scenario_object(local_root: Path) -> None:
+    # station_hall's reception desk is a scenario object with its origin at a corner (its asset's box below): stamped as a
+    # 1 m box around its pose, starts and idle stops fell inside it, where nobody can stand and HumanSim never arrives
+    import shapely
+    from arena_simulation_setup.shared.entities import Obstacle
+
+    desk_model = "Hospital/SM_ReceptionDesk_01a"
+    directory = local_root / Obstacle.parse({"name": "probe", "model": desk_model, "pose": [0.0, 0.0, 0.0]}).model.relpath()
+    directory.mkdir(parents=True)
+    (directory / "annotation.yaml").write_text(yaml.safe_dump({"face": "+x", "bounding_box": [[0.0, 2.4197], [-2.7646, 0.1027], [0.0, 1.1]]}))
+    site = open_site(WORLDS / "station_hall", "demand")
+    floor = _floor(site.root, site.world, read_graph(site.graph))
+    desk = next(s for s in floor.statics if s["name"] == "reception_desk")
+    assert desk["model"] == desk_model and desk["resolved"]
+    box = shapely.Polygon(desk["polygon"])
+    assert box.area == pytest.approx(2.4197 * 2.8673, rel=1e-3) and not box.contains(shapely.Point(*desk["pose"]).buffer(0.6))
+    for seed in range(1, 11):
+        result = read(site, seed=seed)
+        points = [tuple(h["pose"][:2]) for h in result.doc["humans"]] + list(_stops(result).values())
+        inside = [(x, y) for x, y in points if box.contains(shapely.Point(x - floor.origin[0], y - floor.origin[1]))]
+        assert not inside, (seed, inside)
 
 
 def test_only_stated_needs_are_sought_by_default(hospital: Result) -> None:

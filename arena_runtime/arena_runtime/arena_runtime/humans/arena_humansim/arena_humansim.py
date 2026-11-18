@@ -6,10 +6,10 @@ import math
 import traceback
 import typing
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import attrs
 import numpy as np
-import shapely
 import yaml
 from arena_humansim.core.interaction_kinds import InteractionType, MembershipRole
 from arena_humansim.utils.types import InteractionOutcome
@@ -91,12 +91,15 @@ from arena_rclpy_mixins.Async import ClientWrapper
 from arena_rclpy_mixins.lazy import LazySubscription
 from arena_rclpy_mixins.Time import Time
 from arena_runtime_msgs.msg import LockstepChannel
+from arena_simulation_setup.metrics import use_points
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET, CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, Stairs
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
+from arena_simulation_setup.tree.World import World, WorldView
 from arena_simulation_setup.tree.World.model import elevator_doorway_pose
-from arena_simulation_setup.tree.World.Scenario import TeleportZone
-from arena_simulation_setup.utils.affordance import AffordanceClaims, AffordanceKind, AffordanceSlot, SlotOccupied, conflicts, has_z, max_occupancy, placed_slots
-from arena_simulation_setup.utils.face import front_angle
+from arena_simulation_setup.tree.World.Scenario import Scenario, TeleportZone
+from arena_simulation_setup.utils import affordance
+from arena_simulation_setup.utils.affordance import AffordanceClaims, AffordanceKind, AffordanceSlot, SlotOccupied, conflicts, has_z, max_occupancy, placed_slots, seat_reach, seat_slot
+from arena_simulation_setup.utils.face import front_angle, queue_theta
 from geometry_msgs.msg import (
     Point,
     Point32,
@@ -120,7 +123,7 @@ from visualization_msgs.msg import MarkerArray
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.rng import stable_int
 from arena_runtime.env.realizer import Realizer
-from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, Segment
+from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, ScenarioCheckError, Segment
 from arena_runtime.humans.itinerary import STIMULUS_TELEPORTED, ItineraryDriver, Stop, semantic_atom
 from arena_runtime.humans.support import Support, seat_stand
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
@@ -180,9 +183,8 @@ class _TargetOnly(Exception):
 
 
 def facing_pose(pose: Pose2DMsg, front: float) -> Pose2DMsg:
-    """The pose the engine approaches and queues an object from: it lines people up behind its theta, so theta turns until that side is the front at angle front in the object's frame."""
-    theta = pose.theta + front - math.pi
-    return Pose2DMsg(x=pose.x, y=pose.y, theta=math.atan2(math.sin(theta), math.cos(theta)))
+    """The pose the engine approaches and queues an object from (`queue_theta`)."""
+    return Pose2DMsg(x=pose.x, y=pose.y, theta=queue_theta(pose.theta, front))
 
 
 def seat_capacity(humansim: Mapping[str, typing.Any], slots: Sequence[AffordanceSlot]) -> int:
@@ -199,9 +201,6 @@ def slot_height(slot: AffordanceSlot) -> float:
     return slot.bbox[2][1] if has_z(slot.bbox) else math.nan
 
 
-SEAT_SLOT_REACH = 0.15  # m, a scenario seat this close to a sit slot's footprint takes that slot's height
-
-
 def seat_height(seat: Pose, slots: Sequence[AffordanceSlot]) -> float:
     """Surface height of a scenario seat in the object frame, NaN when unknown.
 
@@ -214,35 +213,9 @@ def seat_height(seat: Pose, slots: Sequence[AffordanceSlot]) -> float:
     return math.nan if slot is None else slot_height(slot)
 
 
-def seat_slot(seat: Pose, slots: Sequence[AffordanceSlot]) -> AffordanceSlot | None:
-    """The sit slot with a z range a scenario seat lies in or next to (within SEAT_SLOT_REACH), the nearest center among overlapping ones."""
-    xy = (seat.position.x, seat.position.y)
-    near = [slot for slot in slots if has_z(slot.bbox) and slot.distance(xy) <= SEAT_SLOT_REACH]
-    return min(near, key=lambda slot: (slot.distance(xy), math.dist(slot.center, xy))) if near else None
-
-
-def box_reach(seat: Pose, box: Sequence[Sequence[float]], behind: bool = False) -> float:
-    """How far ahead of a seat along its facing, or behind it, an object-frame box ends."""
-    yaw = seat.orientation.to_yaw() + (math.pi if behind else 0.0)
-    reach = math.inf
-    for (low, high), at, step in zip(box[:2], (seat.position.x, seat.position.y), (math.cos(yaw), math.sin(yaw)), strict=True):
-        if step > 1e-9:
-            reach = min(reach, (high - at) / step)
-        elif step < -1e-9:
-            reach = min(reach, (low - at) / step)
-    return max(0.0, reach)
-
-
-def seat_reach(seat: Pose, slot: AffordanceSlot, behind: bool = False) -> float:
-    """How far ahead of a seat along its facing, or behind it, its slot's box ends, in the object frame."""
-    return box_reach(seat, slot.bbox, behind)
-
-
 def seat_approach(seat: Pose, front: float | None, bounding_box: Sequence[Sequence[float]] | None) -> float:
     """Where a sitter stands ahead of a seat before it sits (`seat_stand`), never inside the object's bounding box, 0 for a seat outside every slot."""
-    if front is None:
-        return 0.0
-    return max(seat_stand(front), 0.0 if bounding_box is None else box_reach(seat, bounding_box))
+    return affordance.seat_approach(seat, front, bounding_box, seat_stand)
 
 
 @attrs.frozen
@@ -467,6 +440,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._prev_agent_states: AgentFrameMsg | None = None
         self._curr_agent_states: AgentFrameMsg | None = None
         self._engine_stamp_ns: int | None = None
+        # sim time of the last reset that removed every agent: an engine frame stamped at or before it is the old episode's
+        self._removed_at_ns: int | None = None
         self._agent_gestures: dict[int, list[EngineGestureMsg]] = {}
         self._agent_types: dict[int, str] = {}
         self._agent_sources: dict[int, AgentSource] = {}
@@ -478,6 +453,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._bridge_agent_ids: set[int] = set()
         # IDs of flow agents (source/sink) with a live actor in the simulator
         self._flow_agent_ids: set[int] = set()
+        # counts the resets that removed every agent: the update loop drops a pass a reset overtook
+        self._removals = 0
         self._flow_meta_wait: dict[int, int] = {}
         self._tagged_models: dict[tuple[str, ...], list[HumanIdentifier]] = {}
         self._warned_untagged_types: set[str] = set()
@@ -518,6 +495,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._seat_slots: dict[str, list[AffordanceSlot]] = {}
         self._seats: dict[str, list[Seat]] = {}
         self._warned_faces: set[str] = set()
+        self._warned_models: set[str] = set()
         self._seat_holds: dict[int, SeatHold] = {}
         self._supports: dict[int, Support] = {}
         self._seat_violation_reported = False
@@ -631,7 +609,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return {object_id: seats for object_id, seats in self._held_seats.items() if object_id in self._seat_slots}
 
     def _agent_states_callback(self, msg: AgentFrameMsg):
-        """Cache prev/curr snapshots from arena_humansim for local interpolation."""
+        """Cache prev/curr snapshots from arena_humansim for local interpolation; drop a frame the engine sent before the
+        last reset that removed every agent, which would put the old episode's walkers back."""
+        stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
+        if self._removed_at_ns is not None and stamp_ns <= self._removed_at_ns:
+            return
         self._prev_agent_states = self._curr_agent_states
         self._curr_agent_states = msg
         self._engine_stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
@@ -1090,6 +1072,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                         peds = self._arena_pedestrians
                     if not peds.pedestrians:
                         continue
+                    removals = self._removals
 
                     states = self._curr_agent_states
                     if states is not None and not self._spawns_in_flight:
@@ -1100,19 +1083,23 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
                         if new_ids:
                             index_by_id = {aid: i for i, aid in enumerate(states.agent_id)}
-                            to_spawn: list[DynamicObstacle] = []
+                            to_spawn: list[tuple[int, DynamicObstacle]] = []
                             for aid in sorted(new_ids):
                                 waited = self._flow_meta_wait.get(aid, 0)
                                 if aid not in self._agent_types and waited < self.FLOW_META_TICKS:
                                     self._flow_meta_wait[aid] = waited + 1
                                     continue
                                 self._flow_meta_wait.pop(aid, None)
+                                to_spawn.append((aid, self._make_flow_dynamic_obstacle(states, index_by_id[aid], await self._flow_model(aid))))
+                            spawnable = await self._ensure_spawnable([obs for _, obs in to_spawn]) if to_spawn else []
+                            if self._removals != removals:
+                                # a reset removed every agent meanwhile: these agents and the roster are the old episode's
+                                continue
+                            for aid, obs in to_spawn:
                                 self._flow_agent_ids.add(aid)
-                                obs = self._make_flow_dynamic_obstacle(states, index_by_id[aid], await self._flow_model(aid))
                                 self._agent_names[aid] = obs.sim_path
-                                to_spawn.append(obs)
-                            if to_spawn:
-                                await self._simulator.pedestrian_spawn(await self._ensure_spawnable(to_spawn))
+                            if spawnable:
+                                await self._simulator.pedestrian_spawn(spawnable)
 
                         for aid in self._flow_meta_wait.keys() - current_ids:
                             del self._flow_meta_wait[aid]
@@ -1125,11 +1112,22 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                                 to_delete.append(self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))))
                             await self._simulator.pedestrian_delete(to_delete)
 
-                    await self.relay_pedestrian_update(peds)
+                    if self._removals != removals:
+                        continue
+                    await self.relay_pedestrian_update(self._named(peds))
         except asyncio.CancelledError:
             pass
         except Exception as e:
             self._logger.error(f"Error in pedestrian update loop: {e}\n{traceback.format_exc()}")
+
+    def _named(self, peds: Pedestrians) -> Pedestrians:
+        """The roster's pedestrians under the name their simulator body has. An agent the update loop has not taken in
+        yet goes by its bare id in the roster; a body made under that name would never be deleted, it would stay
+        where the agent was first seen, moving on at that velocity, after the agent got its own body."""
+        out = Pedestrians()
+        out.header = peds.header
+        out.pedestrians = [ped for ped in peds.pedestrians if self._agent_names.get(ped.id) == ped.name]
+        return out
 
     async def _feedback_loop(self):
         """Publish dirty robot and possessed pedestrian poses on world_state topic, step delayed spawns and itineraries."""
@@ -1238,24 +1236,30 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return shape
 
     def _polygon_centroid(self, polygon: Sequence[Position]) -> tuple[float, float]:
-        """The point a region is sent around: the mean of its vertices, or a point inside the polygon where that mean is not.
+        """The point a region is sent around (`use_points.region_point`).
 
         arena_humansim takes the pose as the region's goal. A walker bound for a sink heads for the sink's pose and is
         removed only while that waypoint lies inside the sink's polygon, so a sink posed outside its own polygon (the mean of
         a concave region's vertices, e.g. a square cut to the floor along a wall) never removes anyone.
         """
-        if not polygon:
-            return 0.0, 0.0
-        cx = sum(p.x for p in polygon) / len(polygon)
-        cy = sum(p.y for p in polygon) / len(polygon)
-        if len(polygon) < 3:
-            return cx, cy
-        # the polygonal part only: a zero-width spike would otherwise count its line as inside
-        area = shapely.make_valid(shapely.Polygon([(p.x, p.y) for p in polygon]), method="structure", keep_collapsed=False)
-        if area.is_empty or area.contains(shapely.Point(cx, cy)):
-            return cx, cy
-        inner = area.point_on_surface()
-        return float(inner.x), float(inner.y)
+        return use_points.region_point([(p.x, p.y) for p in polygon])
+
+    async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
+        """Raise ScenarioCheckError listing what of `scenario` the crowd cannot reach (`use_points.check`), unless `human.check` is
+        off; models that do not resolve only warn, once per model, under `human.check.models:=warn`."""
+        if not self.node.conf.Human.CHECK.value:
+            return
+        findings = await asyncio.to_thread(use_points.check, view, world, scenario, scenario_dir=scenario_dir, origins=origins, stand=seat_stand)
+        if self.node.conf.Human.CHECK_MODELS.value == "warn":
+            models = [f for f in findings if f.point == "model" and f.why not in self._warned_models]
+            self._warned_models.update(f.why for f in models)
+            if models:
+                self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r} (human.check.models:=warn): {use_points.describe(models)}")
+            findings = [f for f in findings if f.point != "model"]
+        if detours := [f for f in findings if f.detour]:
+            self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: walkers may take detours, outside the building too: {use_points.describe(detours)}")
+        if findings := use_points.blocking(findings):
+            raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {use_points.describe(findings)}. Fix them, or launch with human.check:=false (human.check.models:=warn lets models that do not resolve pass)")
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
         """Add the regions one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.
@@ -1799,13 +1803,21 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._logger.warning(f"arena_humansim kept its seed, the crowd will not follow the episode seed: {reason}")
 
     async def _remove_pedestrians_impl(self) -> bool:
-        """Remove all dynamic agents from arena_humansim."""
+        """Remove all dynamic agents from arena_humansim, and the simulator's bodies of its flow agents.
+
+        The simulator keeps a flow agent's body until it is deleted: one left in place would stand where its agent was at
+        the reset, moving on at its last velocity, seen by the robots' sensors but by no crowd measure, until an agent of a
+        later episode takes over its name."""
         request = RemoveAgents.Request()
         request.agent_ids = []  # empty = remove all
 
         try:
             await self._seed_engine()
             response = await self._remove_client.call_timeout(request)
+            self._removals += 1
+            now = self.node.sim_time
+            self._removed_at_ns = now.sec * int(1e9) + now.nanosec
+            flow = [self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))) for aid in sorted(self._flow_agent_ids)]
             self._next_deferred_id = _DEFERRED_ID_BASE
             self._deferred_spawns.clear()
             self._itineraries.clear()
@@ -1826,6 +1838,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._apply_interactions({}, {})
             self._arena_pedestrians = Pedestrians()
             self._arena_pedestrians.header.frame_id = "map"
+            if flow:
+                try:
+                    await self._simulator.pedestrian_delete(flow)
+                except Exception as e:
+                    self._logger.error(f"deleting the simulator bodies of {len(flow)} removed walkers failed: {e}")
             await self._publish_interpolated()
             if response is None:
                 self._logger.error("RemoveAgents timed out")

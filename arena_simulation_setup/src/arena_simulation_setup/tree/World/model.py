@@ -54,6 +54,18 @@ MICROPHONE_PLACEMENT_TOLERANCE_M = 0.05
 AUTO_CEILING_LIGHTS = CeilingLights(fixture='panel', spacing=2.4, lumens=7200.0, cct_K=6500.0)
 
 _ON_LINE_M = 0.01
+#: How far either side of its line a door passes through a wall [m]: a wall drawn as the outlines of the two rooms it
+#: parts has two lines, and the shipped worlds leave a gap for a door in every wall line up to 0.075 m off the door's
+DOOR_DEPTH_M = 0.1
+#: A walker passes a door when no wall meets its passage: the strip this far either side of the door's line, from
+#: `DOOR_DEPTH_M` inside one jamb to as far inside the other [m]
+DOOR_PASSAGE_M = 0.15
+#: A door's side lies outside when the point this far off the middle of its span lies in no zone [m]
+_DOOR_SIDE_M = 0.3
+#: A gap between walls narrower than this lets no walker's body through: HumanSim's smallest body radius, twice [m]
+_BODY_GAP_M = 0.3
+#: The outside of a level counts as shut when walkers reach less than this of it from inside [m2]
+_OUTSIDE_M2 = 0.5
 _MIN_PIECE_M = 1e-4
 _ADJACENT_M = 0.3
 _PASSAGE_CLEARANCE = 2.0
@@ -382,6 +394,80 @@ class Level:
                 raw.extend(_cut(edge, _shared_spans(a, b, open_polygons)))
         door_spans = [(door.start, door.end) for door in self.doors]
         return [piece for wall in _merge(raw) for piece in _cut(wall, door_spans)]
+
+    def exterior_doors(self) -> list[Door]:
+        """The doors with one side in no zone of the level: the point `_DOOR_SIDE_M` off the middle of the span."""
+        import shapely
+
+        zones = [zone.shape() for zone in self.zones if len(zone.polygon) >= 3]
+        if not zones:
+            return []
+        inside = shapely.union_all(zones)
+        shapely.prepare(inside)
+        exterior = []
+        for door in self.doors:
+            dx, dy = door.end.x - door.start.x, door.end.y - door.start.y
+            length = math.hypot(dx, dy)
+            if length == 0.0:
+                continue
+            mx, my, nx, ny = (door.start.x + door.end.x) / 2, (door.start.y + door.end.y) / 2, -dy / length * _DOOR_SIDE_M, dx / length * _DOOR_SIDE_M
+            if inside.covers(shapely.Point(mx + nx, my + ny)) != inside.covers(shapely.Point(mx - nx, my - ny)):
+                exterior.append(door)
+        return exterior
+
+    def outside_reached(self, extra: Iterable[Wall] = ()) -> float:
+        """How much floor outside the level's zones and door spans a walker reaches from inside, through every gap of
+        `all_walls` and `extra` a body passes (`_BODY_GAP_M`) [m2]: the crowd simulator walks its walkers wherever the
+        walls leave room, outside the building too."""
+        import shapely
+
+        zones = [zone.shape() for zone in self.zones if len(zone.polygon) >= 3]
+        if not zones:
+            return 0.0
+        inside = shapely.union_all(zones)
+        spans = [shapely.Polygon([(c.x, c.y) for c in door.corners]) for door in self.doors]
+        walls = [shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in (*self.all_walls, *extra)]
+        free = inside.envelope.buffer(5.0).difference(shapely.union_all(walls).buffer(_BODY_GAP_M / 2)) if walls else inside.envelope.buffer(5.0)
+        seed = inside.buffer(-1.0)
+        reached = [part for part in shapely.get_parts(free) if part.intersects(seed)]
+        if not reached:
+            return 0.0
+        return float(shapely.union_all(reached).difference(shapely.union_all([inside, *spans]).buffer(_DOOR_SIDE_M)).area)
+
+    def outside_walls(self) -> list[Wall]:
+        """A wall across each exterior door, for the crowd simulator only, so its walkers stay inside: it lets them walk
+        wherever the walls leave room, and they cut along the outer walls from one exterior door to the next. None where
+        the level's outside stays open with them (an outdoor scene, a building with a gap in its outer walls)."""
+        closers = [Wall(start=door.start, end=door.end) for door in self.exterior_doors()]
+        return closers if closers and self.outside_reached(closers) < _OUTSIDE_M2 else []
+
+    def walled_doors(self) -> list[Door]:
+        """The doors a wall of `all_walls`, the walls the crowd simulator gets, runs across or into: a wall meets the
+        door's passage, the strip `DOOR_PASSAGE_M` either side of its line from `DOOR_DEPTH_M` inside one jamb to as far
+        inside the other (a quarter of the span for a door narrower than four times that). The walls a door sits in end
+        at its jambs; a wall that crosses the door, or one that ends inside its span, such as a partition between two
+        rooms, splits it."""
+        import shapely
+
+        walls = [shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in self.all_walls]
+        if not walls:
+            return []
+        tree = shapely.STRtree(walls)
+        walled = []
+        for door in self.doors:
+            dx, dy = door.end.x - door.start.x, door.end.y - door.start.y
+            length = math.hypot(dx, dy)
+            if length == 0.0:
+                continue
+            ux, uy = dx / length, dy / length
+            nx, ny = -uy * DOOR_PASSAGE_M, ux * DOOR_PASSAGE_M
+            inset = min(DOOR_DEPTH_M, length / 4)
+            ax, ay = door.start.x + ux * inset, door.start.y + uy * inset
+            bx, by = door.end.x - ux * inset, door.end.y - uy * inset
+            passage = shapely.Polygon([(ax - nx, ay - ny), (bx - nx, by - ny), (bx + nx, by + ny), (ax + nx, ay + ny)])
+            if len(tree.query(passage, predicate='intersects')):
+                walled.append(door)
+        return walled
 
     def adjacent_zones(self, start: Position, end: Position) -> list[Zone]:
         """Zones whose polygon, widened by a margin, holds the middle of a segment."""
@@ -745,13 +831,17 @@ class Level:
         asset_color: str | None = None,
         asset_name_color: str | None = None,
         static_objects: Iterable[tuple[str, shapely.Polygon]] = (),
+        open_doors: bool = True,
     ) -> dict[str, typing.Any]:
         import shapely
         import shapely.affinity
 
+        rooms = [zone.shape() for zone in self.zones if len(zone.polygon) >= 3]
+        doors = [poly for door in self.doors for poly in render_door_polygons(door)]
         map_kwargs: dict[str, typing.Any] = {
-            'rooms': shapely.MultiPolygon([zone.shape() for zone in self.zones if len(zone.polygon) >= 3]),
-            'doors': shapely.MultiPolygon([poly for door in self.doors for poly in render_door_polygons(door)]),
+            # open_doors: the doors drawn free over the walls; else floor beneath them, open only where `all_walls` leaves a gap
+            'rooms': shapely.MultiPolygon(rooms if open_doors else [*rooms, *shapely.force_2d(doors)]),
+            'doors': shapely.MultiPolygon(doors if open_doors else []),
             'cabins': shapely.MultiPolygon([poly for elevator in self.elevators for poly in render_elevator_polygons(elevator)]),
             'walls': shapely.MultiLineString([[(wall.start.x, wall.start.y), (wall.end.x, wall.end.y)] for wall in self.all_walls]),
             'padding': 5,
@@ -795,9 +885,24 @@ class Level:
         asset_color: str | None = None,
         asset_name_color: str | None = None,
         static_objects: Iterable[tuple[str, shapely.Polygon]] = (),
+        open_doors: bool = True,
     ) -> tuple[np.ndarray, tuple[float, float]]:
-        """Like `render` but returns a uint8 numpy array (255=free, 0=occupied) + origin, drawing `static_objects` (name, map-frame polygon) alongside the entity boxes."""
-        return Map.rasterize(resolution=resolution, **self._rasterize_kwargs(default_asset_bbox=default_asset_bbox, asset_color=asset_color, asset_name_color=asset_name_color, static_objects=static_objects))
+        """Like `render` but returns a uint8 numpy array (255=free, 0=occupied) + origin, drawing `static_objects` (name,
+        map-frame polygon) alongside the entity boxes. `open_doors=False` draws the walls over the doors, so a door is
+        free only where `all_walls`, the walls the crowd simulator gets, leaves a gap for it."""
+        return Map.rasterize(resolution=resolution, **self.grid_shapes(default_asset_bbox=default_asset_bbox, asset_color=asset_color, asset_name_color=asset_name_color, static_objects=static_objects, open_doors=open_doors))
+
+    def grid_shapes(
+        self,
+        *,
+        default_asset_bbox: tuple[tuple[float, float], tuple[float, float]] | None = None,
+        asset_color: str | None = None,
+        asset_name_color: str | None = None,
+        static_objects: Iterable[tuple[str, shapely.Polygon]] = (),
+        open_doors: bool = True,
+    ) -> dict[str, typing.Any]:
+        """The shapes `render_grid` draws, by `Map.rasterize` keyword: free `rooms`, `doors` and `cabins`, occupied `walls` and `static_objects`."""
+        return self._rasterize_kwargs(default_asset_bbox=default_asset_bbox, asset_color=asset_color, asset_name_color=asset_name_color, static_objects=static_objects, open_doors=open_doors)
 
     def render_map_files(
         self,

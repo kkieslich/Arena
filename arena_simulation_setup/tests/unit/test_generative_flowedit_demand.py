@@ -85,6 +85,14 @@ def test_a_function_edit_that_gives_demand_drops_inert(local_root: Path) -> None
     assert _facts(site.graph, TRASHCAN, INERT)
 
 
+def test_a_formation_only_function_edit_drops_inert(local_root: Path) -> None:
+    site = open_site(HOSPITAL, "queue")
+    site.graph.add_fact(TRASHCAN, INERT, True, {"by": "class"})
+    edited = apply(site, "function", TRASHCAN, {"formation": {"type": "line", "params": {"base_step": 1.0}}})
+    assert _facts(edited.graph, TRASHCAN, "has_formation") == [("formation:line", {"base_step": 1.0})]
+    assert not _facts(edited.graph, TRASHCAN, INERT)
+
+
 def test_the_reader_leaves_inert_objects_alone(queue: Scene) -> None:
     plain = plan_needs(read_graph(queue), S.load(), "0", [])
     queue.add_fact(TRASHCAN, INERT, True, {"by": "class"})

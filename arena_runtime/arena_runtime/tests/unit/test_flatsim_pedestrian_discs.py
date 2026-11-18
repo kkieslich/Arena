@@ -49,3 +49,19 @@ def test_a_disc_takes_the_pedestrians_radius_ped_radius_without_one_and_keeps_it
         await _until(lambda: disc(unknown) == pytest.approx((0.18, 3.0)), "the disc resized once its radius is known")
 
     on_flatsim(body)
+
+
+def test_removing_the_world_deletes_every_disc_and_a_later_pedestrian_of_the_same_name_gets_a_fresh_one(on_flatsim):
+    async def body(sim, world):
+        standing, walking = sim._name("flow_1220"), sim._name("flow_7")
+        await sim.pedestrian_update(_peds(("flow_1220", 1.0, 0.33), ("flow_7", 3.0, 0.25)))
+        await _until(lambda: standing in world._entities and walking in world._entities, "both discs")
+        assert await sim.remove_world()
+        # a disc no one deletes would stay where its pedestrian was, seen by the robots' sensors
+        await _until(lambda: standing not in world._entities and walking not in world._entities, "no disc after the world went")
+        await sim.pedestrian_update(_peds(("flow_7", 5.0, 0.22)))
+        await _until(lambda: walking in world._entities, "the new pedestrian's disc")
+        assert (world._entities[walking].radius, world._entities[walking].pose[0]) == pytest.approx((0.22, 5.0))
+        assert standing not in world._entities
+
+    on_flatsim(body)

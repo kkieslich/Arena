@@ -112,6 +112,8 @@ class RobotParams(ParamGroup):
 class HumanParams(ParamGroup):
     ROBOTS_VISIBLE = Param[bool]('human.robots.visible', True, 'false = the human backend leaves the robots out of what it tells its pedestrians.')
     SKELETON = Param[bool]('human.skeleton', True, 'false = arena_peds carries no joint states or body poses and animation_states is not published: no pedestrian skeleton for renderers, rviz or a recording; poses and motion stay.')
+    CHECK = Param[bool]('human.check', True, "false = the arena human backend lets an episode start whose scenario fails its check (use_points.check): a model that does not resolve, or a use point, queue slot, seat, source, sink, start, waypoint or room the crowd cannot reach.")
+    CHECK_MODELS = Param[str]('human.check.models', 'fail', 'What the check does with models that do not resolve: fail the episode, or warn once per model and let it start (the point checks still fail it).', constraint=Choices('fail', 'warn'))
 
 
 class EpisodeParams(ParamGroup):

@@ -359,6 +359,21 @@ keys below go in the entry's `humansim:` block (`Obstacle.humansim`):
 The pose theta the engine receives is the object's yaw turned to the model's annotated `face`, and queues form at
 that front. An object without an annotated `face` keeps its yaw, so queues form behind it (at yaw + 180 degrees).
 
+At every episode start of a scenario task, `ArenaHumanSimulator.check_scenario` runs
+[`use_points.check`](../../../../arena_simulation_setup/src/arena_simulation_setup/metrics/use_points.py) on the world
+and the loaded scenario and fails the episode (`ScenarioCheckError`) naming every finding: a model that does not
+resolve, or a point the crowd cannot reach (a sought object's use point and first queue slots, a seat's standing point,
+a source, a sink, a human's start, waypoints and go_to stops, a room people are sent to). The error groups the models
+that do not resolve by model, with each bucket's answer (it does not hold the model, or why the fetch failed), and
+lists the points. A point only HumanSim's narrowest routes reach (a detour, see the check) is logged as a warning and
+does not fail the episode. `human.check:=false` skips the check, `human.check.models:=warn` lets models that do not
+resolve pass with one warning per model. Any other error inside the check fails the reset too.
+
+HumanSim lets its walkers walk wherever the walls leave room, outside the building too, where they cut along the outer
+walls from one exterior door to the next. The runtime hands it, and no other simulator, a wall across every exterior
+door of a level (`Level.outside_walls`: a door with one side in no zone) where that shuts the level's outside; an
+outdoor scene, whose outside stays open other than at its doors, keeps its doors open. Sources and sinks lie inside.
+
 ```yaml
 objects:
   - name: reception_desk
