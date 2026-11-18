@@ -491,9 +491,11 @@ class RobotManager(NodeInterface):
         self._capacity_wh = capacity_wh
         self._capacity_pub.publish(std_msgs.msg.Float64(data=capacity_wh))
 
-    def reset_battery(self, rng: EpisodeRng, capacity_wh: float, soc_min: float, soc_max: float) -> None:
-        """Send the episode's battery capacity, then the start charge drawn for this robot."""
-        soc = self.initial_soc(rng, soc_min, soc_max)
+    def reset_battery(self, rng: EpisodeRng, capacity_wh: float, soc_min: float, soc_max: float, start: float | None = None) -> None:
+        """Send the episode's battery capacity, then the start charge: `start` in percent where given (the robot's charge in the episode's charge state), else drawn for this robot from `soc_min` to `soc_max`."""
+        if start is not None and not 0.0 <= start <= 100.0:
+            raise ValueError(f"a start charge is a percentage between 0 and 100, got {start!r}")
+        soc = self.initial_soc(rng, soc_min, soc_max) if start is None else float(start)
         self.publish_battery_capacity(capacity_wh)
         self.publish_soc(soc)
 

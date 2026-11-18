@@ -44,6 +44,7 @@ from rclpy.lifecycle import TransitionCallbackReturn
 from rclpy.parameter import Parameter
 from std_msgs.msg import Bool, Empty, Int16, String
 
+from arena_runtime.env import charge_states
 from arena_runtime.env.adapters import ResetContext
 from arena_runtime.env.catalogs import LISTERS
 from arena_runtime.env.constants import Constants
@@ -884,8 +885,11 @@ class EpisodeNode(EnvNode):
                     return_exceptions=True,
                 )
                 robot_conf = self.conf.Robot
-                for manager in self._robots_manager.managers.values():
-                    manager.reset_battery(self.conf.General.RNG, robot_conf.BATTERY_CAPACITY_WH.value, robot_conf.BATTERY_SOC_MIN.value, robot_conf.BATTERY_SOC_MAX.value)
+                # with a file of charge states: one state for this episode's seed, each robot its place in it
+                state = charge_states.draw(charge_states.load(robot_conf.BATTERY_SOC_FILE.value), self.conf.General.RNG.stream(*charge_states.STREAM)) if robot_conf.BATTERY_SOC_FILE.value else None
+                for index, manager in enumerate(self._robots_manager.managers.values()):
+                    start = {} if state is None else {"start": charge_states.start_charge(state, index)}
+                    manager.reset_battery(self.conf.General.RNG, robot_conf.BATTERY_CAPACITY_WH.value, robot_conf.BATTERY_SOC_MIN.value, robot_conf.BATTERY_SOC_MAX.value, **start)
                 clock.lap("robot_reset")
                 reasons: list[str] = []
                 for name, outcome in zip(self._robots_manager.managers, robot_outcomes, strict=True):

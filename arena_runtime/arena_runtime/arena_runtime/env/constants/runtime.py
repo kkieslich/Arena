@@ -95,6 +95,7 @@ class RobotParams(ParamGroup):
     GOAL_SIGNAL = Param[str]('task.episode.goto_pose.signal', '', 'Signal the robot must send to end a goto_pose phase, such as arrived (empty = Arena judges arrival).')
     BATTERY_SOC_MIN = Param[float]('task.episode.battery.soc.min', 40.0, 'Lowest battery charge in percent (0 to 100) a robot starts an episode with, drawn per episode seed and robot name.', parse=_percent)
     BATTERY_SOC_MAX = Param[float]('task.episode.battery.soc.max', 100.0, 'Highest battery charge in percent (0 to 100, at least soc.min) a robot starts an episode with, drawn per episode seed and robot name.', parse=_percent)
+    BATTERY_SOC_FILE = Param[str]('task.episode.battery.soc.file', '', 'File of charge states (env/charge_states.py) the robots start an episode from: one state drawn per episode seed, each robot the charge at its place in it; empty: each robot draws from soc.min to soc.max.')
     BATTERY_CAPACITY_WH = Param[float]('task.episode.battery.capacity_wh', 0.0, "Battery capacity in Wh every robot runs with, sent to its power publisher at each reset before its start charge (0 = the robot's own power.yaml).", parse=_capacity_wh)
     NODE_PING_PERIOD = Param[float]('task.episode.node_ping.period', 10.0, 'Wall seconds between pings of the nodes of this env, also the time a node has to answer.')
     NODE_PING_MISSES = Param[int]('task.episode.node_ping.misses', 3, 'Pings in a row a node may miss before it counts as hung, 0 turns the check off.')

@@ -195,6 +195,20 @@ def test_the_reset_sends_the_battery_capacity_before_the_start_charge() -> None:
     assert sent == [("capacity_wh", 15.0), ("soc_percent", soc), ("capacity_wh", 0.0), ("soc_percent", soc)]
 
 
+def test_a_start_charge_from_a_charge_state_replaces_the_robots_own_draw() -> None:
+    manager = _manager_in_env(0, "jackal")
+    sent: list[tuple[str, float]] = []
+    manager._capacity_pub = SimpleNamespace(publish=lambda msg: sent.append(("capacity_wh", msg.data)))
+    manager._soc_pub = SimpleNamespace(publish=lambda msg: sent.append(("soc_percent", msg.data)))
+    manager.reset_battery(_rng(3), 0.0, 40.0, 100.0, start=17.5)
+    assert sent == [("capacity_wh", 0.0), ("soc_percent", 17.5)] and manager.soc == 17.5
+    # without one the robot draws its own, as before
+    manager.reset_battery(_rng(3), 0.0, 40.0, 100.0)
+    assert sent[-1] == ("soc_percent", manager.initial_soc(_rng(3), 40.0, 100.0))
+    with pytest.raises(ValueError, match="between 0 and 100"):
+        manager.reset_battery(_rng(3), 0.0, 40.0, 100.0, start=120.0)
+
+
 def test_a_start_charge_range_with_its_min_above_its_max_fails_the_reset_before_anything_is_sent() -> None:
     manager = _manager_in_env(0, "jackal")
     sent: list[float] = []
