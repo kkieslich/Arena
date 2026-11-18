@@ -67,15 +67,13 @@ def _cmd_demand(args: argparse.Namespace) -> int:
     from . import demand_propose as DP
 
     root = world_root(args.worlds, args.world)
-    scenario = root / "scenarios" / args.scenario / "scenario.yaml" if args.scenario else None
-    if scenario is not None and not scenario.is_file():
-        raise FileNotFoundError(f"no scenario {args.scenario!r} at {scenario}")
     notes: list[str] = []
     classes = D.load_classes()
 
     def filled() -> tuple[Scene, D.Tags]:
         notes.clear()
-        scene = build(root, scenario, args.seed, notes)
+        # an edited world is read from its saved graph, which holds what its edits decided
+        scene = open_site(root, args.scenario, args.seed, notes).graph
         tags = _no_tags if args.name_only else D.world_tags(root, scene)
         D.prefill(scene, args.prefill, tags, notes, classes, D.load_proposals(args.proposals), name_only=args.name_only)
         return scene, tags
@@ -335,7 +333,7 @@ def _parser() -> argparse.ArgumentParser:
     p = verbs.add_parser(
         "demand",
         help="show who decided each object's demand, and ask a model about the rest",
-        description=f"build the graph of a world and scenario with its demand pre-filled and print, per asset model, how many objects it has, what they are decided as and by whom ({D.AUTHORED}, {', '.join(D.Stage)}, {D.UNDECIDED}); exits 1 while an object is undecided. --propose prints the prompt for the undecided models that have no proposal yet, --propose --write asks the model and stores its answers",
+        description=f"build the graph of a world and scenario, or read an edited world's saved graph, with its demand pre-filled and print, per asset model, how many objects it has, what they are decided as and by whom ({D.AUTHORED}, {', '.join(D.Stage)}, {D.UNDECIDED}); exits 1 while an object is undecided. --propose prints the prompt for the undecided models that have no proposal yet, --propose --write asks the model and stores its answers",
     )
     p.add_argument("world", help="the world to build from")
     p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
@@ -344,7 +342,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--propose", action="store_true", help="ask a model for the class of the undecided models (a dry run that prints the prompt without --write)")
     p.add_argument("--model", default=None, help="the model to ask (default: $ARENA_PROMPT_LLM, else utils/llm.py's DEFAULT_MODEL)")
     p.add_argument("--proposals", type=Path, default=D.PROPOSALS, help=f"the proposals file to read and write (default: {D.PROPOSALS.name} of the package)")
-    p.add_argument("--seed", type=int, default=0, help="seed of the point drawn for an object posed at a zone name (default 0)")
+    p.add_argument("--seed", type=int, default=None, help="seed of the point drawn for an object posed at a zone name (default 0, or the seed an edited world was built with)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds)")
     p.add_argument("--write", action="store_true", help="with --propose: ask the model and write its proposals (default: print the prompt)")
     p.set_defaults(fn=_cmd_demand)

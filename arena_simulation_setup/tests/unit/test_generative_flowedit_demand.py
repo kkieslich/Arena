@@ -106,6 +106,50 @@ def test_a_formation_only_function_edit_drops_inert(local_root: Path) -> None:
     assert not _facts(edited.graph, TRASHCAN, INERT)
 
 
+def test_clearing_an_objects_demand_decides_it_inert(local_root: Path) -> None:
+    site = open_site(HOSPITAL, "queue")
+    cleared = apply(site, "function", "obj:fountain", {"clear": True})
+    origin = {"from": f"edit:{cleared.edits[-1].id}"}
+    assert _facts(cleared.graph, "obj:fountain", INERT) == [(True, origin)]
+    assert D.source(cleared.graph, "obj:fountain") == D.AUTHORED
+    refilled = apply(cleared, "function", "obj:fountain", {"type": "fountain", "capacity": 1})
+    assert not _facts(refilled.graph, "obj:fountain", INERT)
+    replaced = apply(site, "function", "obj:fountain", {"clear": True, "type": "fountain", "capacity": 2})
+    assert not _facts(replaced.graph, "obj:fountain", INERT)
+
+
+def test_a_move_leaving_its_demand_behind_leaves_the_object_inert(local_root: Path) -> None:
+    moved = apply(open_site(HOSPITAL, "queue"), "move", "obj:fountain", {"x": 15.0, "y": 11.5, "leave_demand": True})
+    assert _facts(moved.graph, "obj:fountain", INERT) == [(True, {"from": f"edit:{moved.edits[-1].id}"})]
+    assert _facts(moved.graph, "obj:fountain_demand", "satisfies")
+    assert not D.check(moved.graph)
+
+
+def test_an_insert_without_demand_is_inert_and_one_with_demand_is_not(local_root: Path) -> None:
+    site = open_site(HOSPITAL, "queue")
+    bare = apply(site, "insert", "obj:bin_2", {"model": "Hospital/SM_TrashCan", "x": 20.0, "y": 5.0})
+    assert _facts(bare.graph, "obj:bin_2", INERT) == [(True, {"from": f"edit:{bare.edits[-1].id}"})]
+    served = apply(site, "insert", "obj:fountain_2", {"model": "Hospital/SM_WaterDispenser_01a", "x": 20.0, "y": 5.0, "type": "fountain", "capacity": 1, "satisfies": {"thirst": 80.0}})
+    assert not _facts(served.graph, "obj:fountain_2", INERT)
+
+
+def test_a_pre_fill_leaves_what_an_edit_decided(local_root: Path) -> None:
+    cleared = apply(open_site(HOSPITAL, "queue"), "function", "obj:fountain", {"clear": True})
+    before = _demand(cleared.graph, "obj:fountain")
+    D.prefill(cleared.graph, list(D.Stage), no_tags, name_only=True)
+    assert _demand(cleared.graph, "obj:fountain") == before
+
+
+def test_cli_demand_reads_an_edited_worlds_saved_graph(local_root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from arena_simulation_setup.generative.flowedit.edit import save
+
+    inserted = apply(open_site(HOSPITAL, "queue"), "insert", "obj:bin_2", {"model": "Hospital/SM_TrashCan", "x": 20.0, "y": 5.0})
+    saved = save(inserted)
+    assert main(["demand", saved.name, "--worlds", str(saved.parent), "--name-only", "--prefill", "class"]) == 1
+    rows = [line for line in capsys.readouterr().out.splitlines() if "Hospital/SM_TrashCan" in line]
+    assert any(" authored " in row and " inert " in row for row in rows)
+
+
 def test_the_reader_leaves_inert_objects_alone(queue: Scene) -> None:
     plain = plan_needs(read_graph(queue), S.load(), "0", [])
     queue.add_fact(TRASHCAN, INERT, True, {"by": "class"})
