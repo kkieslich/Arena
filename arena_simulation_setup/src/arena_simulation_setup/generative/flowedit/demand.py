@@ -9,7 +9,8 @@ walk. A delivery runs from the loading point to that locker, a pickup back the s
 
 Two distances run from a recipient entrance to a locker spot (`Walks`): as people walk, on the floor and over the
 site's stairs and escalators (the site config's `links`), and step-free, on the floor alone, which is what wheelchair
-users take.
+users take. Both run on the walking floor's raster with long moves (`WALK_NEIGHBOURHOOD`): on open floor at most
+1.3 % longer than the straight line for a long walk, 2.1 % over 16 m.
 
 `EntranceSearch` holds the search space on top of a `search.Search` (its spots, pair checks, robot paths and
 occupancy terms) and scores a layout by
@@ -23,8 +24,10 @@ occupancy terms) and scores a layout by
   that serves the entrance, as the group walks.
 
 The picks: `travel_optimal` (least robot travel per job over all valid layouts), `pedestrian_aware` (among the valid
-layouts within a travel cap, the least predicted cost of the worst-off group, `Cost`) and `practice_based` (waiting
-bays nearest the loading point, a locker nearest each group of recipient entrances, chargers nearest the bays).
+layouts within a travel cap, the least predicted cost of the worst-off group, `Cost`; with `step_free`, rule S, the
+layouts that serve every recipient entrance from within the reach step-free come first) and `practice_based`
+(waiting bays nearest the loading point, a locker nearest each group of recipient entrances, chargers nearest the
+bays).
 
 With several lockers the layouts are too many to list (charger spots x bay spots x locker spots to the power of the
 lockers). The search stays exact without listing them, because every score is a sum over the lockers: a term of the
@@ -33,7 +36,8 @@ the entrances it serves (`_Channel`). The lockers of a layout split the entrance
 (`Cover.partitions`: the few ways to split them so that one spot can serve each group). For one way to split them, one
 bay spot and every charger spot at once, the least value of each locker group gives a lower bound; only charger and
 bay spots whose bound beats the best layout found so far are solved exactly, over the locker spots that can still
-beat it (`EntranceSearch.best`). Every pick passes the full check (`place.check_layout` and the NAV@r filter)."""
+beat it (`EntranceSearch.best`). Every pick passes the full check (`place.check_layout` and the NAV@r filter); spots
+and near pairs of spots that fail it on their own are left out beforehand (`EntranceSearch`, `screen`)."""
 
 from __future__ import annotations
 
@@ -66,9 +70,14 @@ REACHES_M = (20.0, 25.0, 30.0, 40.0, 50.0)
 MARGINS = (1.05, 1.10, 1.25)
 #: The link kinds with steps: walkers take them, wheelchair users do not (HumanSim's `climbs`)
 STEP_KINDS = ("stairs", "escalator")
-#: The speed on a link with steps, for the walk in seconds: on a stair flight and on an escalator's belt (the twin's
-#: site config) [m/s]
+#: The speed on a link with steps for the walk in seconds, for a link whose halves have no hold: on a stair flight and on
+#: an escalator's belt (the twin's site config) [m/s]
 LINK_SPEED_MPS = {"stairs": 0.7, "escalator": 0.5}
+#: The speed a walker keeps at most on a still stair (HumanSim's `teleport_zones.STAIR_SPEED`) [m/s]
+STAIR_SPEED_MPS = 0.7
+#: The walks' raster neighbourhood (`search.NEIGHBOURHOODS`): with 32 a long walk on open floor is at most 1.3 % longer
+#: than the straight line (8: 8.2 %); over 16 m the raster's end cells add to it, up to 2.1 % (8: 8.4 %)
+WALK_NEIGHBOURHOOD = 32
 #: The walking speed of each walker group on the floor, for the walk in seconds: HumanSim's desired speeds of the agent
 #: types adult, wheelchair_manual and blind_white_cane [m/s]
 WALK_SPEED_MPS = {"adult": 1.1, "wheelchair": 0.9, "long_cane": 0.75}
@@ -77,6 +86,10 @@ WALK_SPEED_MPS = {"adult": 1.1, "wheelchair": 0.9, "long_cane": 0.75}
 #: wheelchair 2.19, long cane 1.29) times the 1 m exposure over the 2 m exposure of the twin's travel-optimal layout at
 #: a reach of 40 m (0.38, 0.31, 0.42). A weak calibration and a default only: an input, not a constant of the method
 DELAY_PER_EXPOSURE = {"adult": 0.47, "wheelchair": 0.68, "long_cane": 0.55}
+#: Seconds of delay per second on an element's floor, per walker group: the calibration unconverted, since the time on
+#: an element's floor is the same in every band (an element in a walking line delays about as robot traffic does in
+#: the first study's runs, two layouts with wide intervals; a default only)
+DELAY_PER_ELEMENT = {"adult": 1.22, "wheelchair": 2.19, "long_cane": 1.29}
 #: The walker groups that take step-free floor only
 STEP_FREE = ("wheelchair",)
 #: The share of the robots whose waiting spot is a bay slot, the others wait at a charger (`search.HOMES`: 2 and 2)
@@ -142,15 +155,57 @@ class Demand:
         return self.rate_per_h * (1.0 - self.pickup_share)
 
 
+@attrs.frozen
+class _Link:
+    """One way over a link, from the floor cell nearest the boarding half's entry to the one nearest the landing
+    half's: its length in metres (the distance between the two entries), its kind, the boarding half's `delay`, and
+    for the seconds the stretch of each half from its entry to its hold (its seam trigger) with the speed a walker has
+    there: the belt's, or none on a still stair (the walker's own, at most `STAIR_SPEED_MPS`)."""
+
+    head: int
+    tail: int
+    metres: float
+    kind: str
+    delay: float
+    board_m: float | None
+    land_m: float | None
+    board_belt: float
+    land_belt: float
+
+    def seconds(self, speed_mps: float) -> float:
+        """The traverse at a walker's `speed_mps`, as HumanSim prices it: the boarding half from its entry to its hold,
+        the `delay`, and the landing half from its hold to its entry, each half at its belt speed or on a still stair
+        at the walker's speed capped at `STAIR_SPEED_MPS` (`teleport_zones._climb`). Without holds, a link with steps
+        takes its length at `LINK_SPEED_MPS`, another its `delay` (else its length at the walker's speed)."""
+        if self.board_m is not None and self.land_m is not None and self.kind in STEP_KINDS:
+            def on(belt: float) -> float:
+                return abs(belt) if belt else min(speed_mps, STAIR_SPEED_MPS)
+
+            return self.board_m / on(self.board_belt) + max(0.0, self.delay) + self.land_m / on(self.land_belt)
+        if self.kind in LINK_SPEED_MPS:
+            return self.metres / LINK_SPEED_MPS[self.kind]
+        return self.delay if self.delay > 0 else self.metres / speed_mps
+
+
+def _hold_m(zone: Mapping[str, Any]) -> float | None:
+    """How far a link half's hold lies from its entry along its facing [m], None without a hold."""
+    hold = zone.get("hold")
+    if not hold:
+        return None
+    entry = zone["entry"]
+    theta = float(entry.get("theta", 0.0))
+    return max(0.0, (float(hold["x"]) - float(entry["x"])) * math.cos(theta) + (float(hold["y"]) - float(entry["y"])) * math.sin(theta))
+
+
 @attrs.frozen(eq=False)
 class Walks:
     """Walking distances on one level: `floor` (the step-free walking floor, `place.walking_paths`) and the site's
-    links as directed edges between the floor cells nearest their entries, (from cell, to cell, metres, kind, delay):
-    a link half leads to each of its `destinations`, its length the distance between the two entries. Walkers take
-    every link; a link whose kind has steps (`STEP_KINDS`) is left out of the step-free distances."""
+    links as directed edges between the floor cells nearest their entries (`_Link`): a link half leads to each of its
+    `destinations`, its length the distance between the two entries. Walkers take every link; a link whose kind has
+    steps (`STEP_KINDS`) is left out of the step-free distances."""
 
     floor: RobotPaths
-    links: tuple[tuple[int, int, float, str, float], ...] = ()
+    links: tuple[_Link, ...] = ()
     _graphs: dict[Any, Any] = attrs.field(factory=dict, init=False, repr=False)
 
     @classmethod
@@ -169,7 +224,8 @@ class Walks:
                 (da, ia), (db, ib) = floor.tree.query(a), floor.tree.query(b)
                 if max(da, db) > PATH_SNAP_M:
                     raise ValueError(f"link {z.get('name')!r} to {dest!r}: an entry lies {max(da, db):.2f} m from the walking floor")
-                edges.append((int(ia), int(ib), math.dist(a, b) + float(da) + float(db), str(z.get("kind") or ""), float(z.get("delay") or 0.0)))
+                land = by_name[dest]
+                edges.append(_Link(int(ia), int(ib), math.dist(a, b) + float(da) + float(db), str(z.get("kind") or ""), float(z.get("delay") or 0.0), _hold_m(z), _hold_m(land), float(z.get("belt") or 0.0), float(land.get("belt") or 0.0)))
         return cls(floor, tuple(edges))
 
     def _graph(self, climbs: bool, speed_mps: float | None) -> Any:  # noqa: ANN401 - a scipy sparse matrix
@@ -181,14 +237,11 @@ class Walks:
             if speed_mps is not None:
                 graph = graph / speed_mps
             edges: dict[tuple[int, int], float] = {}
-            for head, tail, metres, kind, delay in self.links:
-                if kind in STEP_KINDS and not climbs:
+            for link in self.links:
+                if link.kind in STEP_KINDS and not climbs:
                     continue
-                if speed_mps is None:
-                    weight = metres
-                else:
-                    weight = metres / LINK_SPEED_MPS[kind] if kind in LINK_SPEED_MPS else (delay if delay > 0 else metres / speed_mps)
-                edges[(head, tail)] = min(weight, edges.get((head, tail), math.inf))
+                weight = link.metres if speed_mps is None else link.seconds(speed_mps)
+                edges[(link.head, link.tail)] = min(weight, edges.get((link.head, link.tail), math.inf))
             if edges:
                 heads, tails = zip(*edges, strict=True)
                 graph = graph + scipy.sparse.csr_matrix((list(edges.values()), (heads, tails)), shape=graph.shape)
@@ -215,8 +268,8 @@ class Walks:
         return self._run(sources, targets, climbs, None)
 
     def seconds(self, sources: Sequence[place.Point], targets: Sequence[place.Point], speed_mps: float, *, climbs: bool) -> np.ndarray:
-        """The quickest walk from each of `sources` to each of `targets` [s] at `speed_mps` on the floor, a link with
-        steps at its kind's speed (`LINK_SPEED_MPS`), another link at its `delay`."""
+        """The quickest walk from each of `sources` to each of `targets` [s] at `speed_mps` on the floor and over each
+        link in its traverse time (`_Link.seconds`)."""
         if speed_mps <= 0:
             raise ValueError(f"speed_mps must be positive, got {speed_mps}")
         return self._run(sources, targets, climbs, float(speed_mps))
@@ -297,38 +350,68 @@ class _Channel:
 @attrs.frozen
 class Cost:
     """The predicted pedestrian cost a layout is ranked by (A5, A6), per walker group: `exposure[g]` times the group's
-    predicted exposure (seconds per hour per member, at `band_m`) plus `walk[g]` times its mean walk to the locker (m,
-    as the group walks). The ranking value is the largest group's cost: the worst-off group. A group named in neither
-    is not scored."""
+    predicted time near a driving robot (seconds per hour per member, at `band_m`), `element[g]` times its time on an
+    element's floor (the same unit, the same in every band; None: the `exposure` weights) and `walk[g]` times its mean
+    walk to the locker (m, as the group walks). The ranking value is the largest group's cost: the worst-off group. A
+    group named nowhere is not scored."""
 
     exposure: Mapping[str, float] = attrs.field(factory=dict, converter=dict)
     walk: Mapping[str, float] = attrs.field(factory=dict, converter=dict)
     band_m: float = CONFLICT_BAND_M
+    element: Mapping[str, float] | None = attrs.field(default=None, converter=lambda v: None if v is None else dict(v))
 
     def __attrs_post_init__(self) -> None:
         if not self.groups:
             raise ValueError("a cost scores at least one walker group")
-        if any(v < 0 for v in (*self.exposure.values(), *self.walk.values())):
+        if any(v < 0 for v in (*self.exposure.values(), *self.walk.values(), *(self.element or {}).values())):
             raise ValueError("cost weights must not be negative")
 
     @property
     def groups(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys([*self.exposure, *self.walk]))
+        return tuple(dict.fromkeys([*self.exposure, *(self.element or {}), *self.walk]))
+
+    def element_weight(self, group: str) -> float:
+        """The weight of `group`'s time on an element's floor."""
+        return self.exposure.get(group, 0.0) if self.element is None else self.element.get(group, 0.0)
 
     @classmethod
-    def pooled(cls, delay_per_exposure: Mapping[str, float], recipients_per_h: float, present: float, speeds: Mapping[str, float] | None = None, band_m: float = CONFLICT_BAND_M) -> Cost:
-        """Both parts as time a group loses per hour its members spend on the site, in seconds per hour per member: the
-        exposure times `delay_per_exposure[g]` (seconds of delay per second of exposure, a calibration), and the
-        recipients' walk to the locker and back, 2 W / speed, times the recipients per hour per walker on the site,
+    def pooled(cls, delay_per_exposure: Mapping[str, float], recipients_per_h: float, present: float, speeds: Mapping[str, float] | None = None, band_m: float = CONFLICT_BAND_M, delay_per_element: Mapping[str, float] | None = None) -> Cost:
+        """All parts as time a group loses per hour its members spend on the site, in seconds per hour per member: the
+        time near a driving robot times `delay_per_exposure[g]` (seconds of delay per second of exposure at `band_m`,
+        a calibration), the time on an element's floor times `delay_per_element[g]` (None: `delay_per_exposure`), and
+        the recipients' walk to the locker and back, 2 W / speed, times the recipients per hour per walker on the site,
         `recipients_per_h / present` (recipients come in the crowd's mix, so the share is the same in every group)."""
         if present <= 0 or recipients_per_h < 0:
             raise ValueError(f"present must be positive and recipients_per_h not negative, got {present} and {recipients_per_h}")
         speeds = dict(WALK_SPEED_MPS if speeds is None else speeds)
-        return cls(dict(delay_per_exposure), {g: recipients_per_h * 2.0 / (present * speeds[g]) for g in delay_per_exposure}, band_m)
+        element = None if delay_per_element is None else {g: delay_per_element[g] for g in delay_per_exposure}
+        return cls(dict(delay_per_exposure), {g: recipients_per_h * 2.0 / (present * speeds[g]) for g in delay_per_exposure}, band_m, element)
 
-    def of(self, exposure: Mapping[str, float], walk_m: Mapping[str, float]) -> dict[str, float]:
-        """The cost per group from a layout's exposure and mean walk per group."""
-        return {g: (self.exposure[g] * exposure[g] if self.exposure.get(g) else 0.0) + (self.walk[g] * walk_m[g] if self.walk.get(g) else 0.0) for g in self.groups}
+    def of(self, exposure: Mapping[str, float], walk_m: Mapping[str, float], exposure_traffic: Mapping[str, float] | None = None) -> dict[str, float]:
+        """The cost per group from a layout's exposure (time near robots and on element floor together), its mean walk
+        per group and, where the element weights differ from the exposure weights, the time near robots alone."""
+        out = {}
+        for g in self.groups:
+            w_t, w_e = self.exposure.get(g, 0.0), self.element_weight(g)
+            if w_t == w_e:
+                part = w_t * exposure[g] if w_t else 0.0
+            else:
+                if exposure_traffic is None:
+                    raise ValueError("the element weights differ from the exposure weights: give the time near robots alone")
+                part = (w_t * exposure_traffic[g] if w_t else 0.0) + (w_e * (exposure[g] - exposure_traffic[g]) if w_e else 0.0)
+            out[g] = part + (self.walk[g] * walk_m[g] if self.walk.get(g) else 0.0)
+        return out
+
+
+def delay_per_exposure(band_m: float) -> dict[str, float]:
+    """The default `Cost.pooled` weights of the time near a driving robot at `band_m`: the calibration itself on its own
+    1 m band (`DELAY_PER_ELEMENT`), `DELAY_PER_EXPOSURE` on the 2 m band. ValueError for another band: its conversion
+    is not known."""
+    if math.isclose(band_m, 1.0):
+        return dict(DELAY_PER_ELEMENT)
+    if math.isclose(band_m, CONFLICT_BAND_M):
+        return dict(DELAY_PER_EXPOSURE)
+    raise ValueError(f"no default delay per exposure at a {band_m:g} m band (the calibration is on 1 m, converted to 2 m): give the weights")
 
 
 @attrs.frozen(eq=False)
@@ -406,6 +489,9 @@ class Placed:
     value: float
     travel_m: float
     navr: NavrVerdict
+    #: for a pick that puts step-free walks first: whether it came from the layouts whose serving lockers all lie
+    #: within the reach step-free (False: there was none within its travel cap)
+    step_free_set: bool | None = None
 
     @property
     def layout_id(self) -> str:
@@ -424,9 +510,16 @@ class EntranceSearch:
     every entrance are dropped. `groups` are the walker groups' occupancy (`search.Occupancy`, by name; none: no
     exposure terms) and `bands` the conflict bands the exposure is kept at. `legs` takes `leg_integrals`' result for
     these lockers, groups and bands (rows in `rows` order), or a function with `leg_integrals`' arguments that gives
-    it (one that reads a cache, or spreads the paths over processes). With `screen` a spot that fails the full
-    check on its own (with the loading point alone) is left out: a layout with it is taken as invalid, so the search
-    does not walk through every layout that holds it."""
+    it (one that reads a cache, or spreads the paths over processes). Walks run on the walking floor with
+    `walk_neighbourhood` (`WALK_NEIGHBOURHOOD`; 8 replays the first version's grid walks).
+
+    With `screen` a spot that fails the full check on its own (with the loading point alone) is left out, and with
+    `screen_pairs` two spots whose floors lie near each other (`_reach` boxes that meet) and that fail the full check
+    together: a layout holding them is taken as invalid, so the search does not walk through every such layout one full
+    check at a time. NAV@r's floor loss is not monotone: a third element can stand on floor a spot or a pair strands,
+    and a layout that holds them could then pass, so the search is exact over the layouts without a screened spot or
+    pair. Pairs further apart, and three or more elements that fail only together, are left to the full check, which
+    every pick passes."""
 
     def __init__(
         self,
@@ -442,6 +535,8 @@ class EntranceSearch:
         walk_speeds: Mapping[str, float] | None = None,
         legs: Mapping[str, np.ndarray] | Callable[[Search, Sequence[Spot], np.ndarray], Mapping[str, np.ndarray]] | None = None,
         screen: bool = True,
+        screen_pairs: bool = True,
+        walk_neighbourhood: int = WALK_NEIGHBOURHOOD,
     ) -> None:
         import numpy as np
 
@@ -463,7 +558,8 @@ class EntranceSearch:
         self.speed_mps = float(speed_mps)
         self.walk_speeds = dict(WALK_SPEED_MPS if walk_speeds is None else walk_speeds)
         self.reach_max_m = float(reach_max_m)
-        self.walks = Walks.of(place.walking_paths(search.site, level), links)
+        self.walk_neighbourhood = int(walk_neighbourhood)
+        self.walks = Walks.of(place.walking_paths(search.site, level, neighbourhood=self.walk_neighbourhood), links)
         anchors = [e.anchor for e in self.entrances]
         every = search.spots[LOCKER]
         walk = self.walks.lengths(anchors, [s.objects[0].goto for s in every], climbs=True)
@@ -504,6 +600,11 @@ class EntranceSearch:
         self._checked: dict[tuple[int, int, tuple[int, ...]], Checked] = {}
         self._element: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.solves = 0
+        self.screen_pairs = bool(screen_pairs)
+        #: Per pair of elements, the near pairs the screen checked and those it left out (`screen_pairs`)
+        self.pairs_screened: dict[str, dict[str, int]] = {}
+        if self.screen_pairs:
+            self._screen_pairs()
 
     def _alone(self, spot: Spot) -> bool:
         """Whether `spot` passes the full check with the loading point alone."""
@@ -511,6 +612,37 @@ class EntranceSearch:
 
         layout = Layout.of([self.search.loading, spot])
         return not place.check_layout(self.search.site, layout) and navr_check(self.search.base, place.placed_elements(layout)).ok
+
+    def _together(self, first: Spot, second: Spot) -> bool:
+        """Whether two spots pass the NAV@r filter together with the loading point (`check_layout` passes them already)."""
+        from arena_simulation_setup.metrics.navr_filter import navr_check
+
+        return navr_check(self.search.base, place.placed_elements(Layout.of([self.search.loading, first, second]))).ok
+
+    def _screen_pairs(self) -> None:
+        """Leave out the near pairs of spots that fail the full check together (`screen_pairs`)."""
+        import shapely
+
+        s = self.search
+        spots = {CHARGERS: s.spots[CHARGERS], BAYS: s.spots[BAYS], LOCKER: self.lockers}
+        boxes = {name: [_reach(x) for x in found] for name, found in spots.items()}
+        live = {CHARGERS: self._cb.any(axis=1), BAYS: self._cb.any(axis=0)}
+        for first, second, matrix in ((CHARGERS, BAYS, self._cb), (CHARGERS, LOCKER, self._ck), (BAYS, LOCKER, self._bk)):
+            checked = dropped = 0
+            if spots[first] and spots[second]:
+                tree = shapely.STRtree(boxes[second])
+                for i, box in enumerate(boxes[first]):
+                    if not live[first][i]:
+                        continue
+                    for j in tree.query(box):
+                        j = int(j)
+                        if matrix[i, j] and (second != BAYS or live[BAYS][j]):
+                            checked += 1
+                            if not self._together(spots[first][i], spots[second][j]):
+                                matrix[i, j] = False
+                                dropped += 1
+            self.pairs_screened[f"{first}/{second}"] = {"near_pairs_checked": checked, "left_out": dropped}
+        self.locker_pairs  # noqa: B018 - checks the near locker pairs too
 
     # --- the walk ----------------------------------------------------------------------------------------------------
 
@@ -562,7 +694,8 @@ class EntranceSearch:
 
     @property
     def locker_pairs(self) -> np.ndarray:
-        """Which two locker spots `check_layout` passes as a pair, (K, K); a spot with itself does not."""
+        """Which two locker spots `check_layout` passes as a pair (with `screen_pairs`, and the NAV@r filter with the
+        loading point), (K, K); a spot with itself does not."""
         if self._kk is None:
             import numpy as np
             import shapely
@@ -572,11 +705,20 @@ class EntranceSearch:
             np.fill_diagonal(out, False)
             boxes = [_reach(s) for s in self.lockers]
             tree = shapely.STRtree(boxes) if boxes else None
+            checked = dropped = 0
             for i, spot in enumerate(self.lockers):
                 for j in tree.query(boxes[i]) if tree is not None else ():
                     j = int(j)
                     if j > i:
-                        out[i, j] = out[j, i] = not place.check_layout(self.search.site, Layout.of([spot, numbered(self.lockers[j], 2)]))
+                        other = numbered(self.lockers[j], 2)
+                        ok = not place.check_layout(self.search.site, Layout.of([spot, other]))
+                        if ok and getattr(self, "screen_pairs", False):
+                            checked += 1
+                            ok = self._together(spot, other)
+                            dropped += not ok
+                        out[i, j] = out[j, i] = ok
+            if getattr(self, "screen_pairs", False):
+                self.pairs_screened[f"{LOCKER}/{LOCKER}"] = {"near_pairs_checked": checked, "left_out": dropped}
             self._kk = out
         return self._kk
 
@@ -656,23 +798,48 @@ class EntranceSearch:
             pair = pair + floor
         return _Channel(pair, unit, scale * x["x_LK"][row], scale * wb * x["x_K_bay"][row].T, scale * wc * x["x_K_charger"][row].T, zeros[5])
 
+    def element_channel(self, group: str) -> _Channel:
+        """The time a member of `group` spends on an element's floor (footprint, dock, approach zone) [s per h per
+        member], the same in every band."""
+        if group not in self.groups:
+            raise ValueError(f"no occupancy of group {group!r} (groups {sorted(self.groups)})")
+        if self.groups[group].present <= 0:
+            raise ValueError(f"group {group!r} has no walker time in its occupancy")
+        zeros = self._zeros()
+        floor, unit = self._elements(group)
+        return _Channel(floor, unit, *zeros[2:])
+
     def walk_channel(self, group: str) -> _Channel:
         """The mean walk to the locker of `group` over the recipient entrances [m]."""
         zeros = self._zeros()
         return _Channel(*zeros[:5], self.walk_of(group) / len(self.entrances))
+
+    def beyond_channel(self, reach_m: float) -> _Channel:
+        """How many recipient entrances the layout's lockers serve from beyond `reach_m` step-free."""
+        zeros = self._zeros()
+        return _Channel(*zeros[:5], (self.free_m > reach_m + _EPS).astype(float))
 
     def cost_channels(self, cost: Cost) -> dict[str, _Channel]:
         """`cost` per walker group."""
         out = {}
         for group in cost.groups:
             parts = []
-            if cost.exposure.get(group):
-                parts.append(self.exposure_channel(group, cost.band_m).times(cost.exposure[group]))
+            w_t, w_e = cost.exposure.get(group, 0.0), cost.element_weight(group)
+            if w_t and w_t == w_e:
+                parts.append(self.exposure_channel(group, cost.band_m).times(w_t))
+            else:
+                if w_t:
+                    parts.append(self.exposure_channel(group, cost.band_m, element=False).times(w_t))
+                if w_e:
+                    parts.append(self.element_channel(group).times(w_e))
             if cost.walk.get(group):
                 parts.append(self.walk_channel(group).times(cost.walk[group]))
             if not parts:
                 parts.append(self.walk_channel(group).times(0.0))
-            out[group] = parts[0] if len(parts) == 1 else parts[0].plus(parts[1])
+            total = parts[0]
+            for part in parts[1:]:
+                total = total.plus(part)
+            out[group] = total
         return out
 
     def value(self, channel: _Channel, charger: int, bay: int, lockers: Sequence[int]) -> float:
@@ -706,10 +873,10 @@ class EntranceSearch:
             out[group] = {"mean_m": sum(metres) / len(metres), "longest_m": max(metres), "mean_s": sum(seconds) / len(seconds), "longest_s": max(seconds)}
         return out
 
-    def placed(self, reach_m: float, charger: int, bay: int, lockers: Sequence[int], value: float | None = None) -> Placed:
+    def placed(self, reach_m: float, charger: int, bay: int, lockers: Sequence[int], value: float | None = None, step_free_set: bool | None = None) -> Placed:
         order, serves = self.served(lockers)
         travel = self.travel(charger, bay, order)
-        return Placed(self.layout(charger, bay, order), float(reach_m), int(charger), int(bay), order, serves, travel if value is None else float(value), travel, self.check(charger, bay, order).navr)
+        return Placed(self.layout(charger, bay, order), float(reach_m), int(charger), int(bay), order, serves, travel if value is None else float(value), travel, self.check(charger, bay, order).navr, step_free_set)
 
     def record(self, placed: Placed, cost: Cost | None = None) -> dict[str, Any]:
         """A layout as plain data: its id, reach, robot travel, the entrances each locker serves, the walk per group
@@ -735,8 +902,10 @@ class EntranceSearch:
                 out["exposure_traffic"][f"{band:g}"] = {g: _num(v) for g, v in traffic.items()}
         if cost is not None:
             values = {g: self.value(ch, placed.charger, placed.bay, placed.lockers) for g, ch in self.cost_channels(cost).items()}
-            out["cost"] = {g: round(v, 6) for g, v in values.items()}
+            out["cost"] = {g: None if not math.isfinite(v) else round(v, 6) for g, v in values.items()}
             out["worst_group"] = max(values, key=lambda g: values[g])
+        if placed.step_free_set is not None:
+            out["step_free_set"] = placed.step_free_set
         out["spots"] = [
             {"element": s.element.name, "spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "objects": [{"name": o.name, "model": o.model, "x": o.x, "y": o.y, "yaw": o.yaw, "goto": list(o.goto)} for o in s.objects]}
             for s in placed.layout.spots
@@ -745,7 +914,7 @@ class EntranceSearch:
 
     def counts(self) -> dict[str, Any]:
         s = self.search
-        return {"entrances": [e.name for e in self.entrances], "spots": {CHARGERS: len(s.spots[CHARGERS]), BAYS: len(s.spots[BAYS]), LOCKER: len(self.lockers)}, "locker_spots_of_the_site": len(s.spots[LOCKER]), "invalid_alone": dict(self.alone_invalid), "reach_max_m": self.reach_max_m}
+        return {"entrances": [e.name for e in self.entrances], "spots": {CHARGERS: len(s.spots[CHARGERS]), BAYS: len(s.spots[BAYS]), LOCKER: len(self.lockers)}, "locker_spots_of_the_site": len(s.spots[LOCKER]), "invalid_alone": dict(self.alone_invalid), "pairs_screened": dict(self.pairs_screened), "walk_neighbourhood": self.walk_neighbourhood, "reach_max_m": self.reach_max_m}
 
     # --- the exact search --------------------------------------------------------------------------------------------
 
@@ -793,6 +962,8 @@ class EntranceSearch:
             if any(values[h] > limits[h] for h in range(ncap)):
                 return
             key = (max(values[ncap : ncap + nobj]), values[-1] if tie is not None else 0.0, (int(charger), int(bay), order))
+            if not math.isfinite(key[0]):
+                return
             if (best_key is None or key < best_key) and self.check(charger, bay, order).valid:
                 best_key = key
 
@@ -883,6 +1054,7 @@ class EntranceSearch:
             for h in range(ncap):
                 keep &= totals[h] <= limits[h]
             value = np.max(np.stack([totals[h] for h in objective]), axis=0)
+            keep &= np.isfinite(value)
             rank = totals[-1] if tied else np.zeros(len(value))
             current = found or best_key
             if current is not None:
@@ -941,32 +1113,57 @@ def travel_optimal(space: EntranceSearch, reach_m: float = REACH_M) -> Placed:
     return space.placed(reach_m, *found[1], value=found[0])
 
 
-def pedestrian_aware(space: EntranceSearch, reach_m: float, cost: Cost | Sequence[Cost], max_travel_m: float, *, start: Sequence[Placed] = ()) -> Placed:
+def pedestrian_aware(space: EntranceSearch, reach_m: float, cost: Cost | Sequence[Cost], max_travel_m: float, *, start: Sequence[Placed] = (), step_free: bool = False) -> Placed:
     """The pedestrian-aware pick at `reach_m` (A5): among the valid layouts whose robot travel per job is at most
     `max_travel_m`, the one with the least cost of the worst-off group (`Cost`); ties go to the shorter robot travel.
     Several costs rank in order: the first decides, the next breaks its ties. `start` are layouts already known (the
-    travel-optimal layout), which bound the search. ValueError without a valid layout within the travel."""
+    travel-optimal layout), which bound the search.
+
+    With `step_free` (rule S) the layouts whose every recipient entrance is served from within the reach step-free as
+    well come first: the pick is the best of them when the travel cap holds one (`Placed.step_free_set` True), else the
+    best of all layouts within the cap (False).
+
+    ValueError ("no pick") without a valid layout within the travel cap whose cost is finite (a cost is infinite where
+    a group cannot walk to a serving locker, e.g. step-free)."""
     cover = space.cover(reach_m)
     travel = space.travel_channel()
-    caps = [(travel, float(max_travel_m))]
-    begin = [p.key for p in start]
-    found = None
+    if step_free:
+        beyond = space.beyond_channel(reach_m)
+        try:
+            found = _ranked(space, cover, cost, [(travel, float(max_travel_m)), (beyond, 0.0)], [p.key for p in start], reach_m, max_travel_m)
+        except ValueError:
+            found = None
+        if found is not None:
+            return space.placed(reach_m, *found[1], value=found[0], step_free_set=True)
+        found = _ranked(space, cover, cost, [(travel, float(max_travel_m))], [p.key for p in start], reach_m, max_travel_m)
+        return space.placed(reach_m, *found[1], value=found[0], step_free_set=False)
+    found = _ranked(space, cover, cost, [(travel, float(max_travel_m))], [p.key for p in start], reach_m, max_travel_m)
+    return space.placed(reach_m, *found[1], value=found[0])
+
+
+def _ranked(space: EntranceSearch, cover: Cover, cost: Cost | Sequence[Cost], caps: list[tuple[_Channel, float]], begin: list[tuple[int, int, tuple[int, ...]]], reach_m: float, max_travel_m: float) -> tuple[float, tuple[int, int, tuple[int, ...]]]:
+    """`pedestrian_aware`'s ranking under `caps`: the costs in order, each the next one's cap. Returns the first cost's
+    value (the one that decides) and the layout the last cost picks among its ties."""
+    travel = caps[0][0]
+    found = first = None
     for one in [cost] if isinstance(cost, Cost) else list(cost):
         channels = list(space.cost_channels(one).values())
         found = space.best(cover, channels, caps, tie=travel, start=begin)
         if found is None:
-            raise ValueError(f"no valid layout within {max_travel_m:.1f} m of robot travel per job at a reach of {reach_m:g} m")
+            raise ValueError(f"no pick: no valid layout within {max_travel_m:.1f} m of robot travel per job at a reach of {reach_m:g} m has a finite cost")
+        first = found[0] if first is None else first
         caps = [*caps, *((ch, found[0]) for ch in channels)]
         begin = [found[1]]
-    assert found is not None
-    return space.placed(reach_m, *found[1], value=found[0])
+    assert found is not None and first is not None
+    return first, found[1]
 
 
 def practice_based(space: EntranceSearch, reach_m: float = REACH_M) -> Placed:
     """The practice-based layout at `reach_m` (A5; the first study's guideline placement on the new demand), by
     walking distance:
 
-    - the waiting bays at the bay spot nearest the loading point (on the step-free floor, as `search.guideline`);
+    - the waiting bays at the bay spot nearest the loading point (on the step-free floor, as `search.guideline`, with
+      the search's walk neighbourhood);
     - a locker nearest each group of recipient entrances: the lockers with the least mean walk from the entrances to
       the locker that serves them, as people walk;
     - the chargers at the charger spot nearest the waiting bays.
@@ -978,7 +1175,7 @@ def practice_based(space: EntranceSearch, reach_m: float = REACH_M) -> Placed:
 
     cover = space.cover(reach_m)
     s = space.search
-    walk = place.walking_paths(s.site, s.loading.level)
+    walk = place.walking_paths(s.site, s.loading.level, neighbourhood=space.walk_neighbourhood)
     centres = s.spot_centres()
     bay_order = np.argsort(walk.lengths([s.loading.objects[0].goto], centres[BAYS])[0], kind="stable")
     for bay in (int(b) for b in bay_order):
@@ -992,14 +1189,17 @@ def practice_based(space: EntranceSearch, reach_m: float = REACH_M) -> Placed:
 
 __all__ = [
     "BAY_SHARE",
+    "DELAY_PER_ELEMENT",
     "DELAY_PER_EXPOSURE",
     "LINK_SPEED_MPS",
     "MARGINS",
     "REACHES_M",
     "REACH_M",
     "RECIPIENT_TYPES",
+    "STAIR_SPEED_MPS",
     "STEP_FREE",
     "STEP_KINDS",
+    "WALK_NEIGHBOURHOOD",
     "WALK_SPEED_MPS",
     "Cost",
     "Cover",
@@ -1008,6 +1208,7 @@ __all__ = [
     "Placed",
     "Walks",
     "assemble_legs",
+    "delay_per_exposure",
     "leg_integrals",
     "locker_element",
     "numbered",
