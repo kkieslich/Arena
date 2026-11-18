@@ -40,7 +40,7 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import attrs
@@ -423,7 +423,10 @@ class EntranceSearch:
     escalators (the site config's), `reach_max_m` the largest reach that will be asked for: locker spots further from
     every entrance are dropped. `groups` are the walker groups' occupancy (`search.Occupancy`, by name; none: no
     exposure terms) and `bands` the conflict bands the exposure is kept at. `legs` takes `leg_integrals`' result for
-    these lockers, groups and bands (rows in `rows` order), e.g. from a cache."""
+    these lockers, groups and bands (rows in `rows` order), or a function with `leg_integrals`' arguments that gives
+    it (one that reads a cache, or spreads the paths over processes). With `screen` a spot that fails the full
+    check on its own (with the loading point alone) is left out: a layout with it is taken as invalid, so the search
+    does not walk through every layout that holds it."""
 
     def __init__(
         self,
@@ -437,7 +440,8 @@ class EntranceSearch:
         bands: Sequence[float] = (CONFLICT_BAND_M,),
         speed_mps: float = ROBOT_SPEED_MPS,
         walk_speeds: Mapping[str, float] | None = None,
-        legs: Mapping[str, np.ndarray] | None = None,
+        legs: Mapping[str, np.ndarray] | Callable[[Search, Sequence[Spot], np.ndarray], Mapping[str, np.ndarray]] | None = None,
+        screen: bool = True,
     ) -> None:
         import numpy as np
 
@@ -463,8 +467,15 @@ class EntranceSearch:
         anchors = [e.anchor for e in self.entrances]
         every = search.spots[LOCKER]
         walk = self.walks.lengths(anchors, [s.objects[0].goto for s in every], climbs=True)
+        near = np.flatnonzero((walk <= self.reach_max_m + _EPS).any(axis=0))
+        #: Per element, the spots left out because they fail the full check on their own
+        self.alone_invalid: dict[str, int] = dict.fromkeys(SEARCHED, 0)
+        if screen:
+            alone = np.array([self._alone(every[int(i)]) for i in near], dtype=bool)
+            self.alone_invalid[LOCKER] = int((~alone).sum())
+            near = near[alone]
         #: The locker spots within the largest reach of at least one entrance, as indices into `search.spots["locker"]`
-        self.kept = np.flatnonzero((walk <= self.reach_max_m + _EPS).any(axis=0))
+        self.kept = near
         self.lockers: tuple[Spot, ...] = tuple(every[int(i)] for i in self.kept)
         gotos = [s.objects[0].goto for s in self.lockers]
         #: Per entrance and locker spot, the walk as people walk and step-free [m]
@@ -472,15 +483,20 @@ class EntranceSearch:
         self.free_m = self.walks.lengths(anchors, gotos, climbs=False)
         self._walk_s: dict[str, np.ndarray] = {}
         self._gotos = gotos
-        self._cb = search.compatible(CHARGERS, BAYS)
+        self._cb = search.compatible(CHARGERS, BAYS).copy()
+        if screen:
+            chargers = np.array([self._alone(spot) for spot in search.spots[CHARGERS]], dtype=bool)
+            bays = np.array([self._alone(spot) for spot in search.spots[BAYS]], dtype=bool)
+            self.alone_invalid[CHARGERS], self.alone_invalid[BAYS] = int((~chargers).sum()), int((~bays).sum())
+            self._cb &= chargers[:, None] & bays[None, :]
         self._ck = search.compatible(CHARGERS, LOCKER)[:, self.kept]
         self._bk = search.compatible(BAYS, LOCKER)[:, self.kept]
         self._kk: np.ndarray | None = None
         #: The rows of the leg integrals: one per walker group and conflict band
         self.rows = [(name, band) for name in self.groups for band in self.bands]
-        if legs is None:
+        if legs is None or callable(legs):
             fields = [self.groups[name].sample(self.groups[name].band(band), search.paths.centres) for name, band in self.rows]
-            legs = leg_integrals(search, self.lockers, np.stack(fields) if fields else np.zeros((0, search.paths.cells)))
+            legs = (leg_integrals if legs is None else legs)(search, self.lockers, np.stack(fields) if fields else np.zeros((0, search.paths.cells)))
         self.legs = dict(legs)
         if self.legs["m_LK"].shape != (len(self.lockers),) or self.legs["x_LK"].shape != (len(self.rows), len(self.lockers)):
             raise ValueError(f"the leg integrals hold {self.legs['m_LK'].shape[0]} locker spots and {self.legs['x_LK'].shape[0]} rows, the search {len(self.lockers)} and {len(self.rows)}")
@@ -488,6 +504,13 @@ class EntranceSearch:
         self._checked: dict[tuple[int, int, tuple[int, ...]], Checked] = {}
         self._element: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.solves = 0
+
+    def _alone(self, spot: Spot) -> bool:
+        """Whether `spot` passes the full check with the loading point alone."""
+        from arena_simulation_setup.metrics.navr_filter import navr_check
+
+        layout = Layout.of([self.search.loading, spot])
+        return not place.check_layout(self.search.site, layout) and navr_check(self.search.base, place.placed_elements(layout)).ok
 
     # --- the walk ----------------------------------------------------------------------------------------------------
 
@@ -722,7 +745,7 @@ class EntranceSearch:
 
     def counts(self) -> dict[str, Any]:
         s = self.search
-        return {"entrances": [e.name for e in self.entrances], "spots": {CHARGERS: len(s.spots[CHARGERS]), BAYS: len(s.spots[BAYS]), LOCKER: len(self.lockers)}, "locker_spots_of_the_site": len(s.spots[LOCKER]), "reach_max_m": self.reach_max_m}
+        return {"entrances": [e.name for e in self.entrances], "spots": {CHARGERS: len(s.spots[CHARGERS]), BAYS: len(s.spots[BAYS]), LOCKER: len(self.lockers)}, "locker_spots_of_the_site": len(s.spots[LOCKER]), "invalid_alone": dict(self.alone_invalid), "reach_max_m": self.reach_max_m}
 
     # --- the exact search --------------------------------------------------------------------------------------------
 

@@ -256,9 +256,18 @@ def test_the_search_keeps_the_locker_spots_within_the_largest_reach(inner: Searc
     assert np.allclose(space.walk_m, space.free_m)  # the hospital has no stairs
     assert np.allclose(space.walk_seconds("wheelchair"), space.free_m / demand.WALK_SPEED_MPS["wheelchair"])
     reach = float(np.sort(space.walk_m.min(axis=0))[len(space.lockers) // 2])
-    near = EntranceSearch(inner, entrances, reach_max_m=reach, legs=None)
+    asked = []
+
+    def from_cache(found: Search, lockers: Sequence[place.Spot], values: np.ndarray) -> dict:
+        asked.append(([s.id for s in lockers], values.shape))
+        return demand.leg_integrals(found, lockers, values)
+
+    near = EntranceSearch(inner, entrances, reach_max_m=reach, legs=from_cache)
     assert [s.id for s in near.lockers] == [s.id for s, d in zip(space.lockers, space.walk_m.min(axis=0), strict=True) if d <= reach + 1e-9]
     assert 0 < len(near.lockers) < len(space.lockers)
+    assert asked == [([s.id for s in near.lockers], (0, inner.paths.cells))]  # the legs' function gets the kept lockers
+    with pytest.raises(ValueError, match="the leg integrals hold"):
+        EntranceSearch(inner, entrances, reach_max_m=reach, legs=space.legs)
     with pytest.raises(ValueError, match="over the search's largest"):
         near.cover(reach + 1.0)
     with pytest.raises(ValueError, match="no recipient entrances"):
@@ -425,6 +434,40 @@ def test_costs_rank_in_order_the_first_decides_and_the_next_breaks_its_ties(spac
     assert alone.value == pytest.approx(shortest) and alone.travel_m <= pick.travel_m + 1e-9
     with pytest.raises(ValueError, match="no valid layout within"):
         demand.pedestrian_aware(space, reach, trip, 0.5 * optimal.travel_m)
+
+
+def test_a_spot_that_fails_the_full_check_on_its_own_is_left_out(inner: Search, entrances: tuple[Entrance, ...], space: EntranceSearch, monkeypatch: pytest.MonkeyPatch) -> None:
+    import attrs
+    from arena_simulation_setup.metrics import navr_filter
+
+    assert space.alone_invalid == dict.fromkeys(search.SEARCHED, 0) and space.counts()["invalid_alone"] == space.alone_invalid
+    reach = _reach(space, 2)
+    pick = demand.travel_optimal(space, reach)
+    # the NAV@r filter refuses every layout with the pick's first locker or its bay spot
+    bad_locker = space.lockers[pick.lockers[0]].objects[0].goto
+    bad_bay = inner.spots[BAYS][pick.bay].objects[0].goto
+    real = navr_filter.navr_check
+
+    def refusing(base, elements, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        verdict = real(base, elements, *args, **kwargs)
+        if any(e.dock_point in (bad_locker, bad_bay) for e in elements):
+            return attrs.evolve(verdict, ok=False, reasons=("refused by the test",))
+        return verdict
+
+    monkeypatch.setattr(navr_filter, "navr_check", refusing)
+    screened = EntranceSearch(inner, entrances, reach_max_m=1000.0, demand=space.demand)
+    assert screened.alone_invalid == {CHARGERS: 0, BAYS: 1, LOCKER: 1}
+    assert bad_locker not in [s.objects[0].goto for s in screened.lockers] and len(screened.lockers) == len(space.lockers) - 1
+    assert not screened._cb[:, pick.bay].any()
+    again = demand.travel_optimal(screened, _reach(screened, 2))
+    assert again.bay != pick.bay and screened.check(*again.key).valid and again.travel_m >= pick.travel_m - 1e-9
+    # without the screen the search still returns a valid layout: it finds the refused ones invalid one by one
+    plain = EntranceSearch(inner, entrances, reach_max_m=1000.0, demand=space.demand, screen=False)
+    assert plain.alone_invalid == dict.fromkeys(search.SEARCHED, 0) and len(plain.lockers) == len(space.lockers)
+    slow = demand.travel_optimal(plain, _reach(plain, 2))
+    assert plain.check(*slow.key).valid and slow.bay != pick.bay and bad_locker not in [plain.lockers[k].objects[0].goto for k in slow.lockers]
+    if _reach(plain, 2) == _reach(screened, 2):
+        assert slow.travel_m == pytest.approx(again.travel_m)
 
 
 def test_the_practice_based_layout_places_bays_lockers_and_chargers_by_walking_distance(inner: Search, space: EntranceSearch) -> None:
