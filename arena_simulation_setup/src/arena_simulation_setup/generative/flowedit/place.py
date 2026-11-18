@@ -502,17 +502,18 @@ def _navr_base(site: Site, level_id: str, radius: float) -> Any:  # noqa: ANN401
     return _BASES[key]
 
 
-def walking_paths(site: Site, level_id: str, radius: float | None = None) -> Any:  # noqa: ANN401 - a search.RobotPaths
+def walking_paths(site: Site, level_id: str, radius: float | None = None, neighbourhood: int = 8) -> Any:  # noqa: ANN401 - a search.RobotPaths
     """Walking distances on a level's floor (`search.RobotPaths` on the walls and doors alone, at the wheelchair radius by
-    default, on a `WALK_RESOLUTION_M` grid): what the catalog's distance rules measure. Cached per site."""
+    default, on a `WALK_RESOLUTION_M` grid with the given `neighbourhood`): what the catalog's distance rules measure
+    (8-connected, as they always have). Cached per site."""
     from arena_simulation_setup.metrics.navr_filter import WHEELCHAIR_RADIUS
 
     from .search import RobotPaths
 
     radius = WHEELCHAIR_RADIUS if radius is None else float(radius)
-    key = (*_site_key(site), level_id, radius)
+    key = (*_site_key(site), level_id, radius, int(neighbourhood))
     if key not in _WALKS:
-        _WALKS[key] = RobotPaths.from_base(_navr_base(site, level_id, radius), radius, WALK_RESOLUTION_M)
+        _WALKS[key] = RobotPaths.from_base(_navr_base(site, level_id, radius), radius, WALK_RESOLUTION_M, int(neighbourhood))
     return _WALKS[key]
 
 
