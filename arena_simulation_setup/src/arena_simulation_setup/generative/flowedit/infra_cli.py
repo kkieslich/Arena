@@ -613,9 +613,16 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
     import yaml
 
     from . import demand as DE
+    from . import entrance_fleet as EF
     from . import place
     from . import recipients as RC
 
+    fleet_only = bool(args.fleet_only)
+    arms = ["fleet"] if fleet_only else list(dict.fromkeys(args.arms))
+    if not arms or sorted(set(arms) - {"site", "without", "fleet"}):
+        raise ValueError(f"--arms names site, without and fleet, not {args.arms}")
+    if args.charge_log and not fleet_only:
+        raise ValueError("--charge-log belongs to a fleet-only run (--fleet-only)")
     if args.pick is not None or args.selection is not None or args.parts:
         raise ValueError("--report reads layouts from a search report: --pick, --selection and --parts belong to the first study's evaluation")
     if not args.layouts:
@@ -657,31 +664,50 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
     if any(other != entrances for other in served.values()):
         raise ValueError(f"the layouts serve different recipient entrances: {served}")
     jobs = {seed: RC.jobs(seed, entrances, rate_per_h=args.rate, pickup_share=args.pickup_share, episode_s=args.duration) for seed in seeds}
-    who = {layout_id: {seed: RC.recipients(seed, jobs[seed], serves[layout_id], mix, offset_s=args.recipient_offset, episode_s=args.duration, kinds=args.recipient_kinds) for seed in seeds} for layout_id in layouts}
+    who = {layout_id: {seed: () if fleet_only else RC.recipients(seed, jobs[seed], serves[layout_id], mix, offset_s=args.recipient_offset, episode_s=args.duration, kinds=args.recipient_kinds) for seed in seeds} for layout_id in layouts}
     any_layout = next(iter(who.values()))
     _log(f"jobs at {args.rate:g} per hour over {len(entrances)} recipient entrances, {args.duration:g} s: " + ", ".join(f"seed {seed} {len(jobs[seed])}" for seed in seeds))
     _log(f"recipients ({'/'.join(args.recipient_kinds)}, {args.recipient_offset:g} s after the release): " + ", ".join(f"seed {seed} {len(any_layout[seed])}" for seed in seeds) + f"; {sum(len(v) for v in any_layout.values())} in all, by group " + json.dumps({group: sum(r.group == group for v in any_layout.values() for r in v) for group in mix}))
     for layout_id, layout in layouts.items():
         _log(f"{roles[layout_id]:22s} {layout_id}: " + "; ".join(f"{locker} ({next(s.zone for s in layout.spots for o in s.objects if o.name == locker)}) serves {', '.join(es)}" for locker, es in serves[layout_id].items()))
-    names = {seed: RC.scenario_name(space.scenario_name, seed, args.tag) for seed in seeds}
+    names = {seed: f"{space.scenario_name}__{args.tag + '__' if args.tag else ''}fleet_only" if fleet_only else RC.scenario_name(space.scenario_name, seed, args.tag) for seed in seeds}
     out = args.out or IN.default_out(IN.ENTRANCE_SUITE)
-    site_out, without_out = out.with_name(f"{out.stem}_site.yaml"), out.with_name(f"{out.stem}_without.yaml")
+    outs = {"site": out.with_name(f"{out.stem}_site.yaml"), "without": out.with_name(f"{out.stem}_without.yaml"), "fleet": out}
     prefix = place.layout_prefix(space.site)
+    states = None if args.charge_states is None else EF.load_charge_states(args.charge_states)
+    states_out = out.with_name(f"{out.stem}.charge_states.json")
+    contest = IN.contest_literal(EF.contest(soc_file=str(states_out) if states is not None else None, start_soc=args.start_charge))
 
-    def docs(part: Sequence[int]) -> tuple[dict[str, Any], dict[str, Any]]:
-        site_doc = IN.reference_suite(space.site.key, part, scenario=space.scenario_name, duration=args.duration, side=space.side)
-        return site_doc, IN.without_suite([f"{prefix}{layout_id}" for layout_id in layouts], {seed: names[seed] for seed in part if seed in without}, duration=args.duration, side=space.side)
+    def fleet_block(layout_id: str, seed: int) -> dict[str, Any]:
+        log = f"{args.charge_log}/{SU.stage_name(f'{prefix}{layout_id}', seed)}.csv" if args.charge_log else ""
+        return EF.fleet_config(list(serves[layout_id]), EF.job_entries(jobs[seed], serves[layout_id]), rate_per_h=args.rate, pickup_share=args.pickup_share, charge_log=log, charge_log_s=args.charge_log_s)
 
-    site_doc, without_doc = docs(seeds)
-    total_episodes = IN.episodes(site_doc) + IN.episodes(without_doc)
-    _log(f"the site as is: {_summary(site_doc)}; the layouts without robots (crowd only) on seeds {', '.join(map(str, without)) or 'none'}: {_summary(without_doc)}; {total_episodes} episodes")
-    _log("the runs with the fleet are not written: the fleet mode has no jobs addressed to recipient entrances yet")
+    def docs(part: Sequence[int]) -> dict[str, dict[str, Any]]:
+        """The suite of each arm on the seeds `part`; an arm without a stage on them is left out."""
+        made = {
+            "site": IN.reference_suite(space.site.key, part, scenario=space.scenario_name, duration=args.duration, side=space.side),
+            "without": IN.without_suite([f"{prefix}{layout_id}" for layout_id in layouts], {seed: names[seed] for seed in part if seed in without}, duration=args.duration, side=space.side),
+            "fleet": IN.stages_suite([IN.fleet_stage(f"{prefix}{layout_id}", seed, fleet_block(layout_id, seed), scenario=names[seed], duration=args.duration) for layout_id in layouts for seed in part], side=space.side),
+        }
+        return {arm: made[arm] for arm in arms if made[arm]["stages"]}
+
+    full = docs(seeds)
+    total_episodes = sum(IN.episodes(doc) for doc in full.values())
+    said = {"site": "the site as is", "without": f"the layouts without robots (crowd only) on seeds {', '.join(map(str, without)) or 'none'}", "fleet": "the layouts with the fleet" + (", no crowd" if fleet_only else "")}
+    _log("; ".join(f"{said[arm]}: {_summary(doc)}" for arm, doc in full.items()) + f"; {total_episodes} episodes")
+    if "fleet" in full:
+        _log(f"fleet: {IN.ROBOT}, charging by need, the nearest free charger, a jammed charging trip goes on; each robot's own battery; start charge " + (f"from {len(states['states'])} charge states of {args.charge_states}" if states is not None else f"{args.start_charge:g} % for every robot (no charge states given)"))
+    else:
+        _log("the runs with the fleet are not written (--arms fleet adds them)")
     if args.dry_run:
         _log("(dry run - no world or suite written)")
         return 0
     worlds: dict[str, Path] = {}
     for layout_id, layout in layouts.items():
-        crowds = {names[seed]: RC.recipient_crowd(scenario, layout, serves[layout_id], who[layout_id][seed], mix) for seed in seeds}
+        if fleet_only:
+            crowds = {names[seeds[0]]: (EF.without_crowd(scenario), {}, "a fleet-only run: the site's scenario without its sources, no walkers")}
+        else:
+            crowds = {names[seed]: RC.recipient_crowd(scenario, layout, serves[layout_id], who[layout_id][seed], mix) for seed in seeds}
         worlds[layout_id] = RC.save_layout(space.site, layout, space.scenario, crowds)
         if not args.no_check:
             # what the runtime checks at an episode's start; the targets and agent types are the same at every seed
@@ -693,28 +719,40 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
             if findings:
                 _log(f"layout {layout_id}: {describe(findings)}")
         _log(f"saved {worlds[layout_id]} with {len(crowds)} crowd scenarios ({names[seeds[0]]} ...)")
+    if states is not None and "fleet" in full:
+        text = json.dumps(states, indent=1) + "\n"
+        if states_out.is_file() and states_out.read_text() != text and not args.force:
+            raise ValueError(f"{states_out} exists with other charge states: pick another name or pass --force")
+        states_out.parent.mkdir(parents=True, exist_ok=True)
+        if not states_out.is_file() or states_out.read_text() != text:
+            states_out.write_text(text)
     common = f"seeds {', '.join(map(str, seeds))}, {args.duration:g} s each, warm-up {IN.WARMUP_S:g} s cut in the analysis"
-    arms = ", ".join(f"{roles[layout_id]} {layout_id}" for layout_id in layouts)
-    crowd_only = SU.benchmark_command("<suite>", args.lanes)
+    named = ", ".join(f"{roles[layout_id]} {layout_id}" for layout_id in layouts)
+    crowd_only = SU.CONTEST
 
-    def write(site_doc: Mapping[str, Any], without_doc: Mapping[str, Any], site_out: Path, without_out: Path, what: str) -> None:
-        IN.write_once(site_doc, site_out, [f"INFRA redesigned study{what}: {space.site.key} as is without robots, scenario {space.scenario_name}, {common}", f"{_summary(site_doc)}", f"run: {crowd_only.replace('<suite>', site_out.stem)}"], force=args.force)
-        if without_doc["stages"]:
-            IN.write_once(without_doc, without_out, [f"INFRA redesigned study{what}: {arms} from {args.report}, each without robots as a crowd-only stage with the seed's parcel recipients (scenario {space.scenario_name}__s<seed>), seeds {', '.join(map(str, without))} of {common}", f"{_summary(without_doc)}", f"run: {crowd_only.replace('<suite>', without_out.stem)}"], force=args.force)
+    def write(made: Mapping[str, Mapping[str, Any]], paths: Mapping[str, Path], what: str) -> None:
+        heads = {
+            "site": f"{space.site.key} as is without robots, scenario {space.scenario_name}, {common}",
+            "without": f"{named} from {args.report}, each without robots as a crowd-only stage with the seed's parcel recipients (scenario {space.scenario_name}__s<seed>), seeds {', '.join(map(str, without))} of {common}",
+            "fleet": f"{named} from {args.report}, each with the fleet" + (", no crowd" if fleet_only else " and the seed's parcel recipients") + f": the seed's jobs to the locker that serves each job's recipient entrance, {args.rate:g} jobs per hour; {common}",
+        }
+        for arm, doc in made.items():
+            IN.write_once(doc, paths[arm], [f"INFRA redesigned study{what}: {heads[arm]}", f"{_summary(doc)}", f"run: {SU.benchmark_command(paths[arm].stem, args.lanes, contest if arm == 'fleet' else crowd_only)}"], force=args.force)
 
-    write(site_doc, without_doc, site_out, without_out, "")
+    write(full, outs, "")
     parts = []
     for tag, part in seed_parts:
-        part_site, part_without = docs(part)
-        outs = out.with_name(f"{out.stem}_site_{tag}.yaml"), out.with_name(f"{out.stem}_without_{tag}.yaml")
-        write(part_site, part_without, *outs, f", part {tag} (seeds {', '.join(map(str, part))})")
-        parts.append({"tag": tag, "seeds": part, "site_suite": outs[0].stem, "without_suite": outs[1].stem if part_without["stages"] else None, "episodes": IN.episodes(part_site) + IN.episodes(part_without)})
-        print(f"part {tag}: seeds {', '.join(map(str, part))}, {outs[0].stem} ({_summary(part_site)})" + (f", {outs[1].stem} ({_summary(part_without)})" if part_without["stages"] else ""))
+        made = docs(part)
+        paths = {"site": out.with_name(f"{out.stem}_site_{tag}.yaml"), "without": out.with_name(f"{out.stem}_without_{tag}.yaml"), "fleet": out.with_name(f"{out.stem}_{tag}.yaml")}
+        write(made, paths, f", part {tag} (seeds {', '.join(map(str, part))})")
+        parts.append({"tag": tag, "seeds": part, **({"suite": paths["fleet"].stem if "fleet" in made else None} if "fleet" in arms else {}), "site_suite": paths["site"].stem if "site" in made else None, "without_suite": paths["without"].stem if "without" in made else None, "episodes": sum(IN.episodes(doc) for doc in made.values())})
+        print(f"part {tag}: seeds {', '.join(map(str, part))}: " + ", ".join(f"{paths[arm].stem} ({_summary(doc)})" for arm, doc in made.items()))
     keep = ("layout_id", "reach_m", "lockers", "travel_m", "floor_loss_m2", "serves", "walk", "walk_by_entrance")
+    block = {key: value for key, value in fleet_block(next(iter(layouts)), seeds[0]).items() if key not in ("jobs", "lockers", "soc_log")}
     record = {
-        "suite": None,
-        "site_suite": site_out.stem,
-        "without_suite": without_out.stem if without_doc["stages"] else None,
+        "suite": out.stem if "fleet" in full else None,
+        "site_suite": outs["site"].stem if "site" in full else None,
+        "without_suite": outs["without"].stem if "without" in full else None,
         "report": str(args.report),
         "picks": {roles[layout_id]: layout_id for layout_id in layouts},
         "site": space.site.key,
@@ -728,9 +766,9 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         "rate_per_h": args.rate,
         "pickup_share": args.pickup_share,
         "seeds": seeds,
-        IN.WITHOUT_ROBOTS_SEEDS: without,
+        IN.WITHOUT_ROBOTS_SEEDS: without if "without" in full else [],
         "episodes": total_episodes,
-        "sim_hours": round(IN.sim_hours(site_doc) + IN.sim_hours(without_doc), 2),
+        "sim_hours": round(sum(IN.sim_hours(doc) for doc in full.values()), 2),
         "loading": space.loading_record(),
         "charge_power_w": args.charge_power,
         "locker_rules": [str(rule) for rule in space.search.elements[SE.SEARCHED[2]].rules],
@@ -745,6 +783,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
             "by_layout": {layout_id: {str(seed): [r.record() for r in group] for seed, group in per_seed.items()} for layout_id, per_seed in who.items()},
         },
         "jobs": {str(seed): [job.record() for job in jobs[seed]] for seed in seeds},
+        **({"fleet": block, "contest": contest, "fleet_only": fleet_only, "charge_states": str(states_out) if states is not None else None, "start_charge": None if states is not None else args.start_charge} if "fleet" in full else {}),
         "runs": [{"role": roles[layout_id], **{key: records[layout_id][key] for key in keep if key in records[layout_id]}} for layout_id in layouts],
         "worlds": {layout_id: str(path) for layout_id, path in worlds.items()},
         **({"seed_parts": parts} if parts else {}),
@@ -755,10 +794,26 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         if manifest_out.is_file() and not args.force:
             raise ValueError(f"{manifest_out} exists with other content: a written manifest is not replaced, pick another name or pass --force")
         manifest_out.write_text(text)
-    print(f"wrote {site_out}: {_summary(site_doc)}; {without_out if without_doc['stages'] else '(no run without robots)'}: {_summary(without_doc)}; {manifest_out}; worlds {', '.join(str(p) for p in worlds.values())}")
-    print(SU.benchmark_command(site_out.stem, args.lanes))
-    if without_doc["stages"]:
-        print(SU.benchmark_command(without_out.stem, args.lanes))
+    print("wrote " + "; ".join(f"{outs[arm]}: {_summary(doc)}" for arm, doc in full.items()) + f"; {manifest_out}; worlds {', '.join(str(p) for p in worlds.values())}")
+    for arm, doc in full.items():
+        print(SU.benchmark_command(outs[arm].stem, args.lanes, contest if arm == "fleet" else crowd_only))
+    return 0
+
+
+def _cmd_charge_states(args: argparse.Namespace) -> int:
+    """`flowedit infra charge-states`: the charge states of fleet-only runs' charge logs, as the file the fleet's start
+    charge is drawn from."""
+    from . import entrance_fleet as EF
+
+    if args.out.exists() and not args.force:
+        raise ValueError(f"{args.out} exists: pick another name, or pass --force")
+    doc = EF.charge_states(args.log, from_s=args.from_s, every_s=args.every_s)
+    states = doc["states"]
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(doc, indent=1) + "\n")
+    flat = sorted(v for state in states for v in state)
+    _log(f"{len(states)} charge states of {len(states[0])} robots from {doc['source']['rows']} rows ({doc['source']['skipped']} left out), from {args.from_s:g} s on, {args.every_s:g} s apart; charge min {flat[0]:.1f} %, median {flat[len(flat) // 2]:.1f} %, max {flat[-1]:.1f} %; by start spot " + ", ".join(f"{spot} {sum(state[i] for state in states) / len(states):.1f} %" for i, spot in enumerate(doc["spots"])))
+    print(f"wrote {args.out}")
     return 0
 
 
@@ -834,7 +889,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
 def add_parser(verbs: Any) -> None:
     """The `infra` verb and its subcommands."""
     p = verbs.add_parser("infra", help="INFRA Stage 1 suites: the site as is, the premise check, the selection and the evaluation", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation}")
+    infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation,charge-states}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE}); layout copies hardlink its assets, so save on its mount")
     common.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): where each element may go, the excluded zones, the crowd scenario")
@@ -932,4 +987,19 @@ def add_parser(verbs: Any) -> None:
     g.add_argument("--loading", type=_point, default=None, help="x,y of the loading point, snapped to the nearest valid spot (default the site config's courier access point)")
     g.add_argument("--no-outlet-rule", action="store_true", help="the report's search ran without the locker's outlet cable rule (`flowedit infra search --no-outlet-rule`)")
     g.add_argument("--no-check", action="store_true", help="skip the check of each layout's crowd scenario that the runtime runs at an episode's start")
+    from . import entrance_fleet as EF
+
+    g.add_argument("--arms", type=lambda text: [a.strip() for a in text.split(",") if a.strip()], default=["site", "without"], help="the suites to write: site (the site as is), without (each layout without robots, crowd only), fleet (each layout with the fleet: the seed's jobs to the locker that serves each job's recipient entrance, robots on their own battery, charging by need); default site,without. A capacity run of one layout is --arms fleet at each job rate, with a --tag and an --out per rate")
+    g.add_argument("--charge-states", type=Path, default=None, help=f"the fleet's start charge: a file of charge states (`flowedit infra charge-states`), copied beside the suite; one state is drawn per episode seed, each robot its place in it (default: every robot starts at --start-charge)")
+    g.add_argument("--start-charge", type=float, default=EF.START_SOC, help=f"start charge of every robot without --charge-states, %% (default {EF.START_SOC:g}: full)")
+    g.add_argument("--fleet-only", action="store_true", help="a fleet-only run: each layout with the fleet and no walkers (the site's scenario without its sources, <scenario>__fleet_only), only the fleet suite; with --charge-log the run that gives the charge states")
+    g.add_argument("--charge-log", default="", help="with --fleet-only: the directory (as the recording machine sees it) the fleet logs the robots' charge to, one <stage>.csv per stage, for `flowedit infra charge-states`")
+    g.add_argument("--charge-log-s", type=float, default=EF.CHARGE_LOG_S, help=f"seconds between two lines of the charge log (default {EF.CHARGE_LOG_S:g})")
     q.set_defaults(fn=_cmd_evaluation)
+    q = infra.add_parser("charge-states", help="the charge states of fleet-only runs, for the fleet's start charge", description="read the charge logs fleet-only runs wrote (`flowedit infra evaluation --report ... --fleet-only --charge-log DIR`) and write the charge states the fleet's start charge is drawn from (`--charge-states`): the robots' charges at moments of the runs, after a run-in and a fixed time apart, in the order of the robots' start spots")
+    q.add_argument("--log", type=Path, action="append", required=True, help="a charge log (<stage>.csv); repeatable")
+    q.add_argument("--from-s", type=float, default=EF.RUN_IN_S, help=f"the run-in: rows before this many seconds of an episode are left out (default {EF.RUN_IN_S:g})")
+    q.add_argument("--every-s", type=float, default=EF.STATE_EVERY_S, help=f"seconds between two states taken from an episode (default {EF.STATE_EVERY_S:g})")
+    q.add_argument("--out", type=Path, required=True, help="the charge-state file (JSON)")
+    q.add_argument("--force", action="store_true", help="replace an existing file")
+    q.set_defaults(fn=_cmd_charge_states)
