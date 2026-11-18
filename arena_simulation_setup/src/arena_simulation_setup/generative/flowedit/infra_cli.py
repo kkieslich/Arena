@@ -124,7 +124,7 @@ def _cmd_reference(args: argparse.Namespace) -> int:
 class _Space:
     """The search space of a layout command: the site, its config, the crowd scenario and the `Search`."""
 
-    def __init__(self, args: argparse.Namespace, elements: dict[str, Any] | None = None) -> None:
+    def __init__(self, args: argparse.Namespace, elements: dict[str, Any] | None = None, *, count: bool = True) -> None:
         self.site = open_site(_site_root(args.site))
         self.config = _config(args, self.site.key)
         self.scenario_name = _scenario(args, self.config)
@@ -138,7 +138,11 @@ class _Space:
         facts = self.config.facts if self.config is not None else None
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
-        _log(f"search space: {json.dumps(self.search.counts())}")
+        if count:
+            _log(f"search space: {json.dumps(self.search.counts())}")
+        else:
+            # the first study's candidate list (charger x bay x locker triples) is no part of the entrance search
+            _log(f"spots: {json.dumps({name: len(found) for name, found in self.search.spots.items()})}")
         loading_spot = self.search.loading
         _log(f"loading point: {loading_spot.zone} piece {loading_spot.piece} step {loading_spot.step}, goto {loading_spot.objects[0].goto}")
 
@@ -417,7 +421,7 @@ def _floats(text: str) -> list[float]:
 
 def _costs(args: argparse.Namespace, space: Any, groups: dict[str, SE.Occupancy]) -> tuple[list[Any], str]:  # noqa: ANN401 - a demand.EntranceSearch
     """The ranking of the pedestrian-aware search by `--rank`, as costs in order (`demand.pedestrian_aware`), and what
-    it is in words."""
+    it is in words. ValueError for a pooled cost at a band without default weights and without `--delay-per-exposure`."""
     from . import demand as DE
 
     scored = [g for g in SE.GROUPS if g in groups]
@@ -430,10 +434,20 @@ def _costs(args: argparse.Namespace, space: Any, groups: dict[str, SE.Occupancy]
         raise ValueError(f"--rank {args.rank} needs the walker groups' occupancy (--group-occupancy); --rank walk ranks without")
     if args.rank == "exposure":
         return [exposure], f"the worst-off group's predicted exposure (s per h per member, {args.band:g} m band)"
-    per = {**DE.DELAY_PER_EXPOSURE, **(args.delay_per_exposure or {})}
+    given = args.delay_per_exposure or {}
+    missing = [g for g in scored if g not in given]
+    per = {**(DE.delay_per_exposure(args.band) if missing else {}), **given}
+    element = {**DE.DELAY_PER_ELEMENT, **(args.delay_per_element or {})}
     present = sum(groups[g].present for g in scored)
-    cost = DE.Cost.pooled({g: per[g] for g in scored}, space.demand.deliveries_per_h, present, speeds, args.band)
-    return [cost], f"the worst-off group's time lost per hour on the site (s per h per member): its exposure times {', '.join(f'{g} {per[g]:g}' for g in scored)}, plus its recipients' walk to the locker and back ({space.demand.deliveries_per_h:g} recipients per hour among {present:.0f} walkers present)"
+    cost = DE.Cost.pooled({g: per[g] for g in scored}, space.demand.deliveries_per_h, present, speeds, args.band, {g: element[g] for g in scored})
+    words = (
+        f"the worst-off group's time lost per hour on the site (s per h per member): its time within {args.band:g} m of a driving robot times "
+        f"{', '.join(f'{g} {per[g]:g}' for g in scored)}, its time on an element's floor times {', '.join(f'{g} {element[g]:g}' for g in scored)}, "
+        f"plus its recipients' walk to the locker and back ({space.demand.deliveries_per_h:g} recipients per hour among {present:.0f} walkers present)"
+    )
+    if args.rank == "step-free":
+        words = f"rule S: the layouts whose every recipient entrance is served from within the reach step-free first, where the travel cap holds one; among them (else among all) {words}"
+    return [cost], words
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
@@ -441,7 +455,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
     if args.out is not None and args.out.exists() and not args.force:
         raise ValueError(f"{args.out} exists: pick another name, or pass --force")
-    space = _Space(args, elements={SE.SEARCHED[2]: DE.locker_element(outlet=not args.no_outlet_rule)})
+    space = _Space(args, elements={SE.SEARCHED[2]: DE.locker_element(outlet=args.outlet_rule)}, count=False)
     if space.config is None:
         raise ValueError(f"{space.site.key}: the recipient entrances come from the site config's entrances; there is none")
     search = space.search
@@ -454,6 +468,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
     _log(f"recipient entrances ({', '.join(args.recipient_types)}): {', '.join(e.name for e in entrances)}")
     _log(f"search space: {json.dumps(found.counts())}")
     costs, ranking = _costs(args, found, groups)
+    step_free = args.rank == "step-free"
     _log(f"pedestrian-aware ranking: {ranking}")
     report: dict[str, Any] = {
         "site": space.site.key,
@@ -463,6 +478,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
         "demand": {"rate_per_h": demand.rate_per_h, "pickup_share": demand.pickup_share, "bay_share": demand.bay_share, "charging_trips_per_job": demand.charging_trips_per_job},
         "recipient_entrances": [e.name for e in entrances],
         "locker_rules": [str(rule) for rule in search.elements[SE.SEARCHED[2]].rules],
+        "rank": args.rank,
         "ranking": ranking,
         "margins": list(args.margins),
         "band_m": args.band,
@@ -473,40 +489,47 @@ def _cmd_search(args: argparse.Namespace) -> int:
 
     def line(role: str, placed: Any, base: float) -> str:  # noqa: ANN401 - a demand.Placed
         record = found.record(placed, costs[0])
-        walk = "; ".join(f"{g} {v['mean_m']:.0f} / {v['longest_m']:.0f} m" for g, v in record["walk"].items())
+        walk = "; ".join(f"{g} {v['mean_m']:.0f} / {v['longest_m']:.0f} m" for g, v in record["walk"].items() if v["mean_m"] is not None)
         exposure = "" if "exposure" not in record else ", exposure s/h " + " ".join(f"{g} {v:.2f}" for g, v in record["exposure"][f"{args.band:g}"].items())
-        return f"  {role:22s} {placed.layout_id}: {placed.travel_m:7.1f} m per job ({placed.travel_m / base:.3f} x), walk mean / longest {walk}{exposure}, worst-off {record['worst_group']} {record['cost'][record['worst_group']]:.3f}, lockers {' / '.join(found.lockers[k].zone for k in placed.lockers)}"
+        worst = record["cost"][record["worst_group"]]
+        set_ = "" if placed.step_free_set is None else (", step-free set" if placed.step_free_set else ", no step-free layout within the cap")
+        return f"  {role:22s} {placed.layout_id}: {placed.travel_m:7.1f} m per job ({placed.travel_m / base:.3f} x), walk mean / longest {walk}{exposure}, worst-off {record['worst_group']} {'unreachable' if worst is None else f'{worst:.3f}'}{set_}, lockers {' / '.join(found.lockers[k].zone for k in placed.lockers)}"
 
     for reach in args.reach:
+        entry: dict[str, Any] = {"reach_m": reach}
+        report["reaches"].append(entry)
         try:
             cover = found.cover(reach)
+            optimal = DE.travel_optimal(found, reach)
         except ValueError as e:
             _log(f"reach {reach:g} m: no valid layout: {e}")
-            report["reaches"].append({"reach_m": reach, "valid": False, "reason": str(e)})
+            entry.update(valid=False, reason=str(e))
             continue
-        optimal = DE.travel_optimal(found, reach)
-        practice = DE.practice_based(found, reach)
-        picks = [(margin, DE.pedestrian_aware(found, reach, costs, margin * optimal.travel_m, start=[optimal])) for margin in args.margins]
+        layouts = [{"role": "travel_optimal", **found.record(optimal, costs[0])}]
         _log(f"reach {reach:g} m: {cover.count} lockers, {len(cover.lockers)} locker spots within the reach, {len(cover.partitions)} ways to split the entrances")
         _log(line("travel-optimal", optimal, optimal.travel_m))
-        for margin, pick in picks:
+        for margin in args.margins:
+            cap = margin * optimal.travel_m
+            try:
+                pick = DE.pedestrian_aware(found, reach, costs, cap, start=[optimal], step_free=step_free)
+            except ValueError as e:
+                _log(f"  pedestrian-aware {margin:g}: {e}")
+                layouts.append({"role": "pedestrian_aware", "margin": margin, "max_travel_m": round(cap, 3), "pick": None, "reason": str(e)})
+                continue
             _log(line(f"pedestrian-aware {margin:g}", pick, optimal.travel_m))
-        _log(line("practice-based", practice, optimal.travel_m))
-        report["reaches"].append({
-            "reach_m": reach,
-            "valid": True,
-            "lockers": cover.count,
-            "locker_spots": len(cover.lockers),
-            "partitions": [[[entrances[e].name for e in group] for group in parts] for parts in cover.partitions],
-            "layouts": [
-                {"role": "travel_optimal", **found.record(optimal, costs[0])},
-                *({"role": "pedestrian_aware", "margin": margin, "max_travel_m": round(margin * optimal.travel_m, 3), **found.record(pick, costs[0])} for margin, pick in picks),
-                {"role": "practice_based", **found.record(practice, costs[0])},
-            ],
-        })
+            layouts.append({"role": "pedestrian_aware", "margin": margin, "max_travel_m": round(cap, 3), **found.record(pick, costs[0])})
+        try:
+            practice = DE.practice_based(found, reach)
+        except ValueError as e:
+            _log(f"  practice-based: {e}")
+            layouts.append({"role": "practice_based", "pick": None, "reason": str(e)})
+        else:
+            _log(line("practice-based", practice, optimal.travel_m))
+            layouts.append({"role": "practice_based", **found.record(practice, costs[0])})
+        entry.update(valid=True, lockers=cover.count, locker_spots=len(cover.lockers), partitions=[[[entrances[e].name for e in group] for group in parts] for parts in cover.partitions], layouts=layouts)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(report, indent=1) + "\n")
+        args.out.write_text(json.dumps(report, indent=1, allow_nan=False) + "\n")
         print(f"wrote {args.out}")
     _log("(a search report: no world or suite written)")
     return 0
@@ -894,12 +917,13 @@ def add_parser(verbs: Any) -> None:
     q.add_argument("--bay-share", type=float, default=DE.BAY_SHARE, help=f"share of the robots that wait at a bay slot, the others at a charger (default {DE.BAY_SHARE:g})")
     q.add_argument("--charging-trips", type=float, default=0.0, help="charging trips per job in the robot travel model, one drive between a bay slot and a charger each (the fleet-only run's rate; default 0)")
     q.add_argument("--speed", type=float, default=IN.SPEED_MPS, help=f"robot speed on its routes, m/s (default {IN.SPEED_MPS:g})")
-    q.add_argument("--no-outlet-rule", action="store_true", help="drop the locker's outlet cable rule (a sensitivity for a site whose outlet marks are in doubt)")
+    q.add_argument("--outlet-rule", action="store_true", help="apply the catalog's outlet cable rule to the lockers too (default: not applied to lockers; chargers keep it)")
     q.add_argument("--occupancy", type=Path, default=None, help="the reference runs' flow cells (all walkers): reported as group `all`, not ranked")
     q.add_argument("--group-occupancy", type=Path, action="append", default=None, help="the reference runs' walker-group cells (`evaluation infra occupancy`); repeatable, read as one. Without them no exposure is predicted and only --rank walk ranks")
     q.add_argument("--band", type=float, default=SE.CONFLICT_BAND_M, help=f"the conflict band of the predicted exposure, m (default {SE.CONFLICT_BAND_M:g})")
-    q.add_argument("--rank", choices=("pooled", "exposure", "walk"), default="pooled", help="the pedestrian-aware ranking, by the worst-off group: pooled (time lost per hour on the site: exposure times --delay-per-exposure plus the recipients' walk; default), exposure (the first study's term alone), walk (the walk to the locker, ties by exposure)")
-    q.add_argument("--delay-per-exposure", type=_pairs, default=None, help=f"seconds of delay per second of exposure per walker group, e.g. adult=0.3,wheelchair=0.5 (default {','.join(f'{g}={v:g}' for g, v in DE.DELAY_PER_EXPOSURE.items())})")
+    q.add_argument("--rank", choices=("step-free", "pooled", "exposure", "walk"), default="step-free", help="the pedestrian-aware ranking, by the worst-off group: step-free (rule S: the layouts that serve every recipient entrance from within the reach step-free first, where the travel cap holds one, then pooled; default), pooled (time lost per hour on the site: time near robots times --delay-per-exposure, time on element floor times --delay-per-element, plus the recipients' walk), exposure (the first study's term alone), walk (the walk to the locker, ties by exposure)")
+    q.add_argument("--delay-per-exposure", type=_pairs, default=None, help=f"seconds of delay per second within --band of a driving robot per walker group, e.g. adult=0.3,wheelchair=0.5 (default at 2 m {','.join(f'{g}={v:g}' for g, v in DE.DELAY_PER_EXPOSURE.items())}, at 1 m the calibration; another band needs them given)")
+    q.add_argument("--delay-per-element", type=_pairs, default=None, help=f"seconds of delay per second on an element's floor per walker group (default {','.join(f'{g}={v:g}' for g, v in DE.DELAY_PER_ELEMENT.items())}, the calibration, the same in every band)")
     q.add_argument("--walk-speed", type=_pairs, default=None, help=f"walking speed per walker group, m/s (default {','.join(f'{g}={v:g}' for g, v in DE.WALK_SPEED_MPS.items())})")
     q.add_argument("--out", type=Path, default=None, help="the report file (JSON); an existing file is kept unless --force")
     q.add_argument("--force", action="store_true", help="replace an existing report file")
