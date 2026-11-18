@@ -223,7 +223,8 @@ def _fleet_world() -> object:
 
     # zone centres bay_1 (0.5, 0.5), bay_2 (2.5, 0.5), dock_a (4.5, 0.5), bay_3 (8.5, 0.5), bay_4 (10.5, 0.5); dock centres charger_1 (1, 3), charger_2 (4, 3), locker_1 (7, 3)
     zones = [Zone(name="bay_1", polygon=square(0.0)), Zone(name="bay_2", polygon=square(2.0)), Zone(name="dock_a", polygon=square(4.0)), Zone(name="bay_3", polygon=square(8.0)), Zone(name="bay_4", polygon=square(10.0))]
-    return Level(id="0", zones=zones, objects=[docked("charger_1", 0.0, 1620.0), docked("charger_2", 3.0, 1620.0), docked("locker_1", 6.0, None)])
+    # a second locker, dock centre (13, 3), for jobs addressed to one of several lockers
+    return Level(id="0", zones=zones, objects=[docked("charger_1", 0.0, 1620.0), docked("charger_2", 3.0, 1620.0), docked("locker_1", 6.0, None), docked("locker_2", 12.0, None)])
 
 
 LOADING_XY = (4.5, 0.5)
@@ -251,8 +252,8 @@ def _stream(kinds: str) -> Iterator[object]:
     yield from (Job(index, "delivery", math.inf) for index in itertools.count(len(kinds)))
 
 
-def _fleet(monkeypatch: pytest.MonkeyPatch | None = None, jobs: str | None = None, **params: object) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
-    """The fleet mode on the test world with robots r0 to r3, the seed's job stream or the given `jobs`, and a record of its task log and log lines."""
+def _fleet(monkeypatch: pytest.MonkeyPatch | None = None, jobs: str | None = None, job_list: list[str] | None = None, **params: object) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
+    """The fleet mode on the test world with robots r0 to r3, the seed's job stream, the given `jobs` (kinds, all released at 1 s) or the job list `job_list` (the mode's `jobs` parameter), and a record of its task log and log lines."""
     from arena_rclpy_mixins.shared import Namespace
     from arena_rclpy_mixins.Time import Time
     from arena_runtime.env.constants.rng import EpisodeRng
@@ -262,7 +263,7 @@ def _fleet(monkeypatch: pytest.MonkeyPatch | None = None, jobs: str | None = Non
     if jobs is not None:
         assert monkeypatch is not None
         monkeypatch.setattr(impl, "releases", lambda rng, rate, share: _stream(jobs))
-    values = {"homes": FLEET_HOMES, "loading": "dock_a", "locker": "locker_1", "rate": FLEET_RATE, **params}
+    values = {"homes": FLEET_HOMES, "loading": "dock_a", "locker": "locker_1", "rate": FLEET_RATE, **params, **({"jobs": job_list} if job_list is not None else {})}
 
     def param(name: object, default: object = None, **kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(value=values.get(str(name).rsplit(".", 1)[-1], default))
@@ -1215,3 +1216,178 @@ def test_fleet_ticks_before_its_first_reset() -> None:
     asyncio.run(mode.tick({}, ()))
     assert all(manager.submitted == [] for manager in managers.values())
     assert record.log == {}
+
+
+# --- jobs addressed to one of several lockers, charging by need, the nearest charger, a jam on a charging trip ---------
+
+
+def test_a_job_list_is_read_in_release_order_and_refuses_what_is_no_job() -> None:
+    from task_generator.tasks.robots.fleet.impl import Job, listed
+
+    assert listed([]) == []
+    assert listed(["12.5 delivery locker_2 lift_a", "12.5 pickup locker_1", "300 delivery locker_2 door_b"]) == [
+        Job(0, "delivery", 12.5, "locker_2", "lift_a"),
+        Job(1, "pickup", 12.5, "locker_1", ""),
+        Job(2, "delivery", 300.0, "locker_2", "door_b"),
+    ]
+    for bad in (["soon delivery locker_1"], ["1 return locker_1"], ["1 delivery"], ["1 delivery locker_1 a b"], ["-1 delivery locker_1"], ["inf delivery locker_1"]):
+        with pytest.raises(ValueError, match="task.fleet.jobs entry 0"):
+            listed(bad)
+    with pytest.raises(ValueError, match="not in release order"):
+        listed(["5 delivery locker_1", "4 delivery locker_1"])
+
+
+def test_fleet_runs_the_jobs_of_its_job_list_to_the_locker_each_names() -> None:
+    entries = ["1 delivery locker_2 lift_a", "2 pickup locker_1 door_b", "500 delivery locker_1 door_b"]
+    mode, managers, node, record = _fleet(lockers=["locker_1", "locker_2"], job_list=entries, rate=3000.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=95.0, r1=90.0, r2=85.0, r3=80.0)
+    _at(node, 2.0)
+    _tick(mode)
+    # the list's jobs at their times, whatever the rate: two released, the third waits for its time
+    assert [record.log[f"job.{i}.{key}"] for i in (0, 1) for key in ("kind", "released", "locker", "entrance")] == ["delivery", "1.000", "locker_2", "lift_a", "pickup", "2.000", "locker_1", "door_b"]
+    assert "job.2.kind" not in record.log
+    # a delivery loads at the loading point and unloads at its locker, a pickup loads at its locker
+    assert _phase_text(managers["r0"]) == "delivery 0: load at dock_a, released 1.0 s" and _phase_text(managers["r1"]) == "pickup 1: load at locker_1, released 2.0 s"
+    _tick(mode, {"r0": _met(), "r1": _met()})
+    assert _phase_text(managers["r0"]) == "delivery 0: unload at locker_2" and _phase_text(managers["r1"]) == "pickup 1: unload at dock_a"
+    _tick(mode, {"r0": _met(), "r1": _met()})
+    assert [record.log[f"job.{i}.outcome"] for i in (0, 1)] == ["completed", "completed"]
+    # the route estimate of a job runs to its own locker: (13, 3) is further from the loading point than (7, 3)
+    assert float(record.log["job.0.energy_wh"]) > float(record.log["job.1.energy_wh"])
+    _at(node, 500.0)
+    _tick(mode)
+    assert record.log["job.2.locker"] == "locker_1"
+    _at(node, 5000.0)
+    _tick(mode)
+    assert "job.3.kind" not in record.log  # the list is the whole stream
+
+
+def test_fleet_without_a_job_list_logs_no_locker_and_draws_the_seeds_stream() -> None:
+    mode, managers, node, record = _fleet(pickup_share=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=90.0, r2=90.0, r3=90.0)
+    releases = [job.release_s for job in _fleet_jobs(FLEET_SEED, 2, FLEET_RATE, 0.0)]
+    _at(node, releases[1])
+    _tick(mode)
+    assert [record.log[f"job.{i}.released"] for i in (0, 1)] == [f"{t:.3f}" for t in releases]
+    assert not [key for key in record.log if key.endswith((".locker", ".entrance"))]
+    assert _phase_text(managers["r0"]).startswith("delivery 0: load at dock_a")
+
+
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        ({"lockers": ["locker_1"], "job_list": ["1 delivery locker_2"]}, r"sends jobs to \['locker_2'\], which task.fleet.lockers does not name"),
+        ({"lockers": ["locker_1", "locker_9"], "job_list": []}, r"names \['locker_9'\], which are no goto target"),
+        ({"lockers": ["locker_1", "bay_1"]}, r"names \['bay_1'\], where jobs load and unload"),
+        ({"charge_rule": "never"}, r"charge_rule is one of threshold, need"),
+        ({"charge_jam": "wait"}, r"charge_jam one of home, retry"),
+    ],
+)
+def test_fleet_reset_refuses_a_job_list_or_a_rule_it_does_not_know(params: dict[str, object], match: str) -> None:
+    mode, *_ = _fleet(**params)
+    with pytest.raises(ValueError, match=match):
+        asyncio.run(mode.reset())
+
+
+def test_fleet_by_need_sends_no_robot_to_charge_under_charge_below_and_tops_nobody_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    for rule in ("threshold", "need"):
+        mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", charge_rule=rule)
+        for manager in managers.values():
+            manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+        # r0 on a bay is under charge_below, r1 on the other bay under charge_until; r2 leaves its charger for the job
+        _socs(managers, r0=25.0, r1=60.0, r2=95.0, r3=92.0)
+        _at(node, 1.0)
+        _tick(mode)
+        assert _job_index(managers["r2"]) == 0
+        if rule == "threshold":
+            # the first study: r0 goes to charge at the charger r2 left
+            assert (record.log["charge.0.robot"], record.log["charge.0.trigger"]) == ("r0", "charge_below") and _phase_text(managers["r0"]) == "charge at charger_1"
+        else:
+            # by need: nobody charges and nobody tops up while no job asks for more than a robot has
+            assert not [key for key in record.log if key.startswith(("charge.", "top_up."))]
+            assert managers["r0"].submitted == [] and managers["r1"].submitted == []
+
+
+def test_fleet_by_need_gives_a_job_to_a_robot_under_charge_below_and_charges_one_the_job_would_leave_under_the_reserve(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="dd", charge_rule="need")
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    need = 100.0 * _job_wh((0.5, 0.5)) / 270.0
+    # every robot is under charge_below: r0 has enough for a job and the reserve, r1 just not, the two on chargers less
+    _socs(managers, r0=10.0 + need + 0.5, r1=10.0 + 100.0 * _job_wh((2.5, 0.5)) / 270.0 - 0.2, r2=6.0, r3=5.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _job_index(managers["r0"]) == 0 and record.log["job.0.robot"] == "r0"
+    # job 1 finds no robot it leaves over the reserve: each free robot it is offered to charges first, the fullest first
+    assert [(record.log[f"charge.{i}.robot"], record.log[f"charge.{i}.trigger"]) for i in (0, 1, 2)] == [("r1", "job 1"), ("r2", "job 1"), ("r3", "job 1")]
+    assert "job.1.robot" not in record.log
+    assert not [key for key in record.log if key.startswith("top_up.")]
+
+
+def test_fleet_takes_the_nearest_free_charger_when_asked_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    for nearest, charger in ((False, "charger_1"), (True, "charger_2")):
+        mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], nearest_charger=nearest)
+        asyncio.run(mode.reset())
+        _socs(managers, r0=90.0, r1=90.0, r2=90.0, r3=20.0)
+        # r3 stands on bay_4 at (10.5, 0.5): charger_2 at (4, 3) is nearer than charger_1 at (1, 3); both are free
+        managers["r3"].pose = _pose(10.5, 0.5)
+        _at(node, 1.0)
+        _tick(mode)
+        assert _phase_text(managers["r3"]) == f"charge at {charger}" and record.log["charge.0.charger"] == charger
+
+
+def test_fleet_a_jammed_charging_trip_goes_on_to_its_charger_when_jams_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], charge_jam="retry", job_timeout=400.0, job_timeout_per_m=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=20.0, r1=90.0, r2=90.0, r3=90.0)
+    managers["r0"].pose = _pose(8.0, 8.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert _phase_text(managers["r0"]) == "charge at charger_1" and len(managers["r0"].submitted) == 1
+    for t in (62.0, 123.0):
+        _at(node, t)
+        _tick(mode)
+    # the jam is logged; the robot is not moved, its charge stays, and it is sent on to the same charger
+    assert (record.log["jam.0.robot"], record.log["jam.0.charge"], record.log["jam.0.action"], record.log["jam.0.target"]) == ("r0", "0", "retry", "charger_1")
+    assert managers["r0"].moved == [] and managers["r0"].navigation_resets == 1
+    assert "charge.0.outcome" not in record.log and "charge.1.robot" not in record.log
+    assert len(managers["r0"].submitted) == 2 and _phase_text(managers["r0"]) == "charge at charger_1"
+    # a second window without progress: a second jam, again sent on
+    for t in (184.0, 245.0):
+        _at(node, t)
+        _tick(mode)
+    assert record.log["jam.1.action"] == "retry" and len(managers["r0"].submitted) == 3 and managers["r0"].moved == []
+    # it arrives and charges; a trip that never arrives still ends at its timeout
+    _tick(mode, {"r0": _met()})
+    assert record.log["charge.0.started"] == "245.001"
+    mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], charge_jam="retry", job_timeout=100.0, job_timeout_per_m=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=20.0, r1=90.0, r2=90.0, r3=90.0)
+    managers["r0"].pose = _pose(8.0, 8.0)
+    for t in (1.0, 62.0, 102.0):
+        _at(node, t)
+        _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.0.reason"]) == ("abandoned", "timeout") and managers["r0"].moved == []
+
+
+def test_fleet_logs_the_robots_charge_and_homes_to_a_file(tmp_path: object) -> None:
+    path = tmp_path / "logs" / "soc.csv"
+    mode, managers, node, record = _fleet(job_list=["9000 delivery locker_1"], soc_log=str(path), soc_log_s=60.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=81.5, r1=70.25, r2=100.0)
+    for t in (0.0, 30.0, 61.0, 200.0):
+        _at(node, t)
+        _tick(mode)
+    lines = path.read_text().splitlines()
+    assert lines[0] == "t_s,soc:r0,soc:r1,soc:r2,soc:r3,home:r0,home:r1,home:r2,home:r3"
+    # a line at the first tick and then once per 60 s of sim time, however far apart the ticks are; r3's charge is unknown
+    assert lines[1:] == ["0.001,81.500,70.250,100.000,,bay_1,bay_2,charger_1,charger_2", "61.001,81.500,70.250,100.000,,bay_1,bay_2,charger_1,charger_2", "200.001,81.500,70.250,100.000,,bay_1,bay_2,charger_1,charger_2"]
+    # a next episode appends its own header
+    asyncio.run(mode.reset())
+    assert path.read_text().splitlines()[4] == lines[0]
+    # no file without the parameter
+    mode, *_ = _fleet()
+    asyncio.run(mode.reset())
+    assert list(tmp_path.iterdir()) == [tmp_path / "logs"]
