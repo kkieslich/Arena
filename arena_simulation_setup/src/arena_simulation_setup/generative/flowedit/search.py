@@ -149,6 +149,32 @@ class TaskMix:
         return {"L_bay": (1 - p * q) / 2, "L_charger": (1 + p * q) / 2, "K_bay": (1 - q + p * q) / 2, "K_charger": (1 + q - p * q) / 2}
 
 
+#: The edges of a path raster's cell to its neighbours, one way each (the other way is the same edge), by
+#: neighbourhood: 8 the grid's neighbours and diagonals, 16 also the knight's moves, 32 also the moves of 3 by 1 and 3 by 2
+NEIGHBOURHOODS: dict[int, tuple[tuple[int, int], ...]] = {
+    8: ((0, 1), (1, 0), (1, 1), (1, -1)),
+    16: ((0, 1), (1, 0), (1, 1), (1, -1), (1, 2), (2, 1), (1, -2), (2, -1)),
+    32: ((0, 1), (1, 0), (1, 1), (1, -1), (1, 2), (2, 1), (1, -2), (2, -1), (1, 3), (3, 1), (2, 3), (3, 2), (1, -3), (3, -1), (2, -3), (3, -2)),
+}
+
+
+def _crossed(dr: int, dc: int) -> list[tuple[int, int]]:
+    """The cells other than its two ends that the straight line from a cell's centre to the cell `dr` rows and `dc`
+    columns away passes through (cell centres sampled along it, rounded): an edge that long needs all of them on the
+    floor. None for a grid neighbour or a diagonal."""
+    if max(abs(dr), abs(dc)) <= 1:
+        return []
+    steps = 64 * max(abs(dr), abs(dc))
+    out: list[tuple[int, int]] = []
+    for i in range(steps):
+        t = (i + 0.5) / steps
+        cell = (math.floor(t * abs(dr) + 0.5), math.floor(t * abs(dc) + 0.5))
+        cell = (cell[0] if dr >= 0 else -cell[0], cell[1] if dc >= 0 else -cell[1])
+        if cell not in ((0, 0), (dr, dc)) and cell not in out:
+            out.append(cell)
+    return out
+
+
 @attrs.frozen(eq=False)
 class RobotPaths:
     """Shortest robot path lengths (m) between level points on a NAV@r base's floor at one radius: the base's
@@ -157,7 +183,10 @@ class RobotPaths:
     block's middle cell): it cannot join floor across an obstacle, which keeps the radius between them on both sides,
     but it can drop a passage narrower than a block. A point snaps to the nearest cell of that component and the snap
     distance counts; beyond `PATH_SNAP_M` it is unreachable (inf). The elements of a layout are no obstacles here:
-    paths are those of the site as is. 8-connected paths run up to 8 % longer than straight ones off the grid axes."""
+    paths are those of the site as is. 8-connected paths run up to 8.2 % longer than straight ones off the grid axes;
+    `neighbourhood` 16 adds the knight's moves (up to 2.8 % longer) and 32 the moves of 3 by 1 and 3 by 2 cells as
+    well (up to 1.3 % longer; a short walk a little more, as its ends sit on cells), each only where every cell its
+    straight line crosses is floor (`NEIGHBOURHOODS`)."""
 
     resolution: float
     centres: np.ndarray
@@ -165,7 +194,7 @@ class RobotPaths:
     tree: Any
 
     @classmethod
-    def from_base(cls, base: NavrBase, radius: float | None = None, resolution: float = PATH_RESOLUTION_M) -> RobotPaths:
+    def from_base(cls, base: NavrBase, radius: float | None = None, resolution: float = PATH_RESOLUTION_M, neighbourhood: int = 8) -> RobotPaths:
         import numpy as np
         import scipy.sparse
         from scipy import ndimage
@@ -173,6 +202,8 @@ class RobotPaths:
 
         from arena_simulation_setup.metrics.navr_filter import JACKAL_RADIUS
 
+        if neighbourhood not in NEIGHBOURHOODS:
+            raise ValueError(f"neighbourhood must be one of {sorted(NEIGHBOURHOODS)}, not {neighbourhood}")
         fine = base.layer(JACKAL_RADIUS if radius is None else radius).traversable
         res = base.resolution
         k = max(1, round(resolution / res))
@@ -193,10 +224,12 @@ class RobotPaths:
         centres = np.column_stack([ox + (fc + 0.5) * res, oy + (height - fr - 0.5) * res])
         step = k * res
         heads, tails, weights = [], [], []
-        for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        for dr, dc in NEIGHBOURHOODS[neighbourhood]:
             a = ids[: rows - dr, max(0, -dc) : cols - max(0, dc)]
             b = ids[dr:, max(0, dc) : cols - max(0, -dc)]
             both = (a >= 0) & (b >= 0)
+            for ir, ic in _crossed(dr, dc):
+                both &= ids[ir : rows - dr + ir, max(0, -dc) + ic : cols - max(0, dc) + ic] >= 0
             heads.append(a[both])
             tails.append(b[both])
             weights.append(np.full(int(both.sum()), step * math.hypot(dr, dc)))
@@ -1093,6 +1126,7 @@ __all__ = [
     "JOINT_SAMPLES",
     "JOINT_TOP",
     "LOADING",
+    "NEIGHBOURHOODS",
     "PATH_RESOLUTION_M",
     "RANDOM_LAYOUTS",
     "SEARCHED",
