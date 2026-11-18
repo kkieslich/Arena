@@ -818,13 +818,18 @@ def write(doc: Mapping[str, Any], out: Path, header: Sequence[str] = (), *, forc
     return out
 
 
+def suite_text(doc: Mapping[str, Any], header: Sequence[str] = ()) -> str:
+    """A suite file's text as `write` writes it: the marker, `header` as comment lines, the suite."""
+    import yaml
+
+    return "\n".join([MARKER, *(f"# {line}" for line in header)]) + "\n" + yaml.safe_dump(dict(doc), sort_keys=False)
+
+
 def write_once(doc: Mapping[str, Any], out: Path, header: Sequence[str] = (), *, force: bool = False) -> Path:
     """Write a suite to `out` as `write` does, but never over another file: a file that exists is kept when it is the
     one this would write, and replaced only with `force`. For suites whose runs may be recorded already."""
-    import yaml
-
     out = Path(out)
-    text = "\n".join([MARKER, *(f"# {line}" for line in header)]) + "\n" + yaml.safe_dump(dict(doc), sort_keys=False)
+    text = suite_text(doc, header)
     if out.is_file() and out.read_text() == text:
         return out
     if out.is_file() and not force:
@@ -954,6 +959,7 @@ __all__ = [
     "sim_hours",
     "site_config",
     "spot_front",
+    "suite_text",
     "visitor_sources",
     "visitors",
     "without_suite",

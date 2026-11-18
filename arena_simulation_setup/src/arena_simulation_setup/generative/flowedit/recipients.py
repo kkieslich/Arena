@@ -33,7 +33,7 @@ import copy
 import itertools
 import json
 import shutil
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -412,12 +412,27 @@ def _world_path(name: str) -> Path:
     return WorldIdentifier(name).resolve_write_sync().path
 
 
-def save_layout(site: Site, layout: Layout, scenario: Path, crowds: Mapping[str, tuple[Mapping[str, Any], Mapping[str, Mapping[str, Any]], str]]) -> Path:
+def copy_path(site: Site, layout: Layout) -> Path:
+    """Where `save_layout` saves the copy of `layout`."""
+    return _world_path(place.layout_name(site, layout))
+
+
+def save_layout(
+    site: Site,
+    layout: Layout,
+    scenario: Path,
+    crowds: Mapping[str, tuple[Mapping[str, Any], Mapping[str, Mapping[str, Any]], str]],
+    *,
+    check: Callable[[Path, str], str | None] | None = None,
+) -> Path:
     """Save the copy of `layout` (`place.save_layout`, assets hardlinked) and write its crowd scenarios `crowds`
     (scenario name -> `recipient_crowd`'s result), each a copy of the site's scenario directory `scenario` (without the
     first study's locker visitors file) with its document and the recipients' agent types written in. Nothing recorded
     is replaced: a copy that exists is kept when it holds this layout as this code places it (its `edits.yaml`), and a
-    scenario that exists must be the one that would be written; ValueError otherwise. Returns the copy's path."""
+    scenario that exists must be the one that would be written; ValueError otherwise. `check` (the copy's path and the
+    name of one of its scenarios -> what is wrong with it, or None) runs once everything is written; when it finds
+    something, what this call wrote is taken away again (the copy itself where this call saved it, else the scenarios
+    it added) and ValueError says what. Returns the copy's path."""
     import yaml
 
     from arena_simulation_setup.tree.World.write import to_yaml
@@ -427,7 +442,9 @@ def save_layout(site: Site, layout: Layout, scenario: Path, crowds: Mapping[str,
     scenario = Path(scenario)
     name = place.layout_name(site, layout)
     path = _world_path(name)
-    if path.exists():
+    existed = path.exists()
+    added: list[Path] = []
+    if existed:
         expected = to_yaml(dump_edits(place.apply_layout(site, layout)))
         if not (path / EDITS).is_file() or (path / EDITS).read_text() != expected:
             raise ValueError(f"{path} exists and is not the copy of layout {layout.layout_id} this would write: nothing recorded is replaced, move it away first")
@@ -447,10 +464,16 @@ def save_layout(site: Site, layout: Layout, scenario: Path, crowds: Mapping[str,
                 raise ValueError(f"{folder} exists with another {', '.join(differ[:3])}: a written scenario is not replaced, pass another tag")
             continue
         shutil.copytree(scenario, folder, ignore=shutil.ignore_patterns(IN.VISITORS))
+        added.append(folder)
         (folder / "scenario.yaml").write_text(text)
         (folder / "types").mkdir(exist_ok=True)
         for file, body in files.items():
             (folder / file).write_text(body)
+    wrong = check(path, next(iter(crowds))) if check is not None and crowds else None
+    if wrong:
+        for folder in added if existed else [path]:
+            shutil.rmtree(folder)
+        raise ValueError(f"layout {layout.layout_id}: its crowd scenario fails the check the runtime runs at an episode's start (human.check), nothing of it is kept: {wrong}")
     return path
 
 
@@ -464,6 +487,7 @@ __all__ = [
     "TARGET",
     "Job",
     "Recipient",
+    "copy_path",
     "crowd_mix",
     "jobs",
     "layout_of",

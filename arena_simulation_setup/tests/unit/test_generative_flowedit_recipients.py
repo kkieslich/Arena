@@ -240,7 +240,7 @@ def test_a_layout_copy_gets_one_crowd_scenario_per_seed_and_nothing_written_is_r
     assert {o["name"]: o.get("charge_power_w") for level in world["levels"] for o in level.get("objects") or [] if o["name"].startswith("charger")} == {"charger_1": place.CHARGE_POWER_W, "charger_2": place.CHARGE_POWER_W}
     # the chargers' power is the copy's, not the layout id's: 270 Wh in 4 h on top of the standby draw by default
     slow = recipients.with_charge_power(pick.layout, recipients.CHARGE_POWER_W)
-    assert slow.layout_id == pick.layout_id and recipients.CHARGE_POWER_W == 109.7 and [o.name for o in slow.objects] == [o.name for o in pick.layout.objects]
+    assert recipients.copy_path(site_copy, slow) == path and slow.layout_id == pick.layout_id and recipients.CHARGE_POWER_W == 109.7 and [o.name for o in slow.objects] == [o.name for o in pick.layout.objects]
     assert sorted({s.element.charge_power_w for s in slow.spots if s.element.charge_power_w is not None}) == [109.7]
     with pytest.raises(ValueError, match="nothing recorded is replaced"):
         recipients.save_layout(site_copy, slow, scenario, crowds)
@@ -256,6 +256,11 @@ def test_a_layout_copy_gets_one_crowd_scenario_per_seed_and_nothing_written_is_r
     stamp = (path / "world.yaml").stat().st_mtime_ns
     assert recipients.save_layout(site_copy, pick.layout, scenario, {**crowds, "mix__s5": crowds["mix__s4"]}) == path
     assert (path / "world.yaml").stat().st_mtime_ns == stamp and (path / "scenarios" / "mix__s5" / "scenario.yaml").is_file()
+    # a scenario that fails the check is taken away again, and nothing else: here the copy stays
+    with pytest.raises(ValueError, match="nothing of it is kept: no floor"):
+        recipients.save_layout(site_copy, pick.layout, scenario, {"mix__s6": crowds["mix__s4"]}, check=lambda world, name: "no floor" if name == "mix__s6" else None)
+    assert sorted(p.name for p in (path / "scenarios").iterdir() if p.name.startswith("mix")) == ["mix__s3", "mix__s4", "mix__s5"] and (path / "world.yaml").stat().st_mtime_ns == stamp
+    assert recipients.save_layout(site_copy, pick.layout, scenario, crowds, check=lambda world, name: None) == path
     # a written scenario is not replaced by another, nor a copy that holds another layout
     with pytest.raises(ValueError, match="a written scenario is not replaced"):
         recipients.save_layout(site_copy, pick.layout, scenario, {"mix__s4": crowds["mix__s3"]})
@@ -284,7 +289,7 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
     optimal, practice = by_role["travel_optimal"], by_role["practice_based"]
     capsys.readouterr()
     out = tmp_path / "suites" / "infra_rd.yaml"
-    ids = f"{optimal['layout_id']},practice={practice['layout_id']}" if practice["layout_id"] != optimal["layout_id"] else optimal["layout_id"]
+    ids = f"travel_optimal={optimal['layout_id']}" + (f",practice={practice['layout_id']}" if practice["layout_id"] != optimal["layout_id"] else "")
     count = len(ids.split(","))
     args = ["infra", "evaluation", *common, "--report", str(report), "--layouts", ids, "--seeds", "71-74", "--without-robots-seeds", "71,72", "--rate", "240", "--recipient-offset", "60", "--seed-part", "h1=71,72", "--seed-part", "h2=73-74", "--out", str(out)]
     assert cli.main([*args, "--dry-run"]) == 0 and not out.parent.exists()
@@ -292,6 +297,7 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
     # each layout's crowd scenario is checked as the runtime checks it at an episode's start: the test world's
     # furniture resolves in no asset root here, which stops the command before a suite is written
     assert cli.main(args) == 1 and "human.check" in capsys.readouterr().err and not out.parent.exists()
+    assert not [p.name for p in site.root.parent.iterdir() if p.name.startswith(f"{site.key}__layout_")]  # the copy that failed is not kept
     args = [*args, "--no-check"]
     assert cli.main(args) == 0
     printed = capsys.readouterr()
@@ -310,7 +316,10 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
     copy = yaml.safe_load((Path(manifest["worlds"][optimal["layout_id"]]) / "world.yaml").read_text())
     assert {o["charge_power_w"] for level in copy["levels"] for o in level.get("objects") or [] if o["name"].startswith("charger")} == {109.7} and manifest["charge_power_w"] == 109.7
     assert manifest["suite"] is None and manifest["site_suite"] == "infra_rd_site" and manifest["without_suite"] == "infra_rd_without"
-    assert manifest["seeds"] == [71, 72, 73, 74] and manifest["without_robots_seeds"] == [71, 72] and manifest["episodes"] == 4 + 2 * count
+    # the seeds with a crowd-only run are not named `without_robots_seeds`: that key makes the analysis ask every row
+    # for a run with the fleet, and none is written here
+    assert manifest["seeds"] == [71, 72, 73, 74] and manifest["crowd_only_seeds"] == [71, 72] and "without_robots_seeds" not in manifest and manifest["episodes"] == 4 + 2 * count
+    assert manifest["writer_commit"] is None and manifest["picks"] == {"travel_optimal": optimal["layout_id"], **({"practice": practice["layout_id"]} if count == 2 else {})}
     assert list(manifest["worlds"]) == [r["layout_id"] for r in manifest["runs"]] and manifest["runs"][0]["role"] == "travel_optimal" and manifest["runs"][0]["serves"] == optimal["serves"]
     assert manifest["seed_parts"] == [
         {"tag": "h1", "seeds": [71, 72], "site_suite": "infra_rd_site_h1", "without_suite": "infra_rd_without_h1", "episodes": 2 + 2 * count},
@@ -336,16 +345,28 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
     stamps = {p: p.stat().st_mtime_ns for p in out.parent.iterdir()}
     assert cli.main(args) == 0 and {p: p.stat().st_mtime_ns for p in out.parent.iterdir()} == stamps
     assert cli.main([*args, "--recipient-offset", "90"]) == 1
-    assert "a written scenario is not replaced" in capsys.readouterr().err
+    assert "written suites and manifests are not replaced" in capsys.readouterr().err and {p: p.stat().st_mtime_ns for p in out.parent.iterdir()} == stamps
+    # another name with the same scenarios: refused before a suite or a manifest of that name is written
+    assert cli.main([*args, "--recipient-offset", "90", "--out", str(out.with_name("infra_rdx.yaml"))]) == 1
+    assert "a written scenario is not replaced" in capsys.readouterr().err and not list(out.parent.glob("infra_rdx*"))
     assert cli.main([*args, "--recipient-offset", "90", "--tag", "b", "--out", str(out.with_name("infra_rdb.yaml"))]) == 0
     assert yaml.safe_load(out.with_name("infra_rdb_without.yaml").read_text())["stages"][0]["config"]["scenario"] == {"file": "mix__b__s71"}
+    assert cli.main([*args, "--tag", "c", "--writer-commit", "0123abcd", "--out", str(out.with_name("infra_rdc.yaml"))]) == 0
+    assert json.loads(out.with_name("infra_rdc.layouts.json").read_text())["writer_commit"] == "0123abcd"
     # what the command needs, and what belongs to the first study's evaluation
-    assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", "ffffffff", "--seeds", "71", "--rate", "6"]) == 1
+    assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", "x=ffffffff", "--seeds", "71", "--rate", "6"]) == 1
     assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", ids, "--seeds", "71"]) == 1
     assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", ids, "--seeds", "71", "--rate", "6", "--without-robots-seeds", "72"]) == 1
     assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", ids, "--seeds", "71-72", "--rate", "6", "--seed-part", "h1=71"]) == 1
     assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", ids, "--seeds", "71", "--rate", "6", "--pick", str(report)]) == 1
     assert cli.main(["infra", "evaluation", *common]) == 1
+    # every layout under a role of its own
+    from arena_simulation_setup.generative.flowedit import infra_cli
+
+    assert infra_cli._named_layouts("a=11111111, b=22222222") == [("a", "11111111"), ("b", "22222222")]
+    for bad in ("11111111", "a=11111111,a=22222222", "a=11111111,b=11111111", "=11111111", "a="):
+        with pytest.raises(Exception, match="a layout is <role>=<id>|twice"):
+            infra_cli._named_layouts(bad)
 
 
 def test_the_locker_front_of_the_first_study_is_the_front_of_its_locker_spot(hospital: Site, inner: Search) -> None:  # noqa: F811
@@ -354,3 +375,18 @@ def test_the_locker_front_of_the_first_study_is_the_front_of_its_locker_spot(hos
     assert infra.locker_front(layout, 0.35) == infra.spot_front(spot, 0.35) == infra.spot_front(demand.numbered(spot, 2), 0.35)
     with pytest.raises(ValueError, match="has no locker"):
         infra.locker_front(place.Layout.of([inner.loading]), 0.35)
+
+
+def test_a_new_copy_whose_scenario_fails_the_check_is_not_kept(space: EntranceSearch, site_copy: Site) -> None:  # noqa: F811
+    pick, doc, serves, who = _crowd(space, 1)
+    crowds = {"mix__s3": recipients.recipient_crowd(doc, pick.layout, serves, who, MIX)}
+    seen: list[tuple[str, str]] = []
+
+    def check(world: Path, name: str) -> str | None:
+        seen.append((world.name, name))
+        assert (world / "scenarios" / name / "scenario.yaml").is_file()
+        return "the first in line stands in a wall"
+
+    with pytest.raises(ValueError, match="nothing of it is kept: the first in line stands in a wall"):
+        recipients.save_layout(site_copy, pick.layout, site_copy.root / "scenarios" / "mix", crowds, check=check)
+    assert seen == [(recipients.copy_path(site_copy, pick.layout).name, "mix__s3")] and not recipients.copy_path(site_copy, pick.layout).exists()
