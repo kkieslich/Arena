@@ -493,7 +493,8 @@ class Search:
     out. `mix` is the task mix robot travel is weighed with. `placements` gives an element its zones, areas or pin
     (`Placement`); `zones` is the default for the others. `loading` and `pins` take precedence over the placements' pins.
     `facts` are the site's (`place.SiteFacts`): the catalog's rules that read them filter every element's spots, so the
-    robot-only, joint and random picks draw from the same rule-valid spots."""
+    robot-only, joint and random picks draw from the same rule-valid spots. `elements` replaces catalog elements by name
+    (an element with other rules, e.g. `demand.locker_element`); the others are the catalog's."""
 
     def __init__(
         self,
@@ -509,6 +510,7 @@ class Search:
         path_resolution: float = PATH_RESOLUTION_M,
         base: NavrBase | None = None,
         facts: place.SiteFacts | None = None,
+        elements: Mapping[str, place.Element] | None = None,
     ) -> None:
         import shapely
 
@@ -522,7 +524,11 @@ class Search:
             raise ValueError(f"placements name {unknown}, not elements of a layout ({', '.join((*SEARCHED, LOADING))})")
         blocked = shapely.union_all(self.keep_out) if self.keep_out else None
         self.facts = facts
-        found = {name: place.candidate_spots(site, name, zones=self._zones(name, zones), exclude=exclude, facts=facts) for name in (*SEARCHED, LOADING)}
+        self.elements: dict[str, place.Element] = dict(elements or {})
+        unknown = sorted(set(self.elements) - {*SEARCHED, LOADING})
+        if unknown:
+            raise ValueError(f"elements name {unknown}, not elements of a layout ({', '.join((*SEARCHED, LOADING))})")
+        found = {name: place.candidate_spots(site, self.elements.get(name, name), zones=self._zones(name, zones), exclude=exclude, facts=facts) for name in (*SEARCHED, LOADING)}
         if loading is None:
             loading = self.placements.get(LOADING, Placement()).pin
             if loading is None:
@@ -618,6 +624,14 @@ class Search:
                 self.pair_checks += 1
                 out[i, j] = not place.check_layout(self.site, Layout.of([s, b[int(j)]]))
         return out
+
+    def compatible(self, first: str, second: str) -> np.ndarray:
+        """Which spots of element `first` (rows) and of element `second` (columns) `check_layout` passes as a pair."""
+        if (first, second) in self._pairs:
+            return self._pairs[(first, second)]
+        if (second, first) in self._pairs:
+            return self._pairs[(second, first)].T
+        raise ValueError(f"no pair of searched elements ({first}, {second})")
 
     @property
     def candidates(self) -> np.ndarray:

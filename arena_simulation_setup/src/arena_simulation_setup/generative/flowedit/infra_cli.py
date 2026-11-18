@@ -4,6 +4,9 @@
     flowedit infra premise                      the 2 most different layouts, premise seeds      -> infra_h1_premise
     flowedit infra layouts --occupancy <run>    robot-only, joint top 10, 5 random, selection    -> infra_h1
     flowedit infra evaluation --pick <json>     the two picks and the site, evaluation seeds     -> infra_h1_eval(_site)
+    flowedit infra search --reach 30,40         demand at the recipient entrances (`demand.py`): the travel-optimal
+                                                layout, the pedestrian-aware pick per travel margin and the
+                                                practice-based layout per reach, as a report; writes no world or suite
 
 Each writes its suite under <imported assets root>/suites (where `arena evaluation benchmark --suite` finds it), the
 layout suites a `<suite>.layouts.json` manifest beside it, and prints the benchmark call that runs it."""
@@ -117,7 +120,7 @@ def _cmd_reference(args: argparse.Namespace) -> int:
 class _Space:
     """The search space of a layout command: the site, its config, the crowd scenario and the `Search`."""
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, args: argparse.Namespace, elements: dict[str, Any] | None = None) -> None:
         self.site = open_site(_site_root(args.site))
         self.config = _config(args, self.site.key)
         self.scenario_name = _scenario(args, self.config)
@@ -126,10 +129,10 @@ class _Space:
         placements = dict(self.config.placements) if self.config is not None else {}
         exclude = self.config.exclude if self.config is not None else SE.EXCLUDED_ZONES
         loading = args.loading if args.loading is not None else (None if SE.LOADING in placements else SE.TWIN_LOADING_XY)
-        self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration, top_ups_per_job=args.top_ups)
+        self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration, top_ups_per_job=getattr(args, "top_ups", 0.0))
         self.rate_from: dict[str, Any] | None = None
         facts = self.config.facts if self.config is not None else None
-        self.search = SE.Search(self.site, loading=loading, pins=dict(args.pin or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts)
+        self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
         _log(f"search space: {json.dumps(self.search.counts())}")
         loading_spot = self.search.loading
@@ -389,6 +392,122 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
     return _write_layout_suite(args, space, IN.LAYOUT_SUITE, runs, seeds, rate, header, extra, kept)
 
 
+def _pairs(text: str) -> dict[str, float]:
+    """`adult=0.3,wheelchair=0.5`: a number per walker group."""
+    out = {}
+    for part in text.split(","):
+        name, _, value = part.partition("=")
+        if name.strip() not in SE.GROUPS:
+            raise argparse.ArgumentTypeError(f"{name.strip()!r} is no walker group ({', '.join(SE.GROUPS)})")
+        out[name.strip()] = float(value)
+    return out
+
+
+def _floats(text: str) -> list[float]:
+    """`30,40`: numbers in order."""
+    out = [float(v) for v in text.split(",") if v.strip()]
+    if not out:
+        raise argparse.ArgumentTypeError(f"no numbers in {text!r}")
+    return out
+
+
+def _costs(args: argparse.Namespace, space: Any, groups: dict[str, SE.Occupancy]) -> tuple[list[Any], str]:  # noqa: ANN401 - a demand.EntranceSearch
+    """The ranking of the pedestrian-aware search by `--rank`, as costs in order (`demand.pedestrian_aware`), and what
+    it is in words."""
+    from . import demand as DE
+
+    scored = [g for g in SE.GROUPS if g in groups]
+    speeds = {**DE.WALK_SPEED_MPS, **(args.walk_speed or {})}
+    exposure = DE.Cost(exposure=dict.fromkeys(scored, 1.0), band_m=args.band) if scored else None
+    trip = DE.Cost(walk={g: 2.0 / speeds[g] for g in SE.GROUPS})
+    if args.rank == "walk":
+        return [trip, *([exposure] if exposure is not None else [])], "the worst-off group's walk to the locker and back (s), ties by its predicted exposure"
+    if exposure is None:
+        raise ValueError(f"--rank {args.rank} needs the walker groups' occupancy (--group-occupancy); --rank walk ranks without")
+    if args.rank == "exposure":
+        return [exposure], f"the worst-off group's predicted exposure (s per h per member, {args.band:g} m band)"
+    per = {**DE.DELAY_PER_EXPOSURE, **(args.delay_per_exposure or {})}
+    present = sum(groups[g].present for g in scored)
+    cost = DE.Cost.pooled({g: per[g] for g in scored}, space.demand.deliveries_per_h, present, speeds, args.band)
+    return [cost], f"the worst-off group's time lost per hour on the site (s per h per member): its exposure times {', '.join(f'{g} {per[g]:g}' for g in scored)}, plus its recipients' walk to the locker and back ({space.demand.deliveries_per_h:g} recipients per hour among {present:.0f} walkers present)"
+
+
+def _cmd_search(args: argparse.Namespace) -> int:
+    from . import demand as DE
+
+    if args.out is not None and args.out.exists() and not args.force:
+        raise ValueError(f"{args.out} exists: pick another name, or pass --force")
+    space = _Space(args, elements={SE.SEARCHED[2]: DE.locker_element(outlet=not args.no_outlet_rule)})
+    if space.config is None:
+        raise ValueError(f"{space.site.key}: the recipient entrances come from the site config's entrances; there is none")
+    search = space.search
+    entrances = DE.recipient_entrances(space.config.facts, args.recipient_types, search.loading.level)
+    groups: dict[str, SE.Occupancy] = dict(SE.Occupancy.from_group_cells(args.group_occupancy, space.site.key, args.duration)) if args.group_occupancy else {}
+    if args.occupancy is not None:
+        groups["all"] = SE.Occupancy.from_flow_cells(args.occupancy, space.site.key, args.duration)
+    demand = DE.Demand(rate_per_h=space.mix.rate_per_h, pickup_share=args.pickup_share, bay_share=args.bay_share, charging_trips_per_job=args.charging_trips)
+    found = DE.EntranceSearch(search, entrances, links=space.config.links, reach_max_m=max(args.reach), demand=demand, groups=groups, bands=(args.band,), speed_mps=args.speed, walk_speeds={**DE.WALK_SPEED_MPS, **(args.walk_speed or {})})
+    _log(f"recipient entrances ({', '.join(args.recipient_types)}): {', '.join(e.name for e in entrances)}")
+    _log(f"search space: {json.dumps(found.counts())}")
+    costs, ranking = _costs(args, found, groups)
+    _log(f"pedestrian-aware ranking: {ranking}")
+    report: dict[str, Any] = {
+        "site": space.site.key,
+        "site_config": space.config.record(),
+        "scenario": str(space.scenario),
+        "loading": space.loading_record(),
+        "demand": {"rate_per_h": demand.rate_per_h, "pickup_share": demand.pickup_share, "bay_share": demand.bay_share, "charging_trips_per_job": demand.charging_trips_per_job},
+        "recipient_entrances": [e.name for e in entrances],
+        "locker_rules": [str(rule) for rule in search.elements[SE.SEARCHED[2]].rules],
+        "ranking": ranking,
+        "margins": list(args.margins),
+        "band_m": args.band,
+        "group_occupancy": [str(p) for p in args.group_occupancy or []],
+        "search": found.counts(),
+        "reaches": [],
+    }
+
+    def line(role: str, placed: Any, base: float) -> str:  # noqa: ANN401 - a demand.Placed
+        record = found.record(placed, costs[0])
+        walk = "; ".join(f"{g} {v['mean_m']:.0f} / {v['longest_m']:.0f} m" for g, v in record["walk"].items())
+        exposure = "" if "exposure" not in record else ", exposure s/h " + " ".join(f"{g} {v:.2f}" for g, v in record["exposure"][f"{args.band:g}"].items())
+        return f"  {role:22s} {placed.layout_id}: {placed.travel_m:7.1f} m per job ({placed.travel_m / base:.3f} x), walk mean / longest {walk}{exposure}, worst-off {record['worst_group']} {record['cost'][record['worst_group']]:.3f}, lockers {' / '.join(found.lockers[k].zone for k in placed.lockers)}"
+
+    for reach in args.reach:
+        try:
+            cover = found.cover(reach)
+        except ValueError as e:
+            _log(f"reach {reach:g} m: no valid layout: {e}")
+            report["reaches"].append({"reach_m": reach, "valid": False, "reason": str(e)})
+            continue
+        optimal = DE.travel_optimal(found, reach)
+        practice = DE.practice_based(found, reach)
+        picks = [(margin, DE.pedestrian_aware(found, reach, costs, margin * optimal.travel_m, start=[optimal])) for margin in args.margins]
+        _log(f"reach {reach:g} m: {cover.count} lockers, {len(cover.lockers)} locker spots within the reach, {len(cover.partitions)} ways to split the entrances")
+        _log(line("travel-optimal", optimal, optimal.travel_m))
+        for margin, pick in picks:
+            _log(line(f"pedestrian-aware {margin:g}", pick, optimal.travel_m))
+        _log(line("practice-based", practice, optimal.travel_m))
+        report["reaches"].append({
+            "reach_m": reach,
+            "valid": True,
+            "lockers": cover.count,
+            "locker_spots": len(cover.lockers),
+            "partitions": [[[entrances[e].name for e in group] for group in parts] for parts in cover.partitions],
+            "layouts": [
+                {"role": "travel_optimal", **found.record(optimal, costs[0])},
+                *({"role": "pedestrian_aware", "margin": margin, "max_travel_m": round(margin * optimal.travel_m, 3), **found.record(pick, costs[0])} for margin, pick in picks),
+                {"role": "practice_based", **found.record(practice, costs[0])},
+            ],
+        })
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(report, indent=1) + "\n")
+        print(f"wrote {args.out}")
+    _log("(a search report: no world or suite written)")
+    return 0
+
+
 def _cmd_crowd(args: argparse.Namespace) -> int:
     import shapely
 
@@ -523,7 +642,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
 def add_parser(verbs: Any) -> None:
     """The `infra` verb and its subcommands."""
     p = verbs.add_parser("infra", help="INFRA Stage 1 suites: the site as is, the premise check, the selection and the evaluation", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,evaluation}")
+    infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE}); layout copies hardlink its assets, so save on its mount")
     common.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): where each element may go, the excluded zones, the crowd scenario")
@@ -566,6 +685,33 @@ def add_parser(verbs: Any) -> None:
     q.add_argument("--travel-slack", type=float, default=SE.TRAVEL_SLACK, help=f"the travel pre-filter: robot travel per job at most this times the robot-only pick's (default {SE.TRAVEL_SLACK:g})")
     q.add_argument("--seed", type=int, default=0, help="seed of the random draw (default 0)")
     q.set_defaults(fn=_cmd_layouts)
+    from . import demand as DE
+
+    q = infra.add_parser("search", help="demand at the recipient entrances: the travel-optimal, pedestrian-aware and practice-based layouts per reach", description="search the site's layouts for demand at the recipient entrances (generative/flowedit/demand.py; study design Part A): per reach, the fewest lockers that give every recipient entrance one within the reach as people walk, the travel-optimal layout, the pedestrian-aware pick at each travel margin and the practice-based layout, each with its robot travel per job, the predicted exposure per walker group and the walk to the locker per group. Prints them and writes a report with --out; writes no world or suite")
+    q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
+    q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): its entrances, links, courier access point and outlets")
+    q.add_argument("--scenario", default=None, help="the crowd scenario whose sources and sinks no element takes (default the site config's)")
+    q.add_argument("--scenarios-from", type=Path, default=None, help="world directory to read the scenario from (default: the site's)")
+    q.add_argument("--duration", type=float, default=IN.EPISODE_S, help=f"sim seconds per episode of the occupancy's runs (default {IN.EPISODE_S:g})")
+    q.add_argument("--loading", type=_point, default=None, help="x,y of the loading point, snapped to the nearest valid spot (default the site config's courier access point)")
+    q.add_argument("--recipient-types", type=lambda text: [t.strip() for t in text.split(",") if t.strip()], default=list(DE.RECIPIENT_TYPES), help=f"entrance types that are recipient entrances (default {','.join(DE.RECIPIENT_TYPES)})")
+    q.add_argument("--reach", type=_floats, default=list(DE.REACHES_M), help=f"the reaches, m: every recipient entrance has a locker within it as people walk (default {','.join(f'{r:g}' for r in DE.REACHES_M)})")
+    q.add_argument("--margins", type=_floats, default=list(DE.MARGINS), help=f"the travel margins of the pedestrian-aware search (default {','.join(f'{m:g}' for m in DE.MARGINS)})")
+    q.add_argument("--rate", type=float, default=None, help=f"jobs per hour in all, the same share to every recipient entrance (default {SE.TaskMix().rate_per_h:g})")
+    q.add_argument("--pickup-share", type=float, default=IN.PICKUP_SHARE, help=f"share of pickups (default {IN.PICKUP_SHARE:g})")
+    q.add_argument("--bay-share", type=float, default=DE.BAY_SHARE, help=f"share of the robots that wait at a bay slot, the others at a charger (default {DE.BAY_SHARE:g})")
+    q.add_argument("--charging-trips", type=float, default=0.0, help="charging trips per job in the robot travel model, one drive between a bay slot and a charger each (the fleet-only run's rate; default 0)")
+    q.add_argument("--speed", type=float, default=IN.SPEED_MPS, help=f"robot speed on its routes, m/s (default {IN.SPEED_MPS:g})")
+    q.add_argument("--no-outlet-rule", action="store_true", help="drop the locker's outlet cable rule (a sensitivity for a site whose outlet marks are in doubt)")
+    q.add_argument("--occupancy", type=Path, default=None, help="the reference runs' flow cells (all walkers): reported as group `all`, not ranked")
+    q.add_argument("--group-occupancy", type=Path, action="append", default=None, help="the reference runs' walker-group cells (`evaluation infra occupancy`); repeatable, read as one. Without them no exposure is predicted and only --rank walk ranks")
+    q.add_argument("--band", type=float, default=SE.CONFLICT_BAND_M, help=f"the conflict band of the predicted exposure, m (default {SE.CONFLICT_BAND_M:g})")
+    q.add_argument("--rank", choices=("pooled", "exposure", "walk"), default="pooled", help="the pedestrian-aware ranking, by the worst-off group: pooled (time lost per hour on the site: exposure times --delay-per-exposure plus the recipients' walk; default), exposure (the first study's term alone), walk (the walk to the locker, ties by exposure)")
+    q.add_argument("--delay-per-exposure", type=_pairs, default=None, help=f"seconds of delay per second of exposure per walker group, e.g. adult=0.3,wheelchair=0.5 (default {','.join(f'{g}={v:g}' for g, v in DE.DELAY_PER_EXPOSURE.items())})")
+    q.add_argument("--walk-speed", type=_pairs, default=None, help=f"walking speed per walker group, m/s (default {','.join(f'{g}={v:g}' for g, v in DE.WALK_SPEED_MPS.items())})")
+    q.add_argument("--out", type=Path, default=None, help="the report file (JSON); an existing file is kept unless --force")
+    q.add_argument("--force", action="store_true", help="replace an existing report file")
+    q.set_defaults(fn=_cmd_search)
     q = infra.add_parser("crowd", parents=[common], help="the study crowd from the site config's entrances", description="write a scenario directory <out>/<name>: every entrance of the site config a PEDS source and sink, the inflow split by entrance type (flow_split), through-walkers between entrances and locker visitors from the recipient entrances")
     q.add_argument("--name", default="study_entrances", help="scenario name (default %(default)s)")
     q.add_argument("--rate", type=float, default=None, help=f"the inflow in all [ped/s] (default: the site config's crowd_density by Little's law, density x area / mean time in the site; without one {IN.CROWD_RATE:g}, study_mix_v2's)")

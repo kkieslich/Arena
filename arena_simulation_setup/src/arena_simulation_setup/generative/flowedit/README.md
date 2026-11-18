@@ -469,6 +469,23 @@ flowedit infra evaluation --pick <infra_pick.json>    # infra_h1_eval + infra_h1
 - Each layout suite writes `<suite>.layouts.json` beside it; `evaluation infra table|premise|pick|compare` (kkieslich/arena-evaluation) reads it with the processed runs.
 - Lanes resolve worlds from the local assets root, the package worlds and the buckets, not from a dev tree's untracked `assets/worlds`: put the site into the local assets root too (`cp -al <site dir> $ARENA_ASSETS_DIR_LOCAL/worlds/`), where the layout copies go, and export the same `ARENA_ASSETS_DIR_LOCAL` in every lane.
 
+### Demand at the recipient entrances
+
+`demand.py` searches layouts for deliveries addressed to recipient entrances (study design Part A). The first study's search (`search.py`, `flowedit infra layouts`) is unchanged beside it.
+
+```
+flowedit infra search --reach 30,40,50 --margins 1.05,1.10,1.25 --rate R --charging-trips TAU --group-occupancy <site run> --out report.json
+```
+
+- **Recipient entrances** by rule (`recipient_entrances`): every entrance of type building or lift, each with the same demand.
+- **Two distances** from a recipient entrance to a locker spot (`Walks`): as people walk (the walking floor plus the site config's `links`, a stair or escalator half leading to its destinations) and step-free (the floor alone, for wheelchair users). The walk in seconds is the quickest walk at the group's speed, a stair flight and an escalator at their own.
+- **Lockers.** A locker spot is a candidate when the catalog's rules hold (`locker_element`: the locker's rules without the first study's recipient distance rule) and it lies within the reach of at least one recipient entrance as people walk. A layout has the fewest lockers that give every recipient entrance one within the reach (`EntranceSearch.cover`); each entrance is served by the layout's locker nearest to it as people walk. A reach no spot meets for some entrance has no valid layout, and the command says which entrances. `--no-outlet-rule` drops the locker's outlet cable rule, as a sensitivity.
+- **Robot travel per job** (`Demand`): the loading point to locker leg of the entrance the job is addressed to, the drives from and back to the robot's waiting spot (a bay slot for `--bay-share` of the robots, a charger for the others), and `--charging-trips` drives between a bay slot and a charger per job.
+- **Predicted pedestrian cost per walker group**, two parts: the exposure of the first study (time within the conflict band of a driving robot over those legs, plus time on an element's floor) and the walk to the locker (mean and longest over the recipient entrances, as the group walks).
+- **The picks.** `travel_optimal`: least robot travel per job over all valid layouts. `pedestrian_aware`: among the valid layouts within a travel margin of it, the least cost of the worst-off group (`Cost`; `--rank pooled`, `exposure` or `walk`). `practice_based`: waiting bays nearest the loading point, the lockers with the least mean walk from the entrances they serve, chargers nearest the bays.
+- **Exact without listing the layouts.** Every score is a sum over the lockers: a term of the charger and bay spots plus, per locker, terms of its spot with the bay spot, the charger spot and the entrances it serves. The lockers split the entrances into groups, one per locker; for one way to split them, one bay spot and all charger spots at once, the least value per locker group bounds every layout from below. Only charger and bay spots whose bound beats the best layout so far are solved exactly, over the locker spots that can still beat it. Every pick passes the full check (`check_layout` and the NAV@r filter).
+- The command prints the layouts per reach and writes them as a report (`--out`); it writes no world and no suite.
+
 ## Map baselines
 
 `flowedit forecast baseline` builds the forecaster's map baselines on a split's recorded runs. Each one predicts the post-edit map on the base world's flow grid and is scored by the same pooled JSD, beside a floor. Stale and transplanted are in `forecast score`; room-purpose crowds are runs of their own.
@@ -559,6 +576,7 @@ A map file (`geometry`, `deepflow predict`) has one map per world in the columns
 | `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
 | `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
 | `search.py` | INFRA layout searches: robot-only (with top-up trips), joint (predicted conflict exposure; the older occupancy fallback), guideline, random valid |
+| `demand.py` | INFRA layout searches for demand at the recipient entrances: several lockers by reach, walk to the locker, travel-optimal, pedestrian-aware and practice-based picks |
 | `infra.py`, `infra_cli.py` | the INFRA Stage 1 suites (site as is, premise check, selection, evaluation), the site config, locker visitors |
 | `infra_sites/` | INFRA site configs: a site's facts (entrances, courier access point, outlets) and its crowd |
 | `run.py` | one edit, settings and seed to a recorded run and its tracks |
