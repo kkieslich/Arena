@@ -61,8 +61,11 @@ def draw(states: tuple[tuple[float, ...], ...], rng: np.random.Generator) -> tup
 
 
 def start_charge(state: tuple[float, ...], index: int) -> float:
-    """The start charge of robot `index` (robot order) in a drawn state; a fleet larger than the state's goes round it."""
-    return state[index % len(state)]
+    """The start charge of robot `index` (robot order) in a drawn state. ValueError for a robot the state has no place for:
+    a fleet larger than the state's would otherwise start some robots with another robot's charge."""
+    if not 0 <= index < len(state):
+        raise ValueError(f"task.episode.battery.soc.file: robot {index} of the fleet has no place in a charge state of {len(state)} robots")
+    return state[index]
 
 
 __all__ = ["FORMAT", "STREAM", "draw", "load", "parse", "start_charge"]

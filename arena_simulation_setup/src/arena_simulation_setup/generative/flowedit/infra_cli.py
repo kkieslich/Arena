@@ -671,11 +671,14 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         raise ValueError(f"{args.report}: no layout {unknown} (it holds {len(records)} layouts)")
     space = _Space(args, elements={SE.SEARCHED[2]: DE.locker_element(outlet=not args.no_outlet_rule)})
     scenario = yaml.safe_load((space.scenario / "scenario.yaml").read_text()) or {}
-    mix = RC.crowd_mix(scenario)
+    # the recipients' walker groups come from a crowd without tagged extras (the site's base scenario): extras added to
+    # the stage scenario to oversample aid users would otherwise change the recipients' mix silently
+    mix_from = args.recipient_mix_from or space.scenario_name
+    mix = RC.crowd_mix(yaml.safe_load((IN.scenario_dir(space.site, mix_from, args.scenarios_from) / "scenario.yaml").read_text()) or {}) if mix_from != space.scenario_name else RC.crowd_mix(scenario)
     if args.recipient_mix:
         mix = {group: (agent_type, args.recipient_mix.get(group, 0.0)) for group, agent_type, _ in IN.GROUPS if args.recipient_mix.get(group, 0.0) > 0}
     total = sum(share for _, share in mix.values())
-    _log("recipients' walker groups: " + ", ".join(f"{group} {share / total:.4f} ({agent_type})" for group, (agent_type, share) in mix.items()) + (" (--recipient-mix)" if args.recipient_mix else f" (the crowd's mix, scenario {space.scenario_name})"))
+    _log("recipients' walker groups: " + ", ".join(f"{group} {share / total:.4f} ({agent_type})" for group, (agent_type, share) in mix.items()) + (" (--recipient-mix)" if args.recipient_mix else f" (the crowd's mix of {mix_from}; scenario {space.scenario_name})"))
     layouts, serves, roles = {}, {}, {}
     for role, layout_id in args.layouts:
         layout = RC.with_charge_power(RC.layout_of(space.search, records[layout_id]), args.charge_power)
@@ -782,9 +785,9 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
             "kinds": list(args.recipient_kinds),
             "offset_s": args.recipient_offset,
             "stand_s": dict(RC.STAND_S),
-            "patience_s": RC.PATIENCE_S,
+            "patience_s": args.recipient_patience,
             "mix": {group: {"agent_type": agent_type, "share": share / total} for group, (agent_type, share) in mix.items()},
-            "mix_from": "--recipient-mix" if args.recipient_mix else "the crowd scenario's sources",
+            "mix_from": "--recipient-mix" if args.recipient_mix else f"the sources of scenario {mix_from}",
             "by_layout": {layout_id: {str(seed): [r.record() for r in group] for seed, group in per_seed.items()} for layout_id, per_seed in who.items()},
         },
         "jobs": {str(seed): [job.record() for job in jobs[seed]] for seed in seeds},
@@ -819,7 +822,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         if fleet_only:
             crowds = {names[seeds[0]]: (EF.without_crowd(scenario), {}, "a fleet-only run: the site's scenario without its sources, no walkers")}
         else:
-            crowds = {names[seed]: RC.recipient_crowd(scenario, layout, serves[layout_id], who[layout_id][seed], mix) for seed in seeds}
+            crowds = {names[seed]: RC.recipient_crowd(scenario, layout, serves[layout_id], who[layout_id][seed], mix, patience_s=args.recipient_patience) for seed in seeds}
         # the targets and agent types are the same at every seed: one scenario is checked; a copy that fails is taken away again
         saved = RC.save_layout(space.site, layout, space.scenario, crowds, check=None if args.no_check else check)
         assert saved == worlds[layout_id], (saved, worlds[layout_id])
@@ -1018,6 +1021,8 @@ def add_parser(verbs: Any) -> None:
     g.add_argument("--rate", type=float, default=None, help="jobs per hour in all, the same share to every recipient entrance; the recipients follow the seeds' jobs")
     g.add_argument("--pickup-share", type=float, default=IN.PICKUP_SHARE, help=f"share of pickups among the jobs (default {IN.PICKUP_SHARE:g})")
     g.add_argument("--recipient-offset", type=float, default=RC.OFFSET_S, help=f"seconds from a job's release to its recipient's arrival at the recipient entrance (default {RC.OFFSET_S:g}, the warm-up; a placeholder)")
+    g.add_argument("--recipient-patience", type=float, default=RC.PATIENCE_S, help=f"seconds a recipient waits for the locker before it gives up and walks back (default {RC.PATIENCE_S:g}; the first study's visitors waited {RC.FIRST_STUDY_PATIENCE_S:g})")
+    g.add_argument("--recipient-mix-from", default=None, help="the scenario whose sources give the recipients' walker groups (default the stage scenario); name the site's base crowd when the stage scenario holds tagged extras")
     g.add_argument("--recipient-kinds", type=lambda text: [k.strip() for k in text.split(",") if k.strip()], default=list(RC.RECIPIENT_KINDS), help=f"the job kinds that bring a recipient (default {','.join(RC.RECIPIENT_KINDS)}; delivery,pickup: every job)")
     g.add_argument("--recipient-mix", type=_shares, default=None, help="the recipients' walker groups as shares, e.g. adult=0.985,wheelchair=0.01,long_cane=0.005 (default the crowd's mix, from the scenario's sources)")
     g.add_argument("--charge-power", type=float, default=RC.CHARGE_POWER_W, help=f"the power the copies' chargers charge with, W (default {RC.CHARGE_POWER_W:g}: the jackal's {RC.BATTERY_WH:g} Wh in {RC.CHARGE_TIME_H:g} h on top of its {RC.STANDBY_W:g} W standby draw; the first study's worlds have {IN.place.CHARGE_POWER_W:g})")

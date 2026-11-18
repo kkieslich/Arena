@@ -35,9 +35,11 @@ def test_a_state_is_drawn_per_episode_seed_and_every_robot_takes_its_place_in_it
     assert all(charge_states.draw(states, _rng(seed).stream(*charge_states.STREAM)) == drawn[seed] for seed in range(200))
     counts = [sum(state == tuple(want) for state in drawn.values()) for want in STATES]
     assert sum(counts) == 200 and min(counts) > 40
-    # the robots of one episode start with the charges of one state, in robot order; a fifth robot goes round
+    # the robots of one episode start with the charges of one state, in robot order; a fifth robot is refused
     state = drawn[7]
-    assert [charge_states.start_charge(state, index) for index in range(5)] == [*state, state[0]]
+    assert [charge_states.start_charge(state, index) for index in range(4)] == list(state)
+    with pytest.raises(ValueError, match="robot 4 of the fleet has no place in a charge state of 4 robots"):
+        charge_states.start_charge(state, 4)
     # the draw does not touch the stream each robot's own start charge comes from
     rng = _rng(7)
     before = float(_rng(7).stream("robots", "soc", "jackal").uniform(40.0, 100.0))

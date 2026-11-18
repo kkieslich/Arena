@@ -39,6 +39,15 @@ RUN_IN_S = 3600.0
 STATE_EVERY_S = 600.0
 #: How often a fleet-only run logs the robots' charge [s]
 CHARGE_LOG_S = 60.0
+#: The charging rules of the entrance fleet (FLEET_DECISIONS 1, 1a). Charge by need: a robot charges when its next job
+#: would leave it under RESERVE % by the job's energy estimate, only the fullest of the free robots for a job none can
+#: take. Plus a floor for robots that stand: a free robot at or under IDLE_FLOOR % goes to charge. 17 % = the 10 %
+#: reserve + the longest trip to a charger on the twin: 313 m x 1.2 (detour) x 0.045 Wh/m (the fleet's energy per metre
+#: at 0.4 m/s) = 17 Wh = 6.3 % of 270 Wh. A charge goes to CHARGE_UNTIL % without interruption; a robot that starts on
+#: its charger under it charges first; a robot at 0 % stops for the episode
+RESERVE = 10.0
+IDLE_FLOOR = 17.0
+CHARGE_UNTIL = 90.0
 
 
 def job_entries(stream: Iterable[Job], serves: Mapping[str, Sequence[str]]) -> list[str]:
@@ -61,7 +70,7 @@ def fleet_config(
     pickup_share: float = IN.PICKUP_SHARE,
     load_s: float = IN.LOAD_S,
     unload_s: float = IN.UNLOAD_S,
-    charge_until: float = IN.CHARGE_UNTIL,
+    charge_until: float = CHARGE_UNTIL,
     charge_log: str = "",
     charge_log_s: float = CHARGE_LOG_S,
 ) -> dict[str, Any]:
@@ -82,7 +91,12 @@ def fleet_config(
         "load_s": float(load_s),
         "unload_s": float(unload_s),
         "charge_until": float(charge_until),
+        "reserve": RESERVE,
         "charge_rule": "need",
+        "idle_floor": IDLE_FLOOR,
+        "one_need_charge": True,
+        "charge_at_start": True,
+        "stop_empty": True,
         "nearest_charger": True,
         "charge_jam": "retry",
         "top_up": False,
@@ -143,10 +157,12 @@ def read_charge_log(path: Path) -> list[dict[str, Any]]:
 
 
 def charge_states(logs: Sequence[Path], *, from_s: float = RUN_IN_S, every_s: float = STATE_EVERY_S) -> dict[str, Any]:
-    """The charge-state document of the charge logs of fleet-only runs: from each episode the rows from `from_s` on, at
-    least `every_s` apart, each as the charges in the order of the start spots (the homes at the episode's first row).
-    A row with an unknown charge, or whose homes are not the start spots, is left out and counted. ValueError when no
-    state is left, or the episodes have different start spots."""
+    """The charge-state document of the charge logs of fleet-only runs: from each episode one row per mark
+    from_s + k x every_s (the first row at or after the mark; a log row comes at the first tick after its own 60 s mark,
+    so states taken "at least every_s after the last" drifted to about every_s + one log period), each as the charges in
+    the order of the start spots (the homes at the episode's first row). A row with an unknown charge, or whose homes are
+    not the start spots, is left out and counted. ValueError when no state is left, or the episodes have different start
+    spots."""
     states: list[list[float]] = []
     spots: list[str] | None = None
     skipped = rows = 0
@@ -159,17 +175,18 @@ def charge_states(logs: Sequence[Path], *, from_s: float = RUN_IN_S, every_s: fl
                 spots = start
             elif start != spots:
                 raise ValueError(f"{path}: an episode starts on {start}, another on {spots}")
-            last = None
+            mark = 0
             for t_s, socs, homes in episode["rows"]:
                 rows += 1
-                if t_s < from_s or (last is not None and t_s - last < every_s):
+                if t_s < from_s + mark * every_s:
                     continue
+                # the first row at or after the next mark stands for it; marks it passed over without a row are skipped
+                mark = int((t_s - from_s) // every_s) + 1
                 if any(soc is None for soc in socs) or sorted(homes) != sorted(start):
                     skipped += 1
                     continue
                 at = dict(zip(homes, socs, strict=True))
                 states.append([round(min(100.0, max(0.0, float(at[spot]))), 3) for spot in start])
-                last = t_s
     if not states:
         raise ValueError(f"no charge state from {from_s:g} s on in {', '.join(str(p) for p in logs)} ({rows} rows)")
     return {"format": CHARGE_STATES_FORMAT, "states": states, "spots": spots, "source": {"logs": [str(p) for p in logs], "from_s": float(from_s), "every_s": float(every_s), "rows": rows, "skipped": skipped}}

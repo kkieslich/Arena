@@ -46,7 +46,12 @@ def test_the_fleet_block_runs_the_job_list_by_the_rules_of_the_redesign_and_the_
         "load_s": 15.0,
         "unload_s": 10.0,
         "charge_until": 90.0,
+        "reserve": 10.0,
         "charge_rule": "need",
+        "idle_floor": 17.0,
+        "one_need_charge": True,
+        "charge_at_start": True,
+        "stop_empty": True,
         "nearest_charger": True,
         "charge_jam": "retry",
         "top_up": False,
@@ -107,7 +112,8 @@ def test_charge_states_are_the_logged_charges_after_the_run_in_in_the_order_of_t
     assert doc["format"] == "infra-charge-states/1" and doc["spots"] == ["bay_1", "bay_2", "charger_1", "charger_2"]
     assert doc["source"] == {"logs": [str(log)], "from_s": 100.0, "every_s": 60.0, "rows": 6, "skipped": 1}
     # states further apart; two episodes in one log and a second log add up
-    assert entrance_fleet.charge_states([log], from_s=0.0, every_s=150.0)["states"] == [[90.0, 80.0, 70.0, 60.0], [73.0, 77.0, 87.0, 63.0]]
+    # at the marks 0, 150, 300 s: the first row at or after each
+    assert entrance_fleet.charge_states([log], from_s=0.0, every_s=150.0)["states"] == [[90.0, 80.0, 70.0, 60.0], [73.0, 77.0, 87.0, 63.0], [85.0, 75.0, 75.0, 65.0]]
     log.write_text(log.read_text() * 2)
     assert len(entrance_fleet.read_charge_log(log)) == 2 and len(entrance_fleet.charge_states([log, log], from_s=100.0, every_s=60.0)["states"]) == 12
     # the file is what the runtime reads, and is checked as it checks it
@@ -221,3 +227,19 @@ def test_cli_charge_states_writes_the_file_the_start_charge_is_drawn_from(tmp_pa
     assert "6 charge states of 4 robots" in capsys.readouterr().err
     assert cli.main(["infra", "charge-states", "--log", str(log), "--out", str(out)]) == 1
     assert cli.main(["infra", "charge-states", "--log", str(log), "--from-s", "99999", "--out", str(out), "--force"]) == 1
+
+
+def test_charge_states_are_taken_at_whole_marks_and_do_not_drift(tmp_path: Path) -> None:
+    import random
+
+    # rows at the first tick after each 60 s mark, as the fleet mode writes them (the reviewer's probe)
+    rng = random.Random(3)
+    homes = "bay_1,bay_2,charger_1,charger_2"
+    rows = []
+    for k in range(14400 // 60 + 1):
+        t = k * 60 + rng.uniform(0.0, 0.1)
+        rows.append(f"{t:.3f}," + ",".join(f"{100 - t / 300:.3f}" for _ in range(4)) + f",{homes}")
+    doc = entrance_fleet.charge_states([_log(tmp_path / "a.csv", rows)], from_s=3600.0, every_s=600.0)
+    # 3600, 4200, ..., 14400 s: 19 states, each at its mark (to the tick)
+    assert len(doc["states"]) == 19
+    assert [round((100.0 - s[0]) * 300.0) for s in doc["states"]] == [3600 + 600 * k for k in range(19)]

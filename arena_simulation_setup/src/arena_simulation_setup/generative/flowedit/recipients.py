@@ -57,16 +57,21 @@ CHARGERS, BAYS, LOCKER = SEARCHED
 OFFSET_S = IN.WARMUP_S
 #: How long a recipient stands at the locker [s]: the first study's locker visitors' (`infra.entrance_crowd`)
 STAND_S: Mapping[str, float] = {"mean": 30.0, "std": 10.0, "clip_low": 15.0, "clip_high": 60.0}
-#: How long a recipient waits for the locker before it gives up and walks back [s]: the first study's
-PATIENCE_S = 1200.0
+#: How long a recipient waits for the locker before it gives up and walks back [s]. The first study's visitors waited
+#: 1200 s; the study's recipients wait 300 s (FLEET_DECISIONS 6): a normal wait at a locker of capacity 1 is under 2 min,
+#: and the shorter patience caps how long a queue the crowd engine leaves standing (a wheelchair user behind another
+#: one does not move up) holds the locker
+PATIENCE_S = 300.0
+FIRST_STUDY_PATIENCE_S = 1200.0
 #: The target in front of a locker as HumanSim takes it, and how far the first in line stands from the locker's
 #: footprint [m]: the first study's (`infra.entrance_crowd`)
 TARGET: Mapping[str, Any] = {"type": "parcel_locker", "capacity": 1, "interaction_radius": 0.8, "formation": {"type": "line", "params": {"base_step": 0.9}}}
 CLEARANCE_M = 0.35
 #: The name of locker 1's target (the first study's) and of the others'
 TARGET_NAME = "locker_visit"
-#: The job kinds that bring a recipient (A3: each delivered parcel)
-RECIPIENT_KINDS = ("delivery",)
+#: The job kinds that bring a recipient: every job (FLEET_DECISIONS 7). A pickup is a parcel someone put in the locker,
+#: who walked to it like a recipient; A3's wording names deliveries only
+RECIPIENT_KINDS = ("delivery", "pickup")
 #: A recipient's source: the rate it jumps to at the recipient's time and how long the jump takes. The engine releases
 #: Poisson(rate x tick) walkers per tick, capped at one in all: at 2000 per s and a 0.05 s tick the first tick after
 #: the time releases it but for a chance of e^-100 [1/s], [s]
@@ -481,6 +486,7 @@ __all__ = [
     "CHARGE_POWER_W",
     "CLEARANCE_M",
     "OFFSET_S",
+    "FIRST_STUDY_PATIENCE_S",
     "PATIENCE_S",
     "RECIPIENT_KINDS",
     "STAND_S",

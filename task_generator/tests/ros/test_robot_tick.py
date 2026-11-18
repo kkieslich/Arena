@@ -1384,10 +1384,148 @@ def test_fleet_logs_the_robots_charge_and_homes_to_a_file(tmp_path: object) -> N
     assert lines[0] == "t_s,soc:r0,soc:r1,soc:r2,soc:r3,home:r0,home:r1,home:r2,home:r3"
     # a line at the first tick and then once per 60 s of sim time, however far apart the ticks are; r3's charge is unknown
     assert lines[1:] == ["0.001,81.500,70.250,100.000,,bay_1,bay_2,charger_1,charger_2", "61.001,81.500,70.250,100.000,,bay_1,bay_2,charger_1,charger_2", "200.001,81.500,70.250,100.000,,bay_1,bay_2,charger_1,charger_2"]
-    # a next episode appends its own header
+    # a log is written once: a reset onto a file that holds lines is refused, an empty file is taken
+    with pytest.raises(ValueError, match="exists and is not empty"):
+        asyncio.run(mode.reset())
+    assert path.read_text().splitlines() == lines
+    path.write_text("")
     asyncio.run(mode.reset())
-    assert path.read_text().splitlines()[4] == lines[0]
+    assert path.read_text().splitlines() == [lines[0]]
     # no file without the parameter
     mode, *_ = _fleet()
     asyncio.run(mode.reset())
     assert list(tmp_path.iterdir()) == [tmp_path / "logs"]
+
+
+
+# --- charging by need with a floor, one charge per waiting job, a charge at the start, a robot at 0 % stops ----------
+
+#: the entrance fleet's rules (entrance_fleet.fleet_config); `_top_up_fleet` sets charge_until 90 %
+NEED = {"charge_rule": "need", "idle_floor": 17.0, "one_need_charge": True, "charge_at_start": True, "stop_empty": True, "top_up": False, "nearest_charger": True, "reserve": 10.0}
+
+
+def test_fleet_a_free_robot_at_the_floor_goes_to_charge_and_one_docked_on_its_charger_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="", **NEED)
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    # r0 on bay_1 at 18 %: over the floor; r2 docked on its charger home at 10 %: the dock charges it
+    _socs(managers, r0=18.0, r1=60.0, r2=95.0, r3=95.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert not [key for key in record.log if key.startswith("charge.")] and managers["r0"].submitted == []
+    # it stands and drains to 17 %: it queues (trigger floor) and goes to the nearest charger, whose holder is charged
+    # to 90 % and yields
+    _socs(managers, r0=17.0)
+    _at(node, 60.0)
+    _tick(mode)
+    assert (record.log["charge.0.robot"], record.log["charge.0.trigger"], record.log["charge.0.soc_queued"]) == ("r0", "floor", "17.00")
+    assert _phase_text(managers["r0"]) == "charge at charger_1" and record.log["charge.0.charger"] == "charger_1"
+    # a robot docked on its charger home under the floor is charged by the dock and not queued
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="", **{**NEED, "charge_at_start": False})
+    _socs(managers, r0=60.0, r1=60.0, r2=10.0, r3=95.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert not [key for key in record.log if key.startswith("charge.")]
+    # the first study's mode (idle_floor 0) has no floor: its threshold is charge_below
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="", charge_rule="need", top_up=False)
+    _socs(managers, r0=5.0, r1=60.0, r2=95.0, r3=95.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert not [key for key in record.log if key.startswith("charge.")]
+
+
+def test_fleet_one_robot_charges_for_a_job_no_free_robot_can_take_and_the_others_stay_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="dd", **{**NEED, "charge_at_start": False})
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    # every robot over the floor, none with enough for a job and the reserve
+    _socs(managers, r0=18.3, r1=18.2, r2=18.1, r3=18.0)
+    for name in managers:
+        managers[name].battery_capacity_wh = 5.0
+    _at(node, 1.0)
+    _tick(mode)
+    # job 0: only the fullest, r0, queues; job 1 queues the fullest of the rest, r1; r2 and r3 stay free
+    assert [(record.log[f"charge.{i}.robot"], record.log[f"charge.{i}.trigger"]) for i in (0, 1)] == [("r0", "job 0"), ("r1", "job 1")]
+    assert "charge.2.robot" not in record.log and "job.0.robot" not in record.log
+    # the chargers are held by r2 and r3, docked under 90 %: the queued robots wait where they are
+    assert managers["r0"].submitted == [] and managers["r1"].submitted == []
+    _at(node, 30.0)
+    _tick(mode)
+    assert "charge.2.robot" not in record.log  # once per job
+    # r2 is charged enough for job 0: it takes it, and r0, queued for job 0 and over the floor, is free again
+    managers["r2"].battery_capacity_wh = 270.0
+    _socs(managers, r2=90.0)
+    _at(node, 40.0)
+    _tick(mode)
+    assert record.log["job.0.robot"] == "r2" and (record.log["charge.0.outcome"], record.log["charge.0.reason"]) == ("withdrawn", "job 0 taken by r2")
+    # r2 left charger_1 for the job, so r1, still queued for job 1, takes that charger
+    assert "r0" not in mode._charge_queue and mode._state["r0"].value == "parked" and _phase_text(managers["r1"]) == "charge at charger_1"
+    # the first study's rule queues every robot the job is offered to
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", charge_rule="need", top_up=False)
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 5.0, JACKAL
+    _socs(managers, r0=18.3, r1=18.2, r2=18.1, r3=18.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert [record.log[f"charge.{i}.robot"] for i in range(4)] == ["r0", "r1", "r2", "r3"]
+
+
+def test_fleet_a_robot_that_starts_on_its_charger_under_charge_until_charges_before_it_takes_a_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", **NEED)
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    _socs(managers, r0=20.0, r1=25.0, r2=60.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # r2 and r3, on their chargers at 60 and 50 %, charge in place (no trip); the job goes to the fullest free robot, r1
+    assert [(record.log[f"charge.{i}.robot"], record.log[f"charge.{i}.trigger"], record.log[f"charge.{i}.charger"]) for i in (0, 1)] == [("r2", "start", "charger_1"), ("r3", "start", "charger_2")]
+    assert record.log["charge.0.started"] == "1.001" and managers["r2"].submitted == [] and managers["r3"].submitted == []
+    assert record.log["job.0.robot"] == "r1"
+    # looked at once: a robot back on its charger later is not queued by this rule
+    _at(node, 2.0)
+    _tick(mode)
+    assert [record.log[k] for k in record.log if k.endswith(".trigger")] == ["start", "start"]
+    # charged to 90 %: free for jobs again
+    _socs(managers, r2=90.0)
+    _at(node, 3.0)
+    _tick(mode)
+    assert record.log["charge.0.outcome"] == "charged"
+    # off: the robot is free at once
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", **{**NEED, "charge_at_start": False})
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    _socs(managers, r0=20.0, r1=25.0, r2=60.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert record.log["job.0.robot"] == "r2" and "charge.0.robot" not in record.log
+
+
+def test_fleet_a_robot_at_0_percent_stops_its_job_is_abandoned_and_it_gets_nothing_more(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="dd", **{**NEED, "charge_at_start": False})
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    _socs(managers, r0=95.0, r1=50.0, r2=40.0, r3=40.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert record.log["job.0.robot"] == "r0" and record.log["job.1.robot"] == "r1"
+    _socs(managers, r0=0.0)
+    _at(node, 10.0)
+    _tick(mode)
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"]) == ("abandoned", "empty")
+    assert (record.log["empty.0.robot"], record.log["empty.0.job"]) == ("r0", "0")
+    assert _phase_text(managers["r0"]) == "battery empty: stopped" and _phase(managers["r0"]).target is None and managers["r0"].navigation_resets == 1
+    phases = len(managers["r0"].submitted)
+    # it holds on: no park, no job, no charge, and its hold is renewed when it ends
+    _tick(mode, {"r0": _met()})
+    assert len(managers["r0"].submitted) == phases + 1 and _phase_text(managers["r0"]) == "battery empty: stopped"
+    assert mode._state["r0"].value == "empty" and "r0" not in mode._takers() and "r0" not in mode._charge_queue
+    assert "empty.1.robot" not in record.log
+    # without stop_empty the robot only gets logged and keeps going (the first study)
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", charge_rule="need", top_up=False)
+    _socs(managers, r0=95.0, r1=50.0, r2=40.0, r3=40.0)
+    _at(node, 1.0)
+    _tick(mode)
+    _socs(managers, r0=0.0)
+    _at(node, 10.0)
+    _tick(mode)
+    assert record.log["empty.0.robot"] == "r0" and "job.0.outcome" not in record.log and managers["r0"].navigation_resets == 0
