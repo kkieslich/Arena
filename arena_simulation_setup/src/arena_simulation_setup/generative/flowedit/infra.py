@@ -765,6 +765,12 @@ def without_suite(worlds: Iterable[str], scenarios: Mapping[int, str], *, durati
     return _doc([SU.stage(world, seed, scenario, duration, robot) for world in dict.fromkeys(worlds) for seed, scenario in scenarios.items()], references=False, side=side)
 
 
+def stages_suite(stages: Sequence[Mapping[str, Any]], *, side: str | None = None) -> dict[str, Any]:
+    """A suite of `stages` as they are, with the INFRA launch and record blocks and no reference runs (the fleet stages of
+    the entrance layouts, whose run without robots is a stage of its own, `without_suite`)."""
+    return _doc(stages, references=False, side=side)
+
+
 def _runs_per_episode(doc: Mapping[str, Any]) -> int:
     """How many runs each episode of a suite's stage makes with one contestant: itself and the reference runs."""
     references = doc.get("references")
@@ -959,6 +965,7 @@ __all__ = [
     "sim_hours",
     "site_config",
     "spot_front",
+    "stages_suite",
     "suite_text",
     "visitor_sources",
     "visitors",

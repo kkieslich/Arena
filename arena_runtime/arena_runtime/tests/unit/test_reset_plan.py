@@ -68,9 +68,9 @@ class _Manager:
         self.log.append(f"reset {self.name} at {ctx.start_pose}")
         return {}
 
-    def reset_battery(self, rng: object, capacity_wh: float, soc_min: float, soc_max: float) -> None:
+    def reset_battery(self, rng: object, capacity_wh: float, soc_min: float, soc_max: float, **start: float) -> None:
         del rng
-        self.log.append(f"battery {self.name} {capacity_wh} {soc_min}-{soc_max}")
+        self.log.append(f"battery {self.name} {capacity_wh} {soc_min}-{soc_max}" + (f" {start}" if start else ""))
 
 
 class _Task:
@@ -116,8 +116,15 @@ class _Environment:
         self.log.append(f"lights {lights}")
 
 
-def test_the_node_applies_the_plan_between_the_robot_and_the_obstacle_reset() -> None:
+@pytest.mark.parametrize("states", [None, [[90.0, 80.0, 70.0], [30.0, 20.0, 10.0]]], ids=["own draw", "charge states"])
+def test_the_node_applies_the_plan_between_the_robot_and_the_obstacle_reset(states: list[list[float]] | None, tmp_path: object) -> None:
     pytest.importorskip("rclpy")
+    import json
+
+    soc_file = ""
+    if states is not None:
+        soc_file = str(tmp_path / "states.json")
+        (tmp_path / "states.json").write_text(json.dumps({"format": "infra-charge-states/1", "states": states}))
     from arena_runtime.env.constants.rng import EpisodeRng
     from arena_runtime.env.episode_node import EpisodeNode
     from arena_runtime.env.phase_clock import PhaseClock
@@ -141,7 +148,7 @@ def test_the_node_applies_the_plan_between_the_robot_and_the_obstacle_reset() ->
         _consecutive_reset_failures=0,
         conf=SimpleNamespace(
             General=SimpleNamespace(RNG=EpisodeRng()),
-            Robot=SimpleNamespace(BATTERY_CAPACITY_WH=SimpleNamespace(value=0.0), BATTERY_SOC_MIN=SimpleNamespace(value=40.0), BATTERY_SOC_MAX=SimpleNamespace(value=100.0)),
+            Robot=SimpleNamespace(BATTERY_CAPACITY_WH=SimpleNamespace(value=0.0), BATTERY_SOC_MIN=SimpleNamespace(value=40.0), BATTERY_SOC_MAX=SimpleNamespace(value=100.0), BATTERY_SOC_FILE=SimpleNamespace(value=soc_file)),
         ),
         sim_time=SimpleNamespace(sec=0.0),
         episode_id=0,
@@ -153,3 +160,10 @@ def test_the_node_applies_the_plan_between_the_robot_and_the_obstacle_reset() ->
     assert log[log.index("reset_robots 3") : log.index("respawn") + 1] == ["reset_robots 3", "submit r0 task0 from start0 seeing ['h0']", "forbid ['zone']", "reset_obstacles 3", "respawn"]
     assert {"spawn ['crate']", "spawn dynamic ['walker']", "lights ('lamp',)"} <= set(log)
     assert {entry for entry in log if entry.startswith("reset r")} == {"reset r0 at start0", "reset r1 at start1", "reset r2 at None"}
+    batteries = [entry for entry in log if entry.startswith("battery ")]
+    if states is None:
+        # every robot draws its own start charge, as before the charge states
+        assert batteries == [f"battery {name} 0.0 40.0-100.0" for name in ("r0", "r1", "r2")]
+    else:
+        # one state for the episode, the robots in order at its places
+        assert batteries in ([f"battery r{i} 0.0 40.0-100.0 {{'start': {soc}}}" for i, soc in enumerate(state)] for state in states)

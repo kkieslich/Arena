@@ -71,8 +71,10 @@ def test_each_delivery_brings_one_recipient_at_its_entrance_after_the_offset() -
     names = ["a", "b", "c", "d"]
     stream = recipients.jobs(5, names, rate_per_h=120.0, episode_s=1500.0)
     serves = {"locker_1": ("a", "b"), "locker_2": ("c",), "locker_3": ("d",)}
-    who = recipients.recipients(5, stream, serves, MIX, offset_s=420.0, episode_s=1500.0)
+    who = recipients.recipients(5, stream, serves, MIX, offset_s=420.0, episode_s=1500.0, kinds=("delivery",))
     due = [j for j in stream if j.kind == "delivery" and round(round((j.release_s + 420.0) / 0.1) * 0.1, 3) < 1500.0]
+    # by default every job brings one (FLEET_DECISIONS 7): pickups too
+    assert recipients.RECIPIENT_KINDS == ("delivery", "pickup") and [r.job for r in recipients.recipients(5, stream, serves, MIX, offset_s=420.0, episode_s=1500.0)] == [j.index for j in stream if round(round((j.release_s + 420.0) / 0.1) * 0.1, 3) < 1500.0]
     assert [r.job for r in who] == [j.index for j in due] and len(who) < len(stream)
     by_job = {j.index: j for j in stream}
     for r in who:
@@ -83,10 +85,10 @@ def test_each_delivery_brings_one_recipient_at_its_entrance_after_the_offset() -
     # every job: the pickups' too
     assert len(recipients.recipients(5, stream, serves, MIX, offset_s=0.0, episode_s=1500.0, kinds=("delivery", "pickup"))) == len(stream)
     # another layout, whose lockers serve the entrances otherwise, has the same recipients but for their locker
-    other = recipients.recipients(5, stream, {"locker_1": ("d", "c", "b"), "locker_2": ("a",)}, MIX, offset_s=420.0, episode_s=1500.0)
+    other = recipients.recipients(5, stream, {"locker_1": ("d", "c", "b"), "locker_2": ("a",)}, MIX, offset_s=420.0, episode_s=1500.0, kinds=("delivery",))
     assert [(r.job, r.entrance, r.group, r.t_s, r.source) for r in other] == [(r.job, r.entrance, r.group, r.t_s, r.source) for r in who]
     # and a recipient's group does not depend on which other jobs there are
-    half = recipients.recipients(5, stream[::2], serves, MIX, offset_s=420.0, episode_s=1500.0)
+    half = recipients.recipients(5, stream[::2], serves, MIX, offset_s=420.0, episode_s=1500.0, kinds=("delivery",))
     assert {r.job: r.group for r in half}.items() <= {r.job: r.group for r in who}.items()
     with pytest.raises(ValueError, match="which no locker serves"):
         recipients.recipients(5, stream, {"locker_1": ("a",)}, MIX)
@@ -201,7 +203,7 @@ def test_the_crowd_of_a_layout_and_seed_has_a_target_per_locker_and_a_source_per
                 step = body["sequences"]["visit"]["steps"]["pickup"]
                 assert body["extends"] == agent_type and body["mode"] == "behavior_tree" and body["initial_sequence"] == "visit"
                 assert step["target"] == recipients.target_name(locker) and step["interaction"] == "USE"
-                assert step["duration"] == {"mean": 30.0, "std": 10.0, "clip_low": 15.0, "clip_high": 60.0} and step["patience"] == {"mean": 1200.0, "std": 0.0}
+                assert step["duration"] == {"mean": 30.0, "std": 10.0, "clip_low": 15.0, "clip_high": 60.0} and step["patience"] == {"mean": 300.0, "std": 0.0}
                 leave = body["sequences"]["leave"]["steps"]["exit"]["target_pose"]
                 assert shapely.Polygon([(p["x"], p["y"]) for p in doc["regions"][f"{name}_sink"]["polygon"]]).contains(shapely.Point(leave["x"], leave["y"]))
     assert header.startswith(f"parcel recipients: {len(who)} (")
@@ -332,14 +334,14 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
         stream = recipients.jobs(seed, names, rate_per_h=240.0, episode_s=1500.0)
         assert manifest["jobs"][str(seed)] == [j.record() for j in stream]
         per_layout = [manifest["recipients"]["by_layout"][r["layout_id"]][str(seed)] for r in manifest["runs"]]
-        assert [x["job"] for x in per_layout[0]] == [j.index for j in stream if j.kind == "delivery" and round((j.release_s + 60.0) * 10) / 10 < 1500.0]
+        assert [x["job"] for x in per_layout[0]] == [j.index for j in stream if round((j.release_s + 60.0) * 10) / 10 < 1500.0]
         assert all([(x["job"], x["entrance"], x["group"], x["t_s"]) for x in other] == [(x["job"], x["entrance"], x["group"], x["t_s"]) for x in per_layout[0]] for other in per_layout)
         for record in manifest["runs"]:
             doc = yaml.safe_load((Path(manifest["worlds"][record["layout_id"]]) / "scenarios" / f"mix__s{seed}" / "scenario.yaml").read_text())
             mine = manifest["recipients"]["by_layout"][record["layout_id"]][str(seed)]
             assert {name for name in doc["regions"] if name.startswith("recipient_")} == {x["source"] for x in mine} <= set(manifest["visitor_sources"])
             assert all(x["entrance"] in record["serves"][x["locker"]] for x in mine)
-    assert manifest["recipients"]["offset_s"] == 60.0 and manifest["recipients"]["kinds"] == ["delivery"] and list(manifest["recipients"]["mix"]) == ["adult", "wheelchair", "long_cane"]
+    assert manifest["recipients"]["offset_s"] == 60.0 and manifest["recipients"]["kinds"] == ["delivery", "pickup"] and manifest["recipients"]["patience_s"] == 300.0 and list(manifest["recipients"]["mix"]) == ["adult", "wheelchair", "long_cane"]
     assert "--suite infra_rd_site " in printed.out and "--suite infra_rd_without " in printed.out and "peds_only" in printed.out
     # again: everything is kept as it is; other settings at the same seeds are refused, with a tag they get new scenarios
     stamps = {p: p.stat().st_mtime_ns for p in out.parent.iterdir()}

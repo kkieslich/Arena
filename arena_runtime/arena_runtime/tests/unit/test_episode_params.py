@@ -20,6 +20,7 @@ EXPECTED = {
     "task.episode.battery.capacity_wh",
     "task.episode.battery.soc.min",
     "task.episode.battery.soc.max",
+    "task.episode.battery.soc.file",
 }
 
 
