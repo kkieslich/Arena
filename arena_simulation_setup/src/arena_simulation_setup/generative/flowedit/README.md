@@ -486,6 +486,21 @@ flowedit infra search --reach 30,40,50 --margins 1.05,1.10,1.25 --rate R --charg
 - **Exact without listing the layouts.** Every score is a sum over the lockers: a term of the charger and bay spots plus, per locker, terms of its spot with the bay spot, the charger spot and the entrances it serves. The lockers split the entrances into groups, one per locker; for one way to split them, one bay spot and all charger spots at once, the least value per locker group bounds every layout from below. Only charger and bay spots whose bound beats the best layout so far are solved exactly, over the locker spots that can still beat it. Every pick passes the full check (`check_layout` and the NAV@r filter).
 - The command prints the layouts per reach and writes them as a report (`--out`); it writes no world and no suite.
 
+### Running the searched layouts
+
+`recipients.py` turns layouts of a search report into world copies with their parcel recipients, and `flowedit infra evaluation --report` writes their suites. Without `--report` the command is the first study's evaluation, unchanged.
+
+```
+flowedit infra evaluation --report report.json --layouts travel_optimal=<id>,practice_based=<id> --seeds 51-70 --without-robots-seeds 51-55 --rate R [--no-outlet-rule] [--seed-part h1=51-55 ...]
+```
+
+- **Layout into world.** A layout record (`EntranceSearch.record`) is read back on the search space the report's search ran on (`layout_of`: each spot by its id, so pass the same site, site config, scenario, loading point and locker rules) and saved as a copy `<site>__layout_<id>` with every locker, the charger pair, the bay pair and the loading point. Chargers and lockers are obstacles for walkers and robots by their models' boxes, as in the first study; bays and the loading point are floor markings. The chargers charge with `--charge-power` (default 109.7 W: 270 Wh in 4 h on top of a parked jackal's standby draw).
+- **Jobs of a seed** (`jobs`): drawn from the seed alone, a Poisson stream at `--rate` jobs per hour, a share `--pickup-share` of pickups, each addressed to a recipient entrance with equal weights. The same in every layout.
+- **Recipients** (`recipients`): each delivery (`--recipient-kinds`) brings one recipient, who comes in at the job's recipient entrance `--recipient-offset` seconds after the job's release, walks to the locker that serves the entrance, stands there (30 s on average, the first study's visitors' time) and walks back. The schedule follows the job list, not what a fleet delivered, so a layout's run with the fleet and its run without robots have the same recipients; the site as is has none. The walker group is drawn with the crowd's mix (`--recipient-mix` overrides it); a wheelchair user's type extends the crowd's wheelchair type and so takes step-free floor only.
+- **One crowd scenario per seed** in each copy, `<scenario>__s<seed>` (`recipient_crowd`): the site's scenario, a target in front of every locker, and one source per recipient that releases one walker at its time, named `recipient_<job>__<entrance>_locker_<group>`. The recorded tracks carry the source name; the manifest lists the names as `visitor_sources`, with the jobs and recipients per seed.
+- **Suites**: `<name>_site` (the site as is), `<name>_without` (each layout without robots as a crowd-only stage on `--without-robots-seeds`, which the manifest records as `without_robots_seeds`), run with the crowd-only contestant; `--seed-part` also writes the suites of a part of the seeds (one lane of one machine). The runs with the fleet are not written yet.
+- **Nothing written is replaced**: a copy, a scenario, a suite or a manifest that exists is kept when it is what the command would write, and refused otherwise (`--tag` names the scenarios of other recipient settings). Each copy's scenario is checked as the runtime checks it at an episode's start.
+
 ## Map baselines
 
 `flowedit forecast baseline` builds the forecaster's map baselines on a split's recorded runs. Each one predicts the post-edit map on the base world's flow grid and is scored by the same pooled JSD, beside a floor. Stale and transplanted are in `forecast score`; room-purpose crowds are runs of their own.

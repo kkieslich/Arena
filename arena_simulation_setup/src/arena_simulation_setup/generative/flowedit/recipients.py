@@ -74,6 +74,14 @@ RELEASE_RATE = 2000.0
 RELEASE_RAMP_S = 0.05
 #: Recipients' times are whole multiples of this, on the engine's tick grid [s]
 TIME_STEP_S = 0.1
+#: The fleet's battery as the manufacturer gives it (study design A4: the jackal's 270 Wh, charged in 4 h; the robot
+#: model's power.yaml holds the 270 Wh and no charge time) and a parked jackal's standby draw (the first study's
+#: 42.2 W, `place.CHARGE_POWER_W`). The chargers of a layout copy charge with the power that fills an empty parked
+#: robot in the charge time: 270 / 4 + 42.2 = 109.7 W (the first study's catalog: 290 W for its 36 Wh battery)
+BATTERY_WH = 270.0
+CHARGE_TIME_H = 4.0
+STANDBY_W = 42.2
+CHARGE_POWER_W = round(BATTERY_WH / CHARGE_TIME_H + STANDBY_W, 1)
 #: The seed sequence key of the job streams, and each stream's
 _JOBS_KEY = 0x1AF4A
 _STREAMS = {"release": 1, "kind": 2, "entrance": 3, "group": 4}
@@ -185,6 +193,13 @@ def layout_of(search: Search, record: Mapping[str, Any]) -> Layout:
     if layout.layout_id != layout_id:
         raise ValueError(f"the spots of record {layout_id} give layout {layout.layout_id}")
     return layout
+
+
+def with_charge_power(layout: Layout, power_w: float) -> Layout:
+    """`layout` with every charger charging at `power_w`. The layout's id stays: it holds the poses, not the power."""
+    if power_w <= 0:
+        raise ValueError(f"the charge power must be positive, got {power_w}")
+    return place.Layout.of([attrs.evolve(s, element=attrs.evolve(s.element, charge_power_w=float(power_w))) if s.element.charge_power_w is not None else s for s in layout.spots])
 
 
 def serves_of(record: Mapping[str, Any], layout: Layout | None = None) -> dict[str, tuple[str, ...]]:
@@ -440,6 +455,7 @@ def save_layout(site: Site, layout: Layout, scenario: Path, crowds: Mapping[str,
 
 
 __all__ = [
+    "CHARGE_POWER_W",
     "CLEARANCE_M",
     "OFFSET_S",
     "PATIENCE_S",
@@ -460,4 +476,5 @@ __all__ = [
     "serves_of",
     "target_name",
     "type_name",
+    "with_charge_power",
 ]

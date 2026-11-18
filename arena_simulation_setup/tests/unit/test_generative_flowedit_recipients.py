@@ -237,6 +237,13 @@ def test_a_layout_copy_gets_one_crowd_scenario_per_seed_and_nothing_written_is_r
     world = yaml.safe_load((path / "world.yaml").read_text())
     names = [o["name"] for level in world["levels"] for o in level.get("objects") or []]
     assert {"charger_1", "charger_2", "bay_1", "bay_2", "loading_point", "locker_1", "locker_2"} <= set(names)
+    assert {o["name"]: o.get("charge_power_w") for level in world["levels"] for o in level.get("objects") or [] if o["name"].startswith("charger")} == {"charger_1": place.CHARGE_POWER_W, "charger_2": place.CHARGE_POWER_W}
+    # the chargers' power is the copy's, not the layout id's: 270 Wh in 4 h on top of the standby draw by default
+    slow = recipients.with_charge_power(pick.layout, recipients.CHARGE_POWER_W)
+    assert slow.layout_id == pick.layout_id and recipients.CHARGE_POWER_W == 109.7 and [o.name for o in slow.objects] == [o.name for o in pick.layout.objects]
+    assert sorted({s.element.charge_power_w for s in slow.spots if s.element.charge_power_w is not None}) == [109.7]
+    with pytest.raises(ValueError, match="nothing recorded is replaced"):
+        recipients.save_layout(site_copy, slow, scenario, crowds)
     assert sorted(p.name for p in (path / "scenarios").iterdir() if p.name.startswith("mix")) == ["mix__s3", "mix__s4"]
     for name, (expected, types, header) in crowds.items():
         folder = path / "scenarios" / name
@@ -300,6 +307,8 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
         twin = next(s for s in site_doc["stages"] if s["seed"] == stage["seed"])
         assert stage == {**twin, "name": stage["name"], "map": stage["map"], "config": {**twin["config"], "scenario": {"file": f"mix__s{stage['seed']}"}}}
     manifest = json.loads(infra.manifest_path(out).read_text())
+    copy = yaml.safe_load((Path(manifest["worlds"][optimal["layout_id"]]) / "world.yaml").read_text())
+    assert {o["charge_power_w"] for level in copy["levels"] for o in level.get("objects") or [] if o["name"].startswith("charger")} == {109.7} and manifest["charge_power_w"] == 109.7
     assert manifest["suite"] is None and manifest["site_suite"] == "infra_rd_site" and manifest["without_suite"] == "infra_rd_without"
     assert manifest["seeds"] == [71, 72, 73, 74] and manifest["without_robots_seeds"] == [71, 72] and manifest["episodes"] == 4 + 2 * count
     assert list(manifest["worlds"]) == [r["layout_id"] for r in manifest["runs"]] and manifest["runs"][0]["role"] == "travel_optimal" and manifest["runs"][0]["serves"] == optimal["serves"]

@@ -647,7 +647,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
     _log("recipients' walker groups: " + ", ".join(f"{group} {share / total:.4f} ({agent_type})" for group, (agent_type, share) in mix.items()) + (" (--recipient-mix)" if args.recipient_mix else f" (the crowd's mix, scenario {space.scenario_name})"))
     layouts, serves, roles = {}, {}, {}
     for role, layout_id in args.layouts:
-        layout = RC.layout_of(space.search, records[layout_id])
+        layout = RC.with_charge_power(RC.layout_of(space.search, records[layout_id]), args.charge_power)
         problems = place.check_layout(space.site, layout)
         if problems:
             raise ValueError(f"layout {layout_id}: " + "; ".join(problems))
@@ -732,6 +732,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         "episodes": total_episodes,
         "sim_hours": round(IN.sim_hours(site_doc) + IN.sim_hours(without_doc), 2),
         "loading": space.loading_record(),
+        "charge_power_w": args.charge_power,
         "locker_rules": [str(rule) for rule in space.search.elements[SE.SEARCHED[2]].rules],
         "recipient_entrances": entrances,
         "recipients": {
@@ -926,6 +927,7 @@ def add_parser(verbs: Any) -> None:
     g.add_argument("--recipient-offset", type=float, default=RC.OFFSET_S, help=f"seconds from a job's release to its recipient's arrival at the recipient entrance (default {RC.OFFSET_S:g}, the warm-up; a placeholder)")
     g.add_argument("--recipient-kinds", type=lambda text: [k.strip() for k in text.split(",") if k.strip()], default=list(RC.RECIPIENT_KINDS), help=f"the job kinds that bring a recipient (default {','.join(RC.RECIPIENT_KINDS)}; delivery,pickup: every job)")
     g.add_argument("--recipient-mix", type=_shares, default=None, help="the recipients' walker groups as shares, e.g. adult=0.985,wheelchair=0.01,long_cane=0.005 (default the crowd's mix, from the scenario's sources)")
+    g.add_argument("--charge-power", type=float, default=RC.CHARGE_POWER_W, help=f"the power the copies' chargers charge with, W (default {RC.CHARGE_POWER_W:g}: the jackal's {RC.BATTERY_WH:g} Wh in {RC.CHARGE_TIME_H:g} h on top of its {RC.STANDBY_W:g} W standby draw; the first study's worlds have {IN.place.CHARGE_POWER_W:g})")
     g.add_argument("--tag", default="", help="a tag in the crowd scenarios' names, <scenario>__<tag>__s<seed>: written scenarios are never replaced, other recipient settings at a seed need another name")
     g.add_argument("--loading", type=_point, default=None, help="x,y of the loading point, snapped to the nearest valid spot (default the site config's courier access point)")
     g.add_argument("--no-outlet-rule", action="store_true", help="the report's search ran without the locker's outlet cable rule (`flowedit infra search --no-outlet-rule`)")
