@@ -38,7 +38,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
     notes: list[str] = []
     scene = build(root, scenario, args.seed, notes)
     if args.prefill:
-        D.prefill(scene, args.prefill, D.world_tags(root, scene), notes)
+        D.prefill(scene, args.prefill, _no_tags if args.name_only else D.world_tags(root, scene), notes, name_only=args.name_only)
     for note in notes:
         print(f"note: {note}", file=sys.stderr)
     if not args.write:
@@ -48,6 +48,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
     write(scene, out)
     print(f"wrote {out}")
     return 0
+
+
+def _no_tags(model: str) -> None:
+    """No asset is resolved: `--name-only`."""
+    return None
 
 
 def _stages(text: str) -> list[D.Stage]:
@@ -71,8 +76,8 @@ def _cmd_demand(args: argparse.Namespace) -> int:
     def filled() -> tuple[Scene, D.Tags]:
         notes.clear()
         scene = build(root, scenario, args.seed, notes)
-        tags = D.world_tags(root, scene)
-        D.prefill(scene, args.prefill, tags, notes, classes, D.load_proposals(args.proposals))
+        tags = _no_tags if args.name_only else D.world_tags(root, scene)
+        D.prefill(scene, args.prefill, tags, notes, classes, D.load_proposals(args.proposals), name_only=args.name_only)
         return scene, tags
 
     scene, tags = filled()
@@ -324,6 +329,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds)")
     p.add_argument("--out", type=Path, default=None, help=f"file to write (default: {GRAPH} next to the scenario.yaml, or in the world without a scenario)")
     p.add_argument("--prefill", type=_stages, default=[], metavar="STAGE[,STAGE...]", help=f"pre-fill the demand of the objects nobody authored: `{D.Stage.CLASS}` by the class of their asset, `{D.Stage.LLM}` by a model's proposals in {D.PROPOSALS.name} (default: authored demand only)")
+    p.add_argument("--name-only", action="store_true", help="class the objects by the name of their model only, without resolving their assets' kind tags (default: refuse a model whose asset does not resolve)")
     p.add_argument("--write", action="store_true", help="write the graph (default: print it)")
     p.set_defaults(fn=_cmd_build)
     p = verbs.add_parser(
@@ -334,6 +340,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("world", help="the world to build from")
     p.add_argument("scenario", nargs="?", help="the scenario under the world's scenarios/ whose objects join the graph (default: world objects only)")
     p.add_argument("--prefill", type=_stages, default=list(D.Stage), metavar="STAGE[,STAGE...]", help=f"the pre-fill stages to count (default: {','.join(D.Stage)})")
+    p.add_argument("--name-only", action="store_true", help="class the objects by the name of their model only, without resolving their assets' kind tags (default: refuse a model whose asset does not resolve)")
     p.add_argument("--propose", action="store_true", help="ask a model for the class of the undecided models (a dry run that prints the prompt without --write)")
     p.add_argument("--model", default=None, help="the model to ask (default: $ARENA_PROMPT_LLM, else utils/llm.py's DEFAULT_MODEL)")
     p.add_argument("--proposals", type=Path, default=D.PROPOSALS, help=f"the proposals file to read and write (default: {D.PROPOSALS.name} of the package)")

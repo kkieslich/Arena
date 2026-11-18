@@ -15,6 +15,7 @@ from arena_simulation_setup.generative.flowedit.edit import DEMAND_VERBS, INERT,
 from arena_simulation_setup.generative.flowedit.read import plan_needs, read_graph
 from arena_simulation_setup.generative.scenario.propose.client import Reply
 from arena_simulation_setup.kg import Scene, Value, dumps, load, write
+from flowedit_hospital_tags import TAGS, write_hospital_tags
 
 pytest.importorskip("numpy")
 
@@ -29,7 +30,13 @@ CLASSES = D.load_classes()
 
 
 def no_tags(model: str) -> None:
+    """No asset resolves."""
     return None
+
+
+def untagged(model: str) -> list[str]:
+    """Every asset resolves, with an annotation without tags: the name decides."""
+    return []
 
 
 def _facts(scene: Scene, subject: str, verb: str) -> list[tuple[Value, dict[str, Value]]]:
@@ -48,6 +55,12 @@ def queue() -> Scene:
 @pytest.fixture
 def bare() -> Scene:
     return build(HOSPITAL)
+
+
+@pytest.fixture
+def hospital_tags(local_root: Path) -> dict[str, Path]:
+    """hospital_1's models resolve, with their real tags."""
+    return write_hospital_tags(local_root)
 
 
 def _proposals(path: Path, models: dict[str, dict[str, Any]]) -> Path:
@@ -106,10 +119,8 @@ def test_the_table_names_only_asa_kinds_and_every_block_builds() -> None:
     from arena_assets.semantic import load_spec
 
     kinds = set(load_spec().facets["kind"].values_for("object"))
-    hoi = set(load_spec().facets["hoi"].values_for("object"))
     for cls in CLASSES.values():
         assert set(cls.kinds) <= kinds, cls.name
-        assert set(cls.hoi) <= hoi, cls.name
         assert cls.desc, cls.name
     scene = build(HOSPITAL)
     for i, cls in enumerate(CLASSES.values()):
@@ -139,7 +150,8 @@ def test_a_wrong_table_is_refused(tmp_path: Path, raw: dict[str, Any], message: 
     ("model", "tags", "expected"),
     [
         ("Hospital/Thing", ["domain::hospital", "kind::dispenser"], ("fountain", "kind::dispenser")),
-        ("Hospital/Thing", ["kind::equipment", "hoi::sit"], ("chair", "hoi::sit")),
+        ("Hospital/Thing", ["kind::equipment", "hoi::sit"], None),
+        ("Hospital/Operating_Table", ["kind::table", "hoi::lie"], None),
         ("Hospital/SM_Chair_01a", ["kind::cabinet"], ("inert", "kind::cabinet")),
         ("Hospital/SM_Chair_01a", ["kind::equipment"], ("chair", "name:chair")),
         ("Hospital/SM_Chair_01a", None, ("chair", "name:chair")),
@@ -159,7 +171,7 @@ def test_a_wrong_table_is_refused(tmp_path: Path, raw: dict[str, Any], message: 
         ("Hospital/Exam_Table", ["kind::table"], None),
     ],
 )
-def test_an_asset_is_classed_by_its_kind_then_hoi_then_the_longest_word_of_its_name(model: str, tags: list[str] | None, expected: tuple[str, str] | None) -> None:
+def test_an_asset_is_classed_by_its_kind_then_the_longest_word_of_its_name_and_never_by_hoi(model: str, tags: list[str] | None, expected: tuple[str, str] | None) -> None:
     assert D.classify(model, tags, CLASSES) == expected
 
 
@@ -168,7 +180,7 @@ def test_an_asset_is_classed_by_its_kind_then_hoi_then_the_longest_word_of_its_n
 
 def test_the_class_stage_leaves_authored_demand_alone(queue: Scene) -> None:
     plain = build(HOSPITAL, QUEUE)
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     for obj in ("obj:fountain", "obj:reception_desk", "obj:gathering_area"):
         assert _demand(queue, obj) == _demand(plain, obj)
         assert D.source(queue, obj) == D.AUTHORED
@@ -176,7 +188,7 @@ def test_the_class_stage_leaves_authored_demand_alone(queue: Scene) -> None:
 
 def test_every_pre_filled_fact_says_who_decided_it_and_why(queue: Scene) -> None:
     plain = {f.key for f in build(HOSPITAL, QUEUE).facts}
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     added = [f for f in queue.facts if f.key not in plain]
     assert added
     assert {f.verb for f in added} <= {*DEMAND_VERBS, INERT}
@@ -186,7 +198,7 @@ def test_every_pre_filled_fact_says_who_decided_it_and_why(queue: Scene) -> None
 
 
 def test_a_pre_filled_object_is_used_as_the_object_that_already_serves_its_need(queue: Scene) -> None:
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     mark = {"by": "class", "why": "name:dispenser"}
     assert _facts(queue, DISPENSER, "serves") == [("service:fountain", {"capacity": 1, **mark})]
     assert _facts(queue, DISPENSER, "satisfies") == [("need:thirst", {"amount": 100.0, **mark})]
@@ -198,7 +210,7 @@ def test_a_pre_filled_object_is_used_as_the_object_that_already_serves_its_need(
 
 
 def test_without_an_object_for_its_need_a_class_brings_its_own_dwell_and_use(bare: Scene) -> None:
-    D.prefill(bare, [D.Stage.CLASS], no_tags)
+    D.prefill(bare, [D.Stage.CLASS], untagged)
     mark = {"by": "class", "why": "name:dispenser"}
     assert _facts(bare, DISPENSER, "dwells") == [(5.0, {"std": 1.5, "clip_low": 4.0, "clip_high": 6.0, "from": "demand_classes.yaml#fountain", **mark})]
     assert _facts(bare, DISPENSER, "affords") == [("interaction:QUEUE_USE", {"from": "rule:formation line", **mark})]
@@ -206,7 +218,7 @@ def test_without_an_object_for_its_need_a_class_brings_its_own_dwell_and_use(bar
 
 
 def test_a_gathering_area_is_anchored_at_itself(bare: Scene) -> None:
-    D.prefill(bare, [D.Stage.CLASS], no_tags)
+    D.prefill(bare, [D.Stage.CLASS], untagged)
     sofa = next(obj for obj in D.objects(bare) if D.model_of(bare, obj) == "Hospital/Waiting_Room_Sofa")
     ((formation, params),) = _facts(bare, sofa, "has_formation")
     assert formation == "formation:f_formation"
@@ -214,7 +226,7 @@ def test_a_gathering_area_is_anchored_at_itself(bare: Scene) -> None:
 
 
 def test_the_class_stage_decides_all_of_hospital_1_but_its_equipment_tables_and_stands(queue: Scene) -> None:
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     assert sorted({D.model_of(queue, obj) for obj in D.undecided(queue)}) == OPEN
     by_source: dict[str, int] = {}
     for row in D.coverage(queue):
@@ -224,30 +236,110 @@ def test_the_class_stage_decides_all_of_hospital_1_but_its_equipment_tables_and_
 
 
 def test_pre_filling_is_deterministic_and_decided_objects_stay(queue: Scene) -> None:
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     once = dumps(queue)
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     assert dumps(queue) == once
     again = build(HOSPITAL, QUEUE)
-    D.prefill(again, [D.Stage.CLASS], no_tags)
+    D.prefill(again, [D.Stage.CLASS], untagged)
     assert dumps(again) == once
 
 
-def test_a_tag_of_the_asset_decides_before_its_name(queue: Scene, local_root: Path) -> None:
+def test_a_kind_tag_of_the_asset_decides_before_its_name(queue: Scene, hospital_tags: dict[str, Path]) -> None:
     from arena_simulation_setup.generative.scenario.formats import load_world
-    from arena_simulation_setup.shared.entities import Obstacle
 
-    for model, tags in (("Hospital/Ventilator", ["domain::hospital", "kind::dispenser"]), ("Hospital/SM_Chair_01a", ["kind::cabinet"])):
-        directory = local_root / Obstacle.parse({"name": "probe", "model": model, "pose": [0.0, 0.0, 0.0]}).model.relpath()
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "annotation.yaml").write_text(yaml.safe_dump({"asa": 1, "tags": tags}))
-    tags_of = D.asset_tags(HOSPITAL, load_world(HOSPITAL), ["Hospital/Ventilator", "Hospital/SM_Chair_01a", "Hospital/SM_TrashCan"])
-    assert tags_of == {"Hospital/Ventilator": ["domain::hospital", "kind::dispenser"], "Hospital/SM_Chair_01a": ["kind::cabinet"], "Hospital/SM_TrashCan": None}
+    (hospital_tags["Hospital/Ventilator"] / "annotation.yaml").write_text(yaml.safe_dump({"asa": 1, "tags": ["domain::hospital", "kind::dispenser"]}))
+    (hospital_tags["Hospital/SM_Chair_01a"] / "annotation.yaml").write_text(yaml.safe_dump({"asa": 1, "tags": ["kind::cabinet"]}))
+    (hospital_tags["Hospital/SM_TrashCan"] / "annotation.yaml").write_text(yaml.safe_dump({"asa": 1}))
+    tags_of = D.asset_tags(HOSPITAL, load_world(HOSPITAL), ["Hospital/Ventilator", "Hospital/SM_Chair_01a", "Hospital/SM_TrashCan", "Hospital/Nowhere"])
+    assert tags_of == {"Hospital/Ventilator": ["domain::hospital", "kind::dispenser"], "Hospital/SM_Chair_01a": ["kind::cabinet"], "Hospital/SM_TrashCan": [], "Hospital/Nowhere": None}
     D.prefill(queue, [D.Stage.CLASS], D.world_tags(HOSPITAL, queue))
     ventilator = next(obj for obj in D.objects(queue) if D.model_of(queue, obj) == "Hospital/Ventilator")
     chair = next(obj for obj in D.objects(queue) if D.model_of(queue, obj) == "Hospital/SM_Chair_01a")
     assert _facts(queue, ventilator, "serves")[0][1]["why"] == "kind::dispenser"
     assert _facts(queue, chair, INERT) == [(True, {"by": "class", "why": "kind::cabinet"})]
+    assert _facts(queue, TRASHCAN, INERT) == [(True, {"by": "class", "why": "name:trashcan"})]
+
+
+# the real tags of hospital_1
+
+
+def _of(scene: Scene, model: str) -> str:
+    return next(obj for obj in D.objects(scene) if D.model_of(scene, obj) == model)
+
+
+def _sources(scene: Scene) -> dict[str, int]:
+    counted: dict[str, int] = {}
+    for row in D.coverage(scene):
+        counted[row.source] = counted.get(row.source, 0) + row.count
+    return counted
+
+
+def test_with_its_real_tags_hospital_1_is_decided_as_by_name_alone(hospital_tags: dict[str, Path]) -> None:
+    tagged = build(HOSPITAL, QUEUE)
+    D.prefill(tagged, list(D.Stage), D.world_tags(HOSPITAL, tagged))
+    named, notes = build(HOSPITAL, QUEUE), []
+    D.prefill(named, list(D.Stage), no_tags, notes, name_only=True)
+    assert {obj: D._decision(tagged, obj)[0] for obj in D.objects(tagged)} == {obj: D._decision(named, obj)[0] for obj in D.objects(named)}
+    assert _sources(tagged) == _sources(named) == {"authored": 5, "class": 120, "llm": 23}
+    assert notes[-1].startswith("name only: ")
+
+
+@pytest.mark.parametrize(
+    ("model", "verb", "fact"),
+    [
+        ("Hospital/SM_WheelChair_01a", INERT, (True, {"by": "class", "why": D.REVIEWED})),
+        ("Hospital/Lab_Bench", "serves", ("service:desk", {"capacity": 1, "interaction_radius": 1.2, "by": "class", "why": D.REVIEWED})),
+        ("Hospital/SM_ReceptionDesk_01a", "serves", ("service:desk", {"capacity": 3, "interaction_radius": 1.0, "by": "class", "why": "kind::counter"})),
+        ("Hospital/SM_Desk_04a", "serves", ("service:desk", {"capacity": 1, "interaction_radius": 1.2, "by": "class", "why": "name:desk"})),
+        ("Hospital/SM_Chair_02a", "serves", ("service:chair", {"capacity": 1, "interaction_radius": 0.8, "by": "class", "why": "kind::chair"})),
+        ("Hospital/Operating_Table", INERT, (True, {"by": "llm", "model": "gemini-3.5-flash", "prompt_sha": "28e35cd583a85a56", "why": "surgical table operated by specialists during procedure"})),
+        ("Hospital/Surgical_Table", INERT, (True, {"by": "llm", "model": "gemini-3.5-flash", "prompt_sha": "28e35cd583a85a56", "why": "surgical procedure table operated by specialists"})),
+    ],
+)
+def test_the_real_tags_walk_the_chain(hospital_tags: dict[str, Path], model: str, verb: str, fact: tuple[Value, dict[str, Value]]) -> None:
+    scene = build(HOSPITAL, QUEUE)
+    D.prefill(scene, list(D.Stage), D.world_tags(HOSPITAL, scene))
+    assert _facts(scene, _of(scene, model), verb) == [fact]
+
+
+def test_a_wrong_annotation_is_overruled_by_a_humans_entry_only(hospital_tags: dict[str, Path]) -> None:
+    scene = build(HOSPITAL, QUEUE)
+    D.prefill(scene, [D.Stage.CLASS], D.world_tags(HOSPITAL, scene), proposals={})
+    assert _facts(scene, _of(scene, "Hospital/SM_WheelChair_01a"), "serves") == [("service:chair", {"capacity": 1, "interaction_radius": 0.8, "by": "class", "why": "kind::chair"})]
+    assert _facts(scene, _of(scene, "Hospital/Lab_Bench"), "serves")[0][1]["why"] == "kind::counter"
+    reviewed = {model for model, entry in D.load_proposals().items() if not D.proposed(entry)}
+    assert reviewed == {"Hospital/SM_WheelChair_01a", "Hospital/Lab_Bench"}
+    assert all(D.load_proposals()[model].get("why") for model in reviewed)
+
+
+def test_a_model_whose_asset_does_not_resolve_is_refused_unless_by_name_only(queue: Scene) -> None:
+    with pytest.raises(ValueError, match=r"the assets of .*Hospital/SM_TrashCan.* do not resolve"):
+        D.prefill(queue, [D.Stage.CLASS], no_tags)
+    assert not [obj for obj in D.objects(queue) if D.source(queue, obj) == "class"]
+    reviewed = {"Hospital/SM_WheelChair_01a", "Hospital/Lab_Bench"}
+    D.prefill(queue, [D.Stage.CLASS], lambda model: None if model in reviewed else [])
+    D.prefill(again := build(HOSPITAL, QUEUE), [D.Stage.LLM], no_tags)
+    assert D.source(again, _of(again, "Hospital/Ventilator")) == "llm"
+    notes: list[str] = []
+    D.prefill(named := build(HOSPITAL, QUEUE), [D.Stage.CLASS], no_tags, notes, name_only=True)
+    assert D.source(named, DISPENSER) == "class"
+    assert notes[-1].startswith("name only: ") and "Hospital/SM_TrashCan" in notes[-1]
+
+
+@pytest.mark.network
+def test_the_tag_snapshot_is_what_the_bucket_holds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from arena_assets.impl.fetch import Bucket
+
+    monkeypatch.setenv("ARENA_ASSETS_DIR", str(tmp_path))
+    monkeypatch.delenv("ARENA_ASSETS_URL", raising=False)
+    bucket = Bucket("public/models")
+    for model, tags in TAGS.items():
+        domain, _, name = model.partition("/")
+        target = tmp_path / "annotations" / model / "annotation.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        bucket.download(f"{domain}/Object/{name}/annotation.yaml", str(target))
+        assert (yaml.safe_load(target.read_text()) or {}).get("tags") == tags, model
 
 
 # proposals
@@ -259,14 +351,14 @@ def test_a_humans_proposal_decides_before_tag_and_name_and_a_models_only_in_the_
         "Hospital/Lab_Bench": {"class": "inert"},
         "Hospital/Ventilator": {"class": "inert", "by": "llm", "model": "gemini-3.5-flash", "prompt_sha": "12a42fdc3c28fdd0", "why": "a machine staff operate"},
     }
-    D.prefill(queue, [D.Stage.CLASS], lambda model: ["kind::desk"] if model == "Hospital/Lab_Bench" else None, proposals=proposals)
+    D.prefill(queue, [D.Stage.CLASS], lambda model: ["kind::desk"] if model == "Hospital/Lab_Bench" else [], proposals=proposals)
     table = next(obj for obj in D.objects(queue) if D.model_of(queue, obj) == "Hospital/Exam_Table")
     bench = next(obj for obj in D.objects(queue) if D.model_of(queue, obj) == "Hospital/Lab_Bench")
     ventilator = next(obj for obj in D.objects(queue) if D.model_of(queue, obj) == "Hospital/Ventilator")
     assert _facts(queue, table, "serves") == [("service:patient_bed", {"capacity": 1, "interaction_radius": 1.2, "by": "class", "why": D.REVIEWED})]
     assert _facts(queue, bench, INERT) == [(True, {"by": "class", "why": D.REVIEWED})]
     assert D.source(queue, ventilator) == D.UNDECIDED
-    D.prefill(queue, [D.Stage.CLASS, D.Stage.LLM], no_tags, proposals=proposals)
+    D.prefill(queue, [D.Stage.CLASS, D.Stage.LLM], untagged, proposals=proposals)
     assert _facts(queue, ventilator, INERT) == [(True, {"by": "llm", "model": "gemini-3.5-flash", "prompt_sha": "12a42fdc3c28fdd0", "why": "a machine staff operate"})]
     assert D.source(queue, ventilator) == "llm"
 
@@ -279,7 +371,7 @@ def test_the_llm_stage_alone_takes_only_a_models_proposals(queue: Scene) -> None
 
 def test_a_proposal_of_no_class_is_refused(queue: Scene, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="proposed as class 'throne'"):
-        D.prefill(queue, [D.Stage.CLASS], no_tags, proposals={"Hospital/Ventilator": {"class": "throne"}})
+        D.prefill(queue, [D.Stage.CLASS], untagged, proposals={"Hospital/Ventilator": {"class": "throne"}})
     with pytest.raises(ValueError, match="needs a class"):
         D.load_proposals(_proposals(tmp_path / "p.yaml", {"Hospital/Ventilator": {"by": "llm"}}))
     assert D.load_proposals(tmp_path / "missing.yaml") == {}
@@ -334,13 +426,13 @@ def test_merge_writes_confident_proposals_and_never_over_a_humans(tmp_path: Path
 
 
 def test_only_undecided_models_without_a_proposal_are_asked_about(queue: Scene) -> None:
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     assert DP.unproposed(queue, {}) == OPEN
     assert DP.unproposed(queue, {"Hospital/Ventilator": {"class": "inert", "by": "llm"}}) == [m for m in OPEN if m != "Hospital/Ventilator"]
 
 
 def test_the_prompt_names_the_classes_the_decided_models_and_the_evidence(queue: Scene) -> None:
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     head = DP.system(CLASSES)
     assert all(f"  {name}" in head for name in [*CLASSES, DP.UNKNOWN])
     user = DP.build_prompt(queue, ["Hospital/Vital_Signal_Station"], lambda model: ["kind::equipment"], world="hospital_1")
@@ -360,7 +452,7 @@ def test_propose_asks_once_and_never_for_nothing(queue: Scene, monkeypatch: pyte
         return Reply(text=json.dumps({m: {"class": "inert", "why": "equipment"} for m in OPEN}))
 
     monkeypatch.setattr(DP, "ask", ask)
-    D.prefill(queue, [D.Stage.CLASS], no_tags)
+    D.prefill(queue, [D.Stage.CLASS], untagged)
     assert DP.propose(queue, [], CLASSES, no_tags, world="hospital_1") == ([], [])
     proposals, complaints = DP.propose(queue, OPEN, CLASSES, no_tags, world="hospital_1", model="some-model")
     assert len(calls) == 1
@@ -372,7 +464,7 @@ def test_propose_asks_once_and_never_for_nothing(queue: Scene, monkeypatch: pyte
 # the CLI
 
 
-def test_cli_build_pre_fills_only_when_asked(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_build_pre_fills_only_when_asked(capsys: pytest.CaptureFixture[str], hospital_tags: dict[str, Path]) -> None:
     assert main(["build", "hospital_1", "queue", "--worlds", str(WORLDS)]) == 0
     assert capsys.readouterr().out == dumps(build(HOSPITAL, QUEUE))
     assert main(["build", "hospital_1", "queue", "--worlds", str(WORLDS), "--prefill", "class"]) == 0
@@ -383,11 +475,11 @@ def test_cli_build_pre_fills_only_when_asked(capsys: pytest.CaptureFixture[str])
         main(["build", "hospital_1", "--worlds", str(WORLDS), "--prefill", "guess"])
 
 
-def test_cli_demand_reports_the_sources_and_fails_while_objects_are_undecided(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_demand_reports_the_sources_and_fails_while_objects_are_undecided(tmp_path: Path, capsys: pytest.CaptureFixture[str], hospital_tags: dict[str, Path]) -> None:
     argv = ["demand", "hospital_1", "queue", "--worlds", str(WORLDS), "--proposals", str(tmp_path / "proposals.yaml")]
     assert main(argv) == 1
     out = capsys.readouterr().out
-    assert "   1  Hospital/SM_WaterDispenser_01a       class      fountain (thirst)         name:dispenser" in out
+    assert "   1  Hospital/SM_WaterDispenser_01a       class      fountain (thirst)         kind::dispenser" in out
     assert out.splitlines()[-1] == "5 authored, 120 class, 23 undecided"
     _proposals(tmp_path / "proposals.yaml", {m: {"class": "inert", "by": "llm", "model": "m", "prompt_sha": "abc", "why": "equipment"} for m in OPEN})
     assert main(argv) == 0
@@ -396,7 +488,7 @@ def test_cli_demand_reports_the_sources_and_fails_while_objects_are_undecided(tm
     assert capsys.readouterr().out.splitlines()[-1] == "5 authored, 120 class, 23 undecided"
 
 
-def test_cli_demand_propose_prints_the_prompt_and_asks_only_with_write(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_demand_propose_prints_the_prompt_and_asks_only_with_write(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, hospital_tags: dict[str, Path]) -> None:
     calls: list[str] = []
 
     def ask(system: str, user: str, *, model: str | None = None, temperature: float = 0.0) -> Reply:
@@ -423,8 +515,18 @@ def test_cli_demand_propose_prints_the_prompt_and_asks_only_with_write(tmp_path:
     assert "every undecided model has a proposal already" in capsys.readouterr().out
 
 
-def test_cli_demand_without_a_model_configured_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_demand_without_a_model_configured_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, hospital_tags: dict[str, Path]) -> None:
     for key in ("LLM_API_ENDPOINT", "GOOGLE_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     assert main(["demand", "hospital_1", "queue", "--worlds", str(WORLDS), "--proposals", str(tmp_path / "proposals.yaml"), "--propose", "--write"]) == 1
     assert "no LLM configured" in capsys.readouterr().out
+
+
+def test_cli_refuses_assets_that_do_not_resolve_unless_by_name_only(capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["build", "hospital_1", "queue", "--worlds", str(WORLDS), "--prefill", "class"]
+    assert main(argv) == 1
+    assert "do not resolve" in capsys.readouterr().err
+    assert main([*argv, "--name-only"]) == 0
+    out = capsys.readouterr()
+    assert D.source(load(yaml.safe_load(out.out)), DISPENSER) == "class"
+    assert "note: name only: " in out.err

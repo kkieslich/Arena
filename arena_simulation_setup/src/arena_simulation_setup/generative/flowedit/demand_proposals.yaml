@@ -1,7 +1,8 @@
 # FLOWEDIT demand proposals: the demand class (`demand_classes.yaml`) of asset models no class rule covers, by model.
 # `flowedit demand <world> --propose --write` asks a model and adds its answers with `by: llm`; `flowedit build --prefill
 # llm` pre-fills them marked `by: llm`. To accept or correct a proposal, set its class and drop `by: llm`: an entry
-# without it is a human's, never replaced, and pre-filled by `--prefill class`.
+# without it is a human's, never replaced, and decides first with `--prefill class`, before the asset's kind tag. That
+# is also how a wrong annotation is overruled, its `why` saying what is wrong, until the asset is fixed.
 format: flowedit-demand-proposals/1
 models:
   Hospital/Anesthesia_Machine:
@@ -30,6 +31,7 @@ models:
     model: gemini-3.5-flash
     prompt_sha: 28e35cd583a85a56
     why: medical equipment table used during procedure
+  Hospital/Lab_Bench: {class: desk, why: 'annotation kind::counter is wrong, a lab bench is a workstation without a queue'}
   Hospital/Microscope_Station:
     class: desk
     by: llm
@@ -49,6 +51,7 @@ models:
     prompt_sha: 28e35cd583a85a56
     why: storage appliance for medical supplies
   Hospital/SM_Scale_01a: {class: inert, by: llm, model: gemini-3.5-flash, prompt_sha: 28e35cd583a85a56, why: medical measuring device}
+  Hospital/SM_WheelChair_01a: {class: inert, why: 'annotation kind::chair is wrong, a wheelchair is equipment nobody walks to'}
   Hospital/Surgical_Table:
     class: inert
     by: llm

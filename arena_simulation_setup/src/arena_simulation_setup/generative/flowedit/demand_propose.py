@@ -22,7 +22,8 @@ HEADER = """\
 # FLOWEDIT demand proposals: the demand class (`demand_classes.yaml`) of asset models no class rule covers, by model.
 # `flowedit demand <world> --propose --write` asks a model and adds its answers with `by: llm`; `flowedit build --prefill
 # llm` pre-fills them marked `by: llm`. To accept or correct a proposal, set its class and drop `by: llm`: an entry
-# without it is a human's, never replaced, and pre-filled by `--prefill class`.
+# without it is a human's, never replaced, and decides first with `--prefill class`, before the asset's kind tag. That
+# is also how a wrong annotation is overruled, its `why` saying what is wrong, until the asset is fixed.
 """
 
 
@@ -38,6 +39,9 @@ Answer with one class per model, from exactly this set:
 
 {rows}
   {UNKNOWN:{width}s} - the evidence does not support any of the above
+
+Where a model's asset has tags, `kind::` says what the object is and `hoi::` only what a person can do with it (sit,
+lie, touch, see), not whether anyone walks to it.
 
 Pick a class with demand only for an object a visitor or staff member would walk to and use as the class says. Machines,
 instruments and furniture that only a specialist operates during a procedure are `inert`: nobody walks to them in the

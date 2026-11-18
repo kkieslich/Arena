@@ -1,10 +1,15 @@
 # FLOWEDIT demand classes: what `flowedit build --prefill` gives an object nobody authored demand for. Each class holds the
 # `humansim:` block its objects get, as the hand-written `demand` scenarios author it; a class without one is inert, its
-# objects are decided to have no demand. An asset is of a class by its ASA `kind` tag (`kinds`), else a `hoi` tag (`hoi`),
-# else the longest of the `words` that ends a word of its name, the name split at non-letters and case changes and each
-# two neighbours joined (`SM_WheelChair_01a`: wheel, chair, wheelchair). Kinds no class lists
-# (appliance, equipment, table) stay undecided, for a model's proposal. `desc` is what the model is told the class is.
-# `dwell` is the dwell of a class with a need when no object of the graph serves that need yet.
+# objects are decided to have no demand. The model of such an object is decided by the first of:
+#   1. a human's entry in demand_proposals.yaml (one without `by: llm`), which also overrules a wrong annotation;
+#   2. its asset's ASA `kind` tag: each kind means one thing, so it is listed by one class at most (`kinds`). Kinds that
+#      say nothing about demand (appliance, equipment, table) are listed by none, and the asset goes on to its name;
+#   3. the longest of the `words` that ends a word of its name, the name split at non-letters and case changes and
+#      each two neighbours joined (`SM_WheelChair_01a`: sm, wheel, chair, a, smwheel, wheelchair, chaira);
+#   4. a model's proposal in demand_proposals.yaml (`by: llm`), with `--prefill class,llm`.
+# A `hoi` tag decides nothing: it says what a person can do with an object, not whether anyone walks to it. `desc` is
+# what the model is told the class is. `dwell` is the dwell of a class with a need when no object of the graph serves
+# that need yet.
 format: flowedit-demand-classes/1
 classes:
   fountain:
@@ -26,13 +31,11 @@ classes:
   chair:
     desc: a chair, armchair or stool one person sits on
     kinds: [chair, stool]
-    hoi: [sit]
     words: [chair, stool, seat]
     humansim: {type: chair, capacity: 1, interaction_radius: 0.8}
   bed:
     desc: a bed, stretcher or cot one person lies on
     kinds: [bed]
-    hoi: [lie]
     words: [bed, stretcher, cot]
     humansim: {type: patient_bed, capacity: 1, interaction_radius: 1.2}
   gathering_area:

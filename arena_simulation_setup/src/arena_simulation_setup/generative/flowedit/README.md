@@ -15,7 +15,7 @@ kg.yaml (room purposes, read)  --+                              +-- read --> sce
 
 `flowedit build <world> [<scenario>]`, or `python3 -m arena_simulation_setup.generative.flowedit.cli build ...`. A dry run prints the graph, `--write` writes it to `flowgraph.yaml` next to the scenario's `scenario.yaml` (or `--out`). Worlds resolve as in [generative/scenario](../scenario/README.md#cli).
 
-`flowedit build ... --prefill class[,llm]` [pre-fills](#pre-filled-demand) the demand of the objects nobody authored. `flowedit demand <world> [<scenario>]` prints, per asset model, what its objects are decided as and by whom, and exits 1 while an object is undecided; `--propose` prints the prompt for the models still undecided, `--propose --write` asks the model and stores its proposals.
+`flowedit build ... --prefill class[,llm]` [pre-fills](#pre-filled-demand) the demand of the objects nobody authored; it needs their assets to resolve, or `--name-only`. `flowedit demand <world> [<scenario>]` prints, per asset model, what its objects are decided as and by whom, and exits 1 while an object is undecided; `--propose` prints the prompt for the models still undecided, `--propose --write` asks the model and stores its proposals.
 
 ```bash
 flowedit build hospital_1 queue --prefill class,llm
@@ -85,22 +85,27 @@ Load and save it with `arena_simulation_setup.kg.load` and `write`.
 
 ## Pre-filled demand
 
-`build` reads demand a human authored. [`demand.py`](demand.py) decides the objects nobody authored, in the graph only: `prefill(scene, stages, tags)`, `flowedit build --prefill`. Authored demand is never touched, and without `--prefill` a graph is what it was. Each object is decided once, by the first source that has an answer:
+`build` reads demand a human authored. [`demand.py`](demand.py) decides the objects nobody authored, in the graph only: `prefill(scene, stages, tags)`, `flowedit build --prefill`. Authored demand is never touched, and without `--prefill` a graph is what it was. The model of each other object is decided once, by the first step of the chain that has an answer, each class one of [`demand_classes.yaml`](demand_classes.yaml):
 
-| `by` | Source |
-|---|---|
-| none | authored: the object's `humansim:` block or an agent type step, as `build` reads them |
-| `class` | the class of the object's asset in [`demand_classes.yaml`](demand_classes.yaml): the one a human set for its model in the proposals (`why: reviewed proposal`), else by its ASA `kind` tag (`why: kind::chair`), else a `hoi` tag, else the longest class word that ends a word of its name, the name split at non-letters and case changes and each two neighbours joined (`Lab_Bench`: lab, bench, labbench, so `why: name:labbench`), which also decides an asset that does not resolve |
-| `llm` | a model's proposal for its model in [`demand_proposals.yaml`](demand_proposals.yaml), with its `model`, `prompt_sha` and `why` |
+| Step | Decides by | `by`, `why` |
+|---|---|---|
+| 1. human | a human's entry for the model in [`demand_proposals.yaml`](demand_proposals.yaml) (one without `by: llm`) | `class`, `reviewed` |
+| 2. kind | the asset's ASA `kind` tag. A kind means one thing, so a class lists it or none does; kinds that say nothing about demand (`table`, `equipment`, `appliance`) are listed by none and go on | `class`, `kind::chair` |
+| 3. name | the longest class word that ends a word of the model's name, the name split at non-letters and case changes and each two neighbours joined (`Lab_Bench`: lab, bench, labbench) | `class`, `name:labbench` |
+| 4. model | a model's proposal for the model in `demand_proposals.yaml`, only with `--prefill class,llm` | `llm`, with its `model`, `prompt_sha` and `why` |
+
+An undecided object keeps no facts. A `hoi` tag decides nothing: it says what a person can do with an object (sit, lie, touch, see), not whether anyone walks to it, and goes to the model as evidence only. The assets are taken as they are annotated; a wrong annotation is overruled by a human's entry whose `why` says what is wrong, until the asset is fixed (`Hospital/SM_WheelChair_01a` is annotated `kind::chair`, `Hospital/Lab_Bench` `kind::counter`).
+
+A model whose asset does not resolve is refused, with the models named: its kind would decide where the asset resolves, so the graph would depend on the machine. `--name-only` skips the kind tags for every model on purpose and notes the models it classed by name. Set `ARENA_ASSETS_DIR` for the assets to resolve; the class stage reads their `annotation.yaml` only.
 
 A class holds the `humansim:` block its objects get, in the form of the hand-written `demand` scenarios, and goes through the same code as an authored block, so `affords` comes from the same rules. The class `inert` has no block: its objects get `inert true`, decided to have no demand. That leaves three states, an object with demand facts, an `inert` one, and an undecided one with neither; an object never has both, and a `function` edit that gives an inert object demand drops its `inert`. Only `thirst` is a need so far: a further one is a class with `satisfies`.
 
 One step serves a need in HumanSim, so the [reader](#reading-a-site) wants the objects of one need to share their type, use and dwell. A pre-filled object therefore takes `dwells` and `affords` of the object that already serves its need; without one it takes its class's `dwell` (`from: demand_classes.yaml#<class>`) and the rule's use.
 
 ```yaml
-- {subject: 'obj:reception_water_dispenser_1', verb: serves, object: 'service:fountain', params: {capacity: 1, by: class, why: 'name:dispenser'}}
-- {subject: 'obj:reception_water_dispenser_1', verb: satisfies, object: 'need:thirst', params: {amount: 100.0, by: class, why: 'name:dispenser'}}
-- {subject: 'obj:reception_trashcan_1', verb: inert, object: true, params: {by: class, why: 'name:trashcan'}}
+- {subject: 'obj:reception_water_dispenser_1', verb: serves, object: 'service:fountain', params: {capacity: 1, by: class, why: 'kind::dispenser'}}
+- {subject: 'obj:reception_water_dispenser_1', verb: satisfies, object: 'need:thirst', params: {amount: 100.0, by: class, why: 'kind::dispenser'}}
+- {subject: 'obj:reception_trashcan_1', verb: inert, object: true, params: {by: class, why: 'kind::bin'}}
 ```
 
 **Proposals.** A model never decides while a graph is built. `flowedit demand <world> --propose --write` asks once per world about the models that are undecided after the class stage and have no entry yet ([`demand_propose.py`](demand_propose.py), the client and the checks of [`classify`](../scenario/README.md#zone-roles)): the model picks a class of the table, `inert` or `unknown`, never a number. Answers nobody asked for and classes the table does not have are dropped, `unknown` is not written and leaves the model to a human. Confident answers land in `demand_proposals.yaml`, by model, so they hold in every world:
@@ -108,10 +113,10 @@ One step serves a need in HumanSim, so the [reader](#reading-a-site) wants the o
 ```yaml
 models:
   Hospital/Ventilator: {class: inert, by: llm, model: gemini-3.5-flash, prompt_sha: 12a42fdc3c28fdd0, why: staff operate it during a procedure}
-  Hospital/Exam_Table: {class: bed}
+  Hospital/Lab_Bench: {class: desk, why: 'annotation kind::counter is wrong, a lab bench is a workstation without a queue'}
 ```
 
-An entry without `by: llm` is a human's: `--propose` never replaces it, and it decides before tag and name. To accept or correct a proposal, set its class and drop `by: llm`. `--prefill class` leaves proposals no human accepted out, `--prefill class,llm` takes them.
+An entry without `by: llm` is a human's: `--propose` never replaces it, and it decides before kind and name. To accept or correct a proposal, set its class and drop `by: llm`. `--prefill class` leaves proposals no human accepted out, `--prefill class,llm` takes them.
 
 `generate`, `read` and the runs open a base world without pre-fill, so they see authored demand only.
 

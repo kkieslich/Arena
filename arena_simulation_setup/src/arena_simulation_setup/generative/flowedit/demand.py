@@ -22,15 +22,16 @@ CLASSES = Path(__file__).with_name("demand_classes.yaml")
 PROPOSALS = Path(__file__).with_name("demand_proposals.yaml")
 CLASSES_FORMAT = "flowedit-demand-classes/1"
 PROPOSALS_FORMAT = "flowedit-demand-proposals/1"
-CLASS_KEYS = ("desc", "kinds", "hoi", "words", "humansim", "dwell")
+CLASS_KEYS = ("desc", "kinds", "words", "humansim", "dwell")
 PROPOSAL_KEYS = ("class", "by", "model", "prompt_sha", "why")
 #: In a class's `humansim:` block, the name of the object the block is given to (a formation anchored at the object itself)
 SELF = "{name}"
-#: `why` of a fact pre-filled from a proposal a human accepted
-REVIEWED = "reviewed proposal"
+#: `why` of a fact pre-filled from a human's entry in the proposals
+REVIEWED = "reviewed"
 #: The source of a fact without `by`
 AUTHORED = "authored"
 UNDECIDED = "undecided"
+#: The tags of a model's asset: a list, empty for an annotation without tags, or None for an asset that does not resolve
 Tags = Callable[[str], Sequence[str] | None]
 
 
@@ -50,7 +51,6 @@ class Class:
     block: Mapping[str, Any] | None = None
     dwell: Duration | None = None
     kinds: tuple[str, ...] = ()
-    hoi: tuple[str, ...] = ()
     words: tuple[str, ...] = ()
 
 
@@ -68,11 +68,12 @@ def load_classes(path: Path = CLASSES) -> dict[str, Class]:
         block = raw.get("humansim")
         if raw.get("dwell") is not None and not (block or {}).get("satisfies"):
             raise ValueError(f"{path}: classes.{name}: a dwell needs a need the class satisfies")
-        for key in ("kinds", "hoi", "words"):
+        # a kind means one thing, so it is of one class at most; a word picks one class too
+        for key in ("kinds", "words"):
             for value in raw.get(key) or []:
                 if (other := taken.setdefault((key, str(value)), name)) != name:
                     raise ValueError(f"{path}: classes.{name}: {key} {value!r} is already of class {other!r}")
-        classes[name] = Class(name, str(raw.get("desc", "")), block, raw.get("dwell"), *(tuple(str(v) for v in raw.get(key) or []) for key in ("kinds", "hoi", "words")))
+        classes[name] = Class(name, str(raw.get("desc", "")), block, raw.get("dwell"), *(tuple(str(v) for v in raw.get(key) or []) for key in ("kinds", "words")))
     return classes
 
 
@@ -105,15 +106,14 @@ def name_words(model: str) -> list[str]:
 
 
 def by_tags(tags: Sequence[str] | None, classes: Mapping[str, Class]) -> tuple[str, str] | None:
-    """`(class, why)` of an asset by its `kind` tag, else a `hoi` tag, None when no class lists one of them."""
+    """`(class, why)` of an asset by its `kind` tag, None without one or for a kind no class lists. A `hoi` tag decides
+    nothing: it says what a person can do with an object, not whether anyone walks to it."""
     from arena_assets.semantic import parse_tags
 
-    facets = parse_tags([str(t) for t in tags or []])
-    for facet, values in (("kind", "kinds"), ("hoi", "hoi")):
-        for value in facets.get(facet, []):
-            for c in classes.values():
-                if value in getattr(c, values):
-                    return c.name, f"{facet}::{value}"
+    for value in parse_tags([str(t) for t in tags or []]).get("kind", []):
+        for c in classes.values():
+            if value in c.kinds:
+                return c.name, f"kind::{value}"
     return None
 
 
@@ -128,12 +128,13 @@ def by_name(model: str, classes: Mapping[str, Class]) -> tuple[str, str] | None:
 
 
 def classify(model: str, tags: Sequence[str] | None, classes: Mapping[str, Class]) -> tuple[str, str] | None:
-    """`(class, why)` of an asset: by its tags, else by its name."""
+    """`(class, why)` of an asset: by its `kind` tag, else by its name."""
     return by_tags(tags, classes) or by_name(model, classes)
 
 
 def asset_tags(root: Path, world: World, models: Sequence[str]) -> dict[str, list[str] | None]:
-    """The annotation tags of each of `models`, resolved as the world at `root` resolves its assets, None for a model that does not resolve."""
+    """The annotation tags of each of `models`, resolved as the world at `root` resolves its assets: empty for an
+    annotation without tags, None for a model that does not resolve."""
     from arena_simulation_setup.shared.entities import Obstacle
     from arena_simulation_setup.tree import Identifier
     from arena_simulation_setup.tree.World.view import WorldView, world_assets
@@ -143,10 +144,10 @@ def asset_tags(root: Path, world: World, models: Sequence[str]) -> dict[str, lis
         for model in sorted(set(models)):
             try:
                 view = Identifier._run_sync(Obstacle.parse({"name": "probe", "model": model, "pose": [0.0, 0.0, 0.0]}).model.resolve())
-                found = (view.annotation or {}).get("tags")
-            except Exception:  # noqa: BLE001 - any failure to resolve leaves the model to its name
-                found = None
-            tags[model] = [str(t) for t in found] if found is not None else None
+            except Exception:  # noqa: BLE001 - any failure to resolve is a missing asset, which `prefill` refuses
+                tags[model] = None
+                continue
+            tags[model] = [str(t) for t in (view.annotation or {}).get("tags") or []]
     return tags
 
 
@@ -228,26 +229,38 @@ def prefill(
     notes: list[str] | None = None,
     classes: Mapping[str, Class] | None = None,
     proposals: Mapping[str, Mapping[str, Any]] | None = None,
+    *,
+    name_only: bool = False,
 ) -> Scene:
     """Decide every undecided object of `scene`, in place, by the `stages` given.
 
-    `Stage.CLASS` takes the class a human set for the object's model in the proposals, else the class of its asset: by
-    its tags (`tags(model)`, None for an asset that does not resolve), else its name. `Stage.LLM` takes a model's
-    proposal for what is still undecided. An object gets its class's `humansim:` block as `build` reads an authored one,
-    or `inert`; every fact carries `by` and `why`. Authored demand and decided objects are left as they are.
+    The model of an object is decided by the first of: with `Stage.CLASS`, the class a human set for it in the
+    proposals, the class of its asset's `kind` tag (`tags(model)`), the class of a word of its name; with `Stage.LLM`,
+    a model's proposal. An object gets its class's `humansim:` block as `build` reads an authored one, or `inert`; every
+    fact carries `by` and `why`. Authored demand and decided objects are left as they are.
+
+    A model whose asset does not resolve (`tags(model)` is None) is refused, since its kind would decide elsewhere and
+    the graph would depend on the machine. `name_only` skips the kind tags for every model, with a note.
     """
     notes = notes if notes is not None else []
     classes = classes if classes is not None else load_classes()
     proposals = proposals if proposals is not None else load_proposals()
-    for obj in undecided(scene):
-        model = model_of(scene, obj)
+    todo = [(obj, model_of(scene, obj)) for obj in undecided(scene)]
+    reviewed = {model for model, entry in proposals.items() if not proposed(entry)}
+    if Stage.CLASS in stages and not name_only:
+        if missing := sorted({model for _, model in todo if model not in reviewed and tags(model) is None}):
+            raise ValueError(f"the assets of {', '.join(missing)} do not resolve, so their kind tags cannot decide: set ARENA_ASSETS_DIR so they resolve, or pre-fill by name only")
+    by_name_only: set[str] = set()
+    for obj, model in todo:
         entry = proposals.get(model)
         found: tuple[str, dict[str, Value]] | None = None
         if Stage.CLASS in stages:
-            if entry is not None and not proposed(entry):
+            if model in reviewed:
                 found = str(entry["class"]), {"by": Stage.CLASS.value, "why": REVIEWED}
-            elif (classed := classify(model, tags(model), classes)) is not None:
+            elif (classed := by_name(model, classes) if name_only else classify(model, tags(model), classes)) is not None:
                 found = classed[0], {"by": Stage.CLASS.value, "why": classed[1]}
+                if name_only:
+                    by_name_only.add(model)
         if found is None and Stage.LLM in stages and entry is not None and proposed(entry):
             found = str(entry["class"]), {"by": Stage.LLM.value, **{k: str(entry[k]) for k in ("model", "prompt_sha", "why") if entry.get(k)}}
         if found is None:
@@ -256,6 +269,8 @@ def prefill(
         if name not in classes:
             raise ValueError(f"{obj}: model {model!r} is proposed as class {name!r}, known: {sorted(classes)}")
         _fill(scene, obj, classes[name], mark, notes)
+    if by_name_only:
+        notes.append(f"name only: {len(by_name_only)} model(s) classed by name without their kind tags: {', '.join(sorted(by_name_only))}")
     problems = [*scene.validate(), *check(scene)]
     if problems:
         raise ValueError("; ".join(problems))
