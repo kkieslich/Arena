@@ -153,7 +153,7 @@ def test_cli_evaluation_writes_the_fleet_stages_with_the_seeds_jobs_and_a_fleet_
     layout_id = optimal["layout_id"]
     world = f"{site.key}__layout_{layout_id}"
     out = tmp_path / "suites" / "infra_rd.yaml"
-    args = ["infra", "evaluation", *common, "--report", str(report), "--layouts", layout_id, "--seeds", "71-73", "--without-robots-seeds", "71", "--rate", "240", "--recipient-offset", "60", "--no-check", "--out", str(out)]
+    args = ["infra", "evaluation", *common, "--report", str(report), "--layouts", f"travel_optimal={layout_id}", "--seeds", "71-73", "--without-robots-seeds", "71", "--rate", "240", "--recipient-offset", "60", "--no-check", "--out", str(out)]
     capsys.readouterr()
     assert cli.main([*args, "--arms", "site,without,fleet", "--seed-part", "h1=71,72", "--seed-part", "h2=73"]) == 0
     printed = capsys.readouterr()
@@ -177,7 +177,8 @@ def test_cli_evaluation_writes_the_fleet_stages_with_the_seeds_jobs_and_a_fleet_
     contest = entrance_fleet.contest()
     assert manifest["suite"] == "infra_rd" and yaml.safe_load(manifest["contest"]) == contest and manifest["charge_states"] is None and manifest["start_charge"] == 100.0
     assert manifest["fleet"]["charge_rule"] == "need" and "jobs" not in manifest["fleet"] and manifest["fleet_only"] is False
-    assert manifest["episodes"] == 3 + 1 + 3 and manifest["without_robots_seeds"] == [71]
+    # with the fleet's runs written the seeds of the runs without robots are also named for the analysis
+    assert manifest["episodes"] == 3 + 1 + 3 and manifest["without_robots_seeds"] == [71] == manifest["crowd_only_seeds"]
     assert [(p["tag"], p["suite"], p["without_suite"], p["episodes"]) for p in manifest["seed_parts"]] == [("h1", "infra_rd_h1", "infra_rd_without_h1", 2 + 1 + 2), ("h2", "infra_rd_h2", None, 2)]
     assert [s["seed"] for s in yaml.safe_load(out.with_name("infra_rd_h1.yaml").read_text())["stages"]] == [71, 72]
     assert f"--suite infra_rd --contest '{manifest['contest']}'" in printed.out and "task.episode.battery.capacity_wh" not in printed.out
@@ -203,7 +204,7 @@ def test_cli_evaluation_writes_the_fleet_stages_with_the_seeds_jobs_and_a_fleet_
     manifest = json.loads(infra.manifest_path(only).read_text())
     bare = yaml.safe_load((Path(manifest["worlds"][layout_id]) / "scenarios" / "mix__fleet_only" / "scenario.yaml").read_text())
     assert not [r for r in bare["regions"].values() if r["type"] == "source"] and len(bare["regions"]) == len(space.entrances) and "objects" not in bare
-    assert manifest["fleet_only"] is True and manifest["visitor_sources"] == [] and manifest["episodes"] == 3
+    assert manifest["fleet_only"] is True and manifest["visitor_sources"] == [] and manifest["episodes"] == 3 and "without_robots_seeds" not in manifest
     # what does not go together
     assert cli.main([*args, "--arms", "fleet,robots"]) == 1 and cli.main([*args, "--charge-log", "/logs/x"]) == 1
     assert cli.main([*args[:-1], str(out.with_name("infra_rdx.yaml")), "--arms", "fleet", "--charge-states", str(tmp_path / "none.json")]) == 1

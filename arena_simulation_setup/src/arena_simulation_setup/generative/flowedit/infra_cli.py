@@ -601,16 +601,17 @@ def _crowd_rate(args: argparse.Namespace, config: IN.SiteConfig) -> tuple[float,
     )
 
 
-def _named_layouts(text: str) -> list[tuple[str | None, str]]:
-    """`83298e5c,practice_based=d837888b`: layout ids, each with a role where given."""
+def _named_layouts(text: str) -> list[tuple[str, str]]:
+    """`travel_optimal=83298e5c,practice_based=d837888b`: layout ids, each under its role. Every layout needs a role and
+    no two share one: the manifest keeps the layouts by role (`picks`)."""
     out = []
     for part in text.split(","):
         role, sep, layout_id = part.strip().rpartition("=")
-        if not layout_id:
-            raise argparse.ArgumentTypeError(f"no layout id in {part!r}")
-        out.append((role if sep else None, layout_id))
-    if len({layout_id for _, layout_id in out}) != len(out):
-        raise argparse.ArgumentTypeError(f"a layout id twice in {text!r}")
+        if not sep or not role.strip() or not layout_id.strip():
+            raise argparse.ArgumentTypeError(f"a layout is <role>=<id>, not {part!r}")
+        out.append((role.strip(), layout_id.strip()))
+    if len({layout_id for _, layout_id in out}) != len(out) or len({role for role, _ in out}) != len(out):
+        raise argparse.ArgumentTypeError(f"a layout id or a role twice in {text!r}")
     return out
 
 
@@ -681,7 +682,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         problems = place.check_layout(space.site, layout)
         if problems:
             raise ValueError(f"layout {layout_id}: " + "; ".join(problems))
-        layouts[layout_id], serves[layout_id], roles[layout_id] = layout, RC.serves_of(records[layout_id], layout), role or str(records[layout_id].get("role") or "layout")
+        layouts[layout_id], serves[layout_id], roles[layout_id] = layout, RC.serves_of(records[layout_id], layout), role
     served = {layout_id: sorted(e for entrances in s.values() for e in entrances) for layout_id, s in serves.items()}
     entrances = next(iter(served.values()))
     if any(other != entrances for other in served.values()):
@@ -722,61 +723,38 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         _log(f"fleet: {IN.ROBOT}, charging by need, the nearest free charger, a jammed charging trip goes on; each robot's own battery; start charge " + (f"from {len(states['states'])} charge states of {args.charge_states}" if states is not None else f"{args.start_charge:g} % for every robot (no charge states given)"))
     else:
         _log("the runs with the fleet are not written (--arms fleet adds them)")
-    if args.dry_run:
-        _log("(dry run - no world or suite written)")
-        return 0
-    worlds: dict[str, Path] = {}
-    for layout_id, layout in layouts.items():
-        if fleet_only:
-            crowds = {names[seeds[0]]: (EF.without_crowd(scenario), {}, "a fleet-only run: the site's scenario without its sources, no walkers")}
-        else:
-            crowds = {names[seed]: RC.recipient_crowd(scenario, layout, serves[layout_id], who[layout_id][seed], mix) for seed in seeds}
-        worlds[layout_id] = RC.save_layout(space.site, layout, space.scenario, crowds)
-        if not args.no_check:
-            # what the runtime checks at an episode's start; the targets and agent types are the same at every seed
-            from arena_simulation_setup.metrics.use_points import blocking, describe
-
-            findings = SU.check_stage(worlds[layout_id], names[seeds[0]], seeds[0])
-            if stops := blocking(findings):
-                raise ValueError(f"layout {layout_id}: its crowd scenario fails the check the runtime runs at an episode's start (human.check): {describe(stops)}")
-            if findings:
-                _log(f"layout {layout_id}: {describe(findings)}")
-        _log(f"saved {worlds[layout_id]} with {len(crowds)} crowd scenarios ({names[seeds[0]]} ...)")
-    if states is not None and "fleet" in full:
-        text = json.dumps(states, indent=1) + "\n"
-        if states_out.is_file() and states_out.read_text() != text and not args.force:
-            raise ValueError(f"{states_out} exists with other charge states: pick another name or pass --force")
-        states_out.parent.mkdir(parents=True, exist_ok=True)
-        if not states_out.is_file() or states_out.read_text() != text:
-            states_out.write_text(text)
+    # every file this writes, worked out before anything is written: a file that exists with other content stops the
+    # command before it saves a copy, so a refused name leaves nothing half written
     common = f"seeds {', '.join(map(str, seeds))}, {args.duration:g} s each, warm-up {IN.WARMUP_S:g} s cut in the analysis"
     named = ", ".join(f"{roles[layout_id]} {layout_id}" for layout_id in layouts)
-    crowd_only = SU.CONTEST
+    files: dict[Path, str] = {}
 
-    def write(made: Mapping[str, Mapping[str, Any]], paths: Mapping[str, Path], what: str) -> None:
+    def plan(made: Mapping[str, Mapping[str, Any]], paths: Mapping[str, Path], what: str) -> None:
         heads = {
             "site": f"{space.site.key} as is without robots, scenario {space.scenario_name}, {common}",
             "without": f"{named} from {args.report}, each without robots as a crowd-only stage with the seed's parcel recipients (scenario {space.scenario_name}__s<seed>), seeds {', '.join(map(str, without))} of {common}",
             "fleet": f"{named} from {args.report}, each with the fleet" + (", no crowd" if fleet_only else " and the seed's parcel recipients") + f": the seed's jobs to the locker that serves each job's recipient entrance, {args.rate:g} jobs per hour; {common}",
         }
         for arm, doc in made.items():
-            IN.write_once(doc, paths[arm], [f"INFRA redesigned study{what}: {heads[arm]}", f"{_summary(doc)}", f"run: {SU.benchmark_command(paths[arm].stem, args.lanes, contest if arm == 'fleet' else crowd_only)}"], force=args.force)
+            files[paths[arm]] = IN.suite_text(doc, [f"INFRA redesigned study{what}: {heads[arm]}", f"{_summary(doc)}", f"run: {SU.benchmark_command(paths[arm].stem, args.lanes, contest if arm == 'fleet' else SU.CONTEST)}"])
 
-    write(full, outs, "")
+    plan(full, outs, "")
     parts = []
     for tag, part in seed_parts:
         made = docs(part)
         paths = {"site": out.with_name(f"{out.stem}_site_{tag}.yaml"), "without": out.with_name(f"{out.stem}_without_{tag}.yaml"), "fleet": out.with_name(f"{out.stem}_{tag}.yaml")}
-        write(made, paths, f", part {tag} (seeds {', '.join(map(str, part))})")
+        plan(made, paths, f", part {tag} (seeds {', '.join(map(str, part))})")
         parts.append({"tag": tag, "seeds": part, **({"suite": paths["fleet"].stem if "fleet" in made else None} if "fleet" in arms else {}), "site_suite": paths["site"].stem if "site" in made else None, "without_suite": paths["without"].stem if "without" in made else None, "episodes": sum(IN.episodes(doc) for doc in made.values())})
-        print(f"part {tag}: seeds {', '.join(map(str, part))}: " + ", ".join(f"{paths[arm].stem} ({_summary(doc)})" for arm, doc in made.items()))
+    worlds = {layout_id: RC.copy_path(space.site, layout) for layout_id, layout in layouts.items()}
     keep = ("layout_id", "reach_m", "lockers", "travel_m", "floor_loss_m2", "serves", "walk", "walk_by_entrance")
     block = {key: value for key, value in fleet_block(next(iter(layouts)), seeds[0]).items() if key not in ("jobs", "lockers", "soc_log")}
+    crowd_only = without if "without" in full else []
     record = {
         "suite": out.stem if "fleet" in full else None,
         "site_suite": outs["site"].stem if "site" in full else None,
         "without_suite": outs["without"].stem if "without" in full else None,
         "report": str(args.report),
+        "writer_commit": args.writer_commit,
         "picks": {roles[layout_id]: layout_id for layout_id in layouts},
         "site": space.site.key,
         "site_root": str(space.site.root),
@@ -789,7 +767,11 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         "rate_per_h": args.rate,
         "pickup_share": args.pickup_share,
         "seeds": seeds,
-        IN.WITHOUT_ROBOTS_SEEDS: without if "without" in full else [],
+        # the seeds with a crowd-only run of every layout. They are also `without_robots_seeds`, the key the analysis
+        # reads, only when the runs with the fleet are written: with that key it asks every row for a run with the
+        # fleet; without it a row of the site as is and the layout without robots gives the obstruction effect
+        "crowd_only_seeds": crowd_only,
+        **({IN.WITHOUT_ROBOTS_SEEDS: crowd_only} if "fleet" in full and not fleet_only else {}),
         "episodes": total_episodes,
         "sim_hours": round(sum(IN.sim_hours(doc) for doc in full.values()), 2),
         "loading": space.loading_record(),
@@ -812,14 +794,45 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         **({"seed_parts": parts} if parts else {}),
     }
     manifest_out = IN.manifest_path(out)
-    text = json.dumps(record, indent=1) + "\n"
-    if not manifest_out.is_file() or manifest_out.read_text() != text:
-        if manifest_out.is_file() and not args.force:
-            raise ValueError(f"{manifest_out} exists with other content: a written manifest is not replaced, pick another name or pass --force")
-        manifest_out.write_text(text)
+    files[manifest_out] = json.dumps(record, indent=1) + "\n"
+    if states is not None and "fleet" in full:
+        files[states_out] = json.dumps(states, indent=1) + "\n"
+    taken = [str(path) for path, text in files.items() if path.is_file() and path.read_text() != text]
+    if taken and not args.force:
+        raise ValueError(f"{', '.join(taken)} exist with other content: written suites and manifests are not replaced, pick another name (--out) or pass --force")
+    if args.dry_run:
+        _log("(dry run - no world or suite written)")
+        return 0
+
+    def check(path: Path, name: str) -> str | None:
+        """What stops an episode at its start in the copy's scenario `name` (the runtime's check, human.check), None when nothing does."""
+        from arena_simulation_setup.metrics.use_points import blocking, describe
+
+        findings = SU.check_stage(path, name, seeds[0])
+        if stops := blocking(findings):
+            return describe(stops)
+        if findings:
+            _log(f"{path.name}: {describe(findings)}")
+        return None
+
+    for layout_id, layout in layouts.items():
+        if fleet_only:
+            crowds = {names[seeds[0]]: (EF.without_crowd(scenario), {}, "a fleet-only run: the site's scenario without its sources, no walkers")}
+        else:
+            crowds = {names[seed]: RC.recipient_crowd(scenario, layout, serves[layout_id], who[layout_id][seed], mix) for seed in seeds}
+        # the targets and agent types are the same at every seed: one scenario is checked; a copy that fails is taken away again
+        saved = RC.save_layout(space.site, layout, space.scenario, crowds, check=None if args.no_check else check)
+        assert saved == worlds[layout_id], (saved, worlds[layout_id])
+        _log(f"saved {saved} with {len(crowds)} crowd scenarios ({names[seeds[0]]} ...)")
+    for path, text in files.items():
+        if not path.is_file() or path.read_text() != text:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+    for part in parts:
+        print(f"part {part['tag']}: seeds {', '.join(map(str, part['seeds']))}: " + ", ".join(str(part[key]) for key in ("suite", "site_suite", "without_suite") if part.get(key)) + f" ({part['episodes']} episodes)")
     print("wrote " + "; ".join(f"{outs[arm]}: {_summary(doc)}" for arm, doc in full.items()) + f"; {manifest_out}; worlds {', '.join(str(p) for p in worlds.values())}")
-    for arm, doc in full.items():
-        print(SU.benchmark_command(outs[arm].stem, args.lanes, contest if arm == "fleet" else crowd_only))
+    for arm in full:
+        print(SU.benchmark_command(outs[arm].stem, args.lanes, contest if arm == "fleet" else SU.CONTEST))
     return 0
 
 
@@ -998,8 +1011,9 @@ def add_parser(verbs: Any) -> None:
 
     g = q.add_argument_group("layouts of `flowedit infra search` (study design Part A)", f"with --report: save the named layouts of a search report as world copies, each with one crowd scenario per seed that holds the seed's parcel recipients (generative/flowedit/recipients.py), and write suites {IN.ENTRANCE_SUITE}_site (the site as is) and {IN.ENTRANCE_SUITE}_without (each layout without robots as a crowd-only stage) with their manifest {IN.ENTRANCE_SUITE}.layouts.json. The search space is built as the report's search built it: pass the same --site, --site-config, --scenario, --loading and --no-outlet-rule. Without --report none of these options is read")
     g.add_argument("--report", type=Path, default=None, help="the report `flowedit infra search --out` wrote (any JSON that holds its layout records)")
-    g.add_argument("--layouts", type=_named_layouts, default=None, metavar="[ROLE=]ID,...", help="the report's layouts to run, by id, each with a role where given (default the record's role)")
-    g.add_argument("--without-robots-seeds", type=_seeds, default=None, help="the seeds at which each layout also runs without robots (default every seed); the manifest records them")
+    g.add_argument("--layouts", type=_named_layouts, default=None, metavar="ROLE=ID,...", help="the report's layouts to run, each as <role>=<id>, e.g. travel_optimal=83298e5c,practice_based=d837888b; the roles are the manifest's `picks`, no two layouts share one")
+    g.add_argument("--without-robots-seeds", type=_seeds, default=None, help="the seeds at which each layout runs without robots as a crowd-only stage (default every seed); the manifest records them as crowd_only_seeds")
+    g.add_argument("--writer-commit", default=None, help="the commit of the code that runs this command, for the manifest (a script that runs a copy of the code names the copy's commit)")
     g.add_argument("--seed-part", type=_seed_part, action="append", default=None, metavar="TAG=SEEDS", help="also write the suites of a part of the seeds, <suite>_site_<tag> and <suite>_without_<tag>, e.g. h1=71-72: one lane of one machine, so that all runs of a seed are recorded on one machine; repeatable, the parts hold each seed once")
     g.add_argument("--rate", type=float, default=None, help="jobs per hour in all, the same share to every recipient entrance; the recipients follow the seeds' jobs")
     g.add_argument("--pickup-share", type=float, default=IN.PICKUP_SHARE, help=f"share of pickups among the jobs (default {IN.PICKUP_SHARE:g})")
