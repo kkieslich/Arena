@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -592,3 +593,34 @@ def test_cli_refuses_assets_that_do_not_resolve_unless_by_name_only(capsys: pyte
     out = capsys.readouterr()
     assert D.source(load(yaml.safe_load(out.out)), DISPENSER) == "class"
     assert "note: name only: " in out.err
+
+
+def _asks_inert(calls: list[str]) -> Callable[..., Reply]:
+    """A model that answers `inert` for every model it is asked about, the prompts it got kept in `calls`."""
+
+    def ask(system: str, user: str, *, model: str | None = None, temperature: float = 0.0) -> Reply:
+        calls.append(user)
+        return Reply(text=json.dumps({m: {"class": "inert", "why": "equipment"} for m in json.loads(user.split("suggests:\n")[1])}))
+
+    return ask
+
+
+def test_proposals_are_written_into_the_checkout_never_into_the_package(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(DP, "ask", _asks_inert(calls))
+    package = D.PROPOSALS.read_text()
+    argv = ["demand", "office_1", "--worlds", str(WORLDS), "--name-only", "--propose", "--write"]
+    monkeypatch.delenv("ARENA_DIR", raising=False)
+    assert main(argv) == 1
+    assert "set ARENA_DIR" in capsys.readouterr().err
+    assert not calls
+    checkout = tmp_path / "Arena"
+    (checkout / D.SOURCE_PROPOSALS).parent.mkdir(parents=True)
+    monkeypatch.setenv("ARENA_DIR", str(checkout))
+    assert D.proposals_path() == D.PROPOSALS
+    main(argv)
+    assert len(calls) == 1
+    written = D.load_proposals(checkout / D.SOURCE_PROPOSALS)
+    assert written and all(entry["by"] == "llm" for entry in written.values())
+    assert D.proposals_path() == checkout / D.SOURCE_PROPOSALS
+    assert D.PROPOSALS.read_text() == package

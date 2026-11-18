@@ -69,18 +69,19 @@ def _cmd_demand(args: argparse.Namespace) -> int:
     root = world_root(args.worlds, args.world)
     notes: list[str] = []
     classes = D.load_classes()
+    path = args.proposals or D.proposals_path()
 
-    def filled() -> tuple[Scene, D.Tags]:
+    def filled(path: Path) -> tuple[Scene, D.Tags]:
         notes.clear()
         # an edited world is read from its saved graph, which holds what its edits decided
         scene = open_site(root, args.scenario, args.seed, notes).graph
         tags = _no_tags if args.name_only else D.world_tags(root, scene)
-        D.prefill(scene, args.prefill, tags, notes, classes, D.load_proposals(args.proposals), name_only=args.name_only)
+        D.prefill(scene, args.prefill, tags, notes, classes, D.load_proposals(path), name_only=args.name_only)
         return scene, tags
 
-    scene, tags = filled()
+    scene, tags = filled(path)
     if args.propose:
-        todo = DP.unproposed(scene, D.load_proposals(args.proposals))
+        todo = DP.unproposed(scene, D.load_proposals(path))
         if not todo:
             print("every undecided model has a proposal already")
         elif not args.write:
@@ -89,6 +90,10 @@ def _cmd_demand(args: argparse.Namespace) -> int:
             print("(dry run - this is the prompt that would be sent, pass --write to ask and store)")
             return 0
         else:
+            # into the checkout, where they are versioned, never into the installed package, which a build replaces
+            target = args.proposals or D.source_proposals()
+            if target is None or not target.parent.is_dir():
+                raise ValueError(f"proposals are written into the Arena checkout, not the installed package: set ARENA_DIR to the checkout, which holds {D.SOURCE_PROPOSALS}, or pass --proposals FILE")
             try:
                 proposals, complaints = DP.propose(scene, todo, classes, tags, world=root.name, model=args.model)
             except DP.Unavailable as exc:
@@ -98,11 +103,11 @@ def _cmd_demand(args: argparse.Namespace) -> int:
                 print(f"  {' ' if proposal.confident else '?'} {proposal.model:40s} {proposal.cls:14s} {proposal.why}")
             for complaint in complaints:
                 print(f"  ! {complaint}")
-            landed, kept = DP.merge(proposals, args.proposals)
+            landed, kept = DP.merge(proposals, target)
             for note in kept:
                 print(f"  = {note}")
-            print(f"  {landed} proposal(s) written to {args.proposals}")
-            scene, tags = filled()
+            print(f"  {landed} proposal(s) written to {target}")
+            scene, tags = filled(target)
     for note in notes:
         print(f"note: {note}", file=sys.stderr)
     rows = D.coverage(scene)
@@ -341,7 +346,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--name-only", action="store_true", help="class the objects by the name of their model only, without resolving their assets' kind tags (default: refuse a model whose asset does not resolve)")
     p.add_argument("--propose", action="store_true", help="ask a model for the class of the undecided models (a dry run that prints the prompt without --write)")
     p.add_argument("--model", default=None, help="the model to ask (default: $ARENA_PROMPT_LLM, else utils/llm.py's DEFAULT_MODEL)")
-    p.add_argument("--proposals", type=Path, default=D.PROPOSALS, help=f"the proposals file to read and write (default: {D.PROPOSALS.name} of the package)")
+    p.add_argument("--proposals", type=Path, default=None, help=f"the proposals file to read and write (default: {D.SOURCE_PROPOSALS} under $ARENA_DIR, which --write needs; read from the installed package without it)")
     p.add_argument("--seed", type=int, default=None, help="seed of the point drawn for an object posed at a zone name (default 0, or the seed an edited world was built with)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds)")
     p.add_argument("--write", action="store_true", help="with --propose: ask the model and write its proposals (default: print the prompt)")

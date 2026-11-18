@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 
 from ..scenario.propose.client import DEFAULT_MODEL, Unavailable, ask, prompt_sha256, strip_fence
-from .demand import PROPOSALS, PROPOSALS_FORMAT, UNDECIDED, Class, Stage, Tags, coverage, load_proposals, model_of, objects, proposed, source
+from .demand import PROPOSALS_FORMAT, UNDECIDED, Class, Stage, Tags, coverage, load_proposals, model_of, objects, proposed, source
 
 if TYPE_CHECKING:
     from arena_simulation_setup.kg import Scene
@@ -132,7 +132,7 @@ def propose(scene: Scene, models: Sequence[str], classes: Mapping[str, Class], t
     return parse(ask(head, user, model=model).text, asked, classes, model=model or DEFAULT_MODEL, sha=sha)
 
 
-def merge(proposals: Sequence[Proposal], path: Path = PROPOSALS) -> tuple[int, list[str]]:
+def merge(proposals: Sequence[Proposal], path: Path) -> tuple[int, list[str]]:
     """Write confident proposals into the proposals file at `path`, never over a human's entry, as (written, notes)."""
     from arena_simulation_setup.tree.World.write import to_yaml
 

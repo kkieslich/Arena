@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
 
 CLASSES = Path(__file__).with_name("demand_classes.yaml")
 PROPOSALS = Path(__file__).with_name("demand_proposals.yaml")
+#: Where the proposals file lies in an Arena checkout, under `$ARENA_DIR`
+SOURCE_PROPOSALS = Path("arena_simulation_setup/src/arena_simulation_setup/generative/flowedit") / PROPOSALS.name
 CLASSES_FORMAT = "flowedit-demand-classes/1"
 PROPOSALS_FORMAT = "flowedit-demand-proposals/1"
 CLASS_KEYS = ("desc", "kinds", "words", "humansim", "dwell")
@@ -77,8 +80,23 @@ def load_classes(path: Path = CLASSES) -> dict[str, Class]:
     return classes
 
 
-def load_proposals(path: Path = PROPOSALS) -> dict[str, dict[str, Any]]:
-    """The proposals at `path` by model: `{class, by, model, prompt_sha, why}`, an entry without `by: llm` a human's."""
+def source_proposals() -> Path | None:
+    """The proposals file of the Arena checkout at `$ARENA_DIR`, None without `ARENA_DIR`: the file proposals are written
+    to, never the installed package's copy, which the next build replaces."""
+    arena = os.environ.get("ARENA_DIR")
+    return Path(arena) / SOURCE_PROPOSALS if arena else None
+
+
+def proposals_path() -> Path:
+    """The proposals file to read: the checkout's while it has one, else the installed package's."""
+    source = source_proposals()
+    return source if source is not None and source.is_file() else PROPOSALS
+
+
+def load_proposals(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """The proposals at `path` (default: `proposals_path()`) by model: `{class, by, model, prompt_sha, why}`, an entry
+    without `by: llm` a human's."""
+    path = path if path is not None else proposals_path()
     if not path.is_file():
         return {}
     doc = yaml.safe_load(path.read_text()) or {}
