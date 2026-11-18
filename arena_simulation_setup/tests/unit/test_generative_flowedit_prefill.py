@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 import yaml
-from arena_simulation_setup.generative.flowedit import demand as D
-from arena_simulation_setup.generative.flowedit import demand_propose as DP
+from arena_simulation_setup.generative.flowedit import prefill as D
+from arena_simulation_setup.generative.flowedit import prefill_propose as DP
 from arena_simulation_setup.generative.flowedit import settings as S
 from arena_simulation_setup.generative.flowedit.build import build
 from arena_simulation_setup.generative.flowedit.cli import main

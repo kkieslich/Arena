@@ -56,7 +56,7 @@ flowedit generate hospital_1 --scenario queue --seed 0 --controls --write
 | `obj` demand | `serves service:<type> {capacity, interaction_radius}`, `satisfies need:<need> {amount}`, `has_formation formation:<type> {<params>, anchor_kind, anchor_ref}` | the object's `humansim:` block |
 | `obj` dwell | `dwells <mean s> {std, clip_low, clip_high, from}` | the `duration` of the first agent type step whose `target` is the object's name, else its type, else of the interaction a `go_to` to it leads into |
 | `obj` use | `affords interaction:<KIND> {from, meet, tag, offer, seek}`, `satisfies need:<need> {amount, from}` | [`interactions.py`](interactions.py): the agent type steps that use the object, else its `humansim:` block against HumanSim's interaction registry |
-| `obj` pre-filled | the demand facts above with `{by: class \| llm, why}`, or `inert true {by, why}` for an object decided to have none | [`demand.py`](demand.py), only under `--prefill`: the class of the object's asset, then a model's proposal |
+| `obj` pre-filled | the demand facts above with `{by: class \| llm, why}`, or `inert true {by, why}` for an object decided to have none | [`prefill.py`](prefill.py), only under `--prefill`: the class of the object's asset, then a model's proposal |
 | `obj:<name>_demand` | no `model`: only `at` and the demand facts `<name>` had | a `move` with `leave_demand` (the `moved_without_demand` control); its `affords` go with it |
 | `door` access | `gated <locked>`, `authorizes <name>` per authorized name, `unlocks_on regime:<regime>` | the door's `gate` preset |
 | `schedule:<name>` | `asserts regime:<regime> {default}`, `window <start s> {end, value}` per window | the world's `schedules:` |
@@ -85,7 +85,7 @@ Load and save it with `arena_simulation_setup.kg.load` and `write`.
 
 ## Pre-filled demand
 
-`build` reads demand a human authored. [`demand.py`](demand.py) decides the objects nobody authored, in the graph only: `prefill(scene, stages, tags)`, `flowedit build --prefill`. Authored demand is never touched, and without `--prefill` a graph is what it was. The model of each other object is decided once, by the first step of the chain that has an answer, each class one of [`demand_classes.yaml`](demand_classes.yaml):
+`build` reads demand a human authored. [`prefill.py`](prefill.py) decides the objects nobody authored, in the graph only: `prefill(scene, stages, tags)`, `flowedit build --prefill`. Authored demand is never touched, and without `--prefill` a graph is what it was. The model of each other object is decided once, by the first step of the chain that has an answer, each class one of [`demand_classes.yaml`](demand_classes.yaml):
 
 | Step | Decides by | `by`, `why` |
 |---|---|---|
@@ -108,7 +108,7 @@ One step serves a need in HumanSim, so the [reader](#reading-a-site) wants the o
 - {subject: 'obj:reception_trashcan_1', verb: inert, object: true, params: {by: class, why: 'kind::bin'}}
 ```
 
-**Proposals.** A model never decides while a graph is built. `flowedit demand <world> --propose --write` asks once per world about the models that are undecided after the class stage and have no entry yet ([`demand_propose.py`](demand_propose.py), the client and the checks of [`classify`](../scenario/README.md#zone-roles)): the model picks a class of the table, `inert` or `unknown`, never a number. Answers nobody asked for and classes the table does not have are dropped, `unknown` is not written and leaves the model to a human. Confident answers land in `demand_proposals.yaml`, by model, so they hold in every world. They are written into the Arena checkout at `$ARENA_DIR` (or the file `--proposals` names), where they are versioned, never into the installed package, which the next build replaces; without either `--write` refuses before it asks. Reading takes the checkout's file while there is one, else the installed package's:
+**Proposals.** A model never decides while a graph is built. `flowedit demand <world> --propose --write` asks once per world about the models that are undecided after the class stage and have no entry yet ([`prefill_propose.py`](prefill_propose.py), the client and the checks of [`classify`](../scenario/README.md#zone-roles)): the model picks a class of the table, `inert` or `unknown`, never a number. Answers nobody asked for and classes the table does not have are dropped, `unknown` is not written and leaves the model to a human. Confident answers land in `demand_proposals.yaml`, by model, so they hold in every world. They are written into the Arena checkout at `$ARENA_DIR` (or the file `--proposals` names), where they are versioned, never into the installed package, which the next build replaces; without either `--write` refuses before it asks. Reading takes the checkout's file while there is one, else the installed package's:
 
 ```yaml
 models:
@@ -599,9 +599,9 @@ A map file (`geometry`, `deepflow predict`) has one map per world in the columns
 |---|---|
 | `build.py` | world + scenario to the graph |
 | `interactions.py` | how an object is used, from agent type steps and HumanSim's interaction registry |
-| `demand.py` | pre-filling the demand of objects nobody authored, by class and by proposal; who decided what |
+| `prefill.py` | pre-filling the demand of objects nobody authored, by class and by proposal; who decided what |
 | `demand_classes.yaml` | the demand classes: their `humansim:` block, and the ASA kinds and name words of their assets |
-| `demand_propose.py` | asking a model for the class of the models no class rule covers |
+| `prefill_propose.py` | asking a model for the class of the models no class rule covers |
 | `demand_proposals.yaml` | the proposals, by model |
 | `read.py` | graph + settings + seed to a scenario |
 | `settings.py` | crowd settings and their defaults |

@@ -16,7 +16,7 @@ from arena_simulation_setup.tree.World.write import to_yaml
 
 from ..scenario.cli import world_root
 from ..scenario.materialize import WouldOverwrite
-from . import demand as D
+from . import prefill as D
 from . import settings as S
 from . import split as SP
 from . import suite as SU
@@ -64,7 +64,7 @@ def _stages(text: str) -> list[D.Stage]:
 
 
 def _cmd_demand(args: argparse.Namespace) -> int:
-    from . import demand_propose as DP
+    from . import prefill_propose as DP
 
     root = world_root(args.worlds, args.world)
     notes: list[str] = []
