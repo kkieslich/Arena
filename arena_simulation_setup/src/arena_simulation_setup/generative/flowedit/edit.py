@@ -45,6 +45,8 @@ DWELL_KEYS = ("mean", "std", "clip_low", "clip_high")
 DEMAND_VERBS = ("serves", "satisfies", "has_formation", "dwells", "affords")
 #: The fact of an object decided to have no demand. An object has demand facts or this one, never both.
 INERT = "inert"
+#: Params of a demand fact that say where it came from (an agent type step, an edit, a pre-fill), never part of the demand
+PROVENANCE_KEYS = ("from", "by", "why", "model", "prompt_sha")
 FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "formation", "clear")
 #: Params that only switch an operation on: false names the same edit as leaving them out.
 FLAGS = ("leave_demand", "clear", "remove")

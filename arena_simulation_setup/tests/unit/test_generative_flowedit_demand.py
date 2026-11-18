@@ -268,6 +268,17 @@ def test_without_an_object_for_its_need_a_class_brings_its_own_dwell_and_use(bar
     assert plan_needs(read_graph(bare), S.load(), "0", [])["thirst"].objects == ("reception_water_dispenser_1",)
 
 
+def test_the_reader_keeps_where_a_pre_filled_fact_came_from_out_of_the_scenario(bare: Scene) -> None:
+    D.prefill(bare, [D.Stage.CLASS], untagged)
+    things = read_graph(bare).objects
+    dispenser = things[DISPENSER.partition(":")[2]]
+    assert _facts(bare, DISPENSER, "has_formation")[0][1]["by"] == "class"
+    assert dispenser.formation == {"type": "line", "params": {"base_step": 1.0, "front_offset": 0.8}}
+    sofa = next(t for t in things.values() if t.model == "Hospital/Waiting_Room_Sofa")
+    assert sofa.formation == {"type": "f_formation", "params": {"base_radius": 0.8, "radius_per_member": 0.12}, "anchor": {"kind": "object", "ref": sofa.name}}
+    assert not {k for t in things.values() for k in (t.formation or {}).get("params", {})} & {"from", "by", "why", "model", "prompt_sha"}
+
+
 def test_a_gathering_area_is_anchored_at_itself(bare: Scene) -> None:
     D.prefill(bare, [D.Stage.CLASS], untagged)
     sofa = next(obj for obj in D.objects(bare) if D.model_of(bare, obj) == "Hospital/Waiting_Room_Sofa")

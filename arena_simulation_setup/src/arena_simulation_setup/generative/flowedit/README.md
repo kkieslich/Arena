@@ -118,7 +118,7 @@ models:
 
 An entry without `by: llm` is a human's: `--propose` never replaces it, and it decides before kind and name. To accept or correct a proposal, set its class and drop `by: llm`. `--prefill class` leaves proposals no human accepted out, `--prefill class,llm` takes them.
 
-`generate`, `read` and the runs open a base world without pre-fill, so they see authored demand only.
+`generate`, `read` and the runs open a base world without pre-fill, so they see authored demand only. Where a graph does carry pre-filled facts, the reader leaves `from`, `by`, `why`, `model` and `prompt_sha` (`PROVENANCE_KEYS`) out of the scenario: they say where a fact came from and are no part of the demand.
 
 ## Edits
 
