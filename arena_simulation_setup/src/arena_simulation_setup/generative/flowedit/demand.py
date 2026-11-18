@@ -118,9 +118,10 @@ def by_tags(tags: Sequence[str] | None, classes: Mapping[str, Class]) -> tuple[s
 
 
 def by_name(model: str, classes: Mapping[str, Class]) -> tuple[str, str] | None:
-    """`(class, why)` of an asset by the longest class word that ends a word of its name, None when none does."""
-    words = name_words(model)
-    found = [(len(word), word, c.name) for c in classes.values() for word in c.words if any(w.endswith(word) for w in words)]
+    """`(class, why)` of an asset by the longest class word that is a whole word of its name, None when none is: a
+    compound no class lists (`Workbench`, `Flowerbed`) matches nothing rather than its last part."""
+    words = set(name_words(model))
+    found = [(len(word), word, c.name) for c in classes.values() for word in c.words if word in words]
     if not found:
         return None
     _, word, name = max(found)

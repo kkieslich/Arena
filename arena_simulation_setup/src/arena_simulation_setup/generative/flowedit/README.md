@@ -91,7 +91,7 @@ Load and save it with `arena_simulation_setup.kg.load` and `write`.
 |---|---|---|
 | 1. human | a human's entry for the model in [`demand_proposals.yaml`](demand_proposals.yaml) (one without `by: llm`) | `class`, `reviewed` |
 | 2. kind | the asset's ASA `kind` tag. A kind means one thing, so a class lists it or none does; kinds that say nothing about demand (`table`, `equipment`, `appliance`) are listed by none and go on | `class`, `kind::chair` |
-| 3. name | the longest class word that ends a word of the model's name, the name split at non-letters and case changes and each two neighbours joined (`Lab_Bench`: lab, bench, labbench) | `class`, `name:labbench` |
+| 3. name | the longest class word that is a whole word of the model's name, the name split at non-letters and case changes and each two neighbours joined (`Lab_Bench`: lab, bench, labbench). A compound no class lists matches nothing: `Workbench` is not a `bench`, `Flowerbed` not a `bed` | `class`, `name:labbench` |
 | 4. model | a model's proposal for the model in `demand_proposals.yaml`, only with `--prefill class,llm` | `llm`, with its `model`, `prompt_sha` and `why` |
 
 An undecided object keeps no facts. A `hoi` tag decides nothing: it says what a person can do with an object (sit, lie, touch, see), not whether anyone walks to it, and goes to the model as evidence only. The assets are taken as they are annotated; a wrong annotation is overruled by a human's entry whose `why` says what is wrong, until the asset is fixed (`Hospital/SM_WheelChair_01a` is annotated `kind::chair`, `Hospital/Lab_Bench` `kind::counter`).

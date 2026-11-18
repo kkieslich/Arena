@@ -164,14 +164,21 @@ def test_a_wrong_table_is_refused(tmp_path: Path, raw: dict[str, Any], message: 
         ("Office/Stand_Table_Work", None, ("desk", "name:tablework")),
         ("Office/SM_ChairOffice", None, ("chair", "name:chair")),
         ("Office/SM_SecretaryDeskA", None, ("desk", "name:desk")),
-        ("Office/SM_Keyboard", None, ("inert", "name:board")),
+        ("Office/SM_Keyboard", None, ("inert", "name:keyboard")),
+        ("Office/SM_Cupboard", None, ("inert", "name:cupboard")),
+        ("Hospital/Patient_Armchair", None, ("chair", "name:armchair")),
+        ("Office/Water_Cooler", None, ("fountain", "name:watercooler")),
+        ("Garden/Flowerbed", None, None),
+        ("Office/Workbench", None, None),
+        ("Office/Countertop", None, None),
+        ("Office/Air_Cooler", None, None),
         ("Hospital/IV_Stand", None, None),
         ("Office/SM_DrinksMachine", None, ("fountain", "name:drinksmachine")),
         ("Hospital/Ventilator", None, None),
         ("Hospital/Exam_Table", ["kind::table"], None),
     ],
 )
-def test_an_asset_is_classed_by_its_kind_then_the_longest_word_of_its_name_and_never_by_hoi(model: str, tags: list[str] | None, expected: tuple[str, str] | None) -> None:
+def test_an_asset_is_classed_by_its_kind_then_the_longest_whole_word_of_its_name_and_never_by_hoi(model: str, tags: list[str] | None, expected: tuple[str, str] | None) -> None:
     assert D.classify(model, tags, CLASSES) == expected
 
 
