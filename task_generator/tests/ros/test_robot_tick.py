@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import math
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from types import SimpleNamespace
 
 import pytest
@@ -1529,3 +1529,306 @@ def test_fleet_a_robot_at_0_percent_stops_its_job_is_abandoned_and_it_gets_nothi
     _at(node, 10.0)
     _tick(mode)
     assert record.log["empty.0.robot"] == "r0" and "job.0.outcome" not in record.log and managers["r0"].navigation_resets == 0
+
+
+# --- a charge that gets no power, a robot stopped at 0 % in a charger's dock -------------------------------------------
+
+
+def test_fleet_ends_a_started_charge_whose_battery_does_not_rise_as_no_power_and_queues_the_robot_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], job_timeout=0.0)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=20.0, r1=25.0, r2=90.0, r3=90.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # r0, the lowest, takes charger_1, r1 charger_2; both arrive in their docks at 10 s
+    assert (_phase_text(managers["r0"]), _phase_text(managers["r1"])) == ("charge at charger_1", "charge at charger_2")
+    managers["r0"].pose, managers["r1"].pose = _pose(1.0, 3.0), _pose(4.0, 3.0)
+    _at(node, 10.0)
+    _tick(mode, {"r0": _met(), "r1": _met()})
+    assert record.log["charge.0.started"] == record.log["charge.1.started"] == "10.001"
+    # r1 charges: 0.15 points every 110 s; r0's charge stays where it was, 0.05 points up is no power
+    for t, r1 in ((60.0, 25.05), (120.0, 25.15), (129.0, 25.2)):
+        _socs(managers, r0=20.05, r1=r1)
+        _at(node, t)
+        _tick(mode)
+    assert "charge.0.ended" not in record.log
+    _at(node, 130.5)
+    _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.0.ended"], record.log["charge.0.soc_end"]) == ("no_power", "130.501", "20.05")
+    assert record.log["charge.0.reason"] == "charge +0.05 % in 120 s"
+    assert any(level == "warning" and "r0 got no power at charger_1 (no other robot in its dock)" in line for level, line in record.lines)
+    # queued again at once; no other robot stands in charger_1's dock, so it is sent to its charger home again
+    assert (record.log["charge.2.robot"], record.log["charge.2.trigger"], record.log["charge.2.queued"]) == ("r0", "no_power", "130.501")
+    assert (record.log["charge.2.charger"], record.log["charge.2.dispatched"]) == ("charger_1", "130.501")
+    assert _phase_text(managers["r0"]) == "charge at charger_1" and mode._home["r0"] == "charger_1"
+    # r1's charge went on rising, at least 0.1 points in every 120 s: it is not touched and ends charged
+    for t, r1 in ((235.0, 25.3), (340.0, 25.45)):
+        _socs(managers, r1=r1)
+        _at(node, t)
+        _tick(mode)
+    assert "charge.1.ended" not in record.log
+    _socs(managers, r1=100.0)
+    _at(node, 341.0)
+    _tick(mode)
+    assert (record.log["charge.1.outcome"], record.log["charge.1.ended"]) == ("charged", "341.001")
+
+
+def test_fleet_checks_no_power_only_once_a_charge_has_started_and_not_with_no_power_s_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    for no_power_s in (120.0, 0.0):
+        mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], job_timeout=0.0, jam_window_s=0.0, no_power_s=no_power_s)
+        asyncio.run(mode.reset())
+        _socs(managers, r0=20.0, r1=90.0, r2=90.0, r3=90.0)
+        _at(node, 1.0)
+        _tick(mode)
+        # 300 s on its way there: no check, the trip has its own timeout and jam rule
+        _at(node, 300.0)
+        _tick(mode)
+        assert "charge.0.ended" not in record.log
+        _at(node, 301.0)
+        _tick(mode, {"r0": _met()})
+        _at(node, 500.0)
+        _tick(mode)
+        assert record.log.get("charge.0.outcome") == ("no_power" if no_power_s else None)
+
+
+def _blocked_fleet(monkeypatch: pytest.MonkeyPatch) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
+    """The yield fleet (r0 bay_1, r1 bay_2, r2 charger_1, r3 charger_2, charge until 90 %, approach 2 m): r0 at 20 % takes
+    charger_1 from r2, parked on it full, and starts charging there at 100 s; r3 at 60 % is parked on charger_2."""
+    mode, managers, node, record = _yield_fleet(monkeypatch, job_timeout=0.0)
+    _socs(managers, r0=20.0, r1=95.0, r2=95.0, r3=60.0)
+    _at(node, 1.0)
+    _tick(mode)
+    managers["r0"].pose = _pose(1.0, 1.5)
+    _at(node, 20.0)
+    _tick(mode)
+    managers["r2"].pose = _pose(0.5, 0.5)
+    managers["r0"].pose = _pose(1.0, 3.0)
+    _at(node, 100.0)
+    _tick(mode, {"r2": _met()})
+    _tick(mode, {"r0": _met()})
+    assert record.log["charge.0.started"] == "100.001" and mode._home["r0"] == "charger_1"
+    return mode, managers, node, record
+
+
+def test_fleet_sends_a_robot_whose_charge_got_no_power_to_another_charger_while_another_robot_stands_in_that_dock(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _blocked_fleet(monkeypatch)
+    # r3 was pushed over the docks' shared side into charger_1's dock: the runtime charges r3 there (to 90 %), r0 gets
+    # nothing
+    managers["r3"].pose = _pose(1.45, 3.0)
+    _socs(managers, r3=90.0)
+    _at(node, 221.0)
+    _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.0.ended"]) == ("no_power", "221.001")
+    assert any("r0 got no power at charger_1 (r3 in its dock)" in line for _, line in record.lines)
+    # r0 does not take charger_1 again while r3 stands in its dock: it takes charger_2, whose holder r3 is charged and
+    # yields, and r3 gets charger_1, where it stands
+    assert (record.log["charge.1.robot"], record.log["charge.1.trigger"], record.log["charge.1.charger"], record.log["charge.1.yielded_by"]) == ("r0", "no_power", "charger_2", "r3")
+    assert (mode._home["r0"], mode._home["r3"]) == ("charger_2", "charger_1")
+    assert _phase_text(managers["r0"]) == "charge at charger_2"
+
+
+def test_fleet_a_robot_whose_charge_got_no_power_waits_in_its_dock_until_the_other_robot_has_left_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _blocked_fleet(monkeypatch)
+    # r3, under charge_until (charger_2 neither free nor yielding), stands in charger_1's dock
+    managers["r3"].pose = _pose(1.45, 3.0)
+    _socs(managers, r3=70.0)
+    _at(node, 221.0)
+    _tick(mode)
+    assert record.log["charge.0.outcome"] == "no_power" and record.log["charge.1.trigger"] == "no_power"
+    # no charger for r0: it is not sent back into charger_1's dock; it parks on its charger home, queued
+    assert "charge.1.dispatched" not in record.log and _phase_text(managers["r0"]) == "park at charger_1"
+    for t in (222.0, 300.0, 400.0):
+        _at(node, t)
+        _tick(mode, {"r0": _met()} if t == 222.0 else {})
+    assert "charge.1.dispatched" not in record.log and "r0" in mode._charge_queue and mode._state["r0"].value == "parked"
+    # r3 is back on its own dock: r0, parked in charger_1's dock, charges there; that charge rises, nothing ends
+    managers["r3"].pose = _pose(4.0, 3.0)
+    _at(node, 401.0)
+    _tick(mode)
+    assert (record.log["charge.1.dispatched"], record.log["charge.1.started"]) == ("401.001", "401.001")
+    for t, soc in ((500.0, 20.5), (600.0, 21.0)):
+        _socs(managers, r0=soc)
+        _at(node, t)
+        _tick(mode)
+    assert "charge.1.ended" not in record.log and mode._no_power_at == {}
+
+
+def _empty_fleet(monkeypatch: pytest.MonkeyPatch, where: tuple[float, float]) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
+    """The entrance fleet's rules (stop at 0 %, floor 17 %, nearest charger): r2, charger_1's holder, stops at 0 % at
+    `where`; then r0 on bay_1 falls to the floor. r3 charges on charger_2 under 90 %, so charger_2 is not free."""
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="", **{**NEED, "charge_at_start": False})
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    managers["r2"].pose = _pose(*where)
+    _socs(managers, r0=40.0, r1=60.0, r2=0.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert mode._state["r2"].value == "empty"
+    _socs(managers, r0=17.0)
+    for t in (60.0, 61.0, 62.0):
+        _at(node, t)
+        _tick(mode)
+    return mode, managers, node, record
+
+
+def test_fleet_a_robot_stopped_at_0_percent_in_a_chargers_dock_blocks_that_charger_and_is_logged_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _empty_fleet(monkeypatch, (1.2, 2.8))
+    assert record.log["empty.0.in_dock"] == "charger_1"
+    assert [line for _, line in record.lines if "in the dock of" in line] == ["r2: stopped at 0 % in the dock of charger_1, which no robot is sent to while it stands there, 1.0 s"]
+    # r0 at the floor queues, but is not sent into the dock r2 stands in: it waits for a charger
+    assert record.log["charge.0.trigger"] == "floor" and "charge.0.dispatched" not in record.log
+    assert managers["r0"].submitted == []
+    # charger_2 is charged and yields: r0 goes there
+    _socs(managers, r3=90.0)
+    _at(node, 63.0)
+    _tick(mode)
+    assert (record.log["charge.0.charger"], _phase_text(managers["r0"])) == ("charger_2", "charge at charger_2")
+
+
+def test_fleet_a_robot_stopped_at_0_percent_outside_any_dock_leaves_its_charger_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _empty_fleet(monkeypatch, (8.0, 8.0))
+    # R6: its home charger counts as free: r0 at the floor takes it
+    assert not [key for key in record.log if key.endswith(".in_dock")]
+    assert (record.log["charge.0.charger"], _phase_text(managers["r0"])) == ("charger_1", "charge at charger_1")
+
+
+def test_fleet_a_robot_stopped_at_0_percent_in_the_dock_of_a_charger_whose_holder_is_away_blocks_it_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="d", **{**NEED, "charge_at_start": False})
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    # r2 leaves charger_1 for job 0; r1 (bay_2) stops at 0 % in charger_1's dock; r3 charges on charger_2
+    _socs(managers, r0=40.0, r1=30.0, r2=95.0, r3=50.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert record.log["job.0.robot"] == "r2"
+    managers["r1"].pose = _pose(1.0, 3.0)
+    _socs(managers, r1=0.0)
+    _at(node, 2.0)
+    _tick(mode)
+    assert record.log["empty.0.in_dock"] == "charger_1"
+    _socs(managers, r0=17.0)
+    _at(node, 3.0)
+    _tick(mode)
+    assert record.log["charge.0.trigger"] == "floor" and "charge.0.dispatched" not in record.log and managers["r0"].submitted == []
+
+
+def test_fleet_a_robot_parked_on_its_charger_home_with_a_robot_stopped_at_0_percent_in_that_dock_charges_elsewhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="", **{**NEED, "charge_at_start": False})
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    # r1 stops at 0 % in charger_1's dock, where r2 is parked at its home: the dock may charge r1, not r2
+    managers["r1"].pose = _pose(1.3, 3.2)
+    _socs(managers, r0=60.0, r1=0.0, r2=17.0, r3=95.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # r2 at the floor is not taken for docked on its charger: it queues and takes charger_2, whose holder yields
+    assert (record.log["charge.0.robot"], record.log["charge.0.trigger"], record.log["charge.0.charger"]) == ("r2", "floor", "charger_2")
+    assert "charge.0.started" not in record.log and (mode._home["r2"], mode._home["r3"]) == ("charger_2", "charger_1")
+
+
+# --- the fleet against the runtime's chargers, which charge one robot per dock, the first parked in it ---------------
+
+
+class _Toy:
+    """The fleet mode against the runtime's `Chargers` on the test world: a robot drives a straight line to its goto
+    target at 0.5 m/s until its centre is in the target's zone or dock (where the runtime's judge counts it arrived),
+    holds there as long as the phase says, and reports the phase met; its charge follows the power `Chargers.step` gives
+    it, less 42.2 W standing and 25 W more while driving, on a 27 Wh battery."""
+
+    SPEED, DT, CAPACITY_WH = 0.5, 1.0, 27.0
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch | None, socs: dict[str, float], charger_w: float = 290.0, **params: object) -> None:
+        import shapely
+        from arena_runtime.env.robot_manager.charging import Chargers
+        from arena_runtime.env.task_api import authored_statics
+        from arena_simulation_setup.shared.judge import zone_polygons
+
+        self.mode, self.managers, self.node, self.record = _fleet(monkeypatch, **params)
+        asyncio.run(self.mode.reset())
+        self.zones = zone_polygons(authored_statics(_fleet_world()))
+        self.chargers = Chargers({"charger_1": charger_w, "charger_2": charger_w})
+        self.point = shapely.Point
+        self.xy = {name: self.mode._xy[self.mode._home[name]] for name in self.managers}
+        self.goal: dict[str, tuple[object, float] | None] = dict.fromkeys(self.managers)
+        self.trace: list[tuple[float, str, str]] = []
+        for name, manager in self.managers.items():
+            manager.battery_capacity_wh, manager.power_profile, manager.soc = self.CAPACITY_WH, JACKAL, socs[name]
+            manager.pose = _pose(*self.xy[name])
+            manager.submit_task = self._submitter(name)
+        self.t = 0.0
+
+    def _submitter(self, name: str) -> Callable[[object], Awaitable[None]]:
+        async def submit(request: object) -> None:
+            phase = request.phases[0]
+            self.goal[name] = (phase, float(getattr(phase, "hold_time", 0.0) or 0.0))
+            self.managers[name].submitted.append(request)
+            self.trace.append((round(self.t, 3), name, phase.text))
+
+        return submit
+
+    def place(self, name: str, xy: tuple[float, float]) -> None:
+        self.xy[name] = xy
+        self.managers[name].pose = _pose(*xy)
+
+    def run(self, until_s: float) -> None:
+        from arena_simulation_setup.shared.judge import Sample
+
+        while self.t < until_s:
+            self.t += self.DT
+            ended, moving = {}, set()
+            for name, goal in self.goal.items():
+                if goal is None:
+                    continue
+                phase, hold = goal
+                target = phase.target
+                if target is not None and not self.zones[target].covers(self.point(self.xy[name])):
+                    (x, y), (tx, ty) = self.xy[name], self.mode._xy[target]
+                    left = math.dist((x, y), (tx, ty))
+                    step = min(left, self.SPEED * self.DT)
+                    self.place(name, (x + (tx - x) * step / left, y + (ty - y) * step / left))
+                    moving.add(name)
+                elif hold > 0.0:
+                    self.goal[name] = (phase, hold - self.DT)
+                else:
+                    self.goal[name] = None
+                    ended[name] = _met()
+            power = self.chargers.step(Sample(t=self.t, robots={name: (*xy, 0.0) for name, xy in self.xy.items()}), self.zones)
+            for name, manager in self.managers.items():
+                net_w = power[name] - 42.2 - (25.0 if name in moving else 0.0)
+                manager.soc = min(100.0, max(0.0, manager.soc + 100.0 * net_w * self.DT / 3600.0 / self.CAPACITY_WH))
+            _at(self.node, self.t)
+            _tick(self.mode, ended)
+
+
+def test_fleet_against_the_runtimes_chargers_a_robot_in_a_dock_another_robot_holds_gets_power_elsewhere_and_does_not_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    # f6s102: r3 (charger_2) was pushed over the docks' shared side into charger_1's dock and is the runtime's occupant
+    # there; r2 leaves charger_1 for a job, so r0 at the floor takes charger_1, drives into that dock and gets 0 W
+    toy = _Toy(monkeypatch, {"r0": 17.0, "r1": 60.0, "r2": 95.0, "r3": 80.0}, jobs="d", **NEED, charge_until=90.0)
+    toy.place("r3", (1.45, 3.0))
+    toy.run(30.0)
+    log = toy.record.log
+    assert (log["job.0.robot"], log["charge.1.robot"], log["charge.1.charger"]) == ("r2", "r0", "charger_1")
+    assert "charge.1.started" in log
+    toy.run(900.0)
+    log = toy.record.log
+    # 120 s without a rise: no_power; r3, charged by charger_1 to 90 % (for the fleet on charger_2), yields charger_2,
+    # and r0 charges there
+    started = float(log["charge.1.started"])
+    assert log["charge.1.outcome"] == "no_power" and started + 120.0 < float(log["charge.1.ended"]) <= started + 121.0
+    assert (log["charge.2.robot"], log["charge.2.trigger"], log["charge.2.charger"], log["charge.2.outcome"]) == ("r0", "no_power", "charger_2", "charged")
+    assert not [key for key in log if key.startswith("empty.")]
+    assert toy.managers["r0"].soc > 0.0 and toy.mode._state["r0"].value == "parked"
+
+
+def test_fleet_against_the_runtimes_chargers_logs_the_same_with_and_without_the_power_check_when_every_charge_gets_power() -> None:
+    entries = [f"{t} {kind} locker_1" for t, kind in ((1, "delivery"), (120, "pickup"), (300, "delivery"), (420, "delivery"), (600, "pickup"), (800, "delivery"), (1000, "delivery"), (1150, "pickup"))]
+    runs = []
+    for no_power_s in (120.0, 0.0):
+        toy = _Toy(None, {"r0": 30.0, "r1": 22.0, "r2": 60.0, "r3": 85.0}, job_list=entries, **NEED, charge_until=90.0, no_power_s=no_power_s)
+        toy.run(1500.0)
+        runs.append((toy.record.log, toy.record.lines, toy.trace, {name: round(manager.soc, 6) for name, manager in toy.managers.items()}))
+    assert runs[0] == runs[1]
+    log = runs[0][0]
+    outcomes = [value for key, value in log.items() if key.startswith("charge.") and key.endswith(".outcome")]
+    assert outcomes.count("charged") >= 3 and "no_power" not in outcomes
+    assert sum(value == "completed" for key, value in log.items() if key.startswith("job.") and key.endswith(".outcome")) >= 6

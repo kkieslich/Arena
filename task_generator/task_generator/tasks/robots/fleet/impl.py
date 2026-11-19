@@ -88,6 +88,8 @@ class _Charge:
     swapped_top_up: bool = False  # that holder held the charger by a top-up: a revert gives it back as such
     leaving: str | None = None  # a holder parked on the charger that gives it up (`_yields`) and has not cleared it yet
     holding_since: float | None = None  # when the robot began to hold in place before the charger for `leaving`
+    power_since: float | None = None  # once started: when the charge last rose by no_power_rise (or started), for `no_power_s`
+    power_soc: float | None = None  # the robot's charge then, None while it was unknown
 
 
 def releases(rng: np.random.Generator, rate_per_h: float, pickup_share: float) -> Iterator[Job]:
@@ -162,6 +164,8 @@ class TM_Fleet(TM_Robots):
     _one_need_charge: ROSParamT[bool]
     _charge_at_start: ROSParamT[bool]
     _stop_empty: ROSParamT[bool]
+    _no_power_s: ROSParamT[float]
+    _no_power_rise: ROSParamT[float]
 
     def __init__(self, **kwargs: typing.Unpack[TaskModeKwargs]) -> None:
         super().__init__(**kwargs)
@@ -196,9 +200,15 @@ class TM_Fleet(TM_Robots):
         self._one_need_charge = self.node.ROSParam[bool](self.namespace("one_need_charge"), False)
         self._charge_at_start = self.node.ROSParam[bool](self.namespace("charge_at_start"), False)
         self._stop_empty = self.node.ROSParam[bool](self.namespace("stop_empty"), False)
+        self._no_power_s = self.node.ROSParam[float](self.namespace("no_power_s"), 120.0)
+        self._no_power_rise = self.node.ROSParam[float](self.namespace("no_power_rise"), 0.1)
 
         self._chargers: list[str] = []
         self._xy: dict[str, tuple[float, float]] = {}
+        self._dock_area: dict[str, shapely.Polygon] = {}  # charger -> its dock polygon, where the runtime charges a robot
+        self._no_power_at: dict[str, set[str]] = {}  # robot -> the chargers where a charge of it ended no_power, until one of its charges gets power
+        self._stopped: dict[str, int] = {}  # robot stopped at 0 % (stop_empty) -> its index in the empty table
+        self._in_dock_logged: set[str] = set()  # stopped robots whose stand in a charger's dock is logged
         self._home: dict[str, str] = {}
         self._spot: dict[str, str] = {}
         self._arrived: set[str] = set()
@@ -259,12 +269,16 @@ class TM_Fleet(TM_Robots):
             raise ValueError(f"task.fleet names {unknown}, which are no goto target of the world")
 
         self._chargers = [entity.name for entity in world.objects if entity.charge_power_w is not None]
-        self._xy = {}
+        self._xy, self._dock_area = {}, {}
         for spot in dict.fromkeys((*homes, *docks, *self._chargers)):
             corners = world.lookup_zone_polygon(spot)
             assert corners is not None, spot
-            centre = shapely.Polygon([(corner.x, corner.y) for corner in corners]).centroid
+            polygon = shapely.Polygon([(corner.x, corner.y) for corner in corners])
+            centre = polygon.centroid
             self._xy[spot] = (centre.x, centre.y)
+            if spot in self._chargers:
+                self._dock_area[spot] = polygon
+        self._no_power_at, self._stopped, self._in_dock_logged = {}, {}, set()
         self._home = {robot.name: home for robot, home in zip(robots, homes, strict=False)}
         self._spot = dict(self._home)
         self._arrived = set(self._home)
@@ -315,6 +329,7 @@ class TM_Fleet(TM_Robots):
             if name in self._state:
                 self._hand_outside(name, now)
         await self._watch_batteries(now)
+        self._watch_empty_docks(now)
         self._log_charge(now)
         self._check_start(now)
 
@@ -623,17 +638,23 @@ class TM_Fleet(TM_Robots):
             if self._state[name] not in (_State.PARKED, _State.FREE):
                 continue
             home = self._home[name]
-            if home in self._chargers and self._state[name] is _State.PARKED and name in self._arrived:
+            # a charger the robot may not use now (`_usable`: a robot stopped at 0 % stands in its dock, or a charge of
+            # this robot had no power there and another robot stands in the dock) is passed over, its home too
+            usable = [charger for charger in self._chargers if self._usable(name, charger)]
+            home_ok = home in usable
+            if home_ok and self._state[name] is _State.PARKED and name in self._arrived:
                 self._start_charge(name, home, now)
-                self._charge[name].started_s = now
-                self._note(f"{self._charge[name].table}.{self._charge[name].index}.started", _s(now))
-                self._note(f"{self._charge[name].table}.{self._charge[name].index}.soc_start", _pct(self._soc(name)))
+                charge = self._charge[name]
+                charge.started_s = now
+                self._note(f"{charge.table}.{charge.index}.started", _s(now))
+                self._note(f"{charge.table}.{charge.index}.soc_start", _pct(self._soc(name)))
+                charge.power_since, charge.power_soc = now, self._soc(name)
             else:
-                charger = home if home in self._chargers else self._free_charger(name, [charger for charger in self._chargers if self._owner_away(charger)])
+                charger = home if home_ok else self._free_charger(name, [charger for charger in usable if self._owner_away(charger)])
                 if charger is None:
-                    charger = self._free_charger(name, [charger for charger in self._chargers if self._yields(charger)])
+                    charger = self._free_charger(name, [charger for charger in usable if self._yields(charger)])
                 if charger is None:
-                    on_the_way = [charger for charger in self._chargers if self._topping_up(charger) is not None]
+                    on_the_way = [charger for charger in usable if self._topping_up(charger) is not None]
                     charger = next((charger for charger in on_the_way if self._charge[typing.cast(str, self._holder(charger))].swapped_with == name), next(iter(on_the_way), None))
                 if charger is None:
                     continue
@@ -678,7 +699,7 @@ class TM_Fleet(TM_Robots):
         takers.sort(key=lambda name: (self._soc(name) or 0.0, name))
         for charger in self._chargers:
             holder = self._holder(charger)
-            if not takers or holder is None or self._state[holder] not in (_State.JOB, _State.DOCK_WAIT):
+            if not takers or holder is None or self._state[holder] not in (_State.JOB, _State.DOCK_WAIT) or self._blocked(charger):
                 continue
             name = takers[0]
             home = self._home[name]
@@ -726,6 +747,7 @@ class TM_Fleet(TM_Robots):
                 self._arrived.add(name)
                 self._note(f"{charge.table}.{charge.index}.started", _s(now))
                 self._note(f"{charge.table}.{charge.index}.soc_start", _pct(self._soc(name)))
+                charge.power_since, charge.power_soc = now, self._soc(name)
                 if charge.table == "top_up":
                     # docked at its new charger home: it charges there and is free for jobs
                     self._end_charge(name, "docked", "", now)
@@ -740,8 +762,40 @@ class TM_Fleet(TM_Robots):
         soc = self._soc(name)
         if charge.started_s is not None and soc is not None and soc >= self._charge_until.value:
             self._logger.info(f"{name} charged to {soc:.1f} % at {self._home[name]}, {now:.1f} s")
+            self._no_power_at.pop(name, None)
             self._end_charge(name, "charged", "", now)
             self._state[name] = _State.PARKED
+        elif charge.started_s is not None:
+            self._watch_power(name, charge, soc, now)
+
+    def _watch_power(self, name: str, charge: _Charge, soc: float | None, now: float) -> None:
+        """A started charge whose robot's charge has not risen by `no_power_rise` within `no_power_s` (from the start, then
+        from each such rise) gets no power: the runtime charges one robot per dock, the first parked in it, so a robot that
+        stops in a dock another robot holds stands at 0 W. The charge ends `no_power` and the robot queues to charge again
+        at once (trigger `no_power`, still the robot charging for the jobs it charged for); it keeps the charger as its
+        home, and while another robot stands in that charger's dock it does not take it again (`_barred`)."""
+        timeout = self._no_power_s.value
+        if timeout <= 0.0 or soc is None or charge.power_since is None:
+            return
+        if charge.power_soc is None:
+            # the charge was unknown when the charge started: the window starts at the first reading
+            charge.power_since, charge.power_soc = now, soc
+            return
+        if soc >= charge.power_soc + self._no_power_rise.value:
+            charge.power_since, charge.power_soc = now, soc
+            self._no_power_at.pop(name, None)
+            return
+        if now - charge.power_since <= timeout:
+            return
+        rise = soc - charge.power_soc
+        jobs = [job for job, robot in self._need_for.items() if robot == name]
+        self._no_power_at.setdefault(name, set()).add(charge.charger)
+        self._end_charge(name, "no_power", f"charge {rise:+.2f} % in {now - charge.power_since:.0f} s", now)
+        self._queue_charge(name, "no_power", now)
+        for job in jobs:
+            self._need_for[job] = name
+        others = [other for other in self._state if other != name and self._in_dock(other, charge.charger)]
+        self._logger.warning(f"{name} got no power at {charge.charger} ({', '.join(others) or 'no other robot'} in its dock), queued to charge again, {now:.1f} s")
 
     async def _follow_yield(self, name: str, charge: _Charge, now: float) -> None:
         """A swap with a charged holder (`charge.leaving`): the robot drives to within `approach_m` of the charger and
@@ -814,8 +868,40 @@ class TM_Fleet(TM_Robots):
         self._state[name] = _State.FREE
 
     def _docked_home(self, name: str) -> bool:
-        """Whether the robot is parked on its charger home, where the dock charges it."""
-        return self._home[name] in self._chargers and self._state[name] is _State.PARKED and name in self._arrived
+        """Whether the robot is parked on its charger home, where the dock charges it (not while a robot stopped at 0 % stands
+        in that dock: then the dock may charge the stopped robot)."""
+        return self._home[name] in self._chargers and self._state[name] is _State.PARKED and name in self._arrived and not self._blocked(self._home[name])
+
+    def _in_dock(self, name: str, charger: str) -> bool:
+        """Whether the robot's centre is in the charger's dock polygon, where the runtime charges a robot parked there."""
+        return bool(self._dock_area[charger].covers(shapely.Point(self._where(name))))
+
+    def _blocked(self, charger: str) -> bool:
+        """Whether a robot stopped at 0 % (`_stop`) stands in the charger's dock: the runtime charges the first robot parked
+        in a dock, so another robot sent there would get no power. Such a charger is free for nobody."""
+        return any(state is _State.EMPTY and self._in_dock(name, charger) for name, state in self._state.items())
+
+    def _barred(self, name: str, charger: str) -> bool:
+        """Whether a charge of the robot ended `no_power` at the charger (since its last charge that got power) and
+        another robot stands in that charger's dock: the robot does not take the charger again until that robot has left
+        it, so it is not sent back into a dock the runtime gives to another robot."""
+        return charger in self._no_power_at.get(name, ()) and any(other != name and self._in_dock(other, charger) for other in self._state)
+
+    def _usable(self, name: str, charger: str) -> bool:
+        """Whether the robot may charge at the charger now: neither `_blocked` nor `_barred` for it."""
+        return not self._blocked(charger) and not self._barred(name, charger)
+
+    def _watch_empty_docks(self, now: float) -> None:
+        """Log once for each robot stopped at 0 % that stands in a charger's dock (`empty.N.in_dock`): it blocks that
+        charger (`_blocked`) while it stands there."""
+        for name, index in self._stopped.items():
+            if name in self._in_dock_logged:
+                continue
+            docks = [charger for charger in self._chargers if self._in_dock(name, charger)]
+            if docks:
+                self._in_dock_logged.add(name)
+                self._note(f"empty.{index}.in_dock", ",".join(docks))
+                self._logger.warning(f"{name}: stopped at 0 % in the dock of {', '.join(docks)}, which no robot is sent to while it stands there, {now:.1f} s")
 
     def _check_start(self, now: float) -> None:
         """`charge_at_start`: a robot whose home is a charger and whose start charge is under `charge_until` charges there
@@ -832,6 +918,8 @@ class TM_Fleet(TM_Robots):
         return next((name for name, home in self._home.items() if home == spot), None)
 
     def _owner_away(self, spot: str) -> bool:
+        """Whether the spot's holder is away from it (or it has none). A holder stopped at 0 % counts as away: its charger is
+        free for others, unless a robot stopped at 0 % stands in its dock (`_blocked`, which `_send_to_chargers` applies)."""
         holder = self._holder(spot)
         return holder is None or self._state[holder] in (_State.JOB, _State.DOCK_WAIT, _State.FREE, _State.EMPTY)
 
@@ -876,7 +964,9 @@ class TM_Fleet(TM_Robots):
 
     async def _stop(self, name: str, index: int, now: float) -> None:
         """A robot at 0 %: its job is abandoned (reason empty), its charge or its place in the charge queue too; it holds in
-        place where it is, an obstacle in the walkway, gets no job or trip, and its home is free for others."""
+        place where it is, an obstacle in the walkway, gets no job or trip, and its home is free for others, unless it
+        stands in a charger's dock: that charger is then free for nobody (`_blocked`)."""
+        self._stopped[name] = index
         state = self._state[name]
         if state in (_State.JOB, _State.DOCK_WAIT):
             self._note(f"empty.{index}.job", str(self._run[name].job.index))
