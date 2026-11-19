@@ -1555,8 +1555,8 @@ def test_fleet_ends_a_started_charge_whose_battery_does_not_rise_as_no_power_and
     _at(node, 130.5)
     _tick(mode)
     assert (record.log["charge.0.outcome"], record.log["charge.0.ended"], record.log["charge.0.soc_end"]) == ("no_power", "130.501", "20.05")
-    assert record.log["charge.0.reason"] == "charge +0.05 % in 120 s"
-    assert any(level == "warning" and "r0 got no power at charger_1 (no other robot in its dock)" in line for level, line in record.lines)
+    assert record.log["charge.0.reason"] == "charge rose 0.05 points in 120 s"
+    assert [line for level, line in record.lines if level == "warning" and "r0" in line and "power" in line] == ["r0 got no power at charger_1 (charge rose 0.05 points in 120 s; no other robot in its dock), queued to charge again, 130.5 s"]
     # queued again at once; no other robot stands in charger_1's dock, so it is sent to its charger home again
     assert (record.log["charge.2.robot"], record.log["charge.2.trigger"], record.log["charge.2.queued"]) == ("r0", "no_power", "130.501")
     assert (record.log["charge.2.charger"], record.log["charge.2.dispatched"]) == ("charger_1", "130.501")
@@ -1591,6 +1591,104 @@ def test_fleet_checks_no_power_only_once_a_charge_has_started_and_not_with_no_po
         assert record.log.get("charge.0.outcome") == ("no_power" if no_power_s else None)
 
 
+#: the study's rates, in battery points per second: standing at 42.2 W, and docked at 109.7 W less that, on 270 Wh
+STAND_PTS_S, DOCKED_PTS_S = 42.2 / 270.0 * 100.0 / 3600.0, (109.7 - 42.2) / 270.0 * 100.0 / 3600.0
+
+
+def _started_in_charger_1(monkeypatch: pytest.MonkeyPatch, **params: object) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
+    """r0 at 20 %, the only robot under charge_below, sent to charger_1 and started there at 10 s (no robot holds a charger)."""
+    mode, managers, node, record = _fleet(monkeypatch, jobs="", homes=["bay_1", "bay_2", "bay_3", "bay_4"], job_timeout=0.0, jam_window_s=0.0, **params)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=20.0, r1=90.0, r2=90.0, r3=90.0)
+    _at(node, 1.0)
+    _tick(mode)
+    managers["r0"].pose = _pose(1.0, 3.0)
+    _at(node, 10.0)
+    _tick(mode, {"r0": _met()})
+    assert record.log["charge.0.started"] == "10.001"
+    return mode, managers, node, record
+
+
+def test_fleet_counts_power_that_comes_late_from_the_lowest_charge_and_does_not_end_the_charge(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _started_in_charger_1(monkeypatch)
+    # 0 W for 70 s (another robot still in the dock), then the study's docked rate: the rise over the drain counts, from
+    # the lowest charge, so the charge is seen to get power about 15 s after it comes
+    soc = 20.0
+    for t in range(11, 400):
+        soc += -STAND_PTS_S if t <= 80 else DOCKED_PTS_S
+        _socs(managers, r0=soc)
+        _at(node, float(t))
+        _tick(mode)
+        if t == 110:
+            assert mode._charge["r0"].power_since > 80.0
+    assert "charge.0.ended" not in record.log and not any("no power" in line for _, line in record.lines)
+
+
+def test_fleet_ends_a_charge_that_rose_and_then_lost_its_power_no_power_after_the_last_rise(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _started_in_charger_1(monkeypatch)
+    # it rises to 100 s, then drains (pushed out of the dock, or another robot took it): no_power 120 s after the last rise
+    for t, soc in ((60.0, 20.2), (100.0, 20.4), (150.0, 20.3), (220.0, 20.1)):
+        _socs(managers, r0=soc)
+        _at(node, t)
+        _tick(mode)
+    assert "charge.0.ended" not in record.log
+    _at(node, 220.5)
+    _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.0.ended"], record.log["charge.0.reason"]) == ("no_power", "220.501", "charge rose 0.00 points in 120 s")
+
+
+def test_fleet_drops_the_no_power_record_with_the_charge_queued_after_it_when_that_charge_is_withdrawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _top_up_fleet(monkeypatch, jobs="dd", **{**NEED, "charge_at_start": False}, wh_per_m=3.0, jam_window_s=0.0, job_timeout=0.0)
+    for manager in managers.values():
+        manager.battery_capacity_wh, manager.power_profile = 270.0, JACKAL
+    # r2 (charger_1) takes job 0; nobody can take job 1, so r0, the fullest short of it, charges for it at charger_1
+    _socs(managers, r0=23.0, r1=18.0, r2=90.0, r3=20.0)
+    _at(node, 1.0)
+    _tick(mode)
+    assert (record.log["job.0.robot"], record.log["charge.0.robot"], record.log["charge.0.trigger"], record.log["charge.0.charger"]) == ("r2", "r0", "job 1", "charger_1")
+    # r3 stands pushed in charger_1's dock: r0's charge gets no power, and its charge queued again (for job 1) waits
+    managers["r0"].pose, managers["r3"].pose = _pose(1.0, 3.0), _pose(1.45, 3.0)
+    _at(node, 10.0)
+    _tick(mode, {"r0": _met()})
+    _at(node, 131.0)
+    _tick(mode)
+    assert (record.log["charge.0.outcome"], record.log["charge.1.trigger"]) == ("no_power", "no_power")
+    assert mode._need_for == {1: "r0"} and mode._barred("r0", "charger_1")
+    # r2 is back from job 0 and takes job 1: r0's queued charge is withdrawn, and its record with it
+    managers["r2"].pose = _pose(*LOCKER_XY)
+    _at(node, 140.0)
+    _tick(mode, {"r2": _met()})
+    _tick(mode, {"r2": _met()})
+    assert record.log["job.1.robot"] == "r2" and (record.log["charge.1.outcome"], record.log["charge.1.reason"]) == ("withdrawn", "job 1 taken by r2")
+    assert mode._no_power_at == {} and not mode._barred("r0", "charger_1")
+
+
+def test_fleet_counts_a_robot_without_a_pose_in_no_dock(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _yield_fleet(monkeypatch, job_timeout=0.0, stop_empty=True)
+    _socs(managers, r0=20.0, r1=95.0, r2=95.0, r3=60.0)
+    _at(node, 1.0)
+    _tick(mode)
+    # r0, sent to charger_1, stops at 0 % near its bay while its pose is unknown: it is not counted at the spot it was
+    # sent to, so it blocks no charger and no in_dock is logged
+    assert mode._spot["r0"] == "charger_1"
+    managers["r0"].pose = None
+    _socs(managers, r0=0.0)
+    _at(node, 2.0)
+    _tick(mode)
+    assert mode._state["r0"].value == "empty" and not mode._blocked("charger_1") and "empty.0.in_dock" not in record.log
+    # once its pose is known again it counts where it is: in charger_1's dock it blocks it, and that is logged
+    managers["r0"].pose = _pose(1.0, 2.8)
+    _at(node, 3.0)
+    _tick(mode)
+    assert mode._blocked("charger_1") and record.log["empty.0.in_dock"] == "charger_1"
+    # the bar of a no-power record likewise looks only at robots with a pose (r2, which gave charger_1 up, is away)
+    managers["r2"].pose = _pose(0.5, 0.5)
+    mode._no_power_at = {"r1": {"charger_1"}}
+    assert mode._barred("r1", "charger_1")
+    managers["r0"].pose = None
+    assert not mode._barred("r1", "charger_1")
+
+
 def _blocked_fleet(monkeypatch: pytest.MonkeyPatch) -> tuple[object, dict[str, _Manager], SimpleNamespace, SimpleNamespace]:
     """The yield fleet (r0 bay_1, r1 bay_2, r2 charger_1, r3 charger_2, charge until 90 %, approach 2 m): r0 at 20 % takes
     charger_1 from r2, parked on it full, and starts charging there at 100 s; r3 at 60 % is parked on charger_2."""
@@ -1619,7 +1717,7 @@ def test_fleet_sends_a_robot_whose_charge_got_no_power_to_another_charger_while_
     _at(node, 221.0)
     _tick(mode)
     assert (record.log["charge.0.outcome"], record.log["charge.0.ended"]) == ("no_power", "221.001")
-    assert any("r0 got no power at charger_1 (r3 in its dock)" in line for _, line in record.lines)
+    assert any("r0 got no power at charger_1 (" in line and "; r3 in its dock)" in line for _, line in record.lines)
     # r0 does not take charger_1 again while r3 stands in its dock: it takes charger_2, whose holder r3 is charged and
     # yields, and r3 gets charger_1, where it stands
     assert (record.log["charge.1.robot"], record.log["charge.1.trigger"], record.log["charge.1.charger"], record.log["charge.1.yielded_by"]) == ("r0", "no_power", "charger_2", "r3")

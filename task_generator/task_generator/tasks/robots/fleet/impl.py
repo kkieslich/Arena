@@ -487,6 +487,7 @@ class TM_Fleet(TM_Robots):
         if self._idle_floor.value > 0.0 and soc is not None and soc <= self._idle_floor.value:
             return
         charge, _ = self._charge_queue.pop(name)
+        self._no_power_at.pop(name, None)
         self._note(f"charge.{charge}.ended", _s(now))
         self._note(f"charge.{charge}.outcome", "withdrawn")
         self._note(f"charge.{charge}.reason", f"job {index} taken by {taker}")
@@ -762,18 +763,18 @@ class TM_Fleet(TM_Robots):
         soc = self._soc(name)
         if charge.started_s is not None and soc is not None and soc >= self._charge_until.value:
             self._logger.info(f"{name} charged to {soc:.1f} % at {self._home[name]}, {now:.1f} s")
-            self._no_power_at.pop(name, None)
             self._end_charge(name, "charged", "", now)
             self._state[name] = _State.PARKED
         elif charge.started_s is not None:
             self._watch_power(name, charge, soc, now)
 
     def _watch_power(self, name: str, charge: _Charge, soc: float | None, now: float) -> None:
-        """A started charge whose robot's charge has not risen by `no_power_rise` within `no_power_s` (from the start, then
-        from each such rise) gets no power: the runtime charges one robot per dock, the first parked in it, so a robot that
-        stops in a dock another robot holds stands at 0 W. The charge ends `no_power` and the robot queues to charge again
-        at once (trigger `no_power`, still the robot charging for the jobs it charged for); it keeps the charger as its
-        home, and while another robot stands in that charger's dock it does not take it again (`_barred`)."""
+        """A started charge whose robot's charge has not risen by `no_power_rise` over its lowest since the window started
+        within `no_power_s` (the window starts at the start, then again at each such rise) gets no power: the runtime
+        charges one robot per dock, the first parked in it, so a robot that stops in a dock another robot holds stands at
+        0 W. The charge ends `no_power` and the robot queues to charge again at once (trigger `no_power`, still the robot
+        charging for the jobs it charged for); it keeps the charger as its home, and while another robot stands in that
+        charger's dock it does not take it again (`_barred`) until the charge queued now ends or gets power."""
         timeout = self._no_power_s.value
         if timeout <= 0.0 or soc is None or charge.power_since is None:
             return
@@ -781,6 +782,9 @@ class TM_Fleet(TM_Robots):
             # the charge was unknown when the charge started: the window starts at the first reading
             charge.power_since, charge.power_soc = now, soc
             return
+        # the rise counts from the lowest charge since the window started: power that comes late (the other robot left the
+        # dock) is seen once it has made up the drain before it
+        charge.power_soc = min(charge.power_soc, soc)
         if soc >= charge.power_soc + self._no_power_rise.value:
             charge.power_since, charge.power_soc = now, soc
             self._no_power_at.pop(name, None)
@@ -788,14 +792,16 @@ class TM_Fleet(TM_Robots):
         if now - charge.power_since <= timeout:
             return
         rise = soc - charge.power_soc
+        reason = f"charge rose {rise:.2f} points in {now - charge.power_since:.0f} s"
+        # `_end_charge` unlinks the robot from the jobs it charged for; the charge queued now is for them again
         jobs = [job for job, robot in self._need_for.items() if robot == name]
         self._no_power_at.setdefault(name, set()).add(charge.charger)
-        self._end_charge(name, "no_power", f"charge {rise:+.2f} % in {now - charge.power_since:.0f} s", now)
+        self._end_charge(name, "no_power", reason, now)
         self._queue_charge(name, "no_power", now)
         for job in jobs:
             self._need_for[job] = name
         others = [other for other in self._state if other != name and self._in_dock(other, charge.charger)]
-        self._logger.warning(f"{name} got no power at {charge.charger} ({', '.join(others) or 'no other robot'} in its dock), queued to charge again, {now:.1f} s")
+        self._logger.warning(f"{name} got no power at {charge.charger} ({reason}; {', '.join(others) or 'no other robot'} in its dock), queued to charge again, {now:.1f} s")
 
     async def _follow_yield(self, name: str, charge: _Charge, now: float) -> None:
         """A swap with a charged holder (`charge.leaving`): the robot drives to within `approach_m` of the charger and
@@ -856,6 +862,9 @@ class TM_Fleet(TM_Robots):
 
     def _end_charge(self, name: str, outcome: str, reason: str, now: float) -> None:
         charge = self._charge.pop(name)
+        if outcome != "no_power":
+            # a no-power record lasts until the charge queued after it ends, however it ends
+            self._no_power_at.pop(name, None)
         for job, robot in list(self._need_for.items()):
             if robot == name:
                 del self._need_for[job]
@@ -864,7 +873,8 @@ class TM_Fleet(TM_Robots):
         self._note(f"{charge.table}.{charge.index}.soc_end", _pct(self._soc(name)))
         if reason:
             self._note(f"{charge.table}.{charge.index}.reason", reason)
-            self._logger.warning(f"{name} {outcome} its charge at {charge.charger} ({reason}), {now:.1f} s")
+            if outcome != "no_power":  # `_watch_power` logs its own line
+                self._logger.warning(f"{name} {outcome} its charge at {charge.charger} ({reason}), {now:.1f} s")
         self._state[name] = _State.FREE
 
     def _docked_home(self, name: str) -> bool:
@@ -873,7 +883,10 @@ class TM_Fleet(TM_Robots):
         return self._home[name] in self._chargers and self._state[name] is _State.PARKED and name in self._arrived and not self._blocked(self._home[name])
 
     def _in_dock(self, name: str, charger: str) -> bool:
-        """Whether the robot's centre is in the charger's dock polygon, where the runtime charges a robot parked there."""
+        """Whether the robot's centre is in the charger's dock polygon, where the runtime charges a robot parked there; False
+        while its pose is unknown (the runtime leaves such a robot out of its charging too), not the spot it was sent to."""
+        if self._ctx.robots[name].pose is None:
+            return False
         return bool(self._dock_area[charger].covers(shapely.Point(self._where(name))))
 
     def _blocked(self, charger: str) -> bool:
@@ -1080,6 +1093,7 @@ class TM_Fleet(TM_Robots):
         elif state is _State.CHARGE:
             self._end_charge(name, "abandoned", "assigned from outside", now)
         self._charge_queue.pop(name, None)
+        self._no_power_at.pop(name, None)
         self._arrived.discard(name)
         self._state[name] = _State.OUTSIDE
         self._logger.info(f"{name} runs a task assigned from outside, {now:.1f} s")

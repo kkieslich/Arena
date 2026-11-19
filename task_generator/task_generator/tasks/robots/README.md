@@ -334,14 +334,15 @@ with 3 decimals; battery charges are percent with 2.
 | `job.<i>.loaded` | when the robot finished loading |
 | `job.<i>.ended`, `job.<i>.outcome` | when the job ended, as `completed`, `failed` or `abandoned` |
 | `job.<i>.reason` | for `failed`, the failed phase's reason; for `abandoned`, `timeout` or `assigned from outside` |
-| `charge.<n>.robot`, `charge.<n>.trigger` | robot, and why it joined the charger queue: `charge_below`, or `job <i>` for a job its battery would not last |
+| `charge.<n>.robot`, `charge.<n>.trigger` | robot, and why it joined the charger queue: `charge_below`; `job <i>` for a job its battery would not last; `floor` (at or under `idle_floor`); `start` (`charge_at_start`); `no_power` (its previous charge got no power and ended `no_power`; it charges again for the same jobs) |
 | `charge.<n>.queued` | when it joined the charger queue |
+| `charge.<n>.soc_queued` | its charge then (written with `idle_floor`, `one_need_charge` or `charge_at_start`) |
 | `charge.<n>.charger`, `charge.<n>.dispatched` | charger it was sent to (or charges at, at home), and when |
 | `charge.<n>.yielded_by` | the holder that gave the charger up to it: parked on it (charged to `charge_until`, or holding it by a top-up), or on its way there to top up |
 | `charge.<n>.holder_left`, `charge.<n>.held_s` | when a holder parked on the charger had cleared it, and how long the robot held in place before the charger for it |
 | `charge.<n>.started`, `charge.<n>.soc_start` | when it arrived at the charger, and its charge then |
-| `charge.<n>.ended`, `charge.<n>.outcome`, `charge.<n>.soc_end` | when the charge ended, as `charged` (reached `charge_until`) or `abandoned`, and the charge then |
-| `charge.<n>.reason` | for `abandoned`: the failed trip's reason, `timeout`, `jam` or `assigned from outside` |
+| `charge.<n>.ended`, `charge.<n>.outcome`, `charge.<n>.soc_end` | when the charge ended, as `charged` (reached `charge_until`), `abandoned`, `withdrawn` (queued for a job another robot took; never dispatched) or `no_power` (started, but the battery did not rise by `no_power_rise` within `no_power_s`), and the charge then |
+| `charge.<n>.reason` | for `abandoned`: the failed trip's reason, `timeout`, `jam`, `empty` or `assigned from outside`; for `withdrawn`: `job <i> taken by <robot>`; for `no_power`: `charge rose <x> points in <s> s` |
 | `top_up.<m>.robot`, `top_up.<m>.soc_dispatched` | a top-up: the robot, and its charge when it was sent |
 | `top_up.<m>.charger`, `top_up.<m>.dispatched` | the charger it took as its home, and when it was sent there |
 | `top_up.<m>.started`, `top_up.<m>.soc_start` | when it docked, and its charge then |
@@ -349,6 +350,8 @@ with 3 decimals; battery charges are percent with 2.
 | `top_up.<m>.reason` | for `abandoned`: the failed trip's reason, `timeout`, `jam`, `assigned from outside`, or `yielded` (it gave the charger up on its way to a queued robot) |
 | `top_up.<m>.yielded_to` | for `yielded`: the queued robot that took the charger |
 | `empty.<k>.robot`, `empty.<k>.at` | a robot whose battery reached 0 %, and when |
+| `empty.<k>.job`, `empty.<k>.charge` or `empty.<k>.top_up` | with `stop_empty`: the job, charge or top-up abandoned when it stopped |
+| `empty.<k>.in_dock` | with `stop_empty`: the charger (or chargers, comma-joined) in whose dock the stopped robot stands, written once; no robot is sent to that charger while it stands there |
 | `jam.<k>.robot`, `jam.<k>.at`, `jam.<k>.target` | a jammed robot, when, and the dock or charger it was headed for |
 | `jam.<k>.job`, `jam.<k>.charge` or `jam.<k>.top_up` | the job that failed, the charge or the top-up abandoned, by the jam |
 | `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
