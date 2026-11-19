@@ -40,7 +40,7 @@ import attrs
 
 from arena_simulation_setup.tree.World.Scenario import parse_scenario
 
-from . import place
+from . import place, site_walls
 from . import suite as SU
 from .search import HOMES, LOADING, SEARCHED, Placement, Scored
 
@@ -184,8 +184,11 @@ class SiteConfig:
     #: stair and escalator halves that join floor the world lays out on one level (HumanSim teleport zones, as the
     #: scenario's `teleport_zones`): the crowd's scenario carries them
     links: tuple[Mapping[str, Any], ...] = ()
+    #: wall loops the site's world holds for objects that are not part of the site (`site_walls`): they must be gone from
+    #: the site's world before a suite or a layout copy is written from it (`flowedit infra remove-walls`)
+    removed_walls: tuple[site_walls.RemovedWall, ...] = ()
 
-    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side", "crowd_density", "links")
+    KEYS = ("site", "scenario", "exclude", "entrances", "courier_access", "outlets", "flow_split", "crowd_side", "crowd_density", "links", "removed_walls")
 
     @property
     def placements(self) -> dict[str, Placement]:
@@ -263,8 +266,11 @@ class SiteConfig:
             parse_scenario({"format": "arena-scenario/2", "teleport_zones": list(links)})
         except ValueError as e:
             raise ValueError(f"{where}links: {e}") from None
+        removed = tuple(site_walls.RemovedWall.parse(entry, where) for entry in doc.get("removed_walls") or [])
+        if len({w.name for w in removed}) != len(removed):
+            raise ValueError(f"{where}removed_walls: names repeat")
         facts = place.SiteFacts(tuple(entrances), courier, outlets)
-        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, density, path, links)
+        return cls(str(doc["site"]), str(doc.get("scenario") or SCENARIO), tuple(doc.get("exclude", place.EXCLUDED_ZONES)), facts, tuple(split), side, density, path, links, removed)
 
     @classmethod
     def load(cls, path: Path) -> SiteConfig:
@@ -288,7 +294,15 @@ class SiteConfig:
             "crowd_density": None if self.crowd_density is None else attrs.asdict(self.crowd_density),
             "links": [dict(z) for z in self.links],
             "pins": {name: list(p.pin) for name, p in self.placements.items() if p.pin is not None},
+            **({"removed_walls": [w.record() for w in self.removed_walls]} if self.removed_walls else {}),
         }
+
+    def check_site(self, root: Path) -> None:
+        """ValueError when the world at `root` still holds a wall of `removed_walls`: what is written from it (a suite of
+        the site as is, a layout copy) would carry the object."""
+        left = site_walls.present(root, self.removed_walls) if self.removed_walls else []
+        if left:
+            raise ValueError(f"{root} still holds the walls {left} its site config removes ({self.path}): run `flowedit infra remove-walls --site {root}` first")
 
 
 def site_config(site: str, path: Path | None = None) -> SiteConfig:

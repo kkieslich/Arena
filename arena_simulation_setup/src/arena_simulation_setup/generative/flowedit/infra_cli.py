@@ -11,6 +11,8 @@
     flowedit infra search --reach 30,40         demand at the recipient entrances (`demand.py`): the travel-optimal
                                                 layout, the pedestrian-aware pick per travel margin and the
                                                 practice-based layout per reach, as a report; writes no world or suite
+    flowedit infra remove-walls                 the walls the site config removes (`removed_walls`, objects that are
+                                                not part of the site), out of the site's world and its layout copies
 
 Each writes its suite under <imported assets root>/suites (where `arena evaluation benchmark --suite` finds it), the
 layout suites a `<suite>.layouts.json` manifest beside it, and prints the benchmark call that runs it."""
@@ -96,9 +98,16 @@ def _summary(doc: dict[str, Any]) -> str:
     return f"{len(doc['stages'])} stages, {IN.episodes(doc)} episodes, {IN.sim_hours(doc):g} sim-hours"
 
 
+def _checked(config: IN.SiteConfig | None, root: Path) -> IN.SiteConfig | None:
+    """`config`, after its check that the site's world at `root` holds none of the walls it removes."""
+    if config is not None:
+        config.check_site(root)
+    return config
+
+
 def _cmd_reference(args: argparse.Namespace) -> int:
     site = open_site(_site_root(args.site))
-    config = _config(args, site.key)
+    config = _checked(_config(args, site.key), site.root)
     scenario = _scenario(args, config)
     IN.scenario_dir(site, scenario, args.scenarios_from)
     seeds = args.seeds or list(IN.SELECTION_SEEDS)
@@ -126,7 +135,7 @@ class _Space:
 
     def __init__(self, args: argparse.Namespace, elements: dict[str, Any] | None = None, *, count: bool = True) -> None:
         self.site = open_site(_site_root(args.site))
-        self.config = _config(args, self.site.key)
+        self.config = _checked(_config(args, self.site.key), self.site.root)
         self.scenario_name = _scenario(args, self.config)
         self.side = self.config.crowd_side if self.config is not None else None
         self.scenario = IN.scenario_dir(self.site, self.scenario_name, args.scenarios_from)
@@ -541,7 +550,7 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
     from ...shared.navmesh import nav_walls
 
     site = open_site(_site_root(args.site))
-    config = _config(args, site.key)
+    config = _checked(_config(args, site.key), site.root)
     if config is None:
         raise ValueError(f"{site.key}: the crowd comes from the site config's entrances; there is none")
     level = next(iter(site.world.levels.values()))
@@ -925,10 +934,33 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_remove_walls(args: argparse.Namespace) -> int:
+    """`flowedit infra remove-walls`: the walls of the site config's `removed_walls` out of the site's world and of each
+    of its layout copies beside it (or of the worlds `--world` names), in place."""
+    from . import site_walls as SW
+
+    root = _site_root(args.site)
+    config = IN.site_config(root.name, args.site_config)
+    if not config.removed_walls:
+        _log(f"{config.path}: no removed_walls, nothing to do")
+        return 0
+    worlds = [Path(w) for w in args.world] if args.world else SW.copies(root)
+    _log(f"{config.path}: removing {', '.join(w.name for w in config.removed_walls)} from {len(worlds)} worlds" + (" (dry run)" if args.dry_run else ""))
+    for world in worlds:
+        report = SW.remove(world, config.removed_walls, dry_run=args.dry_run)
+        walls = ", ".join(f"{w['name']} (level {w['level']} wall {w['index']}, bbox {w['bbox']})" for w in report["walls"]) or "none left"
+        pixels = ", ".join(f"map {level}: {'no map' if n is None else f'{n} pixels'}" for level, n in report["map_pixels"].items())
+        print(f"{world}: {walls}" + (f"; {pixels}" if pixels else ""))
+        left = SW.present(world, config.removed_walls)
+        if left and not args.dry_run:
+            raise ValueError(f"{world}: still holds {left}")
+    return 0
+
+
 def add_parser(verbs: Any) -> None:
     """The `infra` verb and its subcommands."""
     p = verbs.add_parser("infra", help="INFRA Stage 1 suites: the site as is, the premise check, the selection and the evaluation", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation,charge-states}")
+    infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation,charge-states,remove-walls}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE}); layout copies hardlink its assets, so save on its mount")
     common.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): where each element may go, the excluded zones, the crowd scenario")
@@ -1046,3 +1078,9 @@ def add_parser(verbs: Any) -> None:
     q.add_argument("--out", type=Path, required=True, help="the charge-state file (JSON)")
     q.add_argument("--force", action="store_true", help="replace an existing file")
     q.set_defaults(fn=_cmd_charge_states)
+    q = infra.add_parser("remove-walls", help="take the walls the site config removes out of the site's world and its layout copies", description="take the walls of the site config's removed_walls (objects the scan caught that are not part of the site, matched by level, kind and bounding box) out of the site's world and of every layout copy beside it (<site>__*), in place: the wall loop from world.yaml and its pixels from map/<level>.png; everything else stays as it is. The other infra commands refuse a site world that still holds such a wall.")
+    q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
+    q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml)")
+    q.add_argument("--world", type=Path, action="append", default=None, help="a world directory to clean instead of the site and its copies; repeatable")
+    q.add_argument("--dry-run", action="store_true", help="report what would be removed, change nothing")
+    q.set_defaults(fn=_cmd_remove_walls)
