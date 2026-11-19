@@ -7,7 +7,13 @@ and every other pixel stays as it is. The INFRA writers refuse a site world that
 (`check_site`), so layout copies saved from it are free of it too.
 
 A wall is matched by its geometry, not by its index: a closed path of the listed kind on the listed level whose
-bounding box lies within `MATCH_M` of the listed one, side by side."""
+bounding box lies within `MATCH_M` of the listed one, side by side.
+
+The other way round, a site config lists walls the world lacks (`added_walls`): a short wall that closes a gap the scan
+left between two outlines where the site has none for anyone (a slot at the edge of a stair well, say). `flowedit
+infra site-walls` appends each to the level's `walls:` in `world.yaml` (every other byte kept) and marks its pixels
+occupied in the map; each end must lie on another wall, so the gap is closed. It closes the gap for robots and walkers
+alike, as every wall of `world.yaml` does."""
 
 from __future__ import annotations
 
@@ -22,6 +28,11 @@ import attrs
 MATCH_M = 0.05
 #: a map pixel whose centre lies within this many pixels of a removed wall's path is that wall's
 PIXEL_REACH = 1.5
+#: an added wall's pixels: those whose centre lies within this many pixels of its path (a 4-connected strip, so no free
+#: path crosses it, not even diagonally)
+ADDED_REACH = 0.75
+#: how close each end of an added wall must lie to another wall of its level
+END_M = 0.02
 
 
 @attrs.frozen
@@ -62,6 +73,47 @@ class RemovedWall:
 
     def record(self) -> dict[str, typing.Any]:
         return {"name": self.name, "level": self.level, "kind": self.kind, "bbox": list(self.bbox), "note": self.note}
+
+
+@attrs.frozen
+class AddedWall:
+    """A wall the site's world lacks: `name`, why (`note`), the level, wall kind, path (world frame) and whether it is
+    closed."""
+
+    name: str
+    level: str
+    kind: str
+    path: tuple[tuple[float, float], ...]
+    closed: bool = False
+    note: str = ""
+
+    KEYS: typing.ClassVar[tuple[str, ...]] = ("name", "level", "kind", "path", "closed", "note")
+
+    @classmethod
+    def parse(cls, entry: object, where: str = "") -> AddedWall:
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"{where}added_walls: each entry is a mapping ({', '.join(cls.KEYS)}), not {entry!r}")
+        name = str(entry.get("name") or "")
+        if sorted(set(entry) - set(cls.KEYS)) or not name or not entry.get("kind"):
+            raise ValueError(f"{where}added_walls entry {name or entry!r}: needs name, kind and path, may have level, closed and note, not {sorted(entry)}")
+        path = entry.get("path")
+        if not isinstance(path, (list, tuple)) or len(path) < 2 or not all(isinstance(p, (list, tuple)) and len(p) == 2 for p in path):
+            raise ValueError(f"{where}added_walls entry {name}: path is [[x, y], [x, y], ...] with 2 points or more, not {path!r}")
+        return cls(name, str(entry.get("level", "0")), str(entry["kind"]), tuple((float(p[0]), float(p[1])) for p in path), bool(entry.get("closed", False)), str(entry.get("note") or ""))
+
+    def matches(self, level: str, wall: Mapping[str, typing.Any]) -> bool:
+        """Whether `wall` on `level` is this one (same kind and closedness, every point within 0.01 m)."""
+        path = wall.get("path") or []
+        if str(level) != self.level or wall.get("kind") != self.kind or bool(wall.get("closed")) != self.closed or len(path) != len(self.path):
+            return False
+        return all(math.dist(p[:2], q) <= 0.01 for p, q in zip(path, self.path, strict=True))
+
+    def entry(self) -> dict[str, typing.Any]:
+        """The `walls:` entry of `world.yaml`."""
+        return {"path": [list(p) for p in self.path], "closed": self.closed, "kind": self.kind}
+
+    def record(self) -> dict[str, typing.Any]:
+        return {"name": self.name, "level": self.level, "kind": self.kind, "path": [list(p) for p in self.path], "closed": self.closed, "note": self.note}
 
 
 def _bbox(path: Sequence[Sequence[float]]) -> tuple[float, float, float, float]:
@@ -127,10 +179,11 @@ def _value(node: typing.Any, key: str) -> typing.Any:  # noqa: ANN401 - a yaml n
 
 
 def _line_end(text: str, index: int) -> int:
-    """The index after the line break that ends the line `index` lies on (or the text's end); `index` itself when it is a
-    line start already."""
-    if index == 0 or text[index - 1] == "\n":
-        return index
+    """The index after the line break that ends the line `index` lies on (or the text's end); the start of that line when
+    only blanks stand before `index` on it (a mark at the next key's indented start)."""
+    start = text.rfind("\n", 0, index) + 1
+    if not text[start:index].strip():
+        return start
     newline = text.find("\n", index)
     return len(text) if newline < 0 else newline + 1
 
@@ -225,6 +278,124 @@ def remove(world: Path, removed: Iterable[RemovedWall], *, dry_run: bool = False
     return report
 
 
+def append_world_yaml(text: str, level: int, walls: Sequence[Mapping[str, typing.Any]]) -> str:
+    """`world.yaml` text with `walls` (`walls:` entries) appended to level `level`'s walls, after its last entry, every
+    other byte as it was. ValueError when the result does not read back as the same world with those walls added."""
+    import yaml
+
+    if not walls:
+        return text
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    sequence = _value(_value(root, "levels").value[level], "walls")
+    if sequence.flow_style or not sequence.value:
+        raise ValueError("the walls are a flow sequence ([...]) or empty: only block items (- path: ...) can be appended to")
+    last = sequence.value[-1]
+    at = _line_end(text, last.end_mark.index)
+    if at > 0 and text[at - 1] != "\n":
+        text, at = text + "\n", at + 1
+    dash = text.rfind("\n", 0, last.start_mark.index) + 1
+    indent = " " * (last.start_mark.column - 2) if text[dash:last.start_mark.index].strip() == "-" else None
+    if indent is None:
+        raise ValueError("the last wall does not start its own line (- path: ...)")
+    block = "".join(f"{indent}- path: [{', '.join(f'[{_num(p[0])}, {_num(p[1])}]' for p in wall['path'])}]\n{indent}  closed: {'true' if wall['closed'] else 'false'}\n{indent}  kind: {wall['kind']}\n" for wall in walls)
+    out = text[:at] + block + text[at:]
+    want = _load(text)
+    want["levels"][level]["walls"].extend(dict(wall) for wall in walls)
+    if _load(out) != want:
+        raise ValueError("world.yaml with the walls added does not read back as the world with those walls")
+    return out
+
+
+def _num(value: float) -> str:
+    return repr(float(value))
+
+
+def mark_map(image: typing.Any, meta: Mapping[str, typing.Any], paths: Sequence[Sequence[Sequence[float]]]) -> tuple[typing.Any, int]:  # noqa: ANN401 - numpy
+    """The map image with every pixel whose centre lies within `ADDED_REACH` pixels of one of `paths` set to occupied
+    (0 with `negate` 0), and how many it changed."""
+    import numpy as np
+    import shapely
+
+    resolution = float(meta["resolution"])
+    ox, oy = float(meta["origin"][0]), float(meta["origin"][1])
+    occupied = 255 if int(meta.get("negate", 0)) else 0
+    grey = image if image.ndim == 2 else image[..., 0]
+    height, width = grey.shape
+    lines = shapely.MultiLineString([[tuple(q[:2]) for q in p] for p in paths])
+    x0, y0, x1, y1 = lines.bounds
+    c0, c1 = max(int(math.floor((x0 - ox) / resolution)) - 2, 0), min(int(math.floor((x1 - ox) / resolution)) + 2, width - 1)
+    r0, r1 = max(height - 1 - int(math.floor((y1 - oy) / resolution)) - 2, 0), min(height - 1 - int(math.floor((y0 - oy) / resolution)) + 2, height - 1)
+    rr, cc = np.mgrid[r0 : r1 + 1, c0 : c1 + 1]
+    points = shapely.points((ox + (cc + 0.5) * resolution).ravel(), (oy + (height - 1 - rr + 0.5) * resolution).ravel())
+    near = shapely.dwithin(points, lines, ADDED_REACH * resolution).reshape(rr.shape)
+    out = image.copy()
+    patch = out[r0 : r1 + 1, c0 : c1 + 1]
+    target = near & ((patch if patch.ndim == 2 else patch[..., 0]) != occupied)
+    patch[target] = occupied
+    return out, int(target.sum())
+
+
+def add(world: Path, added: Iterable[AddedWall], *, dry_run: bool = False) -> dict[str, typing.Any]:
+    """Append the walls of `added` the world at `world` lacks to `world.yaml` (`append_world_yaml`) and mark them in each
+    level's `map/<level id>.png` (`mark_map`), in place. ValueError when an end of one lies further than `END_M` from
+    every other wall of its level: it would not close the gap there. What it added (or would, with `dry_run`)."""
+    import numpy as np
+    import shapely
+    import yaml
+    from PIL import Image
+
+    world = Path(world)
+    text = (world / "world.yaml").read_text()
+    doc = _load(text)
+    report: dict[str, typing.Any] = {"world": str(world), "added": [], "map_pixels": {}}
+    by_level: dict[int, list[AddedWall]] = {}
+    ids = [str(level.get("id")) for level in doc.get("levels") or []]
+    for entry in added:
+        if entry.level not in ids:
+            raise ValueError(f"{world}: no level {entry.level!r} for the added wall {entry.name}")
+        li = ids.index(entry.level)
+        walls = doc["levels"][li].get("walls") or []
+        if any(entry.matches(entry.level, w) for w in walls):
+            continue
+        others = shapely.MultiLineString([[tuple(q[:2]) for q in _line(w)] for w in walls if len(w.get("path") or []) > 1])
+        loose = [p for p in (entry.path[0], entry.path[-1]) if shapely.distance(shapely.Point(p), others) > END_M]
+        if loose:
+            raise ValueError(f"{world}: the added wall {entry.name} ends at {loose}, off every other wall of level {entry.level}: it would not close the gap")
+        by_level.setdefault(li, []).append(entry)
+        report["added"].append({"name": entry.name, "level": entry.level, "index": len(walls) + len(by_level[li]) - 1})
+    if not by_level:
+        return report
+    out = text
+    for li in sorted(by_level, reverse=True):
+        out = append_world_yaml(out, li, [w.entry() for w in by_level[li]])
+    images: dict[Path, typing.Any] = {}
+    for li, entries in by_level.items():
+        png, meta_path = world / "map" / f"{ids[li]}.png", world / "map" / f"{ids[li]}.yaml"
+        if not png.is_file() or not meta_path.is_file():
+            report["map_pixels"][ids[li]] = None
+            continue
+        meta = yaml.safe_load(meta_path.read_text()) or {}
+        with Image.open(png) as img:
+            mode = img.mode
+            pixels = np.asarray(img)
+        marked, n = mark_map(pixels, meta, [_line(w.entry()) for w in entries])
+        report["map_pixels"][ids[li]] = n
+        if n:
+            images[png] = Image.fromarray(marked, mode=mode)
+    if not dry_run:
+        (world / "world.yaml").write_text(out)
+        for png, img in images.items():
+            img.save(png, format="PNG")
+    return report
+
+
+def missing(world: Path, added: Iterable[AddedWall]) -> list[str]:
+    """The names of the walls of `added` the world at `world` lacks."""
+    doc = _load((Path(world) / "world.yaml").read_text())
+    levels = {str(level.get("id")): level.get("walls") or [] for level in doc.get("levels") or []}
+    return [entry.name for entry in added if not any(entry.matches(entry.level, w) for w in levels.get(entry.level, []))]
+
+
 def _line(wall: Mapping[str, typing.Any]) -> list[Sequence[float]]:
     """A `walls:` entry's path as a polyline, closed back to its start where the wall is closed."""
     path = list(wall["path"])
@@ -242,4 +413,4 @@ def copies(site_root: Path) -> list[Path]:
     return [site_root, *sorted(p for p in site_root.parent.glob(f"{site_root.name}__*") if (p / "world.yaml").is_file())]
 
 
-__all__ = ["MATCH_M", "PIXEL_REACH", "RemovedWall", "clear_map", "copies", "found", "present", "remove", "strip_world_yaml"]
+__all__ = ["ADDED_REACH", "END_M", "MATCH_M", "PIXEL_REACH", "AddedWall", "RemovedWall", "add", "append_world_yaml", "clear_map", "copies", "found", "mark_map", "missing", "present", "remove", "strip_world_yaml"]

@@ -4,6 +4,7 @@ import difflib
 import os
 from pathlib import Path
 
+import attrs
 import pytest
 import yaml
 
@@ -180,30 +181,161 @@ def test_a_site_config_refuses_a_removed_wall_it_cannot_match(entry: dict, match
         infra.SiteConfig.parse(doc)
 
 
+def _sign_only_config(tmp_path: Path) -> Path:
+    """The v2 twin's site config with its removed walls only (the test worlds lack the stairs' outlines)."""
+    doc = yaml.safe_load(infra.site_config("smu_link_full_v2").path.read_text())
+    doc.pop("added_walls")
+    path = tmp_path / "smu_link_full_v2.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return path
+
+
 def test_remove_walls_cleans_the_site_and_its_layout_copies_and_the_writers_refuse_a_site_that_holds_the_sign(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     worlds = tmp_path / "worlds"
     site = _world(worlds / "smu_link_full_v2")
     copies = [_world(worlds / "smu_link_full_v2__layout_2242008c", "onpse", flow=True), _world(worlds / "smu_link_full_v2__layout_4b5e5e6f")]
     other = _world(worlds / "smu_link_full")
-    config = infra.site_config("smu_link_full_v2")
-    with pytest.raises(ValueError, match=r"still holds the walls \['wet_floor_sign'\].*remove-walls"):
+    path = _sign_only_config(tmp_path)
+    config = infra.site_config("smu_link_full_v2", path)
+    with pytest.raises(ValueError, match=r"still holds the walls \['wet_floor_sign'\].*site-walls"):
         config.check_site(site)
-    assert cli.main(["infra", "remove-walls", "--site", str(site), "--dry-run"]) == 0
+    assert cli.main(["infra", "site-walls", "--site", str(site), "--site-config", str(path), "--dry-run"]) == 0
     assert all(SW.present(w, config.removed_walls) == ["wet_floor_sign"] for w in (site, *copies))
-    assert cli.main(["infra", "remove-walls", "--site", str(site)]) == 0
+    # remove-walls is the same command
+    assert cli.main(["infra", "remove-walls", "--site", str(site), "--site-config", str(path)]) == 0
     out = capsys.readouterr().out
-    assert all(f"{w}: wet_floor_sign (level 0 wall " in out for w in (site, *copies))
+    assert all(f"{w}: removed wet_floor_sign (level 0 wall " in out for w in (site, *copies))
     assert all(SW.present(w, config.removed_walls) == [] and _occupied_in(_pixels(w), SIGN_BBOX) == 0 for w in (site, *copies))
     config.check_site(site)
     # another world beside it is no copy of the site: left alone
     assert SW.present(other, config.removed_walls) == ["wet_floor_sign"]
-    assert cli.main(["infra", "remove-walls", "--site", str(site)]) == 0
+    assert cli.main(["infra", "site-walls", "--site", str(site), "--site-config", str(path)]) == 0
     assert "none left" in capsys.readouterr().out
+
+
+#: the T-junction stairs' foot: the outer wall coming up x 131.45 and turning west at y 48.07 (walls[0]), the deck's
+#: outline from its corner (131.55, 48.40) east (walls[37]); the slot between them joins the lower concourse (south-east)
+#: to the corridor above the stairs (north-west)
+STAIR_OUTER = [[131.45, 44.0], [131.45, 48.07], [131.203, 48.07], [131.229, 48.177], [131.156, 48.25], [130.87, 48.31], [130.0, 48.31]]
+STAIR_DECK = [[131.55, 48.4], [132.382, 48.35], [134.49, 48.45], [134.49, 49.0], [131.65, 49.0], [131.65, 48.45], [131.6, 48.52]]
+SLOT = SW.AddedWall("stair_foot_slot", "0", "scan_boundary", ((131.45, 48.07), (131.55, 48.40)))
+LOWER, ABOVE = (131.9, 47.9), (131.35, 48.75)
+#: the window round the slot the map check looks in (the test world is open round the two outlines)
+NEAR_SLOT = (130.9, 47.6, 132.2, 48.95)
+
+
+def _stairs(root: Path, *, flow: bool = False) -> Path:
+    """A world of the stairs' foot: the floor round it free, the two outlines drawn, the slot open."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    root.mkdir(parents=True)
+    walls = [{"path": STAIR_OUTER, "closed": False, "kind": "scan_boundary"}, {"path": STAIR_DECK, "closed": True, "kind": "scan_boundary"}]
+    doc = {"format": "arena-world/2", "levels": [{"id": "0", "zones": [], "walls": walls, "objects": []}]}
+    text = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+    if flow:
+        text = text.replace("- - ", "- [").replace("\n      - ", ", ")
+        text = "\n".join(line + "]" if line.lstrip().startswith("- [") else line for line in text.split("\n"))
+        assert yaml.safe_load(text) == doc
+    (root / "world.yaml").write_text(text)
+    origin, width, height = (128.0, 45.0), 160, 120
+    img = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(img)
+
+    def px(p: list[float]) -> tuple[float, float]:
+        return ((p[0] - origin[0]) / RESOLUTION, height - (p[1] - origin[1]) / RESOLUTION)
+
+    for wall in walls:
+        draw.line([px(p) for p in wall["path"]] + ([px(wall["path"][0])] if wall["closed"] else []), fill=0, width=1)
+    (root / "map").mkdir()
+    img.save(root / "map" / "0.png")
+    (root / "map" / "0.yaml").write_text(yaml.safe_dump({"free_thresh": 0.1, "image": "0.png", "negate": 0, "occupied_thresh": 0.9, "origin": [*origin, 0], "resolution": RESOLUTION}))
+    assert np.asarray(img).shape == (height, width)
+    return root
+
+
+def _connected(root: Path, a: tuple[float, float], b: tuple[float, float], box: tuple[float, float, float, float] | None = None) -> bool:
+    """Whether free pixels of the map join `a` and `b`, 8-connected (a diagonal step counts), within `box` (x_min, y_min,
+    x_max, y_max) only when given."""
+    from collections import deque
+
+    import numpy as np
+    from PIL import Image
+
+    meta = yaml.safe_load((root / "map" / "0.yaml").read_text())
+    with Image.open(root / "map" / "0.png") as img:
+        free = np.asarray(img.convert("L")) > 128
+    (ox, oy), res, height = meta["origin"][:2], meta["resolution"], free.shape[0]
+
+    def cell(p: tuple[float, float]) -> tuple[int, int]:
+        return height - 1 - int((p[1] - oy) / res), int((p[0] - ox) / res)
+
+    r0, c0, r1, c1 = 0, 0, free.shape[0] - 1, free.shape[1] - 1
+    if box is not None:
+        (r1, c0), (r0, c1) = cell((box[0], box[1])), cell((box[2], box[3]))
+    start, goal = cell(a), cell(b)
+    assert free[start] and free[goal]
+    seen, todo = {start}, deque([start])
+    while todo:
+        r, c = todo.popleft()
+        if (r, c) == goal:
+            return True
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                n = (r + dr, c + dc)
+                if r0 <= n[0] <= r1 and c0 <= n[1] <= c1 and free[n] and n not in seen:
+                    seen.add(n)
+                    todo.append(n)
+    return False
+
+
+@pytest.mark.parametrize("flow", [False, True])
+def test_add_closes_the_stair_foot_slot_in_world_yaml_and_the_map_for_robots(tmp_path: Path, flow: bool) -> None:
+    root = _stairs(tmp_path / "w", flow=flow)
+    before = (root / "world.yaml").read_text()
+    assert _connected(root, LOWER, ABOVE, NEAR_SLOT)
+    assert SW.missing(root, [SLOT]) == ["stair_foot_slot"]
+    report = SW.add(root, [SLOT])
+    assert [(w["name"], w["index"]) for w in report["added"]] == [("stair_foot_slot", 2)] and report["map_pixels"]["0"] > 3
+    # world.yaml: the same world with the wall appended; every line before it as it was
+    after = (root / "world.yaml").read_text()
+    want = yaml.safe_load(before)
+    want["levels"][0]["walls"].append({"path": [[131.45, 48.07], [131.55, 48.4]], "closed": False, "kind": "scan_boundary"})
+    assert yaml.safe_load(after) == want
+    ops = difflib.SequenceMatcher(None, before.splitlines(), after.splitlines(), autojunk=False).get_opcodes()
+    assert [op for op, *_ in ops if op != "equal"] == ["insert"]
+    # the map: no free path from the lower concourse to the corridor above the stairs any more
+    assert not _connected(root, LOWER, ABOVE, NEAR_SLOT)
+    assert SW.missing(root, [SLOT]) == []
+    # a second run adds nothing
+    pixels = _pixels(root)
+    assert SW.add(root, [SLOT])["added"] == [] and (root / "world.yaml").read_text() == after and (_pixels(root) == pixels).all()
+
+
+def test_add_refuses_a_wall_whose_end_is_off_every_other_wall(tmp_path: Path) -> None:
+    root = _stairs(tmp_path / "w")
+    short = SW.AddedWall("short", "0", "scan_boundary", ((131.45, 48.07), (131.52, 48.30)))
+    with pytest.raises(ValueError, match="would not close the gap"):
+        SW.add(root, [short])
+    assert SW.missing(root, [short]) == ["short"]
+
+
+def test_the_v2_twins_site_config_closes_the_stair_foot_slot_and_the_writers_refuse_a_site_without_it(tmp_path: Path) -> None:
+    config = infra.site_config("smu_link_full_v2")
+    (slot,) = config.added_walls
+    assert slot == attrs.evolve(SLOT, note=slot.note) and not slot.closed
+    assert config.record()["added_walls"] == [slot.record()]
+    root = _stairs(tmp_path / "w")
+    with pytest.raises(ValueError, match=r"lacks the walls \['stair_foot_slot'\]"):
+        attrs.evolve(config, removed_walls=()).check_site(root)
+    SW.add(root, config.added_walls)
+    attrs.evolve(config, removed_walls=()).check_site(root)
 
 
 def test_every_installed_v2_twin_world_is_free_of_the_sign_and_keeps_the_pillars() -> None:
     """The local worlds smu_link_full_v2 and its copies (`<site>__*`), when installed: no wall of the sign in world.yaml,
-    no occupied pixel round it in map/0.png, and the two pillars beside it still there."""
+    no occupied pixel round it in map/0.png, and the two pillars beside it still there; the stair foot slot closed in
+    world.yaml, and no free map path through it from the lower concourse to the corridor above the stairs."""
     import numpy as np
     from PIL import Image
 
@@ -218,6 +350,10 @@ def test_every_installed_v2_twin_world_is_free_of_the_sign_and_keeps_the_pillars
             problems.append(f"{world.name}: world.yaml holds {left}")
         if missing := sorted({p.name for p in pillars} - set(SW.present(world, pillars))):
             problems.append(f"{world.name}: no pillar {missing}")
+        if lacking := SW.missing(world, config.added_walls):
+            problems.append(f"{world.name}: world.yaml lacks {lacking}")
+        elif _connected(world, (131.9, 47.9), (131.0, 50.3), (128.0, 45.0, 136.0, 52.0)):
+            problems.append(f"{world.name}: free map pixels join the lower concourse to the corridor above the T-junction stairs")
         meta = yaml.safe_load((world / "map" / "0.yaml").read_text())
         with Image.open(world / "map" / "0.png") as img:
             grey = np.asarray(img.convert("L"))

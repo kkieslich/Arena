@@ -39,12 +39,20 @@ scenario: study_entrances
 # the ramps: the 4 % ramp, and the west ramp (flat to y 86, then 1.3 m up by y 58, ~4.6 %) to the side corridor
 exclude: [ramp, west_ramp]
 # objects the scan caught that are not part of the site, by level, wall kind and bounding box [x_min, y_min, x_max,
-# y_max] in the world frame (matched within 0.05 m per side, not by index): `flowedit infra remove-walls` takes their wall
+# y_max] in the world frame (matched within 0.05 m per side, not by index): `flowedit infra site-walls` takes their wall
 # loops out of the site's world and its layout copies (world.yaml and map/0.png), and the other infra commands refuse a
 # site world that still holds one. The two scanned pillars beside the sign (bbox 150.55-151.49 x 17.51-18.33 and
 # 150.47-151.37 x 11.91-12.65) are real and stay.
 removed_walls:
   - {name: wet_floor_sign, level: '0', kind: scan_boundary, bbox: [152.03, 16.67, 152.53, 17.25], note: 'temporary wet-floor warning sign between the robot bays and the loading point, not normally there; it left a 0.56 m slot to the east wall and a 0.89 m gap to the pillar west of it'}
+# gaps the scan left between two wall outlines where the site has no way through for anyone, closed by a short wall
+# whose ends lie on the two outlines (`flowedit infra site-walls` appends it to world.yaml and marks it in map/0.png):
+# the 0.32 m slot at the foot of the T-junction stairs between the outer wall (walls[0], corner 131.45, 48.07) and the
+# deck's outline (walls[37], corner 131.55, 48.40) joins the lower concourse to the corridor above the stairs. Walkers
+# change level by the stair halves in `links` (their bottom halves stand at x 131.5-133 on the lower concourse), never
+# through this slot.
+added_walls:
+  - {name: stair_foot_slot, level: '0', kind: scan_boundary, path: [[131.45, 48.07], [131.55, 48.40]], note: 'closes the 0.32 m slot at the foot of the T-junction stairs between the lower concourse and the corridor above them (a level change); Nav2 kept it closed only because it is narrower than the footprint plus inflation'}
 entrances:
   - {name: outdoor_space_scis1, type: building, at: [143.44, 181.47]}
   - {name: scis1_entrance, type: building, at: [154.14, 166.72], recipients: true}
