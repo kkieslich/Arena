@@ -153,6 +153,7 @@ class TM_Fleet(TM_Robots):
     _jam_goal_m: ROSParamT[float]
     _jam_home: ROSParamT[bool]
     _leg_timeout_moving: ROSParamT[bool]
+    _leg_timeout_cap: ROSParamT[float]
     _approach_m: ROSParamT[float]
     _top_up: ROSParamT[bool]
     _lockers: ROSParamT[list[str]]
@@ -191,6 +192,7 @@ class TM_Fleet(TM_Robots):
         self._jam_goal_m = self.node.ROSParam[float](self.namespace("jam_goal_m"), 1.0)
         self._jam_home = self.node.ROSParam[bool](self.namespace("jam_home"), True)
         self._leg_timeout_moving = self.node.ROSParam[bool](self.namespace("leg_timeout_moving"), True)
+        self._leg_timeout_cap = self.node.ROSParam[float](self.namespace("leg_timeout_cap"), 2.0)
         self._approach_m = self.node.ROSParam[float](self.namespace("approach_m"), 5.0)
         self._top_up = self.node.ROSParam[bool](self.namespace("top_up"), True)
         self._lockers = self.node.ROSParam[list[str]](self.namespace("lockers"), [], type_=rclpy.Parameter.Type.STRING_ARRAY)
@@ -584,17 +586,32 @@ class TM_Fleet(TM_Robots):
                 run.leg_started_s, run.leg_waited_s, run.reserved, run.waiting_since = now, 0.0, False, None
                 run.leg_timeout_s = self._timeout(math.dist(self._where(name), self._xy[run.docks[1]]) * self._detour.value)
             return
-        if run.leg_timeout_s > 0.0 and run.driving_s(now) > run.leg_timeout_s and (self._leg_timeout_moving.value or self._stalled_at_dock(name, run, now)):
+        if self._overdue_leg(run, now) and (self._leg_timeout_moving.value or self._past_cap(run, now) or self._stalled_at_dock(name, run, now)):
             self._end_job(name, "abandoned", "timeout", now)
 
+    @staticmethod
+    def _overdue_leg(run: _Run, now: float) -> bool:
+        """Whether the run's leg has driven longer than its timeout (its waits for the dock apart)."""
+        return run.leg_timeout_s > 0.0 and run.driving_s(now) > run.leg_timeout_s
+
+    def _past_cap(self, run: _Run, now: float) -> bool:
+        """With `leg_timeout_moving` false, whether an overdue leg has driven `leg_timeout_cap` times its timeout: it ends
+        then whatever the robot does, so a robot that keeps moving and never arrives cannot hold its dock for good."""
+        cap = self._leg_timeout_cap.value
+        return cap > 0.0 and run.driving_s(now) > cap * run.leg_timeout_s
+
     def _stalled_at_dock(self, name: str, run: _Run, now: float) -> bool:
-        """With `leg_timeout_moving` false, whether a leg past its timeout ends: only once the robot has stood (moved less
-        than `jam_progress_m` over `jam_window_s`, watched from when the timeout passed) within `jam_goal_m` of its dock,
-        where the jam rule does not look (docking that does not finish). A robot that still moves drives on, and one that
-        stands further from its dock is the jam rule's. Without a pose, or with the jam rule off, the timeout applies."""
+        """With `leg_timeout_moving` false, whether a leg past its timeout ends before its cap: only once the robot has
+        stood (moved less than `jam_progress_m` over `jam_window_s`, watched from when the timeout passed) within
+        `jam_goal_m` of its dock, where the jam rule does not look (docking that does not finish). A robot that still
+        moves drives on, and one that stands further from its dock is the jam rule's (which ends such a leg as a timeout,
+        `_unjam`). A robot holding before a busy dock is not judged, nor one without a pose on this tick; with the jam
+        rule off the timeout applies."""
         window = self._jam_window_s.value
-        if window <= 0.0 or self._ctx.robots[name].pose is None:
+        if window <= 0.0:
             return True
+        if run.waiting_since is not None or self._ctx.robots[name].pose is None:
+            return False
         key = (run.job.index, run.leg)
         if name not in self._overdue or self._overdue[name][0] != key:
             self._overdue[name] = (key, deque())
@@ -612,6 +629,7 @@ class TM_Fleet(TM_Robots):
     def _end_job(self, name: str, outcome: str, reason: str, now: float) -> None:
         """Close the robot's job as completed, failed or abandoned, release its docks and free the robot; a job that did not complete is dropped, not queued again."""
         run = self._run.pop(name)
+        self._overdue.pop(name, None)
         for dock in run.docks:
             self._release(dock, name)
             if name in self._dock_queue.get(dock, []):
@@ -1142,8 +1160,15 @@ class TM_Fleet(TM_Robots):
             await self._unjam_home(name, index, target, now)
             return
         if state is _State.JOB:
-            self._note(f"jam.{index}.job", str(self._run[name].job.index))
-            self._end_job(name, "failed", "jam", now)
+            run = self._run[name]
+            self._note(f"jam.{index}.job", str(run.job.index))
+            if not self._leg_timeout_moving.value and self._overdue_leg(run, now):
+                # past its timeout already: it ends as the timeout would have ended it (a job jam is a leg that stalled
+                # within its time), and the jam is logged as overdue
+                self._note(f"jam.{index}.overdue", str(run.leg))
+                self._end_job(name, "abandoned", "timeout", now)
+            else:
+                self._end_job(name, "failed", "jam", now)
         else:
             charge = self._charge[name]
             self._note(f"jam.{index}.{charge.table}", str(charge.index))

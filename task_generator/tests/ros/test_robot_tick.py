@@ -622,7 +622,7 @@ def test_fleet_cuts_a_moving_leg_off_at_its_timeout_by_default(monkeypatch: pyte
 
 
 def test_fleet_lets_a_leg_past_its_timeout_drive_on_while_it_moves_and_ends_it_once_it_stands_at_its_dock(monkeypatch: pytest.MonkeyPatch) -> None:
-    mode, managers, node, record = _overdue_leg(monkeypatch, leg_timeout_moving=False)
+    mode, managers, node, record = _overdue_leg(monkeypatch, leg_timeout_moving=False, leg_timeout_cap=3.0)
     # past its 100 s at 110 s, still moving: it drives on, and when its timeout passed is logged
     assert "job.0.ended" not in record.log and record.log["job.0.overdue_0"] == "110.001"
     assert record.log["job.0.timeout_0"] == "100.000"
@@ -638,16 +638,58 @@ def test_fleet_lets_a_leg_past_its_timeout_drive_on_while_it_moves_and_ends_it_o
     assert not any(field.startswith("jam.") for field in record.log)
 
 
-def test_fleet_leaves_a_leg_past_its_timeout_that_stands_away_from_its_dock_to_the_jam_rule(monkeypatch: pytest.MonkeyPatch) -> None:
-    mode, managers, node, record = _overdue_leg(monkeypatch, leg_timeout_moving=False)
-    # it stops 4.6 m short of the loading point: no timeout, the jam rule fails the job 60 s after it last moved
+def test_fleet_ends_a_leg_past_its_timeout_that_stands_away_from_its_dock_by_the_jam_rule_as_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _overdue_leg(monkeypatch, leg_timeout_moving=False, leg_timeout_cap=3.0)
+    # it stops 4.6 m short of the loading point: the jam rule takes it 60 s after it last moved, but the leg was past its
+    # timeout: it ends abandoned on the timeout, as the plain timeout would have ended it, not failed on a jam
     for t in (230.0, 259.5):
         _at(node, t)
         _tick(mode)
     assert "job.0.ended" not in record.log
     _at(node, 260.5)
     _tick(mode)
-    assert (record.log["job.0.outcome"], record.log["job.0.reason"], record.log["jam.0.job"]) == ("failed", "jam", "0")
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"], record.log["job.0.overdue_0"]) == ("abandoned", "timeout", "110.001")
+    assert (record.log["jam.0.job"], record.log["jam.0.overdue"]) == ("0", "0")
+    assert managers["r0"].moved and managers["r0"].navigation_resets == 1
+
+
+def test_fleet_ends_a_leg_past_its_timeout_cap_however_the_robot_moves_and_frees_its_dock(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _fleet(monkeypatch, jobs="dd", job_timeout=100.0, job_timeout_per_m=0.0, no_power_s=0.0, leg_timeout_moving=False)
+    asyncio.run(mode.reset())
+    _socs(managers, r0=90.0, r1=80.0, r2=50.0, r3=50.0)
+    for name, manager in managers.items():
+        manager.pose = _pose(20.0 + 3 * int(name[1]), 9.0)
+    # r0 takes the loading point (within approach_m) and moves 0.6 m back and forth 1.5-2.1 m from it for good; r1 waits
+    managers["r0"].pose, managers["r1"].pose = _pose(LOADING_XY[0] - 1.5, LOADING_XY[1]), _pose(LOADING_XY[0], LOADING_XY[1] + 3.0)
+    _at(node, 1.0)
+    _tick(mode)
+    _tick(mode)
+    assert _phase_text(managers["r1"]) == "delivery 1: wait for dock_a"
+    t = 10.0
+    while t < 200.0:
+        managers["r0"].pose = _pose(LOADING_XY[0] - (2.1 if int(t / 10) % 2 else 1.5), LOADING_XY[1])
+        _at(node, t)
+        _tick(mode)
+        t += 10.0
+    assert "job.0.ended" not in record.log and not any(field.startswith("jam.") for field in record.log)
+    # at twice its timeout (200 s of driving) the leg ends whatever the robot does, and r1 gets the loading point
+    _at(node, 201.5)
+    _tick(mode)
+    assert (record.log["job.0.outcome"], record.log["job.0.reason"]) == ("abandoned", "timeout")
+    assert _phase_text(managers["r1"]).startswith("delivery 1: load at dock_a")
+
+
+def test_fleet_decides_nothing_on_an_overdue_leg_on_a_tick_without_a_pose(monkeypatch: pytest.MonkeyPatch) -> None:
+    mode, managers, node, record = _overdue_leg(monkeypatch, leg_timeout_moving=False, leg_timeout_cap=3.0)
+    pose = managers["r0"].pose
+    managers["r0"].pose = None
+    _at(node, 205.0)
+    _tick(mode)
+    assert "job.0.ended" not in record.log
+    managers["r0"].pose = _pose(pose.position.x + 0.6, pose.position.y)
+    _at(node, 206.0)
+    _tick(mode)
+    assert "job.0.ended" not in record.log
 
 
 def test_fleet_charger_trip_timeout_grows_with_the_distance_to_the_charger(monkeypatch: pytest.MonkeyPatch) -> None:

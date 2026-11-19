@@ -255,7 +255,8 @@ words a goto as walking directions through the world's doors and openings.
 | `jam_home` | true | the jam rule also watches a robot on its way home (see **Jams** below); `false` leaves trips home unwatched |
 | `approach_m` | 5 | metres from the loading point or locker within which a robot takes that dock, or holds in place before it while another robot has it |
 | `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job leg may drive from its start, its waits before a busy dock apart, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
-| `leg_timeout_moving` | true | a job leg past its timeout is abandoned even while the robot moves; `false`: it drives on while it moves and ends only once the robot stands at its dock without docking (see **Ends**) |
+| `leg_timeout_moving` | true | a job leg past its timeout is abandoned even while the robot moves; `false`: it drives on while it moves and ends once the robot stands at its dock without docking, stands elsewhere (jam rule) or reaches `leg_timeout_cap` (see **Ends**) |
+| `leg_timeout_cap` | 2 | with `leg_timeout_moving: false`: a leg ends at this many times its timeout whatever the robot does; 0 for no cap |
 
 - Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
   every world. Released jobs queue until a robot is free.
@@ -288,9 +289,13 @@ words a goto as walking directions through the world's doors and openings.
   With `leg_timeout_moving: false` a leg past its timeout is not cut off while the robot moves: the time it passed
   is logged (`job.<i>.overdue_<leg>`), and the leg is abandoned (reason `timeout`) only once the robot has moved less
   than `jam_progress_m` over `jam_window_s`, counted from then, within `jam_goal_m` of its dock, where the jam rule
-  does not look (docking that does not finish). A robot past its timeout that stands anywhere else is the jam rule's
-  (`failed`, reason `jam`). A leg that cannot be submitted, a robot without a pose, and every leg with
-  `jam_window_s: 0` keep the plain timeout; charging trips keep theirs. In a crowd a leg can drive more than twice its
+  does not look (docking that does not finish). A robot past its timeout that stands anywhere else is caught by the
+  jam rule (teleported home, navigation reset), but its job ends as the timeout would have ended it: `abandoned`,
+  reason `timeout`, with `jam.<k>.overdue` logged, so `failed`/`jam` keeps meaning a leg that stalled within its time.
+  At `leg_timeout_cap` times its timeout (default 2) a leg ends `abandoned`/`timeout` whatever the robot does, so a
+  robot that keeps moving and never arrives cannot hold its dock for good. A tick without a pose, or while the robot
+  holds before a busy dock, decides nothing. A leg that cannot be submitted and every leg with `jam_window_s: 0` keep
+  the plain timeout; charging trips keep theirs. In a crowd a leg can drive more than twice its
   straight-line route and still arrive, so the plain timeout cut off robots that were making progress.
 - **Jams.** Each tick the mode keeps the positions of the robots on a job leg or a charging trip. A robot whose
   positions over the last `jam_window_s` all lie within `jam_progress_m` of the first is jammed: its job fails with
@@ -374,6 +379,7 @@ with 3 decimals; battery charges are percent with 2.
 | `empty.<k>.in_dock` | with `stop_empty`: the charger (or chargers, comma-joined) in whose dock the stopped robot stands, written once; no robot is sent to that charger while it stands there |
 | `jam.<k>.robot`, `jam.<k>.at`, `jam.<k>.target` | a jammed robot, when, and the dock, charger or home it was headed for |
 | `jam.<k>.job`, `jam.<k>.charge` or `jam.<k>.top_up` | the job that failed, the charge or the top-up abandoned, by the jam |
+| `jam.<k>.overdue` | with `leg_timeout_moving: false`: the leg (0 or 1) of a job leg past its timeout that stalled; the job ends `abandoned`, reason `timeout` |
 | `jam.<k>.trip` | `home` for a robot jammed on its way home (`jam_home`): no job or charge ended |
 | `jam.<k>.action` | `retry` for a charging trip that goes on to its charger (`charge_jam: retry`); `reset` for a trip home whose home had no free cell: the navigation was reset where the robot stood, no teleport |
 | `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
