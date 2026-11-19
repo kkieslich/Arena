@@ -59,6 +59,7 @@ setup(
     package_data={
         f'{package_name}.kg': ['packages/*.toml'],
         f'{package_name}.generative.scenario': ['agent_types/*.yaml', 'promptgen/*.yaml', 'promptgen/*.md', 'promptgen/prompts/*.yaml'],
+        f'{package_name}.generative.flowedit': ['demand_classes.yaml', 'demand_proposals.yaml'],
     },
     data_files=[
         ('share/' + package_name, ['package.xml']),

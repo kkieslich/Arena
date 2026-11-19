@@ -35,7 +35,7 @@ from ..scenario import populate as P
 from ..scenario.formats import first_level, scenario_text
 from ..scenario.materialize import GENERATED_MARKER, WouldOverwrite, is_generated
 from . import settings as S
-from .edit import EDITS, Site, open_site
+from .edit import EDITS, PROVENANCE_KEYS, Site, open_site
 from .interactions import by_rule, handle
 
 if TYPE_CHECKING:
@@ -170,7 +170,8 @@ def read_graph(scene: Scene) -> Graph:
             # `from` only records where the value came from: every satisfies is the object's own
             t.satisfies[_name(f.object)] = float(p.get("amount", 100.0))
         elif f.verb == "has_formation":
-            params = {k: v for k, v in p.items() if k not in ("anchor_kind", "anchor_ref")}
+            # a formation's params are its type's own, so all of them but the anchor and where the fact came from
+            params = {k: v for k, v in p.items() if k not in ("anchor_kind", "anchor_ref", *PROVENANCE_KEYS)}
             formation: dict[str, Any] = {"type": _name(f.object), "params": params}
             if "anchor_kind" in p:
                 formation["anchor"] = {"kind": p["anchor_kind"], **({"ref": p["anchor_ref"]} if "anchor_ref" in p else {})}

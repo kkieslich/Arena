@@ -43,6 +43,10 @@ SERVICE_KEYS = ("capacity", "interaction_radius")
 DWELL_KEYS = ("mean", "std", "clip_low", "clip_high")
 #: How an object is used (`affords`) is part of its demand: it moves with a left demand and goes with a cleared one.
 DEMAND_VERBS = ("serves", "satisfies", "has_formation", "dwells", "affords")
+#: The fact of an object decided to have no demand. An object has demand facts or this one, never both.
+INERT = "inert"
+#: Params of a demand fact that say where it came from (an agent type step, an edit, a pre-fill), never part of the demand
+PROVENANCE_KEYS = ("from", "by", "why", "model", "prompt_sha")
 FUNCTION_PARAMS = ("type", *SERVICE_KEYS, "satisfies", "dwell", "formation", "clear")
 #: Params that only switch an operation on: false names the same edit as leaving them out.
 FLAGS = ("leave_demand", "clear", "remove")
@@ -294,6 +298,13 @@ def _leave_demand(site: Site, obj: str, level_id: str, pose: Mapping[str, Any]) 
         level.objects[i] = attrs.evolve(level.objects[i], humansim={k: v for k, v in level.objects[i].humansim.items() if k == "seats"})
 
 
+def _decide_inert(graph: Scene, obj: str, origin: str) -> None:
+    """Mark `obj` inert when an edit leaves it without demand: the edit decided it has none, so a pre-fill must not give
+    it demand again."""
+    if not any(f.subject == obj and f.verb in DEMAND_VERBS for f in graph.facts):
+        graph.add_fact(obj, INERT, True, {"from": origin})
+
+
 def _move(site: Site, edit: Edit) -> None:
     """Move an object: `x`, `y`, `yaw` (default: unchanged), `level` (default: its own), `leave_demand` to leave its demand at the old spot."""
     _check_params(edit.params, ("x", "y", "yaw", "level", "leave_demand"))
@@ -306,6 +317,7 @@ def _move(site: Site, edit: Edit) -> None:
     x, y, yaw = (float(edit.params.get(k, pose[k])) for k in ("x", "y", "yaw"))
     if edit.params.get("leave_demand"):
         _leave_demand(site, edit.target, old_level_id, pose)
+        _decide_inert(site.graph, edit.target, f"edit:{edit.id}")
     site.graph.remove_fact(edit.target, "at", f"floor:{old_level_id}")
     site.graph.add_fact(edit.target, "at", f"floor:{level_id}", {"x": x, "y": y, "yaw": yaw})
     found = world_object(site.world, _name(edit.target, "obj"))
@@ -344,6 +356,7 @@ def _insert(site: Site, edit: Edit) -> None:
     site.graph.add_fact(edit.target, "at", f"floor:{level_id}", {"x": x, "y": y, "yaw": yaw})
     if params:
         _set_demand(site, edit.target, params, f"edit:{edit.id}")
+    _decide_inert(site.graph, edit.target, f"edit:{edit.id}")
     _rederive(site.world, site.graph)
 
 
@@ -447,6 +460,12 @@ def _set_demand(site: Site, obj: str, params: Mapping[str, Any], origin: str) ->
         _set_dwell(site.graph, obj, params["dwell"], origin)
     if "formation" in params:
         _set_formation(site.graph, obj, params["formation"], block)
+    # after every demand part, a formation-only edit included: an object with demand is no longer inert
+    if any(f.subject == obj and f.verb in DEMAND_VERBS for f in site.graph.facts):
+        for fact in [f for f in site.graph.facts if f.subject == obj and f.verb == INERT]:
+            site.graph.remove_fact(fact.subject, fact.verb, fact.object, fact.params)
+    if params.get("clear"):
+        _decide_inert(site.graph, obj, origin)
     if found is not None and block is not None:
         level, i = found
         level.objects[i] = attrs.evolve(level.objects[i], humansim=block)

@@ -118,7 +118,7 @@ def _uses_of(name: str, kind: str | None, uses: list[Use]) -> list[Use]:
     return [u for u in uses if u.target == name] or [u for u in uses if kind and u.target == kind]
 
 
-def _add_uses(scene: Scene, obj: str, block: Mapping[str, Any], model: str, found: list[Use]) -> None:
+def add_uses(scene: Scene, obj: str, block: Mapping[str, Any], model: str, found: list[Use]) -> None:
     """Add `affords` facts for how people use `obj` and the needs its steps satisfy, by HumanSim's rules when no step uses it."""
     if not found:
         rule = by_rule(block, model) if block else None
@@ -142,7 +142,7 @@ def _add_uses(scene: Scene, obj: str, block: Mapping[str, Any], model: str, foun
                 stated.add(f"need:{need}")
 
 
-def _add_demand(scene: Scene, obj: str, block: Mapping[str, Any], dwell: tuple[Duration, str] | None, notes: list[str]) -> None:
+def add_demand(scene: Scene, obj: str, block: Mapping[str, Any], dwell: tuple[Duration, str] | None, notes: list[str]) -> None:
     """Add the demand facts of `obj` from its `humansim:` block and dwell."""
     service = {k: block[k] for k in ("capacity", "interaction_radius") if block.get(k) is not None}
     if block.get("type"):
@@ -247,8 +247,8 @@ def build(root: Path, scenario: Path | None = None, seed: int = 0, notes: list[s
             if dwell is None:
                 dwell = next(((u.duration, u.origin) for u in found if u.duration is not None), None)
             if o.humansim or dwell is not None or found:
-                _add_demand(scene, obj, o.humansim, dwell, notes)
-                _add_uses(scene, obj, o.humansim, model, found)
+                add_demand(scene, obj, o.humansim, dwell, notes)
+                add_uses(scene, obj, o.humansim, model, found)
     sync_access(scene, world, notes)
     problems = scene.validate()
     if problems:
