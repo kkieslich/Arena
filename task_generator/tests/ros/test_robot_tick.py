@@ -820,7 +820,7 @@ def test_fleet_leaves_a_robot_on_its_way_home_alone_with_jam_home_off(monkeypatc
     assert managers["r0"].moved == [] and managers["r0"].navigation_resets == 0
 
 
-def test_fleet_resets_only_the_navigation_of_a_robot_jammed_on_its_way_home_to_a_spot_with_no_free_cell(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fleet_resets_only_the_navigation_of_a_robot_jammed_on_its_way_home_to_a_spot_with_no_free_cell_once_per_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     mode, managers, node, record = _timed_out_on_the_way(monkeypatch)
 
     def no_cell(phase: object) -> object:
@@ -833,6 +833,20 @@ def test_fleet_resets_only_the_navigation_of_a_robot_jammed_on_its_way_home_to_a
     assert (record.log["jam.0.trip"], record.log["jam.0.action"]) == ("home", "reset")
     assert managers["r0"].moved == [] and managers["r0"].navigation_resets == 1
     assert any(level == "warning" and "its navigation reset where it stands" in line for level, line in record.lines)
+    # its home stays blocked and it stands: no second jam on this trip
+    for t in range(200, 1400, 30):
+        _at(node, float(t))
+        _tick(mode)
+    assert "jam.1.robot" not in record.log and managers["r0"].navigation_resets == 1
+    # once it has moved 0.6 m on and stands again, it is watched again
+    managers["r0"].pose = _pose(2.2, 2.1)
+    for t in (1400.0, 1430.0, 1459.5):
+        _at(node, t)
+        _tick(mode)
+    assert "jam.1.robot" not in record.log
+    _at(node, 1461.0)
+    _tick(mode)
+    assert record.log["jam.1.trip"] == "home" and managers["r0"].navigation_resets == 2
 
 
 def test_fleet_counts_no_jam_for_robots_parked_at_home_waiting_for_a_dock_or_moving_on_their_way_home(monkeypatch: pytest.MonkeyPatch) -> None:

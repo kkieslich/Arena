@@ -231,6 +231,7 @@ class TM_Fleet(TM_Robots):
         self._empties = itertools.count()
         self._tracks: dict[str, deque[tuple[float, float, float]]] = {}
         self._home_tracks: set[str] = set()  # robots whose track in `_tracks` is of a trip home
+        self._home_jammed: dict[str, tuple[float, float] | None] = {}  # robot jammed on its trip home -> where it stood after the reset (None until seen): not watched again until it moves jam_progress_m from there or the trip ends
         self._overdue: dict[str, tuple[tuple[int, int], deque[tuple[float, float, float]]]] = {}  # robot past its leg's timeout -> (job, leg), its positions since
         self._jams = itertools.count()
         self._log: dict[str, str] = {}
@@ -293,7 +294,7 @@ class TM_Fleet(TM_Robots):
         self._run, self._docks, self._dock_queue, self._queue = {}, {}, {}, deque()
         self._charge_queue, self._charge, self._charges, self._top_ups, self._topping = {}, {}, itertools.count(), itertools.count(), {}
         self._empty, self._empties = set(), itertools.count()
-        self._tracks, self._home_tracks, self._jams = {}, set(), itertools.count()
+        self._tracks, self._home_tracks, self._home_jammed, self._jams = {}, set(), {}, itertools.count()
         self._overdue = {}
         self._need_for = {}
         self._start_check = {name for name, home in self._home.items() if home in self._chargers} if self._charge_at_start.value else set()
@@ -1090,6 +1091,17 @@ class TM_Fleet(TM_Robots):
                     self._home_tracks.add(name)
                 else:
                     self._home_tracks.discard(name)
+            if not home_trip:
+                self._home_jammed.pop(name, None)
+            elif name in self._home_jammed and self._ctx.robots[name].pose is not None:
+                # jammed on this trip home already: one jam per trip, unless it has moved on since its reset
+                here, since = self._where(name), self._home_jammed[name]
+                if since is None:
+                    self._home_jammed[name] = here
+                if since is None or math.dist(here, since) < self._jam_progress_m.value:
+                    self._tracks.pop(name, None)
+                    continue
+                del self._home_jammed[name]
             if window <= 0.0 or target is None or self._ctx.robots[name].pose is None:
                 self._tracks.pop(name, None)
                 continue
@@ -1165,6 +1177,7 @@ class TM_Fleet(TM_Robots):
         clear."""
         self._note(f"jam.{index}.trip", "home")
         self._tracks.pop(name, None)
+        self._home_jammed[name] = None
         robot = self._ctx.robots[name]
         try:
             home = robot.resolve_target(GoToPhase(target=target)).pose

@@ -304,7 +304,9 @@ words a goto as walking directions through the world's doors and openings.
   its timeout), after a charge, or as a holder leaving its charger to a queued robot. The window starts when the trip
   home does, not with the leg or trip before it. A jam there ends no job and no charge (`jam.<k>.trip` is `home`, no
   `jam.<k>.job`): the robot is teleported to its home, its navigation is reset, and its park there goes on. Where its
-  home has no free cell for it, only its navigation is reset where it stands (`jam.<k>.action` `reset`). Without this
+  home has no free cell for it, only its navigation is reset where it stands (`jam.<k>.action` `reset`). A robot is
+  jammed at most once per trip home: after its reset it is not watched again until it has moved `jam_progress_m` from
+  where it stood after the reset, or the trip ends (so a home that stays blocked gives one row, not one a minute). Without this
   a robot whose navigation died on a leg that timed out stood where it was until its next job. Robots parked at their
   home (arrived), holding before a dock or a charger, running a task from outside, or stopped at 0 % are not watched.
 - **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
