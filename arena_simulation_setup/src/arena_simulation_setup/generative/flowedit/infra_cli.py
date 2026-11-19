@@ -255,6 +255,9 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
     plan = _plan_parts(args, [s.layout_id for s in unique])
     also = [scored for scored, _ in (kept or {}).values() if scored.layout_id not in {s.layout_id for s in unique}]
     worlds = IN.save_layouts(space.site, [s.layout for s in [*unique, *also]], space.scenario, visitor_rate_per_h=args.visitor_rate)
+    if space.config is not None:
+        for path in worlds.values():
+            space.config.check_site(path)
     fleet = IN.fleet_config(rate, pickup_share=args.pickup_share, charge_below=args.charge_below, charge_until=args.charge_until)
     doc = IN.layout_suite([worlds[s.layout_id].name for s in unique], fleet, seeds, scenario=space.scenario_name, duration=args.duration, side=space.side)
     contest = IN.contest_literal(IN.contest(args.capacity_wh, soc_min=args.soc_min, soc_max=args.soc_max))
@@ -818,9 +821,18 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         return 0
 
     def check(path: Path, name: str) -> str | None:
-        """What stops an episode at its start in the copy's scenario `name` (the runtime's check, human.check), None when nothing does."""
+        """What is wrong with the copy (saved now or kept from before): a wall its site config removes or lacks one it
+        adds (`check_site`), then, unless --no-check, what stops an episode at its start in its scenario `name` (the
+        runtime's check, human.check); None when nothing is."""
         from arena_simulation_setup.metrics.use_points import blocking, describe
 
+        if space.config is not None:
+            try:
+                space.config.check_site(path)
+            except ValueError as e:
+                return str(e)
+        if args.no_check:
+            return None
         findings = SU.check_stage(path, name, seeds[0])
         if stops := blocking(findings):
             return describe(stops)
@@ -834,7 +846,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         else:
             crowds = {names[seed]: RC.recipient_crowd(scenario, layout, serves[layout_id], who[layout_id][seed], mix, patience_s=args.recipient_patience) for seed in seeds}
         # the targets and agent types are the same at every seed: one scenario is checked; a copy that fails is taken away again
-        saved = RC.save_layout(space.site, layout, space.scenario, crowds, check=None if args.no_check else check)
+        saved = RC.save_layout(space.site, layout, space.scenario, crowds, check=check)
         assert saved == worlds[layout_id], (saved, worlds[layout_id])
         _log(f"saved {saved} with {len(crowds)} crowd scenarios ({names[seeds[0]]} ...)")
     for path, text in files.items():

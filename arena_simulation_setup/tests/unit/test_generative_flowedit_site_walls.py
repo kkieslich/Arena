@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 import os
 from pathlib import Path
 
@@ -234,7 +235,8 @@ def _stairs(root: Path, *, flow: bool = False) -> Path:
 
     root.mkdir(parents=True)
     walls = [{"path": STAIR_OUTER, "closed": False, "kind": "scan_boundary"}, {"path": STAIR_DECK, "closed": True, "kind": "scan_boundary"}]
-    doc = {"format": "arena-world/2", "levels": [{"id": "0", "zones": [], "walls": walls, "objects": []}]}
+    floor = [[128.5, 45.5], [135.5, 45.5], [135.5, 51.5], [128.5, 51.5]]
+    doc = {"format": "arena-world/2", "levels": [{"id": "0", "zones": [{"name": "floor", "polygon": floor}], "walls": walls, "objects": []}]}
     text = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
     if flow:
         text = text.replace("- - ", "- [").replace("\n      - ", ", ")
@@ -257,17 +259,45 @@ def _stairs(root: Path, *, flow: bool = False) -> Path:
     return root
 
 
-def _connected(root: Path, a: tuple[float, float], b: tuple[float, float], box: tuple[float, float, float, float] | None = None) -> bool:
+def _rendered(root: Path) -> tuple[object, dict]:
+    """Level 0 of the world at `root` as the runtime renders the occupancy map Nav2 gets from world.yaml
+    (`render_map_files` at 0.05 m, objects black, as the world manager calls it): free pixels and the map yaml."""
+    import io
+
+    import numpy as np
+    from arena_simulation_setup.tree.World.view import WorldView
+    from PIL import Image
+
+    level = WorldView(root.resolve()).load().levels["0"]
+    png, text = level.render_map_files(resolution=RESOLUTION, asset_color="black")
+    with Image.open(io.BytesIO(png)) as img:
+        return np.asarray(img.convert("L")) > 128, yaml.safe_load(text)
+
+
+def _connected(source: Path | tuple[object, dict], a: tuple[float, float], b: tuple[float, float], box: tuple[float, float, float, float] | None = None, clearance: float = 0.0) -> bool:
     """Whether free pixels of the map join `a` and `b`, 8-connected (a diagonal step counts), within `box` (x_min, y_min,
-    x_max, y_max) only when given."""
+    x_max, y_max) only when given, keeping `clearance` metres from every occupied pixel (a robot of that radius).
+    `source` is a world (its map/0.png) or a rendered map (`_rendered`)."""
     from collections import deque
 
     import numpy as np
     from PIL import Image
 
-    meta = yaml.safe_load((root / "map" / "0.yaml").read_text())
-    with Image.open(root / "map" / "0.png") as img:
-        free = np.asarray(img.convert("L")) > 128
+    if isinstance(source, Path):
+        meta = yaml.safe_load((source / "map" / "0.yaml").read_text())
+        with Image.open(source / "map" / "0.png") as img:
+            free = np.asarray(img.convert("L")) > 128
+    else:
+        free, meta = source
+    if clearance > 0.0:
+        reach = int(math.ceil(clearance / float(meta["resolution"])))
+        padded = np.pad(free, reach, constant_values=False)
+        eroded = np.ones_like(free)
+        for dr in range(-reach, reach + 1):
+            for dc in range(-reach, reach + 1):
+                if dr * dr + dc * dc <= (clearance / float(meta["resolution"])) ** 2:
+                    eroded &= padded[reach + dr : reach + dr + free.shape[0], reach + dc : reach + dc + free.shape[1]]
+        free = eroded
     (ox, oy), res, height = meta["origin"][:2], meta["resolution"], free.shape[0]
 
     def cell(p: tuple[float, float]) -> tuple[int, int]:
@@ -296,7 +326,7 @@ def _connected(root: Path, a: tuple[float, float], b: tuple[float, float], box: 
 def test_add_closes_the_stair_foot_slot_in_world_yaml_and_the_map_for_robots(tmp_path: Path, flow: bool) -> None:
     root = _stairs(tmp_path / "w", flow=flow)
     before = (root / "world.yaml").read_text()
-    assert _connected(root, LOWER, ABOVE, NEAR_SLOT)
+    assert _connected(root, LOWER, ABOVE, NEAR_SLOT) and _connected(_rendered(root), LOWER, ABOVE, NEAR_SLOT, clearance=0.1)
     assert SW.missing(root, [SLOT]) == ["stair_foot_slot"]
     report = SW.add(root, [SLOT])
     assert [(w["name"], w["index"]) for w in report["added"]] == [("stair_foot_slot", 2)] and report["map_pixels"]["0"] > 3
@@ -307,8 +337,13 @@ def test_add_closes_the_stair_foot_slot_in_world_yaml_and_the_map_for_robots(tmp
     assert yaml.safe_load(after) == want
     ops = difflib.SequenceMatcher(None, before.splitlines(), after.splitlines(), autojunk=False).get_opcodes()
     assert [op for op, *_ in ops if op != "equal"] == ["insert"]
-    # the map: no free path from the lower concourse to the corridor above the stairs any more
+    # the map: no free path from the lower concourse to the corridor above the stairs any more, in map/0.png and in the
+    # map the runtime renders from world.yaml for Nav2 (where the slot was open before)
     assert not _connected(root, LOWER, ABOVE, NEAR_SLOT)
+    # the runtime draws every wall as a 1-pixel line, which a diagonal step can cross between two pixels (any wall of the
+    # twin can); a robot keeps more than 0.1 m from occupied cells, and at that clearance the slot was open and is closed
+    rendered = _rendered(root)
+    assert not _connected(rendered, LOWER, ABOVE, NEAR_SLOT, clearance=0.1)
     assert SW.missing(root, [SLOT]) == []
     # a second run adds nothing
     pixels = _pixels(root)
@@ -335,6 +370,40 @@ def test_the_v2_twins_site_config_closes_the_stair_foot_slot_and_the_writers_ref
     attrs.evolve(config, removed_walls=()).check_site(root)
 
 
+def test_walls_without_their_own_kind_match_by_the_worlds_default_wall_kind(tmp_path: Path) -> None:
+    # a world written with defaults.wall: walls of that kind carry no kind of their own
+    root = _world(tmp_path / "w")
+    doc = yaml.safe_load((root / "world.yaml").read_text())
+    doc["defaults"]["wall"] = {"kind": "scan_boundary"}
+    for wall in doc["levels"][0]["walls"]:
+        del wall["kind"]
+    (root / "world.yaml").write_text(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False))
+    assert SW.present(root, [REMOVED]) == ["wet_floor_sign"]
+    assert SW.remove(root, [REMOVED])["walls"][0]["index"] == 1 and SW.present(root, [REMOVED]) == []
+    # a wall with a material of its own has no default kind
+    assert not REMOVED.matches("0", {"path": SIGN, "closed": True, "material": "glass"}, "scan_boundary")
+    stairs = _stairs(tmp_path / "s")
+    doc = yaml.safe_load((stairs / "world.yaml").read_text())
+    doc["defaults"] = {"wall": {"kind": "scan_boundary"}}
+    doc["levels"][0]["walls"].append({"path": [list(p) for p in SLOT.path], "closed": False})
+    (stairs / "world.yaml").write_text(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False))
+    assert SW.missing(stairs, [SLOT]) == [] and SW.add(stairs, [SLOT])["added"] == []
+
+
+def test_clear_map_leaves_unknown_pixels_next_to_a_removed_wall_as_they_are(tmp_path: Path) -> None:
+    import numpy as np
+    from PIL import Image
+
+    root = _world(tmp_path / "w")
+    pixels = _pixels(root)
+    height = pixels.shape[0]
+    row, col = height - 1 - int((16.95 - ORIGIN[1]) / RESOLUTION), int((152.03 - ORIGIN[0]) / RESOLUTION)
+    pixels[row, col] = 205  # unknown, by free_thresh 0.1 and occupied_thresh 0.9
+    Image.fromarray(np.ascontiguousarray(pixels), mode="RGB").save(root / "map" / "0.png")
+    SW.remove(root, [REMOVED])
+    assert tuple(_pixels(root)[row, col]) == (205, 205, 205)
+
+
 def test_every_installed_v2_twin_world_is_free_of_the_sign_and_keeps_the_pillars() -> None:
     """The local worlds smu_link_full_v2 and its copies (`<site>__*`), when installed: no wall of a removed object (the
     sign, the advertisement stand) in world.yaml, no occupied pixel round one in map/0.png, and the two pillars beside it still there; the stair foot slot closed in
@@ -357,6 +426,17 @@ def test_every_installed_v2_twin_world_is_free_of_the_sign_and_keeps_the_pillars
             problems.append(f"{world.name}: world.yaml lacks {lacking}")
         elif _connected(world, (131.9, 47.9), (131.0, 50.3), (128.0, 45.0, 136.0, 52.0)):
             problems.append(f"{world.name}: free map pixels join the lower concourse to the corridor above the T-junction stairs")
+        # the map the runtime renders from world.yaml for Nav2: no cell of a removed object, the slot closed
+        free, meta = _rendered(world)
+        (rx, ry), rres, rheight = meta["origin"][:2], float(meta["resolution"]), free.shape[0]
+        for removed in config.removed_walls:
+            box = [v + d for v, d in zip(removed.bbox, (-0.1, -0.1, 0.1, 0.1), strict=True)]
+            cols = slice(int((box[0] - rx) / rres), int((box[2] - rx) / rres) + 1)
+            rows = slice(rheight - 1 - int((box[3] - ry) / rres), rheight - int((box[1] - ry) / rres))
+            if (occupied := int((~free[rows, cols]).sum())) > 0:
+                problems.append(f"{world.name}: {occupied} occupied cells round {removed.name} in the rendered map")
+        if _connected((free, meta), (131.9, 47.9), (131.0, 50.3), (128.0, 45.0, 136.0, 52.0), clearance=0.1):
+            problems.append(f"{world.name}: the rendered map joins the lower concourse to the corridor above the T-junction stairs")
         meta = yaml.safe_load((world / "map" / "0.yaml").read_text())
         with Image.open(world / "map" / "0.png") as img:
             grey = np.asarray(img.convert("L"))

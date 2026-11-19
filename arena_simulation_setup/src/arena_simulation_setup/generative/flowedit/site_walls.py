@@ -64,10 +64,11 @@ class RemovedWall:
             raise ValueError(f"{where}removed_walls entry {name}: bbox {box} is empty")
         return cls(name, str(entry.get("level", "0")), str(entry["kind"]), (x0, y0, x1, y1), str(entry.get("note") or ""))
 
-    def matches(self, level: str, wall: Mapping[str, typing.Any]) -> bool:
-        """Whether `wall` (a `walls:` entry of `world.yaml`) on `level` is this one."""
+    def matches(self, level: str, wall: Mapping[str, typing.Any], default_kind: str | None = None) -> bool:
+        """Whether `wall` (a `walls:` entry of `world.yaml`) on `level` is this one; `default_kind` is the world's
+        `defaults.wall` kind, which a wall without its own kind or material has."""
         path = wall.get("path") or []
-        if str(level) != self.level or wall.get("kind") != self.kind or not wall.get("closed") or len(path) < 3:
+        if str(level) != self.level or _kind(wall, default_kind) != self.kind or not wall.get("closed") or len(path) < 3:
             return False
         return all(abs(a - b) <= MATCH_M for a, b in zip(_bbox(path), self.bbox, strict=True))
 
@@ -101,10 +102,11 @@ class AddedWall:
             raise ValueError(f"{where}added_walls entry {name}: path is [[x, y], [x, y], ...] with 2 points or more, not {path!r}")
         return cls(name, str(entry.get("level", "0")), str(entry["kind"]), tuple((float(p[0]), float(p[1])) for p in path), bool(entry.get("closed", False)), str(entry.get("note") or ""))
 
-    def matches(self, level: str, wall: Mapping[str, typing.Any]) -> bool:
-        """Whether `wall` on `level` is this one (same kind and closedness, every point within 0.01 m)."""
+    def matches(self, level: str, wall: Mapping[str, typing.Any], default_kind: str | None = None) -> bool:
+        """Whether `wall` on `level` is this one (same kind, `default_kind` for a wall without its own, same closedness,
+        every point within 0.01 m)."""
         path = wall.get("path") or []
-        if str(level) != self.level or wall.get("kind") != self.kind or bool(wall.get("closed")) != self.closed or len(path) != len(self.path):
+        if str(level) != self.level or _kind(wall, default_kind) != self.kind or bool(wall.get("closed")) != self.closed or len(path) != len(self.path):
             return False
         return all(math.dist(p[:2], q) <= 0.01 for p, q in zip(path, self.path, strict=True))
 
@@ -116,6 +118,19 @@ class AddedWall:
         return {"name": self.name, "level": self.level, "kind": self.kind, "path": [list(p) for p in self.path], "closed": self.closed, "note": self.note}
 
 
+def _kind(wall: Mapping[str, typing.Any], default_kind: str | None) -> str | None:
+    """A `walls:` entry's kind: its own, else (without a material of its own) the world's `defaults.wall` kind."""
+    if wall.get("kind") is not None:
+        return str(wall["kind"])
+    return None if "material" in wall else default_kind
+
+
+def default_kind(doc: Mapping[str, typing.Any]) -> str | None:
+    """The `defaults.wall` kind of a world (`world.yaml` as data), None without one."""
+    wall = (doc.get("defaults") or {}).get("wall") or {}
+    return None if wall.get("kind") is None else str(wall["kind"])
+
+
 def _bbox(path: Sequence[Sequence[float]]) -> tuple[float, float, float, float]:
     xs, ys = [float(p[0]) for p in path], [float(p[1]) for p in path]
     return (min(xs), min(ys), max(xs), max(ys))
@@ -125,10 +140,11 @@ def found(doc: Mapping[str, typing.Any], removed: Iterable[RemovedWall]) -> list
     """The walls of `removed` the world (`world.yaml` as data) holds: (wall, level index, wall index), in file order."""
     removed = list(removed)
     hits = []
+    kind = default_kind(doc)
     for li, level in enumerate(doc.get("levels") or []):
         for wi, wall in enumerate(level.get("walls") or []):
             for entry in removed:
-                if entry.matches(str(level.get("id")), wall):
+                if entry.matches(str(level.get("id")), wall, kind):
                     hits.append((entry, li, wi))
     return hits
 
@@ -191,7 +207,8 @@ def _line_end(text: str, index: int) -> int:
 def clear_map(image: typing.Any, meta: Mapping[str, typing.Any], removed_paths: Sequence[Sequence[Sequence[float]]], kept_paths: Sequence[Sequence[Sequence[float]]]) -> tuple[typing.Any, int]:  # noqa: ANN401 - numpy
     """The map image (numpy, rows top down, grey or RGB) with the pixels of `removed_paths` (wall polylines) set to
     the free value of the floor round them, and how many it set: an occupied pixel whose centre lies within
-    `PIXEL_REACH` pixels of a removed path and further than that from every path of `kept_paths`. The free value is the
+    `PIXEL_REACH` pixels of a removed path and further than that from every path of `kept_paths` (occupied by the map's
+    `occupied_thresh`: an unknown pixel stays as it is). The free value is the
     one the most free pixels round the removed walls have (within 0.5 m of their bounding boxes, by the map's
     `free_thresh` and `negate`). Pixels that are not occupied are left as they are."""
     import numpy as np
@@ -199,7 +216,7 @@ def clear_map(image: typing.Any, meta: Mapping[str, typing.Any], removed_paths: 
 
     resolution = float(meta["resolution"])
     ox, oy = float(meta["origin"][0]), float(meta["origin"][1])
-    negate, free_thresh = int(meta.get("negate", 0)), float(meta.get("free_thresh", 0.196))
+    negate, free_thresh, occupied_thresh = int(meta.get("negate", 0)), float(meta.get("free_thresh", 0.196)), float(meta.get("occupied_thresh", 0.65))
     grey = image if image.ndim == 2 else image[..., 0]
     occupancy = grey.astype(float) / 255.0 if negate else (255.0 - grey.astype(float)) / 255.0
     height, width = grey.shape
@@ -223,7 +240,7 @@ def clear_map(image: typing.Any, meta: Mapping[str, typing.Any], removed_paths: 
     if kept is not None:
         near &= ~shapely.dwithin(points, kept, reach).reshape(rr.shape)
     window = occupancy[rows, cols]
-    target = near & (window > free_thresh)
+    target = near & (window > occupied_thresh)
     free = ~near & (window < free_thresh)
     out = image.copy()
     if not target.any():
@@ -350,12 +367,13 @@ def add(world: Path, added: Iterable[AddedWall], *, dry_run: bool = False) -> di
     report: dict[str, typing.Any] = {"world": str(world), "added": [], "map_pixels": {}}
     by_level: dict[int, list[AddedWall]] = {}
     ids = [str(level.get("id")) for level in doc.get("levels") or []]
+    kind = default_kind(doc)
     for entry in added:
         if entry.level not in ids:
             raise ValueError(f"{world}: no level {entry.level!r} for the added wall {entry.name}")
         li = ids.index(entry.level)
         walls = doc["levels"][li].get("walls") or []
-        if any(entry.matches(entry.level, w) for w in walls):
+        if any(entry.matches(entry.level, w, kind) for w in walls):
             continue
         others = shapely.MultiLineString([[tuple(q[:2]) for q in _line(w)] for w in walls if len(w.get("path") or []) > 1])
         loose = [p for p in (entry.path[0], entry.path[-1]) if shapely.distance(shapely.Point(p), others) > END_M]
@@ -393,7 +411,8 @@ def missing(world: Path, added: Iterable[AddedWall]) -> list[str]:
     """The names of the walls of `added` the world at `world` lacks."""
     doc = _load((Path(world) / "world.yaml").read_text())
     levels = {str(level.get("id")): level.get("walls") or [] for level in doc.get("levels") or []}
-    return [entry.name for entry in added if not any(entry.matches(entry.level, w) for w in levels.get(entry.level, []))]
+    kind = default_kind(doc)
+    return [entry.name for entry in added if not any(entry.matches(entry.level, w, kind) for w in levels.get(entry.level, []))]
 
 
 def _line(wall: Mapping[str, typing.Any]) -> list[Sequence[float]]:
@@ -413,4 +432,4 @@ def copies(site_root: Path) -> list[Path]:
     return [site_root, *sorted(p for p in site_root.parent.glob(f"{site_root.name}__*") if (p / "world.yaml").is_file())]
 
 
-__all__ = ["ADDED_REACH", "END_M", "MATCH_M", "PIXEL_REACH", "AddedWall", "RemovedWall", "add", "append_world_yaml", "clear_map", "copies", "found", "mark_map", "missing", "present", "remove", "strip_world_yaml"]
+__all__ = ["ADDED_REACH", "default_kind", "END_M", "MATCH_M", "PIXEL_REACH", "AddedWall", "RemovedWall", "add", "append_world_yaml", "clear_map", "copies", "found", "mark_map", "missing", "present", "remove", "strip_world_yaml"]

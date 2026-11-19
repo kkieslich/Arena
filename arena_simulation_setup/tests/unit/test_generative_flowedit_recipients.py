@@ -392,3 +392,38 @@ def test_a_new_copy_whose_scenario_fails_the_check_is_not_kept(space: EntranceSe
     with pytest.raises(ValueError, match="nothing of it is kept: the first in line stands in a wall"):
         recipients.save_layout(site_copy, pick.layout, site_copy.root / "scenarios" / "mix", crowds, check=check)
     assert seen == [(recipients.copy_path(site_copy, pick.layout).name, "mix__s3")] and not recipients.copy_path(site_copy, pick.layout).exists()
+
+
+def test_cli_evaluation_refuses_a_kept_layout_copy_that_holds_a_wall_its_site_config_removes(space: EntranceSearch, site_copy: Site, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from arena_simulation_setup.metrics.navr_filter import NavrBase
+
+    site = site_copy
+    spot = next(s for s in place.candidate_spots(site, "loading_point") if s.valid and s.zone == "central_hallway")
+    level = site.world.levels[spot.level]
+    navr = NavrBase(level, exclude={o.name for o in level.objects})
+    monkeypatch.setattr(search.Search, "base", property(lambda self: navr))
+    x, y = spot.objects[0].goto
+    doc = {"site": site.key, "scenario": "mix", "courier_access": [x, y], "entrances": [{"name": e.name, "type": e.type, "at": list(e.anchor)} for e in space.entrances]}
+    config = tmp_path / "site.yaml"
+    config.write_text(yaml.safe_dump(doc))
+    report = tmp_path / "report.json"
+    common = ["--site", str(site.root), "--site-config", str(config)]
+    assert cli.main(["infra", "search", *common, "--reach", "12", "--margins", "1.5", "--rate", "6", "--rank", "walk", "--out", str(report)]) == 0
+    optimal = next(r for r in json.loads(report.read_text())["reaches"][0]["layouts"] if r["role"] == "travel_optimal")
+    out = tmp_path / "suites" / "infra_rd.yaml"
+    args = ["infra", "evaluation", "--report", str(report), "--layouts", f"travel_optimal={optimal['layout_id']}", "--seeds", "71", "--rate", "240", "--no-check"]
+    assert cli.main([*args, *common, "--out", str(out)]) == 0
+    copy = next(p for p in site.root.parent.iterdir() if p.name == f"{site.key}__layout_{optimal['layout_id']}")
+    # a sign the scan caught stands in the kept copy only (the site was cleaned, the copy not): the copy is reused as it is
+    # (its edits.yaml matches), and the writer refuses it instead of writing a suite on it
+    text = (copy / "world.yaml").read_text()
+    sign = [[x + 1.0, y], [x + 1.4, y], [x + 1.4, y + 0.4], [x + 1.0, y + 0.4]]
+    world = yaml.safe_load(text)
+    world["levels"][0]["walls"].append({"path": sign, "closed": True, "kind": "scan_boundary"})
+    (copy / "world.yaml").write_text(yaml.safe_dump(world, sort_keys=False))
+    config.write_text(yaml.safe_dump({**doc, "removed_walls": [{"name": "sign", "kind": "scan_boundary", "bbox": [x + 1.0, y, x + 1.4, y + 0.4]}]}))
+    capsys.readouterr()
+    other = tmp_path / "suites" / "infra_rdz.yaml"
+    assert cli.main([*args, *common, "--tag", "z", "--out", str(other)]) == 1
+    assert "still holds the walls ['sign']" in capsys.readouterr().err
+    assert not list(other.parent.glob("infra_rdz*"))
