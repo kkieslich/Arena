@@ -151,6 +151,7 @@ class TM_Fleet(TM_Robots):
     _jam_window_s: ROSParamT[float]
     _jam_progress_m: ROSParamT[float]
     _jam_goal_m: ROSParamT[float]
+    _jam_home: ROSParamT[bool]
     _approach_m: ROSParamT[float]
     _top_up: ROSParamT[bool]
     _lockers: ROSParamT[list[str]]
@@ -187,6 +188,7 @@ class TM_Fleet(TM_Robots):
         self._jam_window_s = self.node.ROSParam[float](self.namespace("jam_window_s"), 60.0)
         self._jam_progress_m = self.node.ROSParam[float](self.namespace("jam_progress_m"), 0.5)
         self._jam_goal_m = self.node.ROSParam[float](self.namespace("jam_goal_m"), 1.0)
+        self._jam_home = self.node.ROSParam[bool](self.namespace("jam_home"), True)
         self._approach_m = self.node.ROSParam[float](self.namespace("approach_m"), 5.0)
         self._top_up = self.node.ROSParam[bool](self.namespace("top_up"), True)
         self._lockers = self.node.ROSParam[list[str]](self.namespace("lockers"), [], type_=rclpy.Parameter.Type.STRING_ARRAY)
@@ -226,6 +228,7 @@ class TM_Fleet(TM_Robots):
         self._empty: set[str] = set()
         self._empties = itertools.count()
         self._tracks: dict[str, deque[tuple[float, float, float]]] = {}
+        self._home_tracks: set[str] = set()  # robots whose track in `_tracks` is of a trip home
         self._jams = itertools.count()
         self._log: dict[str, str] = {}
         self._log_changed = False
@@ -287,7 +290,7 @@ class TM_Fleet(TM_Robots):
         self._run, self._docks, self._dock_queue, self._queue = {}, {}, {}, deque()
         self._charge_queue, self._charge, self._charges, self._top_ups, self._topping = {}, {}, itertools.count(), itertools.count(), {}
         self._empty, self._empties = set(), itertools.count()
-        self._tracks, self._jams = {}, itertools.count()
+        self._tracks, self._home_tracks, self._jams = {}, set(), itertools.count()
         self._need_for = {}
         self._start_check = {name for name, home in self._home.items() if home in self._chargers} if self._charge_at_start.value else set()
         for robot in robots:
@@ -1047,10 +1050,20 @@ class TM_Fleet(TM_Robots):
         """§8's jam rule: a robot on a job leg or a charging trip that moved less than `jam_progress_m` from where the
         last `jam_window_s` started fails its job (reason `jam`) or abandons its charge, and is reset to its home. Within
         `jam_goal_m` of its target it is docking or holding, and its window starts again. Each jam is logged with the
-        distance to the nearest other robot, so robot-robot jams can be told apart."""
+        distance to the nearest other robot, so robot-robot jams can be told apart. With `jam_home` a robot on its way
+        home (parked, not arrived: after a job, a charge or a jam, or a holder leaving its charger) is watched the same
+        way, its window started when the trip started; a jam there fails nothing and resets it to its home too."""
         window = self._jam_window_s.value
         for name, state in list(self._state.items()):
             target = self._jam_target(name, state)
+            home_trip = target is not None and state is _State.PARKED
+            if home_trip != (name in self._home_tracks):
+                # a trip home after a job leg or a charging trip, or a leg after a trip home: the window starts again
+                self._tracks.pop(name, None)
+                if home_trip:
+                    self._home_tracks.add(name)
+                else:
+                    self._home_tracks.discard(name)
             if window <= 0.0 or target is None or self._ctx.robots[name].pose is None:
                 self._tracks.pop(name, None)
                 continue
@@ -1068,12 +1081,15 @@ class TM_Fleet(TM_Robots):
             await self._unjam(name, state, target, now)
 
     def _jam_target(self, name: str, state: _State) -> str | None:
-        """Where the robot is headed on a job leg or a charging trip, None otherwise."""
+        """Where the robot is headed on a job leg, a charging trip or (with `jam_home`) a trip home, None otherwise: not
+        for a robot holding before a dock or a charger, parked at its home, running a task from outside or stopped at 0 %."""
         if state is _State.JOB:
             run = self._run[name]
             return run.docks[run.leg] if run.dispatched else None
         if state is _State.CHARGE and self._charge[name].started_s is None and self._charge[name].holding_since is None:
             return self._charge[name].charger
+        if state is _State.PARKED and self._jam_home.value and name not in self._arrived:
+            return self._home[name]
         return None
 
     async def _unjam(self, name: str, state: _State, target: str, now: float) -> None:
@@ -1084,6 +1100,9 @@ class TM_Fleet(TM_Robots):
         self._note(f"jam.{index}.target", target)
         if others:
             self._note(f"jam.{index}.robot_m", f"{min(others):.2f}")
+        if state is _State.PARKED:
+            await self._unjam_home(name, index, target, now)
+            return
         if state is _State.JOB:
             self._note(f"jam.{index}.job", str(self._run[name].job.index))
             self._end_job(name, "failed", "jam", now)
@@ -1111,6 +1130,28 @@ class TM_Fleet(TM_Robots):
             # way for every goal from home on
             await robot.reset_navigation()
         self._logger.warning(f"{name} jammed on its way to {target}: under {self._jam_progress_m.value:g} m in {self._jam_window_s.value:g} s, reset to {self._home[name]}, {now:.1f} s")
+
+    async def _unjam_home(self, name: str, index: int, target: str, now: float) -> None:
+        """A robot jammed on its way home (`jam.<k>.trip home`): no job or charge ends; it is teleported to its home and
+        its navigation is reset, and its park there goes on (the runtime sends the goal again after the teleport). Where
+        its home has no free cell for it (another robot stands there), only its navigation is reset where it stands
+        (`jam.<k>.action reset`): nav2's costmaps keep what it marked while it stalled, which a goal sent again does not
+        clear."""
+        self._note(f"jam.{index}.trip", "home")
+        self._tracks.pop(name, None)
+        robot = self._ctx.robots[name]
+        try:
+            home = robot.resolve_target(GoToPhase(target=target)).pose
+        except ValueError as e:
+            self._logger.debug(f"{name}: {e}")
+            home = None
+        if home is not None:
+            await robot.move(home)
+        else:
+            self._note(f"jam.{index}.action", "reset")
+        await robot.reset_navigation()
+        done = f"reset to {target}" if home is not None else "its navigation reset where it stands"
+        self._logger.warning(f"{name} jammed on its way home to {target}: under {self._jam_progress_m.value:g} m in {self._jam_window_s.value:g} s, {done}, {now:.1f} s")
 
     # OUTSIDE TASKS AND PLUMBING
 

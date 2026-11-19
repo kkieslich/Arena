@@ -252,6 +252,7 @@ words a goto as walking directions through the world's doors and openings.
 | `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
 | `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
 | `jam_window_s`, `jam_progress_m`, `jam_goal_m` | 60, 0.5, 1 | the jam rule (INFRA §8): a robot on a job leg or a charging trip that moves less than `jam_progress_m` within `jam_window_s`, further than `jam_goal_m` from its target, is jammed; `jam_window_s: 0` turns it off |
+| `jam_home` | true | the jam rule also watches a robot on its way home (see **Jams** below); `false` leaves trips home unwatched |
 | `approach_m` | 5 | metres from the loading point or locker within which a robot takes that dock, or holds in place before it while another robot has it |
 | `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job leg may drive from its start, its waits before a busy dock apart, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
 
@@ -290,6 +291,14 @@ words a goto as walking directions through the world's doors and openings.
   to its holder (or, if that holder has taken another charger since, to the robot that has the bay now). Within
   `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
   Each jam is logged with the distance to the nearest other robot, so robot-robot jams can be told apart.
+  With `jam_home` a robot on its way home is watched the same way (same window, distance and `jam_goal_m` to its
+  home): a robot parked but not yet arrived, sent home after a job ended (completed, failed, jammed or abandoned on
+  its timeout), after a charge, or as a holder leaving its charger to a queued robot. The window starts when the trip
+  home does, not with the leg or trip before it. A jam there ends no job and no charge (`jam.<k>.trip` is `home`, no
+  `jam.<k>.job`): the robot is teleported to its home, its navigation is reset, and its park there goes on. Where its
+  home has no free cell for it, only its navigation is reset where it stands (`jam.<k>.action` `reset`). Without this
+  a robot whose navigation died on a leg that timed out stood where it was until its next job. Robots parked at their
+  home (arrived), holding before a dock or a charger, running a task from outside, or stopped at 0 % are not watched.
 - **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
   a charger lowest battery first (ties by queue time, then name): a robot parked on its charger home charges there,
   any other takes, in this order, a charger whose holder is away (on a job, or freed), one whose holder yields, or one
@@ -352,8 +361,10 @@ with 3 decimals; battery charges are percent with 2.
 | `empty.<k>.robot`, `empty.<k>.at` | a robot whose battery reached 0 %, and when |
 | `empty.<k>.job`, `empty.<k>.charge` or `empty.<k>.top_up` | with `stop_empty`: the job, charge or top-up abandoned when it stopped |
 | `empty.<k>.in_dock` | with `stop_empty`: the charger (or chargers, comma-joined) in whose dock the stopped robot stands, written once; no robot is sent to that charger while it stands there |
-| `jam.<k>.robot`, `jam.<k>.at`, `jam.<k>.target` | a jammed robot, when, and the dock or charger it was headed for |
+| `jam.<k>.robot`, `jam.<k>.at`, `jam.<k>.target` | a jammed robot, when, and the dock, charger or home it was headed for |
 | `jam.<k>.job`, `jam.<k>.charge` or `jam.<k>.top_up` | the job that failed, the charge or the top-up abandoned, by the jam |
+| `jam.<k>.trip` | `home` for a robot jammed on its way home (`jam_home`): no job or charge ended |
+| `jam.<k>.action` | `retry` for a charging trip that goes on to its charger (`charge_jam: retry`); `reset` for a trip home whose home had no free cell: the navigation was reset where the robot stood, no teleport |
 | `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
 
 `<i>` is the job's index in the stream, `<n>`, `<m>` and `<k>` count from 0 per episode. A job without `ended` was still
