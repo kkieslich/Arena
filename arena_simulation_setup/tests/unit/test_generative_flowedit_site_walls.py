@@ -17,6 +17,8 @@ from arena_simulation_setup.generative.flowedit import site_walls as SW  # noqa:
 
 #: the twin's temporary sign (smu_link_full_v2, level 0) and the two scanned pillars beside it, which stay
 SIGN_BBOX = (152.03, 16.67, 152.53, 17.25)
+#: the twin's temporary advertisement stand by the locker_4 lane (level 0)
+AD_STAND_BBOX = (142.95, 219.55, 143.61, 220.25)
 SIGN = [[152.17, 17.182], [152.25, 17.223], [152.133, 17.25], [152.032, 16.866], [152.254, 16.672], [152.45, 16.792], [152.529, 17.105], [152.36, 16.954], [152.218, 17.01]]
 PILLAR_NORTH = [[150.55, 17.9], [150.9, 17.51], [151.49, 17.8], [151.3, 18.33], [150.7, 18.25]]
 PILLAR_SOUTH = [[150.47, 12.3], [150.9, 11.91], [151.37, 12.2], [151.1, 12.65], [150.6, 12.6]]
@@ -159,9 +161,10 @@ def test_a_wall_matches_only_by_level_kind_closed_loop_and_bounding_box_within_5
 
 def test_the_v2_twins_site_config_removes_the_sign_and_records_it() -> None:
     config = infra.site_config("smu_link_full_v2")
-    (sign,) = config.removed_walls
+    sign, stand = config.removed_walls
     assert (sign.name, sign.level, sign.kind, sign.bbox) == ("wet_floor_sign", "0", "scan_boundary", SIGN_BBOX)
-    assert config.record()["removed_walls"] == [sign.record()]
+    assert (stand.name, stand.level, stand.kind, stand.bbox) == ("advertisement_stand", "0", "scan_boundary", AD_STAND_BBOX)
+    assert config.record()["removed_walls"] == [sign.record(), stand.record()]
     assert "removed_walls" not in infra.site_config("smu_link_full").record()
 
 
@@ -333,8 +336,8 @@ def test_the_v2_twins_site_config_closes_the_stair_foot_slot_and_the_writers_ref
 
 
 def test_every_installed_v2_twin_world_is_free_of_the_sign_and_keeps_the_pillars() -> None:
-    """The local worlds smu_link_full_v2 and its copies (`<site>__*`), when installed: no wall of the sign in world.yaml,
-    no occupied pixel round it in map/0.png, and the two pillars beside it still there; the stair foot slot closed in
+    """The local worlds smu_link_full_v2 and its copies (`<site>__*`), when installed: no wall of a removed object (the
+    sign, the advertisement stand) in world.yaml, no occupied pixel round one in map/0.png, and the two pillars beside it still there; the stair foot slot closed in
     world.yaml, and no free map path through it from the lower concourse to the corridor above the stairs."""
     import numpy as np
     from PIL import Image
@@ -358,9 +361,10 @@ def test_every_installed_v2_twin_world_is_free_of_the_sign_and_keeps_the_pillars
         with Image.open(world / "map" / "0.png") as img:
             grey = np.asarray(img.convert("L"))
         (ox, oy), res, height = meta["origin"][:2], float(meta["resolution"]), grey.shape[0]
-        box = [v + d for v, d in zip(SIGN_BBOX, (-0.1, -0.1, 0.1, 0.1), strict=True)]
-        cols = slice(int((box[0] - ox) / res), int((box[2] - ox) / res) + 1)
-        rows = slice(height - 1 - int((box[3] - oy) / res), height - int((box[1] - oy) / res))
-        if (occupied := int((grey[rows, cols] < 128).sum())) > 0:
-            problems.append(f"{world.name}: {occupied} occupied map pixels round the sign")
+        for removed in config.removed_walls:
+            box = [v + d for v, d in zip(removed.bbox, (-0.1, -0.1, 0.1, 0.1), strict=True)]
+            cols = slice(int((box[0] - ox) / res), int((box[2] - ox) / res) + 1)
+            rows = slice(height - 1 - int((box[3] - oy) / res), height - int((box[1] - oy) / res))
+            if (occupied := int((grey[rows, cols] < 128).sum())) > 0:
+                problems.append(f"{world.name}: {occupied} occupied map pixels round {removed.name}")
     assert not problems, problems

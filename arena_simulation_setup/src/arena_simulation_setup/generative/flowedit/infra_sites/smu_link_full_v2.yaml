@@ -45,6 +45,7 @@ exclude: [ramp, west_ramp]
 # 150.47-151.37 x 11.91-12.65) are real and stay.
 removed_walls:
   - {name: wet_floor_sign, level: '0', kind: scan_boundary, bbox: [152.03, 16.67, 152.53, 17.25], note: 'temporary wet-floor warning sign between the robot bays and the loading point, not normally there; it left a 0.56 m slot to the east wall and a 0.89 m gap to the pillar west of it'}
+  - {name: advertisement_stand, level: '0', kind: scan_boundary, bbox: [142.95, 219.55, 143.61, 220.25], note: 'temporary advertisement sign on a floor stand by a wall corner beside the locker_4 lane, not normally there; it left a 0.43 m slot to the wall'}
 # gaps the scan left between two wall outlines where the site has no way through for anyone, closed by a short wall
 # whose ends lie on the two outlines (`flowedit infra site-walls` appends it to world.yaml and marks it in map/0.png):
 # the 0.32 m slot at the foot of the T-junction stairs between the outer wall (walls[0], corner 131.45, 48.07) and the
