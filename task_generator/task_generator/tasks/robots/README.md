@@ -334,7 +334,7 @@ with 3 decimals; battery charges are percent with 2.
 | `job.<i>.loaded` | when the robot finished loading |
 | `job.<i>.ended`, `job.<i>.outcome` | when the job ended, as `completed`, `failed` or `abandoned` |
 | `job.<i>.reason` | for `failed`, the failed phase's reason; for `abandoned`, `timeout` or `assigned from outside` |
-| `charge.<n>.robot`, `charge.<n>.trigger` | robot, and why it joined the charger queue: `charge_below`; `job <i>` for a job its battery would not last; `floor` (at or under `idle_floor`); `start` (`charge_at_start`); `no_power` (its previous charge got no power and ended `no_power`; it charges again for the same jobs) |
+| `charge.<n>.robot`, `charge.<n>.trigger` | robot, and why it joined the charger queue: `charge_below`; `job <i>` for a job its battery would not last; `floor` (at or under `idle_floor`); `start` (`charge_at_start`); `no_power` (its previous charge got no power and ended `no_power`, and it charges again for the same jobs; or it was parked on its charger home under `charge_until` and the dock did not charge it, the battery not rising by `no_power_rise` within `no_power_s`) |
 | `charge.<n>.queued` | when it joined the charger queue |
 | `charge.<n>.soc_queued` | its charge then (written with `idle_floor`, `one_need_charge` or `charge_at_start`) |
 | `charge.<n>.charger`, `charge.<n>.dispatched` | charger it was sent to (or charges at, at home), and when |

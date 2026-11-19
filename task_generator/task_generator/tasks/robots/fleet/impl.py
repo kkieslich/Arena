@@ -209,6 +209,7 @@ class TM_Fleet(TM_Robots):
         self._no_power_at: dict[str, set[str]] = {}  # robot -> the chargers where a charge of it ended no_power, until one of its charges gets power
         self._stopped: dict[str, int] = {}  # robot stopped at 0 % (stop_empty) -> its index in the empty table
         self._in_dock_logged: set[str] = set()  # stopped robots whose stand in a charger's dock is logged
+        self._docked_watch: dict[str, tuple[float, float]] = {}  # robot parked on its charger home under charge_until -> since when and lowest charge its charge has not risen
         self._home: dict[str, str] = {}
         self._spot: dict[str, str] = {}
         self._arrived: set[str] = set()
@@ -278,7 +279,7 @@ class TM_Fleet(TM_Robots):
             self._xy[spot] = (centre.x, centre.y)
             if spot in self._chargers:
                 self._dock_area[spot] = polygon
-        self._no_power_at, self._stopped, self._in_dock_logged = {}, {}, set()
+        self._no_power_at, self._stopped, self._in_dock_logged, self._docked_watch = {}, {}, set(), {}
         self._home = {robot.name: home for robot, home in zip(robots, homes, strict=False)}
         self._spot = dict(self._home)
         self._arrived = set(self._home)
@@ -332,6 +333,7 @@ class TM_Fleet(TM_Robots):
         self._watch_empty_docks(now)
         self._log_charge(now)
         self._check_start(now)
+        self._watch_docked(now)
 
         for name, state in list(self._state.items()):
             last = await self._ended(name, ended)
@@ -903,6 +905,33 @@ class TM_Fleet(TM_Robots):
     def _usable(self, name: str, charger: str) -> bool:
         """Whether the robot may charge at the charger now: neither `_blocked` nor `_barred` for it."""
         return not self._blocked(charger) and not self._barred(name, charger)
+
+    def _watch_docked(self, now: float) -> None:
+        """A robot parked on its charger home (`_docked_home`) under `charge_until`, not queued to charge, is charged by its
+        dock without a charge of the mode, so `_watch_power` does not look at it. If its charge has not risen by
+        `no_power_rise` over its lowest within `no_power_s` (the window starts again at each such rise), the dock does not
+        charge it (another robot holds it in the runtime): it queues to charge (trigger `no_power`) with a no-power record
+        for its home, so it takes another charger while another robot stands in that dock (`_barred`)."""
+        timeout, until = self._no_power_s.value, self._charge_until.value
+        for name in self._state:
+            soc = self._soc(name)
+            if timeout <= 0.0 or soc is None or soc >= until or name in self._charge_queue or not self._docked_home(name):
+                self._docked_watch.pop(name, None)
+                continue
+            since, lowest = self._docked_watch.get(name, (now, soc))
+            lowest = min(lowest, soc)
+            if soc >= lowest + self._no_power_rise.value:
+                since, lowest = now, soc
+            if now - since <= timeout:
+                self._docked_watch[name] = (since, lowest)
+                continue
+            del self._docked_watch[name]
+            home = self._home[name]
+            reason = f"charge rose {soc - lowest:.2f} points in {now - since:.0f} s"
+            self._no_power_at.setdefault(name, set()).add(home)
+            self._queue_charge(name, "no_power", now)
+            others = [other for other in self._state if other != name and self._in_dock(other, home)]
+            self._logger.warning(f"{name} parked on its charger home {home} at {soc:.1f} % gets no power there ({reason}; {', '.join(others) or 'no other robot'} in its dock), queued to charge, {now:.1f} s")
 
     def _watch_empty_docks(self, now: float) -> None:
         """Log once for each robot stopped at 0 % that stands in a charger's dock (`empty.N.in_dock`): it blocks that
