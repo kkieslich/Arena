@@ -7,7 +7,9 @@ writes into the stages with the fleet, and the charge states a long fleet-only r
 - Rules (`fleet_config`): robots charge by need (`charge_rule: need`: a robot goes to charge only when its next job
   would leave it under the reserve by the job's energy estimate; no threshold, no top-ups of idle robots), take the
   nearest free charger, and go on to it after a jam on the way (`charge_jam: retry`) instead of being reset to a far
-  waiting spot. The first study's suites (`infra.fleet_config`) set none of these and keep its behaviour.
+  waiting spot. A job leg past its timeout is not cut off while the robot still moves (`leg_timeout_moving: false`):
+  in the crowd a leg can drive far longer than its straight-line estimate and still arrive; the jam rule stays the net
+  for a robot that stands. The first study's suites (`infra.fleet_config`) set none of these and keep its behaviour.
 - Battery (`contest`): no capacity override, so every robot runs on its model's own battery (the jackal's 270 Wh). The
   start charge comes from a file of charge states (`task.episode.battery.soc.file`: one state per episode seed, each
   robot its place in it), else every robot starts at `start_soc` (full by default).
@@ -100,6 +102,9 @@ def fleet_config(
         "nearest_charger": True,
         "charge_jam": "retry",
         "top_up": False,
+        # a leg past its timeout drives on while the robot moves; it ends only once the robot stands at its dock without
+        # docking (the jam rule takes a robot that stands anywhere else)
+        "leg_timeout_moving": False,
     }
     if charge_log:
         block |= {"soc_log": str(charge_log), "soc_log_s": float(charge_log_s)}

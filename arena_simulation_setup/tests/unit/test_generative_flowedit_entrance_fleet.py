@@ -55,6 +55,7 @@ def test_the_fleet_block_runs_the_job_list_by_the_rules_of_the_redesign_and_the_
         "nearest_charger": True,
         "charge_jam": "retry",
         "top_up": False,
+        "leg_timeout_moving": False,
     }
     logged = entrance_fleet.fleet_config(["locker_1"], [], rate_per_h=9.0, charge_log="/logs/x.csv", charge_log_s=30.0)
     assert (logged["soc_log"], logged["soc_log_s"]) == ("/logs/x.csv", 30.0)

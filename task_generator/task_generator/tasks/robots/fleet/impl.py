@@ -152,6 +152,7 @@ class TM_Fleet(TM_Robots):
     _jam_progress_m: ROSParamT[float]
     _jam_goal_m: ROSParamT[float]
     _jam_home: ROSParamT[bool]
+    _leg_timeout_moving: ROSParamT[bool]
     _approach_m: ROSParamT[float]
     _top_up: ROSParamT[bool]
     _lockers: ROSParamT[list[str]]
@@ -189,6 +190,7 @@ class TM_Fleet(TM_Robots):
         self._jam_progress_m = self.node.ROSParam[float](self.namespace("jam_progress_m"), 0.5)
         self._jam_goal_m = self.node.ROSParam[float](self.namespace("jam_goal_m"), 1.0)
         self._jam_home = self.node.ROSParam[bool](self.namespace("jam_home"), True)
+        self._leg_timeout_moving = self.node.ROSParam[bool](self.namespace("leg_timeout_moving"), True)
         self._approach_m = self.node.ROSParam[float](self.namespace("approach_m"), 5.0)
         self._top_up = self.node.ROSParam[bool](self.namespace("top_up"), True)
         self._lockers = self.node.ROSParam[list[str]](self.namespace("lockers"), [], type_=rclpy.Parameter.Type.STRING_ARRAY)
@@ -229,6 +231,7 @@ class TM_Fleet(TM_Robots):
         self._empties = itertools.count()
         self._tracks: dict[str, deque[tuple[float, float, float]]] = {}
         self._home_tracks: set[str] = set()  # robots whose track in `_tracks` is of a trip home
+        self._overdue: dict[str, tuple[tuple[int, int], deque[tuple[float, float, float]]]] = {}  # robot past its leg's timeout -> (job, leg), its positions since
         self._jams = itertools.count()
         self._log: dict[str, str] = {}
         self._log_changed = False
@@ -291,6 +294,7 @@ class TM_Fleet(TM_Robots):
         self._charge_queue, self._charge, self._charges, self._top_ups, self._topping = {}, {}, itertools.count(), itertools.count(), {}
         self._empty, self._empties = set(), itertools.count()
         self._tracks, self._home_tracks, self._jams = {}, set(), itertools.count()
+        self._overdue = {}
         self._need_for = {}
         self._start_check = {name for name, home in self._home.items() if home in self._chargers} if self._charge_at_start.value else set()
         for robot in robots:
@@ -579,8 +583,30 @@ class TM_Fleet(TM_Robots):
                 run.leg_started_s, run.leg_waited_s, run.reserved, run.waiting_since = now, 0.0, False, None
                 run.leg_timeout_s = self._timeout(math.dist(self._where(name), self._xy[run.docks[1]]) * self._detour.value)
             return
-        if run.leg_timeout_s > 0.0 and run.driving_s(now) > run.leg_timeout_s:
+        if run.leg_timeout_s > 0.0 and run.driving_s(now) > run.leg_timeout_s and (self._leg_timeout_moving.value or self._stalled_at_dock(name, run, now)):
             self._end_job(name, "abandoned", "timeout", now)
+
+    def _stalled_at_dock(self, name: str, run: _Run, now: float) -> bool:
+        """With `leg_timeout_moving` false, whether a leg past its timeout ends: only once the robot has stood (moved less
+        than `jam_progress_m` over `jam_window_s`, watched from when the timeout passed) within `jam_goal_m` of its dock,
+        where the jam rule does not look (docking that does not finish). A robot that still moves drives on, and one that
+        stands further from its dock is the jam rule's. Without a pose, or with the jam rule off, the timeout applies."""
+        window = self._jam_window_s.value
+        if window <= 0.0 or self._ctx.robots[name].pose is None:
+            return True
+        key = (run.job.index, run.leg)
+        if name not in self._overdue or self._overdue[name][0] != key:
+            self._overdue[name] = (key, deque())
+            self._note(f"job.{run.job.index}.overdue_{run.leg}", _s(now))
+        track = self._overdue[name][1]
+        x, y = self._where(name)
+        track.append((now, x, y))
+        while len(track) > 1 and now - track[1][0] >= window:
+            track.popleft()
+        t0, x0, y0 = track[0]
+        if math.dist((x, y), self._xy[run.docks[run.leg]]) > self._jam_goal_m.value:
+            return False
+        return now - t0 >= window and all(math.dist((x0, y0), (px, py)) < self._jam_progress_m.value for _, px, py in track)
 
     def _end_job(self, name: str, outcome: str, reason: str, now: float) -> None:
         """Close the robot's job as completed, failed or abandoned, release its docks and free the robot; a job that did not complete is dropped, not queued again."""

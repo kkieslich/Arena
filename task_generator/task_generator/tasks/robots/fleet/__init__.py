@@ -45,6 +45,7 @@ class FleetParams(ParamGroup):
     NO_POWER_RISE = Param[float]("no_power_rise", 0.1, "Battery percentage points a started charge must rise by within no_power_s to count as getting power.", constraint=Range(0.0, 100.0))
     SOC_LOG = Param[str]("soc_log", "", "File the mode writes the robots' battery charge and homes to every soc_log_s seconds (CSV with a header line); empty for none. A file that exists and is not empty is refused at the reset: logs are written once.")
     SOC_LOG_S = Param[float]("soc_log_s", 60.0, "Seconds between two lines of soc_log.", constraint=Range(1.0, 86400.0))
+    LEG_TIMEOUT_MOVING = Param[bool]("leg_timeout_moving", True, "A job leg past its timeout is abandoned even while the robot still moves. false: past its timeout a leg drives on while the robot moves (logged job.N.overdue_K when the timeout passed) and is abandoned (reason timeout) only once the robot has moved less than jam_progress_m over jam_window_s within jam_goal_m of its dock, where the jam rule does not look; a robot that stands further from its dock is the jam rule's. A leg that cannot be submitted, a robot without a pose and every leg with jam_window_s 0 keep the plain timeout; charging trips are not affected.")
     JOB_TIMEOUT_PER_M = Param[float]("job_timeout_per_m", 5.0, "Seconds the timeout grows by per metre of the route estimate (straight line times detour): from where a job leg starts to its dock, to the charger for a charging trip.", constraint=Range(0.0, 3600.0))
 
 

@@ -255,6 +255,7 @@ words a goto as walking directions through the world's doors and openings.
 | `jam_home` | true | the jam rule also watches a robot on its way home (see **Jams** below); `false` leaves trips home unwatched |
 | `approach_m` | 5 | metres from the loading point or locker within which a robot takes that dock, or holds in place before it while another robot has it |
 | `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job leg may drive from its start, its waits before a busy dock apart, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
+| `leg_timeout_moving` | true | a job leg past its timeout is abandoned even while the robot moves; `false`: it drives on while it moves and ends only once the robot stands at its dock without docking (see **Ends**) |
 
 - Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
   every world. Released jobs queue until a robot is free.
@@ -284,6 +285,13 @@ words a goto as walking directions through the world's doors and openings.
   The holder's own timeout frees a dock nobody reaches. A leg that cannot be submitted (its dock has no free cell for
   the robot) is sent again each tick until it goes out, or abandoned once its timer runs out; it never counts as done. A job that did not complete is not queued again: it ends
   there, its docks are freed and the robot goes home (or runs the outside task, and goes home once that is done).
+  With `leg_timeout_moving: false` a leg past its timeout is not cut off while the robot moves: the time it passed
+  is logged (`job.<i>.overdue_<leg>`), and the leg is abandoned (reason `timeout`) only once the robot has moved less
+  than `jam_progress_m` over `jam_window_s`, counted from then, within `jam_goal_m` of its dock, where the jam rule
+  does not look (docking that does not finish). A robot past its timeout that stands anywhere else is the jam rule's
+  (`failed`, reason `jam`). A leg that cannot be submitted, a robot without a pose, and every leg with
+  `jam_window_s: 0` keep the plain timeout; charging trips keep theirs. In a crowd a leg can drive more than twice its
+  straight-line route and still arrive, so the plain timeout cut off robots that were making progress.
 - **Jams.** Each tick the mode keeps the positions of the robots on a job leg or a charging trip. A robot whose
   positions over the last `jam_window_s` all lie within `jam_progress_m` of the first is jammed: its job fails with
   reason `jam` (its charge is abandoned with reason `jam`), its docks are freed and it is teleported to its home,
@@ -339,6 +347,7 @@ with 3 decimals; battery charges are percent with 2.
 | `job.<i>.robot`, `job.<i>.assigned` | robot that took the job, and when |
 | `job.<i>.energy_wh` | the energy estimate it was taken on |
 | `job.<i>.timeout_0`, `job.<i>.timeout_1` | seconds each leg may drive, waits for its dock apart, before the job is abandoned (0: none) |
+| `job.<i>.overdue_0`, `job.<i>.overdue_1` | with `leg_timeout_moving: false`: when the leg passed its timeout while the robot still moved |
 | `job.<i>.wait_s` | seconds the robot held in place before busy docks over the job, written when it ends (part of `ended - released`) |
 | `job.<i>.loaded` | when the robot finished loading |
 | `job.<i>.ended`, `job.<i>.outcome` | when the job ended, as `completed`, `failed` or `abandoned` |
