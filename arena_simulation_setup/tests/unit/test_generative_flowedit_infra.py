@@ -123,6 +123,14 @@ def test_the_contest_scales_the_battery_and_reads_back_from_its_literal() -> Non
     assert "\n" not in literal and yaml.safe_load(literal) == entries
 
 
+def test_the_fleet_replans_with_the_inter_planner_that_clears_the_global_costmap_when_planning_fails() -> None:
+    assert infra.PLANNER == {"driver": "nav2", "local_planner": "dwb", "inter_planner": "navigate_w_replanning_time_clear"}
+    trees = Path(__file__).resolve().parents[3] / "arena_robots" / "arena_robots" / "config" / "nav2" / "interplanners"
+    if not trees.is_dir():
+        pytest.skip("arena_robots is not checked out")
+    assert (trees / infra.PLANNER["inter_planner"] / "interplanner_behavior.xml").is_file()
+
+
 def test_write_replaces_only_its_own_suites(tmp_path: Path) -> None:
     out = infra.write(infra.reference_suite("site", [1]), tmp_path / "s.yaml", ["a header"])
     assert out.read_text().startswith(infra.MARKER + "\n# a header\n")

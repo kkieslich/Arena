@@ -145,8 +145,21 @@ class Nav2Adapter(MobileAdapter):
         if self.client.is_done() is False:
             self.client.cancel()
         await super().on_reset(robot, ctx)
+        # the global costmap keeps the obstacles the robot marked in the last episode, which in this episode's layout and
+        # from its start it may never see again to clear; under slam, reset_map clears it once, after the map
+        if self._bringup_kwargs.get("mapping") == "slam":
+            await self.reset_map(robot)
+        else:
+            await self._clear_global_costmap(robot)
         await self._clear_costmap(robot, "local")
-        await self.reset_map(robot)
+
+    async def _clear_global_costmap(self, robot: RobotManager) -> bool:
+        """Clear the global costmap; False while it is not active or still coming up, which does not fail the reset."""
+        try:
+            return await self._clear_costmap(robot, "global")
+        except TimeoutError as exc:
+            robot.node.get_logger().warning(f"{robot.namespace}: global costmap not cleared, the navigation stack is still coming up ({exc})")
+            return False
 
     async def reset_map(self, robot: RobotManager) -> bool:
         """Under robot.mobile.mapping:=slam, empty slam_toolbox's map and the global costmap built on it."""

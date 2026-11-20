@@ -94,8 +94,10 @@ CHARGE_UNTIL = 90.0
 PICKUP_SHARE = 0.3
 LOAD_S = 15.0
 UNLOAD_S = 10.0
-#: The fleet's planner: Nav2 DWB with the same parameters in every layout (§8)
-PLANNER = {"driver": "nav2", "local_planner": "dwb", "inter_planner": "navigate_w_replanning_time"}
+#: The fleet's planner: Nav2 DWB with the same parameters in every layout (§8). The inter planner replans at 4 Hz and
+#: clears the global costmap when planning fails (arena_robots config/nav2/interplanners): walkers marked there and
+#: left behind can otherwise close a passage for every later goal
+PLANNER = {"driver": "nav2", "local_planner": "dwb", "inter_planner": "navigate_w_replanning_time_clear"}
 FLEET_CONTESTANT = "fleet_dwb"
 #: The jackal's planner speed limit (`velocity_limits` in its caps/mobile.yaml, Nav2 DWB's `max_vel_x`), for the rate
 #: estimate: an upper bound, since the crowd slows the robots
