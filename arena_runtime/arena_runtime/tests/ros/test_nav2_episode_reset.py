@@ -41,32 +41,182 @@ class _Logger:
         self._events.append(f"warning: {message}")
 
 
-def _reset(mapping: str, *, running: bool = True, start_pose: object | None = None, timeout_on: str | None = None, active: bool = True) -> list[str]:
-    """Run on_reset with the service calls recorded instead of made; the events in their order."""
-    events: list[str] = []
-    adapter = Nav2Adapter.__new__(Nav2Adapter)
-    adapter._bringup_kwargs = {"mapping": mapping}
-    adapter._service_clients = {}
-    adapter._clients = {TaskKind.GOTO_POSE: _Client(events, done=not running)}
+SCAN = f"{NS}/lidar"
+CLOUD = f"{NS}/lidar/points"
+TICK_NS = 20_000_000  # one physics step
+SCAN_NS = 100_000_000  # the lidar's 10 Hz
 
-    async def call_active(robot: object, node_name: str, srv_type: type, srv_name: str, req: object) -> bool:
-        if srv_name == timeout_on:
+
+class _Rig:
+    """A Nav2Adapter on a held sim: the service calls, sim steps and the move are recorded instead of made, and each step
+    publishes on the scan topics at the lidar's rate, stamped with the sim time."""
+
+    def __init__(self, mapping: str = "static", *, running: bool = True, timeout_on: str | None = None, active: bool = True, held: bool = True, topics: tuple[str, ...] = ()) -> None:
+        self.events: list[str] = []
+        self.timeout_on = timeout_on
+        self.active = active
+        self.held = held
+        self.now = 5_000_000_000
+        self.landed: int | None = None
+        self.publishing = set(topics)
+        self.callbacks: dict[str, object] = {}
+        self.at_clear: list[dict[str, list[int]]] = []
+        self.adapter = Nav2Adapter.__new__(Nav2Adapter)
+        self.adapter._bringup_kwargs = {"mapping": mapping}
+        self.adapter._service_clients = {}
+        self.adapter._clients = {TaskKind.GOTO_POSE: _Client(self.events, done=not running)}
+        self.adapter._scan_topics = dict.fromkeys(topics, object)
+        self.adapter._scan_subs = []
+        self.adapter._scan_stamps = {}
+        self.adapter._call_active = self._call_active
+        node = SimpleNamespace(get_logger=lambda: _Logger(self.events), step_tick=self._step_tick, create_subscription=self._subscribe)
+        self.robot = SimpleNamespace(namespace=Namespace(NS), node=node, move=self._move, pose_stamped=None)
+
+    def _subscribe(self, msg_type: type, topic: str, callback: object, qos: object) -> object:
+        self.callbacks[topic] = callback
+        return topic
+
+    def publish(self, topic: str, stamp: int) -> None:
+        self.callbacks[topic](SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=stamp // 1_000_000_000, nanosec=stamp % 1_000_000_000))))
+
+    def tick(self) -> None:
+        self.now += TICK_NS
+        if self.now % SCAN_NS == 0:
+            for topic in self.publishing:
+                self.publish(topic, self.now)
+
+    async def _step_tick(self) -> float | None:
+        self.events.append("step")
+        if not self.held:
+            return None
+        self.tick()
+        return TICK_NS / 1e9
+
+    async def _call_active(self, robot: object, node_name: str, srv_type: type, srv_name: str, req: object) -> bool:
+        if srv_name == self.timeout_on:
             raise TimeoutError(f"{srv_name} not available after 20.0s")
-        events.append(srv_name)
+        self.events.append(srv_name)
         assert srv_type is not ClearEntireCostmap or isinstance(req, ClearEntireCostmap.Request)
-        return active
+        if srv_name == GLOBAL:
+            self.at_clear.append({topic: list(stamps) for topic, stamps in self.adapter._scan_stamps.items()})
+        return self.active
 
-    async def move(pose: object) -> None:
-        events.append("move")
+    async def _move(self, pose: object) -> None:
+        self.events.append("move")
+        self.tick()
+        self.landed = self.now
+        self.robot.pose_stamped = (pose, SimpleNamespace(nanoseconds=self.landed))
 
-    adapter._call_active = call_active
-    robot = SimpleNamespace(namespace=Namespace(NS), node=SimpleNamespace(get_logger=lambda: _Logger(events)), move=move)
-    asyncio.run(adapter.on_reset(robot, SimpleNamespace(start_pose=start_pose)))
-    return events
+    def history(self) -> None:
+        """The scan topics' subscriptions from an earlier reset, each with a scan from the pose before the move."""
+        self.adapter._watch_scans(self.robot)
+        for topic in self.publishing:
+            self.publish(topic, self.now)
+
+    def reset(self, start_pose: object | None = None) -> list[str]:
+        asyncio.run(self.adapter.on_reset(self.robot, SimpleNamespace(start_pose=start_pose)))
+        return self.events
+
+
+def _reset(mapping: str, *, start_pose: object | None = None, **kwargs: object) -> list[str]:
+    """Run on_reset with the service calls recorded instead of made; the events in their order."""
+    return _Rig(mapping, **kwargs).reset(start_pose)
+
+
+def _steps_squeezed(events: list[str]) -> list[str]:
+    return [e for i, e in enumerate(events) if e != "step" or (i and events[i - 1] != "step")]
 
 
 def test_a_static_map_robot_cancels_moves_and_clears_the_global_then_the_local_costmap() -> None:
-    assert _reset("static", start_pose=object()) == ["cancel", "move", GLOBAL, LOCAL]
+    # no scan topic has published yet (the first reset): the second clear follows at once
+    assert _reset("static", start_pose=object()) == ["cancel", "move", GLOBAL, LOCAL, GLOBAL]
+
+
+def test_the_second_global_clear_waits_for_two_scans_from_the_start_pose_on_every_scan_topic() -> None:
+    rig = _Rig(topics=(SCAN, CLOUD))
+    rig.history()
+    events = rig.reset(start_pose=object())
+    assert _steps_squeezed(events) == ["cancel", "move", GLOBAL, LOCAL, "step", GLOBAL]
+    first, second = rig.at_clear
+    assert all(sum(stamp > rig.landed for stamp in stamps) == 0 for stamps in first.values())
+    assert all(sum(stamp > rig.landed for stamp in stamps) >= 2 for stamps in second.values()) and set(second) == {SCAN, CLOUD}
+    assert events.count("step") <= 2 * SCAN_NS // TICK_NS
+
+
+def test_a_scan_stamped_before_the_landing_is_no_scan_from_the_start_pose() -> None:
+    rig = _Rig(topics=(SCAN,))
+    rig.history()
+    rig.adapter._scan_stamps[SCAN].extend([rig.now + TICK_NS // 2] * 5)  # late deliveries of a scan from before the move
+    events = rig.reset(start_pose=object())
+    assert sum(stamp > rig.landed for stamp in rig.at_clear[1][SCAN]) >= 2
+    assert events.count("step") >= SCAN_NS // TICK_NS
+
+
+def test_a_topic_that_never_published_is_not_waited_for() -> None:
+    rig = _Rig(topics=(SCAN, CLOUD))
+    rig.history()
+    rig.publishing.discard(CLOUD)
+    rig.adapter._scan_stamps[CLOUD].clear()
+    events = rig.reset(start_pose=object())
+    assert _steps_squeezed(events) == ["cancel", "move", GLOBAL, LOCAL, "step", GLOBAL]
+    assert sum(stamp > rig.landed for stamp in rig.at_clear[1][SCAN]) >= 2
+
+
+def test_a_sim_that_runs_on_its_own_is_waited_for_without_steps() -> None:
+    rig = _Rig(topics=(SCAN,), held=False)
+    rig.history()
+
+    async def main() -> None:
+        async def sim() -> None:
+            while True:
+                await asyncio.sleep(0.005)
+                rig.tick()
+
+        clock = asyncio.create_task(sim())
+        try:
+            await rig.adapter.on_reset(rig.robot, SimpleNamespace(start_pose=object()))
+        finally:
+            clock.cancel()
+
+    asyncio.run(main())
+    assert rig.events == ["cancel", "move", GLOBAL, LOCAL, "step", GLOBAL]
+    assert sum(stamp > rig.landed for stamp in rig.at_clear[1][SCAN]) >= 2
+
+
+def test_scans_that_do_not_come_end_the_wait_with_a_warning_and_the_clear_goes_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arena_runtime.env.adapters.mobile import nav2
+
+    monkeypatch.setattr(nav2, "_FRESH_SCAN_TIMEOUT_S", 0.2)
+    rig = _Rig(topics=(SCAN,))
+    rig.history()
+    rig.publishing.clear()
+    events = _steps_squeezed(rig.reset(start_pose=object()))
+    assert events[:5] == ["cancel", "move", GLOBAL, LOCAL, "step"] and events[-1] == GLOBAL
+    assert events[5].startswith(f"warning: {NS}: no 2 scans from the start pose within 0.2s")
+
+
+def test_a_robot_that_is_not_moved_gets_no_second_clear() -> None:
+    rig = _Rig(topics=(SCAN,))
+    rig.history()
+    assert rig.reset() == ["cancel", GLOBAL, LOCAL]
+
+
+def test_the_scan_topics_are_the_robots_laserscan_and_pointcloud_sensors_in_its_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arena_robots.Sensor import SensorSpec, SensorType
+
+    base = next(c for c in Nav2Adapter.__mro__[1:] if "launch_description" in c.__dict__)
+    monkeypatch.setattr(base, "launch_description", lambda self, ctx: "group")
+    adapter = Nav2Adapter.__new__(Nav2Adapter)
+    adapter._scan_topics = {}
+    sensors = [
+        SensorSpec(name="lidar", type=SensorType.LASERSCAN, topic="${namespace}/lidar", frame=""),
+        SensorSpec(name="lidar_points", type=SensorType.POINTCLOUD, topic="lidar/points", frame=""),
+        SensorSpec(name="camera", type=SensorType.IMAGE, topic="${namespace}/camera", frame=""),
+    ]
+    assert adapter.launch_description(SimpleNamespace(namespace=Namespace(NS), sensors=sensors)) == "group"
+    from sensor_msgs.msg import LaserScan, PointCloud2
+
+    assert adapter._scan_topics == {SCAN: LaserScan, CLOUD: PointCloud2}
 
 
 def test_a_robot_without_a_running_goal_still_clears_both_costmaps() -> None:
