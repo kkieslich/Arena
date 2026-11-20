@@ -91,5 +91,18 @@ def test_a_global_costmap_still_coming_up_does_not_fail_the_reset() -> None:
     assert len(events) == 3 and events[1].startswith(f"warning: {NS}: global costmap not cleared")
 
 
-def test_an_inactive_global_costmap_does_not_stop_the_local_clear() -> None:
-    assert _reset("static", active=False) == ["cancel", GLOBAL, LOCAL]
+def test_an_inactive_global_costmap_is_logged_and_does_not_stop_the_local_clear() -> None:
+    events = _reset("static", active=False)
+    assert events[:2] == ["cancel", GLOBAL] and events[-1] == LOCAL
+    assert len(events) == 4 and events[2] == f"warning: {NS}: global costmap not cleared, it is not active or the call failed"
+
+
+def test_a_slam_robot_whose_mapper_is_still_coming_up_still_clears_the_local_costmap() -> None:
+    events = _reset("slam", timeout_on=SLAM_RESET)
+    assert events[0] == "cancel" and events[-1] == LOCAL
+    assert len(events) == 3 and events[1].startswith(f"warning: {NS}: slam map not reset")
+
+
+def test_a_local_costmap_still_coming_up_fails_the_reset() -> None:
+    with pytest.raises(TimeoutError):
+        _reset("static", timeout_on=LOCAL)
