@@ -1,4 +1,5 @@
-"""Nav2Adapter.on_reset: every episode starts with the goal cancelled and both costmaps cleared, the global one once."""
+"""Nav2Adapter.on_reset: every episode starts with the goal cancelled and both costmaps cleared; a moved robot's global
+costmap is cleared twice, the second time once the sensors have reported from the start pose."""
 
 from __future__ import annotations
 
@@ -48,19 +49,33 @@ SCAN_NS = 100_000_000  # the lidar's 10 Hz
 
 
 class _Rig:
-    """A Nav2Adapter on a held sim: the service calls, sim steps and the move are recorded instead of made, and each step
-    publishes on the scan topics at the lidar's rate, stamped with the sim time."""
+    """A Nav2Adapter on a held sim: the service calls, sim steps, subscriptions and the move are recorded instead of
+    made, and each step publishes on the subscribed scan topics at the lidar's rate, stamped with the sim time."""
 
-    def __init__(self, mapping: str = "static", *, running: bool = True, timeout_on: str | None = None, active: bool = True, held: bool = True, topics: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        mapping: str = "static",
+        *,
+        running: bool = True,
+        timeout_on: str | None = None,
+        active: bool = True,
+        held: bool = True,
+        topics: tuple[str, ...] = (),
+        first: bool = False,
+        refused: int = 0,
+    ) -> None:
         self.events: list[str] = []
         self.timeout_on = timeout_on
         self.active = active
         self.held = held
+        self.refused = refused  # steps refused before the sim is held again (another robot's unpause window)
         self.now = 5_000_000_000
         self.landed: int | None = None
-        self.publishing = set(topics)
+        self.publishing = set(topics)  # topics with a publisher that publish on the steps
         self.callbacks: dict[str, object] = {}
+        self.late: list[int] = []  # stamps delivered as soon as a subscription is made: scans in flight from before
         self.at_clear: list[dict[str, list[int]]] = []
+        self.waited: dict[str, list[int]] = {}  # each topic's stamps when the wait ended
         self.adapter = Nav2Adapter.__new__(Nav2Adapter)
         self.adapter._bringup_kwargs = {"mapping": mapping}
         self.adapter._service_clients = {}
@@ -68,13 +83,29 @@ class _Rig:
         self.adapter._scan_topics = dict.fromkeys(topics, object)
         self.adapter._scan_subs = []
         self.adapter._scan_stamps = {}
+        self.adapter._resets = 0 if first else 1
         self.adapter._call_active = self._call_active
-        node = SimpleNamespace(get_logger=lambda: _Logger(self.events), step_tick=self._step_tick, create_subscription=self._subscribe)
+        node = SimpleNamespace(
+            get_logger=lambda: _Logger(self.events),
+            step_tick=self._step_tick,
+            create_subscription=self._subscribe,
+            destroy_subscription=self._unsubscribe,
+            count_publishers=lambda topic: int(topic in self.publishing),
+        )
         self.robot = SimpleNamespace(namespace=Namespace(NS), node=node, move=self._move, pose_stamped=None)
+        self.adapter.rm = self.robot
 
     def _subscribe(self, msg_type: type, topic: str, callback: object, qos: object) -> object:
+        self.events.append(f"subscribe {topic}")
         self.callbacks[topic] = callback
+        for stamp in self.late:
+            self.publish(topic, stamp)
         return topic
+
+    def _unsubscribe(self, sub: object) -> None:
+        self.events.append(f"unsubscribe {sub}")
+        self.waited.setdefault(str(sub), list(self.adapter._scan_stamps.get(str(sub), ())))
+        self.callbacks.pop(str(sub))
 
     def publish(self, topic: str, stamp: int) -> None:
         self.callbacks[topic](SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=stamp // 1_000_000_000, nanosec=stamp % 1_000_000_000))))
@@ -82,12 +113,15 @@ class _Rig:
     def tick(self) -> None:
         self.now += TICK_NS
         if self.now % SCAN_NS == 0:
-            for topic in self.publishing:
+            for topic in self.publishing & set(self.callbacks):
                 self.publish(topic, self.now)
 
     async def _step_tick(self) -> float | None:
         self.events.append("step")
         if not self.held:
+            return None
+        if self.refused:
+            self.refused -= 1
             return None
         self.tick()
         return TICK_NS / 1e9
@@ -107,15 +141,13 @@ class _Rig:
         self.landed = self.now
         self.robot.pose_stamped = (pose, SimpleNamespace(nanoseconds=self.landed))
 
-    def history(self) -> None:
-        """The scan topics' subscriptions from an earlier reset, each with a scan from the pose before the move."""
-        self.adapter._watch_scans(self.robot)
-        for topic in self.publishing:
-            self.publish(topic, self.now)
-
     def reset(self, start_pose: object | None = None) -> list[str]:
         asyncio.run(self.adapter.on_reset(self.robot, SimpleNamespace(start_pose=start_pose)))
         return self.events
+
+    def fresh(self, topic: str) -> int:
+        """Scans stamped after the landing that `topic` had delivered when the wait ended."""
+        return sum(stamp > self.landed for stamp in self.waited[topic])
 
 
 def _reset(mapping: str, *, start_pose: object | None = None, **kwargs: object) -> list[str]:
@@ -127,44 +159,73 @@ def _steps_squeezed(events: list[str]) -> list[str]:
     return [e for i, e in enumerate(events) if e != "step" or (i and events[i - 1] != "step")]
 
 
+WAIT = ["subscribe " + SCAN, "subscribe " + CLOUD, "step", "unsubscribe " + SCAN, "unsubscribe " + CLOUD]
+
+
 def test_a_static_map_robot_cancels_moves_and_clears_the_global_then_the_local_costmap() -> None:
-    # no scan topic has published yet (the first reset): the second clear follows at once
+    # no scan topic: the second clear follows at once
     assert _reset("static", start_pose=object()) == ["cancel", "move", GLOBAL, LOCAL, GLOBAL]
 
 
 def test_the_second_global_clear_waits_for_two_scans_from_the_start_pose_on_every_scan_topic() -> None:
     rig = _Rig(topics=(SCAN, CLOUD))
-    rig.history()
     events = rig.reset(start_pose=object())
-    assert _steps_squeezed(events) == ["cancel", "move", GLOBAL, LOCAL, "step", GLOBAL]
-    first, second = rig.at_clear
-    assert all(sum(stamp > rig.landed for stamp in stamps) == 0 for stamps in first.values())
-    assert all(sum(stamp > rig.landed for stamp in stamps) >= 2 for stamps in second.values()) and set(second) == {SCAN, CLOUD}
+    assert _steps_squeezed(events) == ["cancel", "move", GLOBAL, LOCAL, *WAIT, GLOBAL]
+    assert rig.at_clear == [{}, {}] and rig.callbacks == {}  # no subscription at either clear
+    assert rig.fresh(SCAN) >= 2 and rig.fresh(CLOUD) >= 2
     assert events.count("step") <= 2 * SCAN_NS // TICK_NS
+
+
+def test_the_subscriptions_live_only_for_the_wait_and_hold_no_stamps_after_it() -> None:
+    rig = _Rig(topics=(SCAN, CLOUD))
+    rig.reset(start_pose=object())
+    assert rig.adapter._scan_subs == [] and rig.adapter._scan_stamps == {} and rig.callbacks == {}
+
+
+def test_teardown_destroys_subscriptions_still_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def base_teardown(self: object) -> None:
+        return None
+
+    base = next(c for c in Nav2Adapter.__mro__[1:] if "teardown" in c.__dict__)
+    monkeypatch.setattr(base, "teardown", base_teardown)
+    rig = _Rig(topics=(SCAN,))
+    rig.adapter._watch_scans(rig.robot)
+    asyncio.run(rig.adapter.teardown())
+    assert rig.events == ["subscribe " + SCAN, "unsubscribe " + SCAN] and rig.adapter._scan_subs == []
+
+
+def test_the_first_reset_of_an_env_clears_twice_at_once_without_a_step() -> None:
+    rig = _Rig(topics=(SCAN, CLOUD), first=True)
+    assert rig.reset(start_pose=object()) == ["cancel", "move", GLOBAL, LOCAL, GLOBAL]
+    assert rig.adapter._resets == 1
+    assert _steps_squeezed(rig.reset(start_pose=object()))[-6:] == [*WAIT, GLOBAL]
 
 
 def test_a_scan_stamped_before_the_landing_is_no_scan_from_the_start_pose() -> None:
     rig = _Rig(topics=(SCAN,))
-    rig.history()
-    rig.adapter._scan_stamps[SCAN].extend([rig.now + TICK_NS // 2] * 5)  # late deliveries of a scan from before the move
+    rig.late = [rig.now + TICK_NS // 2] * 5  # stamped before the landing, delivered after it
     events = rig.reset(start_pose=object())
-    assert sum(stamp > rig.landed for stamp in rig.at_clear[1][SCAN]) >= 2
+    assert rig.fresh(SCAN) >= 2
     assert events.count("step") >= SCAN_NS // TICK_NS
 
 
-def test_a_topic_that_never_published_is_not_waited_for() -> None:
+def test_a_topic_without_a_publisher_is_not_waited_for() -> None:
     rig = _Rig(topics=(SCAN, CLOUD))
-    rig.history()
     rig.publishing.discard(CLOUD)
-    rig.adapter._scan_stamps[CLOUD].clear()
     events = rig.reset(start_pose=object())
-    assert _steps_squeezed(events) == ["cancel", "move", GLOBAL, LOCAL, "step", GLOBAL]
-    assert sum(stamp > rig.landed for stamp in rig.at_clear[1][SCAN]) >= 2
+    assert _steps_squeezed(events) == ["cancel", "move", GLOBAL, LOCAL, "subscribe " + SCAN, "step", "unsubscribe " + SCAN, GLOBAL]
+    assert rig.fresh(SCAN) >= 2
 
 
-def test_a_sim_that_runs_on_its_own_is_waited_for_without_steps() -> None:
+def test_a_refused_step_is_tried_again_and_stepping_resumes() -> None:
+    rig = _Rig(topics=(SCAN,), refused=3)
+    events = rig.reset(start_pose=object())
+    assert rig.fresh(SCAN) >= 2 and not any(e.startswith("warning") for e in events)
+    assert events.count("step") >= 3 + SCAN_NS // TICK_NS
+
+
+def test_a_sim_that_runs_on_its_own_is_waited_for() -> None:
     rig = _Rig(topics=(SCAN,), held=False)
-    rig.history()
 
     async def main() -> None:
         async def sim() -> None:
@@ -179,25 +240,22 @@ def test_a_sim_that_runs_on_its_own_is_waited_for_without_steps() -> None:
             clock.cancel()
 
     asyncio.run(main())
-    assert rig.events == ["cancel", "move", GLOBAL, LOCAL, "step", GLOBAL]
-    assert sum(stamp > rig.landed for stamp in rig.at_clear[1][SCAN]) >= 2
+    assert _steps_squeezed(rig.events) == ["cancel", "move", GLOBAL, LOCAL, "subscribe " + SCAN, "step", "unsubscribe " + SCAN, GLOBAL]
+    assert rig.fresh(SCAN) >= 2
 
 
 def test_scans_that_do_not_come_end_the_wait_with_a_warning_and_the_clear_goes_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
     from arena_runtime.env.adapters.mobile import nav2
 
     monkeypatch.setattr(nav2, "_FRESH_SCAN_TIMEOUT_S", 0.2)
-    rig = _Rig(topics=(SCAN,))
-    rig.history()
-    rig.publishing.clear()
+    rig = _Rig(topics=(SCAN,), held=False)  # held=False: steps are refused and nothing publishes
     events = _steps_squeezed(rig.reset(start_pose=object()))
-    assert events[:5] == ["cancel", "move", GLOBAL, LOCAL, "step"] and events[-1] == GLOBAL
-    assert events[5].startswith(f"warning: {NS}: no 2 scans from the start pose within 0.2s")
+    assert events[:7] == ["cancel", "move", GLOBAL, LOCAL, "subscribe " + SCAN, "step", "unsubscribe " + SCAN]
+    assert events[7].startswith(f"warning: {NS}: no 2 scans from the start pose within 0.2s") and events[-1] == GLOBAL
 
 
 def test_a_robot_that_is_not_moved_gets_no_second_clear() -> None:
     rig = _Rig(topics=(SCAN,))
-    rig.history()
     assert rig.reset() == ["cancel", GLOBAL, LOCAL]
 
 

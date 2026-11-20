@@ -38,8 +38,9 @@ _SLAM_NODE = "slam_toolbox"
 _REDISPATCH_MIN_S = 2.0
 #: The sensors the costmaps mark from, by SensorSpec type (arena_robots nav2.py `_TYPE_TO_NAV2`)
 _SCAN_TYPES: dict[str, type] = {"laserscan": LaserScan, "pointcloud": PointCloud2}
-#: Scans stamped after the move a topic must deliver before the second global clear: by the second, the costmap holds the
-#: first, and with the global observation persistence 0 it marks from nothing older
+#: Scans stamped after the move a topic must deliver before the second global clear. Assumed: by the second, the costmap
+#: has buffered the first, and with the global observation persistence 0 (arena_robots nav2.py `SensorsDerivedYAML`) it
+#: marks from nothing older. A robot with a longer persistence would need more
 _FRESH_SCANS = 2
 _FRESH_SCAN_TIMEOUT_S = 3.0  # wall
 _FRESH_SCAN_POLL_S = 0.02
@@ -93,6 +94,7 @@ class Nav2Adapter(MobileAdapter):
         self._scan_topics: dict[str, type] = {}
         self._scan_subs: list[object] = []
         self._scan_stamps: dict[str, collections.deque[int]] = {}
+        self._resets = 0
 
     def launch_description(self, ctx: AdapterCtx):  # noqa: ANN201 - GroupAction, as the base
         namespace = str(ctx.namespace).rstrip("/")
@@ -107,9 +109,7 @@ class Nav2Adapter(MobileAdapter):
         for cli in self._service_clients.values():
             self.rm.node.destroy_client(cli.client)
         self._service_clients.clear()
-        for sub in self._scan_subs:
-            self.rm.node.destroy_subscription(sub)
-        self._scan_subs.clear()
+        self._unwatch_scans(self.rm)
         await super().teardown()
 
     async def publish_goal_loop(self) -> None:
@@ -178,59 +178,75 @@ class Nav2Adapter(MobileAdapter):
         else:
             await self._clear_global_costmap(robot)
         await self._clear_costmap(robot, "local")
+        first, self._resets = self._resets == 0, self._resets + 1
         if ctx.start_pose is not None:
-            await self._clear_global_costmap_from_start(robot)
+            await self._clear_global_costmap_from_start(robot, wait=not first)
 
-    async def _clear_global_costmap_from_start(self, robot: RobotManager) -> None:
+    async def _clear_global_costmap_from_start(self, robot: RobotManager, *, wait: bool = True) -> None:
         """Clear the global costmap again once the sensors have reported from the start pose.
 
         The first clear lands right after the teleport, while the costmap still holds the last scan from the pose before
         it and marks it again: one sensor view of marks at the old pose, which the robot never sees again to clear. Once
-        every scan topic that published before has delivered `_FRESH_SCANS` scans stamped after the robot landed, the
-        costmap holds only scans from the start pose, and a clear drops the rest for good. The sim is stepped while the
-        reset holds it. After `_FRESH_SCAN_TIMEOUT_S` the clear goes ahead with a warning."""
-        self._watch_scans(robot)
-        stamped = robot.pose_stamped
-        landed = None if stamped is None else stamped[1].nanoseconds
-        if not await self._await_fresh_scans(robot, landed):
-            robot.node.get_logger().warning(f"{robot.namespace}: no {_FRESH_SCANS} scans from the start pose within {_FRESH_SCAN_TIMEOUT_S:g}s, global costmap cleared again without them")
+        every scan topic with a publisher has delivered `_FRESH_SCANS` scans stamped after the robot landed, the costmap
+        is assumed to hold only scans from the start pose, and a clear drops the rest for good. The sim is stepped while
+        the reset holds it. After `_FRESH_SCAN_TIMEOUT_S` the clear goes ahead with a warning. Without `wait` (the env's
+        first reset, whose costmap has seen only the spawn) it follows at once, with no step."""
+        if wait:
+            stamped = robot.pose_stamped
+            landed = None if stamped is None else stamped[1].nanoseconds
+            topics = self._watch_scans(robot)
+            try:
+                fresh = await self._await_fresh_scans(robot, topics, landed)
+            finally:
+                self._unwatch_scans(robot)
+            if not fresh:
+                robot.node.get_logger().warning(f"{robot.namespace}: no {_FRESH_SCANS} scans from the start pose within {_FRESH_SCAN_TIMEOUT_S:g}s, global costmap cleared again without them")
         await self._clear_global_costmap(robot)
 
-    def _watch_scans(self, robot: RobotManager) -> None:
-        """Subscribe once to the robot's scan topics, keeping each topic's latest stamps."""
-        if self._scan_subs or not self._scan_topics:
-            return
-        for topic, msg_type in self._scan_topics.items():
+    def _watch_scans(self, robot: RobotManager) -> list[str]:
+        """Subscribe to the robot's scan topics that have a publisher, each keeping its stamps from now on; those topics."""
+        topics = [topic for topic in self._scan_topics if robot.node.count_publishers(topic) > 0]
+        for topic in topics:
             stamps: collections.deque[int] = collections.deque(maxlen=8)
             self._scan_stamps[topic] = stamps
 
             def record(msg: LaserScan | PointCloud2, stamps: collections.deque[int] = stamps) -> None:
                 stamps.append(msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec)
 
-            self._scan_subs.append(robot.node.create_subscription(msg_type, topic, record, qos_profile_sensor_data))
+            self._scan_subs.append(robot.node.create_subscription(self._scan_topics[topic], topic, record, qos_profile_sensor_data))
+        return topics
 
-    async def _await_fresh_scans(self, robot: RobotManager, landed: int | None) -> bool:
-        """Whether every scan topic that has published delivers `_FRESH_SCANS` scans stamped after `landed` (after its latest
-        stamp so far, without a TF stamp of the landing) within the timeout, stepping a held sim."""
-        since = {topic: landed if landed is not None else stamps[-1] for topic, stamps in self._scan_stamps.items() if stamps}
+    def _unwatch_scans(self, robot: RobotManager) -> None:
+        for sub in self._scan_subs:
+            robot.node.destroy_subscription(sub)
+        self._scan_subs.clear()
+        self._scan_stamps.clear()
+
+    async def _await_fresh_scans(self, robot: RobotManager, topics: list[str], landed: int | None) -> bool:
+        """Whether each of `topics` delivers `_FRESH_SCANS` scans stamped after `landed` within the timeout, stepping a held
+        sim. Without a TF stamp of the landing, a topic's first scan in the wait stands for it."""
 
         def fresh() -> bool:
-            # a snapshot: the subscriptions may append from the executor's thread
-            return all(sum(stamp > after for stamp in tuple(self._scan_stamps[topic])) >= _FRESH_SCANS for topic, after in since.items())
+            for topic in topics:
+                stamps = tuple(self._scan_stamps[topic])  # a snapshot: the callbacks append from the executor's thread
+                after = landed if landed is not None else min(stamps, default=None)
+                if after is None or sum(stamp > after for stamp in stamps) < _FRESH_SCANS:
+                    return False
+            return True
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _FRESH_SCAN_TIMEOUT_S
-        stepping = True
         while not fresh():
             if loop.time() >= deadline:
                 return False
-            if stepping:
-                try:
-                    advanced = await asyncio.wait_for(robot.node.step_tick(), timeout=max(0.0, deadline - loop.time()))
-                except TimeoutError:
-                    return fresh()
-                stepping = advanced is not None  # None: the sim runs on its own or refuses a step, so wait for it
-            await asyncio.sleep(_FRESH_SCAN_POLL_S)
+            # stepped on every round: a step refused while another robot's teleport holds an unpause window works again
+            # once the window closes and the sim is held again
+            try:
+                advanced = await asyncio.wait_for(robot.node.step_tick(), timeout=max(0.0, deadline - loop.time()))
+            except TimeoutError:
+                return fresh()
+            if advanced is None:  # the sim runs on its own or refuses a step: give it time; a step already waits for /clock
+                await asyncio.sleep(_FRESH_SCAN_POLL_S)
         return True
 
     async def _clear_global_costmap(self, robot: RobotManager) -> bool:
