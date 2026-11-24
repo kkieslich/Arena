@@ -518,8 +518,10 @@ def test_fleet_sends_a_robot_to_charge_before_a_job_that_would_leave_it_under_th
     for manager in managers.values():
         manager.battery_capacity_wh, manager.power_profile = 36.0, {"static_power_w": 42.2}
     far, near = _job_wh((0.5, 0.5)), _job_wh((2.5, 0.5))
-    # r0 on bay_1 is fuller than r1 on bay_2, but the job would leave it just under 10 % of 36 Wh, and r1 just over
-    _socs(managers, r0=10.0 + 100.0 * far / 36.0 - 0.1, r1=10.0 + 100.0 * near / 36.0 + 0.1, r2=4.0, r3=4.0)
+    # r0 on bay_1 is fuller than r1 on bay_2, but the job would leave it just under 10 % of 36 Wh, and r1 just over,
+    # each by a quarter of the gap the 2 m between the bays makes in percent
+    margin = 100.0 * (far - near) / 36.0 / 4.0
+    _socs(managers, r0=10.0 + 100.0 * far / 36.0 - margin, r1=10.0 + 100.0 * near / 36.0 + margin, r2=4.0, r3=4.0)
     assert managers["r0"].soc > managers["r1"].soc
     _at(node, 1.0)
     _tick(mode)
