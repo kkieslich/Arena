@@ -105,7 +105,11 @@ FLEET_CONTESTANT = "fleet_dwb"
 SPEED_MPS = 0.5
 #: The share of the fleet's capacity in the wide premise layout the rate asks for (§8: near 75 %)
 UTILISATION = 0.75
-#: Suite names; `arena evaluation benchmark --suite <name>` finds them under <imported assets root>/suites
+#: The files a layout suite's writer leaves in the suite's bundle: the layouts' manifest (`evaluation infra` reads it
+#: with the processed runs) and the charge states the fleet's start charge is drawn from
+MANIFEST_FILE = "layouts.json"
+CHARGE_STATES_FILE = "charge_states.json"
+#: Suite names; `arena evaluation benchmark --suite <name>` finds them as bundles <imported assets root>/suites/<name>/suite.yaml
 REFERENCE_SUITE = "infra_h1_site"
 PREMISE_SUITE = "infra_h1_premise"
 LAYOUT_SUITE = "infra_h1"
@@ -871,10 +875,10 @@ def write_once(doc: Mapping[str, Any], out: Path, header: Sequence[str] = (), *,
 
 
 def default_out(name: str) -> Path:
-    """`<imported assets root>/suites/<name>.yaml`, where `arena evaluation benchmark --suite <name>` finds it."""
+    """`<imported assets root>/suites/<name>/suite.yaml`, where `arena evaluation benchmark --suite <name>` finds it."""
     from arena_simulation_setup.tree import imported_root
 
-    return imported_root() / SU.SUITES / f"{name}.yaml"
+    return imported_root() / SU.SUITES / name / SU.SUITE_FILE
 
 
 def split_parts(items: Iterable[str], weights: Sequence[int]) -> list[list[str]]:
@@ -902,9 +906,22 @@ def part_name(suite: str, index: int) -> str:
 
 
 def manifest_path(suite: Path) -> Path:
-    """The manifest a layout suite's writer leaves beside it: `<suite>.layouts.json`."""
-    suite = Path(suite)
-    return suite.with_name(f"{suite.stem}.layouts.json")
+    """The manifest a layout suite's writer leaves with it: `layouts.json` in its bundle (`<suite>.layouts.json`
+    beside a flat suite file of older writers)."""
+    return SU.beside(suite, MANIFEST_FILE)
+
+
+def charge_states_path(suite: Path) -> Path:
+    """The charge states a fleet suite's writer leaves with it: `charge_states.json` in its bundle (`<suite>.charge_states.json`
+    beside a flat suite file of older writers)."""
+    return SU.beside(suite, CHARGE_STATES_FILE)
+
+
+def find_manifest(name: str) -> Path:
+    """The manifest of layout suite `name` under <imported assets root>/suites: its bundle's, else the flat
+    `<name>.layouts.json` older writers left; the bundle's path when neither exists."""
+    suite = default_out(name)
+    return manifest_path(SU.find_suite(SU.suites_dir(suite), name))
 
 
 def picks_record(picks: Mapping[str, Scored | Sequence[Scored]], ranking: Mapping[str, float] | None = None) -> list[dict[str, Any]]:
@@ -938,6 +955,7 @@ __all__ = [
     "write_crowd",
     "CAPACITY_WH",
     "CHARGE_BELOW",
+    "CHARGE_STATES_FILE",
     "CHARGE_UNTIL",
     "EPISODE_S",
     "EVALUATION_SEEDS",
@@ -950,6 +968,7 @@ __all__ = [
     "GROUPS",
     "LAUNCH",
     "LAYOUT_SUITE",
+    "MANIFEST_FILE",
     "PREMISE_SEEDS",
     "PREMISE_SUITE",
     "RECORD",
@@ -967,11 +986,13 @@ __all__ = [
     "WARMUP_S",
     "WITHOUT_ROBOTS_SEEDS",
     "SiteConfig",
+    "charge_states_path",
     "contest",
     "contest_literal",
     "crowd",
     "default_out",
     "episodes",
+    "find_manifest",
     "fleet_config",
     "fleet_rate",
     "fleet_stage",

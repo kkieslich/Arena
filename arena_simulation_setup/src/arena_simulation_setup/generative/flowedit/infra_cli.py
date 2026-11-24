@@ -16,11 +16,12 @@
                                                 and the walls it adds (`added_walls`, gaps the site does not have) in
 
 Each writes its suite under <imported assets root>/suites (where `arena evaluation benchmark --suite` finds it), the
-layout suites a `<suite>.layouts.json` manifest beside it, and prints the benchmark call that runs it."""
+layout suites a `layouts.json` manifest in its bundle (`suites/<suite>/suite.yaml`), and prints the benchmark call that runs it."""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import sys
@@ -92,7 +93,8 @@ def _scenario(args: argparse.Namespace, config: IN.SiteConfig | None) -> str:
 
 
 def _out(args: argparse.Namespace, name: str) -> Path:
-    return args.out or IN.default_out(name)
+    """The suite file `--out` names, as a bundle (`SU.bundle_file`), else suite `name`'s default bundle."""
+    return SU.bundle_file(args.out) if args.out else IN.default_out(name)
 
 
 def _summary(doc: Mapping[str, Any]) -> str:
@@ -113,7 +115,7 @@ def _cmd_reference(args: argparse.Namespace) -> int:
     IN.scenario_dir(site, scenario, args.scenarios_from)
     seeds = args.seeds or list(IN.SELECTION_SEEDS)
     doc = IN.reference_suite(site.key, seeds, scenario=scenario, duration=args.duration, side=config.crowd_side if config is not None else None)
-    name = args.out.stem if args.out else IN.REFERENCE_SUITE
+    name = SU.name_of(_out(args, IN.REFERENCE_SUITE))
     if args.dry_run:
         from arena_simulation_setup.tree.World.write import to_yaml
 
@@ -216,13 +218,17 @@ def _plan_parts(args: argparse.Namespace, layout_ids: Iterable[str]) -> list[lis
 
 
 def _drop_stale_parts(out: Path, keep: Collection[str]) -> None:
-    """Remove the part suites an earlier run left beside `out` (`<suite>_p<N>.yaml`, written by flowedit infra) that
+    """Remove the part suites an earlier run left beside `out` (bundles `<suite>_p<N>`, written by flowedit infra) that
     this run did not write, so a suite's parts are always the ones its manifest lists."""
-    pattern = re.compile(rf"^{re.escape(out.stem)}_p\d+\.yaml$")
-    for path in sorted(out.parent.glob(f"{out.stem}_p*.yaml")):
-        if pattern.match(path.name) and path.stem not in keep and path.read_text().startswith(IN.MARKER):
+    name = SU.name_of(out)
+    pattern = re.compile(rf"^{re.escape(name)}_p\d+$")
+    for path in sorted(SU.suites_dir(out).glob(f"{name}_p*/{SU.SUITE_FILE}")):
+        part = SU.name_of(path)
+        if pattern.match(part) and part not in keep and path.read_text().startswith(IN.MARKER):
             path.unlink()
-            _log(f"removed {path}: a part of an earlier run of {out.stem}")
+            with contextlib.suppress(OSError):
+                path.parent.rmdir()
+            _log(f"removed {path}: a part of an earlier run of {name}")
 
 
 def _write_parts(args: argparse.Namespace, out: Path, plan: list[list[str]] | None, worlds: dict[str, str], doc_for: Callable[[list[str]], dict[str, Any]], contest: str) -> list[dict[str, Any]]:
@@ -232,14 +238,14 @@ def _write_parts(args: argparse.Namespace, out: Path, plan: list[list[str]] | No
     records: list[dict[str, Any]] = []
     plan = plan or []
     for index, (ids, weight) in enumerate(zip(plan, getattr(args, "parts", None) or [], strict=True), start=1):
-        name = IN.part_name(out.stem, index)
+        name = IN.part_name(SU.name_of(out), index)
         doc = doc_for([worlds[layout_id] for layout_id in ids])
         header = [
-            f"part {index} of {len(plan)} of suite {out.stem} (weight {weight}): layouts {', '.join(ids)}",
+            f"part {index} of {len(plan)} of suite {SU.name_of(out)} (weight {weight}): layouts {', '.join(ids)}",
             f"{_summary(doc)}; every part runs as its own run on its own machine, `evaluation infra` reads their run dirs together with {IN.manifest_path(out).name}",
             f"run: {SU.benchmark_command(name, weight, contest)}",
         ]
-        path = IN.write(doc, out.with_name(f"{name}.yaml"), header, force=args.force)
+        path = IN.write(doc, SU.sibling(out, name), header, force=args.force)
         records.append({"suite": name, "weight": weight, "layouts": ids, "worlds": [worlds[layout_id] for layout_id in ids], "episodes": IN.episodes(doc), "sim_hours": IN.sim_hours(doc)})
         print(f"part {index}: {path} ({len(ids)} layouts, {_summary(doc)}): {SU.benchmark_command(name, weight, contest)}")
     _drop_stale_parts(out, {r["suite"] for r in records})
@@ -270,12 +276,12 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
         f"fleet: {IN.ROBOT}, rate {rate:g} jobs/h, charge below {args.charge_below:g} % until {args.charge_until:g} %; battery {args.capacity_wh:g} Wh and start charge {args.soc_min:g}-{args.soc_max:g} % through the contest, chargers {place.CHARGE_POWER_W:g} W in the worlds",
         f"references: {IN.REFERENCES} adds per stage the layout without robots, the traffic part's reference (§6)",
         f"{_summary(doc)}",
-        f"run: {SU.benchmark_command(out.stem, args.lanes, contest)}",
+        f"run: {SU.benchmark_command(SU.name_of(out), args.lanes, contest)}",
     ]
     out = IN.write(doc, out, header, force=args.force)
     parts = _write_parts(args, out, plan, {s.layout_id: worlds[s.layout_id].name for s in unique}, lambda names: IN.layout_suite(names, fleet, seeds, scenario=space.scenario_name, duration=args.duration, side=space.side), contest)
     record = {
-        "suite": out.stem,
+        "suite": SU.name_of(out),
         "site": space.site.key,
         "site_root": str(space.site.root),
         "site_config": None if space.config is None else space.config.record(),
@@ -303,7 +309,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
     manifest = IN.manifest_path(out)
     manifest.write_text(json.dumps(record, indent=1) + "\n")
     print(f"wrote {out}: {_summary(doc)}; {manifest}; worlds {', '.join(str(p) for p in worlds.values())}")
-    print(SU.benchmark_command(out.stem, args.lanes, contest))
+    print(SU.benchmark_command(SU.name_of(out), args.lanes, contest))
     return 0
 
 
@@ -720,11 +726,12 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
     for layout_id, layout in layouts.items():
         _log(f"{roles[layout_id]:22s} {layout_id}: " + "; ".join(f"{locker} ({next(s.zone for s in layout.spots for o in s.objects if o.name == locker)}) serves {', '.join(es)}" for locker, es in serves[layout_id].items()))
     names = {seed: f"{space.scenario_name}__{args.tag + '__' if args.tag else ''}fleet_only" if fleet_only else RC.scenario_name(space.scenario_name, seed, args.tag) for seed in seeds}
-    out = args.out or IN.default_out(IN.ENTRANCE_SUITE)
-    outs = {"site": out.with_name(f"{out.stem}_site.yaml"), "without": out.with_name(f"{out.stem}_without.yaml"), "fleet": out}
+    out = _out(args, IN.ENTRANCE_SUITE)
+    name = SU.name_of(out)
+    outs = {"site": SU.sibling(out, f"{name}_site"), "without": SU.sibling(out, f"{name}_without"), "fleet": out}
     prefix = place.layout_prefix(space.site)
     states = None if args.charge_states is None else EF.load_charge_states(args.charge_states)
-    states_out = out.with_name(f"{out.stem}.charge_states.json")
+    states_out = IN.charge_states_path(out)
     contest = IN.contest_literal(EF.contest(soc_file=str(states_out) if states is not None else None, start_soc=args.start_charge))
 
     def fleet_block(layout_id: str, seed: int) -> dict[str, Any]:
@@ -761,21 +768,21 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
             "fleet": f"{named} from {args.report}, each with the fleet" + (", no crowd" if fleet_only else " and the seed's parcel recipients") + f": the seed's jobs to the locker that serves each job's recipient entrance, {args.rate:g} jobs per hour; {common}",
         }
         for arm, doc in made.items():
-            files[paths[arm]] = IN.suite_text(doc, [f"INFRA redesigned study{what}: {heads[arm]}", f"{_summary(doc)}", f"run: {SU.benchmark_command(paths[arm].stem, args.lanes, contest if arm == 'fleet' else SU.CONTEST)}"])
+            files[paths[arm]] = IN.suite_text(doc, [f"INFRA redesigned study{what}: {heads[arm]}", f"{_summary(doc)}", f"run: {SU.benchmark_command(SU.name_of(paths[arm]), args.lanes, contest if arm == 'fleet' else SU.CONTEST)}"])
 
     plan(full, outs, "")
     parts = []
     for tag, part in seed_parts:
         made = docs(part)
-        paths = {"site": out.with_name(f"{out.stem}_site_{tag}.yaml"), "without": out.with_name(f"{out.stem}_without_{tag}.yaml"), "fleet": out.with_name(f"{out.stem}_{tag}.yaml")}
+        paths = {"site": SU.sibling(out, f"{name}_site_{tag}"), "without": SU.sibling(out, f"{name}_without_{tag}"), "fleet": SU.sibling(out, f"{name}_{tag}")}
         plan(made, paths, f", part {tag} (seeds {', '.join(map(str, part))})")
         parts.append(
             {
                 "tag": tag,
                 "seeds": part,
-                **({"suite": paths["fleet"].stem if "fleet" in made else None} if "fleet" in arms else {}),
-                "site_suite": paths["site"].stem if "site" in made else None,
-                "without_suite": paths["without"].stem if "without" in made else None,
+                **({"suite": SU.name_of(paths["fleet"]) if "fleet" in made else None} if "fleet" in arms else {}),
+                "site_suite": SU.name_of(paths["site"]) if "site" in made else None,
+                "without_suite": SU.name_of(paths["without"]) if "without" in made else None,
                 "episodes": sum(IN.episodes(doc) for doc in made.values()),
             }
         )
@@ -784,9 +791,9 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
     block = {key: value for key, value in fleet_block(next(iter(layouts)), seeds[0]).items() if key not in ("jobs", "lockers", "soc_log")}
     crowd_only = without if "without" in full else []
     record = {
-        "suite": out.stem if "fleet" in full else None,
-        "site_suite": outs["site"].stem if "site" in full else None,
-        "without_suite": outs["without"].stem if "without" in full else None,
+        "suite": name if "fleet" in full else None,
+        "site_suite": SU.name_of(outs["site"]) if "site" in full else None,
+        "without_suite": SU.name_of(outs["without"]) if "without" in full else None,
         "report": str(args.report),
         "writer_commit": args.writer_commit,
         "picks": {roles[layout_id]: layout_id for layout_id in layouts},
@@ -875,7 +882,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         print(f"part {part['tag']}: seeds {', '.join(map(str, part['seeds']))}: " + ", ".join(str(part[key]) for key in ("suite", "site_suite", "without_suite") if part.get(key)) + f" ({part['episodes']} episodes)")
     print("wrote " + "; ".join(f"{outs[arm]}: {_summary(doc)}" for arm, doc in full.items()) + f"; {manifest_out}; worlds {', '.join(str(p) for p in worlds.values())}")
     for arm in full:
-        print(SU.benchmark_command(outs[arm].stem, args.lanes, contest if arm == "fleet" else SU.CONTEST))
+        print(SU.benchmark_command(SU.name_of(outs[arm]), args.lanes, contest if arm == "fleet" else SU.CONTEST))
     return 0
 
 
@@ -905,7 +912,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     if args.pick is None:
         raise ValueError("--pick (the first study's evaluation) or --report (layouts of `flowedit infra search`) is needed")
     pick = json.loads(Path(args.pick).read_text())
-    selection = Path(args.selection) if args.selection else IN.manifest_path(IN.default_out(IN.LAYOUT_SUITE))
+    selection = Path(args.selection) if args.selection else IN.find_manifest(IN.LAYOUT_SUITE)
     manifest = json.loads(selection.read_text())
     worlds = dict(manifest["worlds"])
     chosen = {"joint": pick.get("joint_pick"), "robot_only": pick.get("robot_only")}
@@ -939,16 +946,17 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
         _log("(dry run - nothing written)")
         return 0
     contest = manifest.get("contest") or IN.contest_literal(IN.contest())
-    out = args.out or IN.default_out(IN.EVALUATION_SUITE)
-    site_out = out.with_name(f"{IN.EVALUATION_SITE_SUITE}.yaml") if args.out is None else out.with_name(f"{out.stem}_site.yaml")
+    out = _out(args, IN.EVALUATION_SUITE)
+    name = SU.name_of(out)
+    site_out = SU.sibling(out, IN.EVALUATION_SITE_SUITE if args.out is None else f"{name}_site")
     common = f"seeds {', '.join(map(str, seeds))}, {duration:g} s each, warm-up {float(manifest['warmup_s']):g} s cut in the analysis"
     arms = f"the joint pick {chosen['joint']}, the robot-only pick {chosen['robot_only']}" + (f" and the guideline layout {chosen['guideline']}" if "guideline" in chosen else "")
-    IN.write(doc, out, [f"INFRA Stage 1 evaluation (§10, §12): {arms} from {selection}, with the fleet and without robots, {common}", f"{_summary(doc)}", f"run: {SU.benchmark_command(out.stem, args.lanes, contest)}"], force=args.force)
+    IN.write(doc, out, [f"INFRA Stage 1 evaluation (§10, §12): {arms} from {selection}, with the fleet and without robots, {common}", f"{_summary(doc)}", f"run: {SU.benchmark_command(name, args.lanes, contest)}"], force=args.force)
     parts = _write_parts(args, out, plan, {layout_id: Path(worlds[layout_id]).name for layout_id in dict.fromkeys(chosen.values())}, lambda names: IN.layout_suite(names, fleet, seeds, scenario=scenario, duration=duration, side=side), contest)
-    IN.write(site_doc, site_out, [f"INFRA Stage 1 evaluation reference: {manifest['site']} as is without robots, {common}", f"{_summary(site_doc)}", f"run: {SU.benchmark_command(site_out.stem, args.lanes)}"], force=args.force)
+    IN.write(site_doc, site_out, [f"INFRA Stage 1 evaluation reference: {manifest['site']} as is without robots, {common}", f"{_summary(site_doc)}", f"run: {SU.benchmark_command(SU.name_of(site_out), args.lanes)}"], force=args.force)
     record = {
-        "suite": out.stem,
-        "site_suite": site_out.stem,
+        "suite": name,
+        "site_suite": SU.name_of(site_out),
         "selection": str(selection),
         "pick": str(args.pick),
         "picks": chosen,
@@ -963,8 +971,8 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     manifest_out = IN.manifest_path(out)
     manifest_out.write_text(json.dumps(record, indent=1) + "\n")
     print(f"wrote {out}: {_summary(doc)}; {site_out}: {_summary(site_doc)}; {manifest_out}")
-    print(SU.benchmark_command(site_out.stem, args.lanes))
-    print(SU.benchmark_command(out.stem, args.lanes, contest))
+    print(SU.benchmark_command(SU.name_of(site_out), args.lanes))
+    print(SU.benchmark_command(name, args.lanes, contest))
     return 0
 
 
@@ -1011,7 +1019,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     common.add_argument("--scenarios-from", type=Path, default=None, help="world directory to copy the scenario from (default: the site's, else the world its name resolves to)")
     common.add_argument("--seeds", type=_seeds, default=None, help=f"episode seeds, e.g. 1-5 (default: reference and layouts {IN.SELECTION_SEEDS[0]}-{IN.SELECTION_SEEDS[-1]}, premise {IN.PREMISE_SEEDS[0]}-{IN.PREMISE_SEEDS[-1]}, evaluation {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]})")
     common.add_argument("--duration", type=float, default=IN.EPISODE_S, help=f"sim seconds per episode (default {IN.EPISODE_S:g})")
-    common.add_argument("--out", type=Path, default=None, help="suite file (default: <imported assets root>/suites/<suite name>.yaml)")
+    common.add_argument("--out", type=Path, default=None, help="suite bundle (default: <imported assets root>/suites/<suite name>/suite.yaml, where `--suite <suite name>` finds it); a <name>.yaml writes the bundle <name>/suite.yaml beside it")
     common.add_argument("--lanes", type=int, default=2, help="lanes in the printed benchmark call (default 2)")
     common.add_argument("--force", action="store_true", help="replace a suite file flowedit infra did not write")
     common.add_argument("--dry-run", action="store_true", help="search and print without writing worlds or suites")
@@ -1044,7 +1052,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
         "layouts",
         parents=[common, searched],
         help="the selection: robot-only pick, joint top 10, 5 random layouts",
-        description=f"search the site's layouts (generative/flowedit/search.py): the robot-only pick, the joint top {SE.JOINT_TOP} distinct layouts by predicted conflict exposure (worst walker group) among the layouts within {SE.TRAVEL_SLACK:g} x the robot-only travel per job, and {SE.RANDOM_LAYOUTS} random valid layouts; save them as world copies with the crowd and write suite {IN.LAYOUT_SUITE}: each with the fleet and without robots on the selection seeds; writes <suite>.layouts.json beside it",
+        description=f"search the site's layouts (generative/flowedit/search.py): the robot-only pick, the joint top {SE.JOINT_TOP} distinct layouts by predicted conflict exposure (worst walker group) among the layouts within {SE.TRAVEL_SLACK:g} x the robot-only travel per job, and {SE.RANDOM_LAYOUTS} random valid layouts; save them as world copies with the crowd and write suite {IN.LAYOUT_SUITE}: each with the fleet and without robots on the selection seeds; writes the manifest layouts.json in the suite's bundle",
     )
     q.add_argument("--occupancy", type=Path, default=None, help="the reference runs' flow cells: flow_cells.parquet or the benchmark dir holding it (all walkers: the joint ranking's one group without --group-occupancy; the random control's occupancy column)")
     q.add_argument("--group-occupancy", type=Path, action="append", default=None, help="the reference runs' walker-group cells (`evaluation infra occupancy`: infra_occupancy.parquet or the benchmark dir holding it); repeatable, read as one")
@@ -1115,12 +1123,12 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     q.add_argument("--pick", type=Path, default=None, help="the pick file `evaluation infra pick` writes (joint_pick, robot_only); needed without --report")
     q.add_argument("--no-guideline", action="store_true", help="leave out the guideline layout the selection's manifest records (`layouts --guideline`)")
     q.add_argument("--parts", type=_weights, default=None, metavar="W1,W2", help=parts_help)
-    q.add_argument("--selection", type=Path, default=None, help=f"the selection's manifest (default <imported assets root>/suites/{IN.LAYOUT_SUITE}.layouts.json)")
+    q.add_argument("--selection", type=Path, default=None, help=f"the selection's manifest (default <imported assets root>/suites/{IN.LAYOUT_SUITE}/layouts.json, else an older writer's {IN.LAYOUT_SUITE}.layouts.json beside it)")
     from . import recipients as RC
 
     g = q.add_argument_group(
         "layouts of `flowedit infra search` (study design Part A)",
-        f"with --report: save the named layouts of a search report as world copies, each with one crowd scenario per seed that holds the seed's parcel recipients (generative/flowedit/recipients.py), and write suites {IN.ENTRANCE_SUITE}_site (the site as is) and {IN.ENTRANCE_SUITE}_without (each layout without robots as a crowd-only stage) with their manifest {IN.ENTRANCE_SUITE}.layouts.json. The search space is built as the report's search built it: pass the same --site, --site-config, --scenario, --loading and --no-outlet-rule. Without --report none of these options is read",
+        f"with --report: save the named layouts of a search report as world copies, each with one crowd scenario per seed that holds the seed's parcel recipients (generative/flowedit/recipients.py), and write suites {IN.ENTRANCE_SUITE}_site (the site as is) and {IN.ENTRANCE_SUITE}_without (each layout without robots as a crowd-only stage) with their manifest layouts.json in bundle {IN.ENTRANCE_SUITE}. The search space is built as the report's search built it: pass the same --site, --site-config, --scenario, --loading and --no-outlet-rule. Without --report none of these options is read",
     )
     g.add_argument("--report", type=Path, default=None, help="the report `flowedit infra search --out` wrote (any JSON that holds its layout records)")
     g.add_argument("--layouts", type=_named_layouts, default=None, metavar="ROLE=ID,...", help="the report's layouts to run, each as <role>=<id>, e.g. travel_optimal=83298e5c,practice_based=d837888b; the roles are the manifest's `picks`, no two layouts share one")

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 from arena_simulation_setup.generative.flowedit import cli, entrance_fleet, infra, place, recipients, search
+from arena_simulation_setup.generative.flowedit import suite as SU
 from arena_simulation_setup.generative.flowedit.demand import EntranceSearch
 from arena_simulation_setup.generative.flowedit.edit import Site
 
@@ -159,14 +160,14 @@ def test_cli_evaluation_writes_the_fleet_stages_with_the_seeds_jobs_and_a_fleet_
     common, report, optimal = _searched(site, space, tmp_path, monkeypatch)
     layout_id = optimal["layout_id"]
     world = f"{site.key}__layout_{layout_id}"
-    out = tmp_path / "suites" / "infra_rd.yaml"
+    out = tmp_path / "suites" / "infra_rd" / "suite.yaml"
     args = ["infra", "evaluation", *common, "--report", str(report), "--layouts", f"travel_optimal={layout_id}", "--seeds", "71-73", "--without-robots-seeds", "71", "--rate", "240", "--recipient-offset", "60", "--no-check", "--out", str(out)]
     capsys.readouterr()
     assert cli.main([*args, "--arms", "site,without,fleet", "--seed-part", "h1=71,72", "--seed-part", "h2=73"]) == 0
     printed = capsys.readouterr()
     doc = yaml.safe_load(out.read_text())
-    without = yaml.safe_load(out.with_name("infra_rd_without.yaml").read_text())
-    site_doc = yaml.safe_load(out.with_name("infra_rd_site.yaml").read_text())
+    without = yaml.safe_load(SU.sibling(out, "infra_rd_without").read_text())
+    site_doc = yaml.safe_load(SU.sibling(out, "infra_rd_site").read_text())
     assert [s["name"] for s in doc["stages"]] == [f"{world}__s{seed}" for seed in (71, 72, 73)]
     assert doc["references"] is False and doc["launch"] == site_doc["launch"] and doc["record"] == site_doc["record"]
     names = sorted(e.name for e in space.entrances)
@@ -187,23 +188,24 @@ def test_cli_evaluation_writes_the_fleet_stages_with_the_seeds_jobs_and_a_fleet_
     # with the fleet's runs written the seeds of the runs without robots are also named for the analysis
     assert manifest["episodes"] == 3 + 1 + 3 and manifest["without_robots_seeds"] == [71] == manifest["crowd_only_seeds"]
     assert [(p["tag"], p["suite"], p["without_suite"], p["episodes"]) for p in manifest["seed_parts"]] == [("h1", "infra_rd_h1", "infra_rd_without_h1", 2 + 1 + 2), ("h2", "infra_rd_h2", None, 2)]
-    assert [s["seed"] for s in yaml.safe_load(out.with_name("infra_rd_h1.yaml").read_text())["stages"]] == [71, 72]
+    assert [s["seed"] for s in yaml.safe_load(SU.sibling(out, "infra_rd_h1").read_text())["stages"]] == [71, 72]
     assert f"--suite infra_rd --contest '{manifest['contest']}'" in printed.out and "task.episode.battery.capacity_wh" not in printed.out
     # the start charge from charge states: the file is copied beside the suite and the contest names the copy
     states = tmp_path / "states.json"
     states.write_text(json.dumps({"format": "infra-charge-states/1", "states": [[90.0, 80.0, 70.0, 60.0], [50.0, 40.0, 30.0, 20.0]]}))
-    drawn = out.with_name("infra_rdc.yaml")
+    drawn = SU.sibling(out, "infra_rdc")
     assert cli.main([*args[:-1], str(drawn), "--arms", "fleet", "--charge-states", str(states)]) == 0
-    copy = drawn.with_name("infra_rdc.charge_states.json")
+    copy = infra.charge_states_path(drawn)
+    assert copy == tmp_path / "suites" / "infra_rdc" / "charge_states.json"
     manifest = json.loads(infra.manifest_path(drawn).read_text())
     assert json.loads(copy.read_text())["states"] == [[90.0, 80.0, 70.0, 60.0], [50.0, 40.0, 30.0, 20.0]] and manifest["charge_states"] == str(copy)
     assert yaml.safe_load(manifest["contest"]) == entrance_fleet.contest(soc_file=str(copy)) and manifest["site_suite"] is None and manifest["without_suite"] is None
-    assert not drawn.with_name("infra_rdc_site.yaml").exists() and manifest["episodes"] == 3 and manifest["without_robots_seeds"] == []
+    assert not SU.sibling(drawn, "infra_rdc_site").exists() and manifest["episodes"] == 3 and manifest["without_robots_seeds"] == []
     # a fleet-only run: no walkers, the same jobs, the robots' charge logged per stage
-    only = out.with_name("infra_rdf.yaml")
+    only = SU.sibling(out, "infra_rdf")
     assert cli.main([*args[:-1], str(only), "--fleet-only", "--charge-log", "/logs/rdf", "--duration", "7200"]) == 0
     doc = yaml.safe_load(only.read_text())
-    assert [s["name"] for s in doc["stages"]] == [f"{world}__s{seed}" for seed in (71, 72, 73)] and not only.with_name("infra_rdf_site.yaml").exists()
+    assert [s["name"] for s in doc["stages"]] == [f"{world}__s{seed}" for seed in (71, 72, 73)] and not SU.sibling(only, "infra_rdf_site").exists()
     for stage in doc["stages"]:
         assert stage["config"]["scenario"] == {"file": "mix__fleet_only"} and stage["timeout"] == 7200.0
         assert stage["config"]["fleet"]["soc_log"] == f"/logs/rdf/{stage['name']}.csv" and stage["config"]["fleet"]["soc_log_s"] == 60.0
@@ -214,7 +216,7 @@ def test_cli_evaluation_writes_the_fleet_stages_with_the_seeds_jobs_and_a_fleet_
     assert manifest["fleet_only"] is True and manifest["visitor_sources"] == [] and manifest["episodes"] == 3 and "without_robots_seeds" not in manifest
     # what does not go together
     assert cli.main([*args, "--arms", "fleet,robots"]) == 1 and cli.main([*args, "--charge-log", "/logs/x"]) == 1
-    assert cli.main([*args[:-1], str(out.with_name("infra_rdx.yaml")), "--arms", "fleet", "--charge-states", str(tmp_path / "none.json")]) == 1
+    assert cli.main([*args[:-1], str(SU.sibling(out, "infra_rdx")), "--arms", "fleet", "--charge-states", str(tmp_path / "none.json")]) == 1
 
 
 def test_cli_charge_states_writes_the_file_the_start_charge_is_drawn_from(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

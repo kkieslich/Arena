@@ -57,9 +57,35 @@ def split(worlds: Path, tmp_path: Path) -> tuple[Path, dict[str, Any]]:
 
 def _suite(split: Path, worlds: Path, out: Path, *extra: str) -> dict[str, Any]:
     assert main(["suite", str(split), "--worlds", str(worlds), "--no-generate", "--out", str(out), *extra]) == 0
-    text = out.read_text()
+    # a flat `<name>.yaml` --out writes the bundle `<name>/suite.yaml` arena_evaluation resolves
+    text = SU.bundle_file(out).read_text()
     assert text.startswith(SU.MARKER)
     return yaml.safe_load(text)
+
+
+def test_suites_are_bundles_and_flat_suites_of_older_writers_still_read(tmp_path: Path) -> None:
+    suites = tmp_path / "suites"
+    bundle = suites / "infra_x" / "suite.yaml"
+    # every --out form names the bundle arena_evaluation resolves `--suite infra_x` to
+    assert SU.bundle_file(bundle) == SU.bundle_file(suites / "infra_x.yaml") == SU.bundle_file(suites / "infra_x") == bundle
+    assert SU.is_bundle(bundle) and not SU.is_bundle(suites / "infra_x.yaml")
+    assert SU.name_of(bundle) == SU.name_of(suites / "infra_x.yaml") == "infra_x"
+    assert SU.suites_dir(bundle) == SU.suites_dir(suites / "infra_x.yaml") == suites
+    # siblings and the files that belong to a suite keep its format
+    assert SU.sibling(bundle, "infra_x_site") == suites / "infra_x_site" / "suite.yaml"
+    assert SU.sibling(suites / "infra_x.yaml", "infra_x_site") == suites / "infra_x_site.yaml"
+    assert SU.beside(bundle, "layouts.json") == suites / "infra_x" / "layouts.json"
+    assert SU.beside(suites / "infra_x.yaml", "layouts.json") == suites / "infra_x.layouts.json"
+    assert SU.contest_out(bundle) == tmp_path / "contests" / "infra_x" / "contest.yaml"
+    # a name is found as a bundle, else as a flat file an older writer left, else as the bundle to write
+    assert SU.find_suite(suites, "infra_x") == bundle
+    (suites / "infra_x.yaml").parent.mkdir(parents=True)
+    (suites / "infra_x.yaml").write_text("stages: []\n")
+    assert SU.find_suite(suites, "infra_x") == suites / "infra_x.yaml"
+    bundle.parent.mkdir()
+    bundle.write_text("stages: []\n")
+    assert SU.find_suite(suites, "infra_x") == bundle
+    assert SU.default_out(Path("peds_pilot.yaml")).parts[-3:] == ("suites", "flowedit_peds_pilot", "suite.yaml")
 
 
 def test_stage_names_parse_back() -> None:
@@ -175,7 +201,7 @@ def test_a_test_crowd_is_its_own_suite_of_its_partitions(split: tuple[Path, dict
     assert SU.suite_name(path, "orca") == "flowedit_pilot__orca" and SU.suite_name(path) == "flowedit_pilot"
     # a crowd asked for on partitions it does not run on would be an empty suite
     assert main(["suite", str(path), "--worlds", str(worlds), "--no-generate", "--out", str(tmp_path / "empty.yaml"), "--crowd", "orca", "--partition", "train"]) == 1
-    assert not (tmp_path / "empty.yaml").exists()
+    assert not (tmp_path / "empty.yaml").exists() and not (tmp_path / "empty").exists()
 
 
 TASK = {"start": [10.0, 2.0, 1.5708], "phases": [{"loop": [{"goto": [14.8, 22.9, -0.82], "tolerance_angle": 3.1416}, {"goto": [10.0, 2.0, -1.5708], "tolerance_angle": 3.1416}]}]}
@@ -198,12 +224,13 @@ def test_a_robot_task_drives_every_stage_among_the_robot_free_suite_s_people(spl
         robot_doc = yaml.safe_load((scenarios / with_robot["config"]["scenario"]["file"] / "scenario.yaml").read_text())
         crowd_doc = yaml.safe_load((scenarios / without["config"]["scenario"]["file"] / "scenario.yaml").read_text())
         assert robot_doc["humans"] == crowd_doc["humans"] and len(robot_doc["robots"]) == 1 and "robots" not in crowd_doc
-    contest = yaml.safe_load((tmp_path / "imported" / "contests" / "flowedit_pilot.yaml").read_text())
+    assert (suites / "flowedit_pilot" / "suite.yaml").is_file() and not (suites / "flowedit_pilot.yaml").exists()
+    contest = yaml.safe_load((tmp_path / "imported" / "contests" / "flowedit_pilot" / "contest.yaml").read_text())
     assert contest == {"name": "flowedit_pilot", "contestants": CONTEST}
     assert "--suite flowedit_pilot --contest flowedit_pilot --lanes 2" in capsys.readouterr().out
-    # elsewhere than a suites directory the contest lands beside the suite
+    # elsewhere than a suites directory the contest lands in the suite's bundle
     _suite(path, worlds, tmp_path / "s.yaml")
-    assert yaml.safe_load((tmp_path / "s.contest.yaml").read_text())["contestants"] == CONTEST
+    assert yaml.safe_load((tmp_path / "s" / "contest.yaml").read_text())["contestants"] == CONTEST
 
 
 @pytest.mark.parametrize(
@@ -275,6 +302,7 @@ def test_the_printed_benchmark_call_finds_the_suite_where_it_was_written(split: 
     other = tmp_path / "node" / "assets"
     _suite(path, worlds, other / "suites" / "flowedit_pilot.yaml")
     assert capsys.readouterr().out.splitlines()[-1].startswith(f"ARENA_ASSETS_DIR_IMPORTED={other} arena evaluation benchmark --suite flowedit_pilot")
+    assert SU.imported_for(other / "suites" / "x" / "suite.yaml") == other.resolve() and SU.imported_for(tmp_path / "x" / "suite.yaml") is None
     assert SU.imported_for(other / "suites" / "x.yaml") == other.resolve() and SU.imported_for(tmp_path / "x.yaml") is None
     # no suites/ directory: no `--suite` name reaches it, and the call says so
     _suite(path, worlds, tmp_path / "loose.yaml")

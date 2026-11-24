@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 from arena_simulation_setup.generative.flowedit import cli, demand, infra, place, recipients, search
+from arena_simulation_setup.generative.flowedit import suite as SU
 from arena_simulation_setup.generative.flowedit.demand import EntranceSearch
 from arena_simulation_setup.generative.flowedit.edit import Site, open_site
 from arena_simulation_setup.generative.flowedit.search import Search
@@ -290,22 +291,22 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
     by_role = {r["role"]: r for r in found["layouts"]}
     optimal, practice = by_role["travel_optimal"], by_role["practice_based"]
     capsys.readouterr()
-    out = tmp_path / "suites" / "infra_rd.yaml"
+    out = tmp_path / "suites" / "infra_rd" / "suite.yaml"
     ids = f"travel_optimal={optimal['layout_id']}" + (f",practice={practice['layout_id']}" if practice["layout_id"] != optimal["layout_id"] else "")
     count = len(ids.split(","))
     args = ["infra", "evaluation", *common, "--report", str(report), "--layouts", ids, "--seeds", "71-74", "--without-robots-seeds", "71,72", "--rate", "240", "--recipient-offset", "60", "--seed-part", "h1=71,72", "--seed-part", "h2=73-74", "--out", str(out)]
-    assert cli.main([*args, "--dry-run"]) == 0 and not out.parent.exists()
+    assert cli.main([*args, "--dry-run"]) == 0 and not SU.suites_dir(out).exists()
     assert "no world or suite written" in capsys.readouterr().err
     # each layout's crowd scenario is checked as the runtime checks it at an episode's start: the test world's
     # furniture resolves in no asset root here, which stops the command before a suite is written
-    assert cli.main(args) == 1 and "human.check" in capsys.readouterr().err and not out.parent.exists()
+    assert cli.main(args) == 1 and "human.check" in capsys.readouterr().err and not SU.suites_dir(out).exists()
     assert not [p.name for p in site.root.parent.iterdir() if p.name.startswith(f"{site.key}__layout_")]  # the copy that failed is not kept
     args = [*args, "--no-check"]
     assert cli.main(args) == 0
     printed = capsys.readouterr()
     assert not out.exists()  # the runs with the fleet are not written here
-    site_doc = yaml.safe_load(out.with_name("infra_rd_site.yaml").read_text())
-    without = yaml.safe_load(out.with_name("infra_rd_without.yaml").read_text())
+    site_doc = yaml.safe_load(SU.sibling(out, "infra_rd_site").read_text())
+    without = yaml.safe_load(SU.sibling(out, "infra_rd_without").read_text())
     assert [s["name"] for s in site_doc["stages"]] == [f"{site.key}__s{seed}" for seed in (71, 72, 73, 74)] and site_doc == infra.reference_suite(site.key, [71, 72, 73, 74], scenario="mix")
     worlds = [f"{site.key}__layout_{layout_id.rpartition('=')[2]}" for layout_id in ids.split(",")]
     assert [s["name"] for s in without["stages"]] == [f"{world}__s{seed}" for world in worlds for seed in (71, 72)]
@@ -327,7 +328,7 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
         {"tag": "h1", "seeds": [71, 72], "site_suite": "infra_rd_site_h1", "without_suite": "infra_rd_without_h1", "episodes": 2 + 2 * count},
         {"tag": "h2", "seeds": [73, 74], "site_suite": "infra_rd_site_h2", "without_suite": None, "episodes": 2},
     ]
-    assert [s["seed"] for s in yaml.safe_load(out.with_name("infra_rd_without_h1.yaml").read_text())["stages"]] == [71, 72] * count and not out.with_name("infra_rd_without_h2.yaml").exists()
+    assert [s["seed"] for s in yaml.safe_load(SU.sibling(out, "infra_rd_without_h1").read_text())["stages"]] == [71, 72] * count and not SU.sibling(out, "infra_rd_without_h2").exists()
     # the recipients follow the seeds' jobs, the same in every layout; their sources are the manifest's visitor sources
     names = sorted(e.name for e in space.entrances)
     for seed in (71, 72, 73, 74):
@@ -343,18 +344,22 @@ def test_cli_evaluation_writes_the_layouts_of_a_search_report_without_robots_and
             assert all(x["entrance"] in record["serves"][x["locker"]] for x in mine)
     assert manifest["recipients"]["offset_s"] == 60.0 and manifest["recipients"]["kinds"] == ["delivery", "pickup"] and manifest["recipients"]["patience_s"] == 300.0 and list(manifest["recipients"]["mix"]) == ["adult", "wheelchair", "long_cane"]
     assert "--suite infra_rd_site " in printed.out and "--suite infra_rd_without " in printed.out and "peds_only" in printed.out
+
     # again: everything is kept as it is; other settings at the same seeds are refused, with a tag they get new scenarios
-    stamps = {p: p.stat().st_mtime_ns for p in out.parent.iterdir()}
-    assert cli.main(args) == 0 and {p: p.stat().st_mtime_ns for p in out.parent.iterdir()} == stamps
+    def stamped() -> dict[Path, int]:
+        return {p: p.stat().st_mtime_ns for p in SU.suites_dir(out).rglob("*") if p.is_file()}
+
+    stamps = stamped()
+    assert cli.main(args) == 0 and stamped() == stamps
     assert cli.main([*args, "--recipient-offset", "90"]) == 1
-    assert "written suites and manifests are not replaced" in capsys.readouterr().err and {p: p.stat().st_mtime_ns for p in out.parent.iterdir()} == stamps
+    assert "written suites and manifests are not replaced" in capsys.readouterr().err and stamped() == stamps
     # another name with the same scenarios: refused before a suite or a manifest of that name is written
-    assert cli.main([*args, "--recipient-offset", "90", "--out", str(out.with_name("infra_rdx.yaml"))]) == 1
-    assert "a written scenario is not replaced" in capsys.readouterr().err and not list(out.parent.glob("infra_rdx*"))
-    assert cli.main([*args, "--recipient-offset", "90", "--tag", "b", "--out", str(out.with_name("infra_rdb.yaml"))]) == 0
-    assert yaml.safe_load(out.with_name("infra_rdb_without.yaml").read_text())["stages"][0]["config"]["scenario"] == {"file": "mix__b__s71"}
-    assert cli.main([*args, "--tag", "c", "--writer-commit", "0123abcd", "--out", str(out.with_name("infra_rdc.yaml"))]) == 0
-    assert json.loads(out.with_name("infra_rdc.layouts.json").read_text())["writer_commit"] == "0123abcd"
+    assert cli.main([*args, "--recipient-offset", "90", "--out", str(SU.sibling(out, "infra_rdx"))]) == 1
+    assert "a written scenario is not replaced" in capsys.readouterr().err and not list(SU.suites_dir(out).glob("infra_rdx*"))
+    assert cli.main([*args, "--recipient-offset", "90", "--tag", "b", "--out", str(SU.sibling(out, "infra_rdb"))]) == 0
+    assert yaml.safe_load(SU.sibling(out, "infra_rdb_without").read_text())["stages"][0]["config"]["scenario"] == {"file": "mix__b__s71"}
+    assert cli.main([*args, "--tag", "c", "--writer-commit", "0123abcd", "--out", str(SU.sibling(out, "infra_rdc"))]) == 0
+    assert json.loads(infra.manifest_path(SU.sibling(out, "infra_rdc")).read_text())["writer_commit"] == "0123abcd"
     # what the command needs, and what belongs to the first study's evaluation
     assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", "x=ffffffff", "--seeds", "71", "--rate", "6"]) == 1
     assert cli.main(["infra", "evaluation", *common, "--report", str(report), "--layouts", ids, "--seeds", "71"]) == 1
@@ -410,7 +415,7 @@ def test_cli_evaluation_refuses_a_kept_layout_copy_that_holds_a_wall_its_site_co
     common = ["--site", str(site.root), "--site-config", str(config)]
     assert cli.main(["infra", "search", *common, "--reach", "12", "--margins", "1.5", "--rate", "6", "--rank", "walk", "--out", str(report)]) == 0
     optimal = next(r for r in json.loads(report.read_text())["reaches"][0]["layouts"] if r["role"] == "travel_optimal")
-    out = tmp_path / "suites" / "infra_rd.yaml"
+    out = tmp_path / "suites" / "infra_rd" / "suite.yaml"
     args = ["infra", "evaluation", "--report", str(report), "--layouts", f"travel_optimal={optimal['layout_id']}", "--seeds", "71", "--rate", "240", "--no-check"]
     assert cli.main([*args, *common, "--out", str(out)]) == 0
     copy = next(p for p in site.root.parent.iterdir() if p.name == f"{site.key}__layout_{optimal['layout_id']}")
@@ -423,7 +428,7 @@ def test_cli_evaluation_refuses_a_kept_layout_copy_that_holds_a_wall_its_site_co
     (copy / "world.yaml").write_text(yaml.safe_dump(world, sort_keys=False))
     config.write_text(yaml.safe_dump({**doc, "removed_walls": [{"name": "sign", "kind": "scan_boundary", "bbox": [x + 1.0, y, x + 1.4, y + 0.4]}]}))
     capsys.readouterr()
-    other = tmp_path / "suites" / "infra_rdz.yaml"
+    other = tmp_path / "suites" / "infra_rdz" / "suite.yaml"
     assert cli.main([*args, *common, "--tag", "z", "--out", str(other)]) == 1
     assert "still holds the walls ['sign']" in capsys.readouterr().err
-    assert not list(other.parent.glob("infra_rdz*"))
+    assert not list(SU.suites_dir(other).glob("infra_rdz*"))

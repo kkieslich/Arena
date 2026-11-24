@@ -225,11 +225,12 @@ def _cmd_suite(args: argparse.Namespace) -> int:
         print(f"(dry run - no scenario or suite written, {stages} stages)", file=sys.stderr)
         return 0
     header = [f"split {args.split.name}, partitions {', '.join(parts)}, crowd {args.crowd}, settings {S.digest(crowd)}", f"{stages} stages, each one episode at the seed its name ends in; an edit stage pairs with its base world's stage at that seed"]
-    out = Path(args.out or SU.default_out(args.split, args.crowd))
+    out = SU.bundle_file(args.out) if args.out else SU.default_out(args.split, args.crowd)
+    name = SU.name_of(out)
     contest = None
     try:
         if contestants:
-            contest = SU.write(SU.contest_doc(out.stem, contestants), SU.contest_out(out), [f"split {args.split.name}: the planners of suite {out.stem}"], force=args.force)
+            contest = SU.write(SU.contest_doc(name, contestants), SU.contest_out(out), [f"split {args.split.name}: the planners of suite {name}"], force=args.force)
         written = SU.write(suite, out, header, force=args.force)
     except ValueError as exc:
         print(f"flowedit: {exc}", file=sys.stderr)
@@ -238,11 +239,12 @@ def _cmd_suite(args: argparse.Namespace) -> int:
     if contestants:
         print(f"wrote {contest}: {len(contestants)} contestants")
     # the contest has the suite's name, which `--contest` resolves as `--suite` does
-    command = SU.benchmark_command(written.stem, args.lanes, *([written.stem] if contestants else []))
+    command = SU.benchmark_command(name, args.lanes, *([name] if contestants else []))
     root = SU.imported_for(written)
+    default = SU.suites_dir(SU.default_out(args.split, args.crowd))
     if root is None:
-        print(f"note: `--suite {written.stem}` resolves under {SU.default_out(args.split, args.crowd).parent}, not {written.parent}; write the suite with the default --out, or into a directory named {SU.SUITES}/", file=sys.stderr)
-    elif root != SU.default_out(args.split, args.crowd).parent.parent.resolve():
+        print(f"note: `--suite {name}` resolves under {default}, not {SU.suites_dir(written)}; write the suite with the default --out, or into a directory named {SU.SUITES}/", file=sys.stderr)
+    elif root != default.parent.resolve():
         # the runner finds the suite under ARENA_ASSETS_DIR_IMPORTED, so the command names the root the suite was written to
         command = f"ARENA_ASSETS_DIR_IMPORTED={shlex.quote(str(root))} {command}"
     print(command)
@@ -355,7 +357,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to write; repeatable (default: all)")
     p.add_argument("--crowd", default=SP.BASE_CROWD, help=f"the crowd to write, `{SP.BASE_CROWD}` (the split's own settings, default) or one of its `crowds`; each crowd is its own suite")
     p.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over the crowd's settings")
-    p.add_argument("--out", type=Path, default=None, help="suite file (default: <imported assets root>/suites/flowedit_<split name>[__<crowd>].yaml, where `--suite` finds it by that name)")
+    p.add_argument("--out", type=Path, default=None, help="suite bundle (default: <imported assets root>/suites/flowedit_<split name>[__<crowd>]/suite.yaml, where `--suite` finds it by that name); a <name>.yaml writes the bundle <name>/suite.yaml beside it")
     p.add_argument("--robot", default=SU.ROBOT, help=f"robot of every stage (default {SU.ROBOT}, the robot of the shipped suites), parked off the map and unseen unless the split has a robot_task")
     p.add_argument("--lanes", type=int, default=2, help="lanes in the printed benchmark call (default 2)")
     p.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds, then the resolvers)")
