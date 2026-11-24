@@ -8,14 +8,14 @@ from pathlib import Path
 
 import attrs
 import numpy as np
-import rclpy
 import shapely
-from arena_rclpy_mixins.ROSParamServer import ROSParamT
+from arena_rclpy_mixins.params import ParamHandle
 from arena_runtime.env.task_api import GoToPhase, PhaseState, TaskPhase, TaskRequest, authored_statics
 from arena_runtime.env.task_layer import ResetPlan, RobotReset
 
 from task_generator.tasks.mode import TaskModeKwargs
 from task_generator.tasks.robots import TM_Robots
+from task_generator.tasks.robots.fleet import FleetParams
 
 #: the semantic entity kind, and name, of the task log
 LOG_KIND = "fleet"
@@ -134,80 +134,81 @@ def wh_per_m(profile: Mapping[str, float] | None) -> float:
 class TM_Fleet(TM_Robots):
     """Deliveries and pickups released at a fixed rate from the episode seed, handed to free robots one dock at a time, with charging trips below a battery level or before a job the battery would not last, and opportunistic charging at chargers whose holders are away."""
 
-    _homes: ROSParamT[list[str]]
-    _loading: ROSParamT[str]
-    _locker: ROSParamT[str]
-    _rate: ROSParamT[float]
-    _pickup_share: ROSParamT[float]
-    _load_s: ROSParamT[float]
-    _unload_s: ROSParamT[float]
-    _charge_below: ROSParamT[float]
-    _charge_until: ROSParamT[float]
-    _reserve: ROSParamT[float]
-    _wh_per_m: ROSParamT[float]
-    _detour: ROSParamT[float]
-    _job_timeout: ROSParamT[float]
-    _job_timeout_per_m: ROSParamT[float]
-    _jam_window_s: ROSParamT[float]
-    _jam_progress_m: ROSParamT[float]
-    _jam_goal_m: ROSParamT[float]
-    _jam_home: ROSParamT[bool]
-    _leg_timeout_moving: ROSParamT[bool]
-    _leg_timeout_cap: ROSParamT[float]
-    _approach_m: ROSParamT[float]
-    _top_up: ROSParamT[bool]
-    _lockers: ROSParamT[list[str]]
-    _job_list: ROSParamT[list[str]]
-    _charge_rule: ROSParamT[str]
-    _nearest_charger: ROSParamT[bool]
-    _charge_jam: ROSParamT[str]
-    _soc_log: ROSParamT[str]
-    _soc_log_s: ROSParamT[float]
-    _idle_floor: ROSParamT[float]
-    _one_need_charge: ROSParamT[bool]
-    _charge_at_start: ROSParamT[bool]
-    _stop_empty: ROSParamT[bool]
-    _no_power_s: ROSParamT[float]
-    _no_power_rise: ROSParamT[float]
+    _homes: ParamHandle[list[str]]
+    _loading: ParamHandle[str]
+    _locker: ParamHandle[str]
+    _rate: ParamHandle[float]
+    _pickup_share: ParamHandle[float]
+    _load_s: ParamHandle[float]
+    _unload_s: ParamHandle[float]
+    _charge_below: ParamHandle[float]
+    _charge_until: ParamHandle[float]
+    _reserve: ParamHandle[float]
+    _wh_per_m: ParamHandle[float]
+    _detour: ParamHandle[float]
+    _job_timeout: ParamHandle[float]
+    _job_timeout_per_m: ParamHandle[float]
+    _jam_window_s: ParamHandle[float]
+    _jam_progress_m: ParamHandle[float]
+    _jam_goal_m: ParamHandle[float]
+    _jam_home: ParamHandle[bool]
+    _leg_timeout_moving: ParamHandle[bool]
+    _leg_timeout_cap: ParamHandle[float]
+    _approach_m: ParamHandle[float]
+    _top_up: ParamHandle[bool]
+    _lockers: ParamHandle[list[str]]
+    _job_list: ParamHandle[list[str]]
+    _charge_rule: ParamHandle[str]
+    _nearest_charger: ParamHandle[bool]
+    _charge_jam: ParamHandle[str]
+    _soc_log: ParamHandle[str]
+    _soc_log_s: ParamHandle[float]
+    _idle_floor: ParamHandle[float]
+    _one_need_charge: ParamHandle[bool]
+    _charge_at_start: ParamHandle[bool]
+    _stop_empty: ParamHandle[bool]
+    _no_power_s: ParamHandle[float]
+    _no_power_rise: ParamHandle[float]
 
     def __init__(self, **kwargs: typing.Unpack[TaskModeKwargs]) -> None:
         super().__init__(**kwargs)
 
-        self._homes = self.node.ROSParam[list[str]](self.namespace("homes"), [], type_=rclpy.Parameter.Type.STRING_ARRAY)
-        self._loading = self.node.ROSParam[str](self.namespace("loading"), "")
-        self._locker = self.node.ROSParam[str](self.namespace("locker"), "")
-        self._rate = self.node.ROSParam[float](self.namespace("rate"), 12.0)
-        self._pickup_share = self.node.ROSParam[float](self.namespace("pickup_share"), 0.3)
-        self._load_s = self.node.ROSParam[float](self.namespace("load_s"), 15.0)
-        self._unload_s = self.node.ROSParam[float](self.namespace("unload_s"), 10.0)
-        self._charge_below = self.node.ROSParam[float](self.namespace("charge_below"), 30.0)
-        self._charge_until = self.node.ROSParam[float](self.namespace("charge_until"), 100.0)
-        self._reserve = self.node.ROSParam[float](self.namespace("reserve"), 10.0)
-        self._wh_per_m = self.node.ROSParam[float](self.namespace("wh_per_m"), 0.046)
-        self._detour = self.node.ROSParam[float](self.namespace("detour"), 1.2)
-        self._job_timeout = self.node.ROSParam[float](self.namespace("job_timeout"), 300.0)
-        self._job_timeout_per_m = self.node.ROSParam[float](self.namespace("job_timeout_per_m"), 5.0)
-        self._jam_window_s = self.node.ROSParam[float](self.namespace("jam_window_s"), 60.0)
-        self._jam_progress_m = self.node.ROSParam[float](self.namespace("jam_progress_m"), 0.5)
-        self._jam_goal_m = self.node.ROSParam[float](self.namespace("jam_goal_m"), 1.0)
-        self._jam_home = self.node.ROSParam[bool](self.namespace("jam_home"), True)
-        self._leg_timeout_moving = self.node.ROSParam[bool](self.namespace("leg_timeout_moving"), True)
-        self._leg_timeout_cap = self.node.ROSParam[float](self.namespace("leg_timeout_cap"), 2.0)
-        self._approach_m = self.node.ROSParam[float](self.namespace("approach_m"), 5.0)
-        self._top_up = self.node.ROSParam[bool](self.namespace("top_up"), True)
-        self._lockers = self.node.ROSParam[list[str]](self.namespace("lockers"), [], type_=rclpy.Parameter.Type.STRING_ARRAY)
-        self._job_list = self.node.ROSParam[list[str]](self.namespace("jobs"), [], type_=rclpy.Parameter.Type.STRING_ARRAY)
-        self._charge_rule = self.node.ROSParam[str](self.namespace("charge_rule"), "threshold")
-        self._nearest_charger = self.node.ROSParam[bool](self.namespace("nearest_charger"), False)
-        self._charge_jam = self.node.ROSParam[str](self.namespace("charge_jam"), "home")
-        self._soc_log = self.node.ROSParam[str](self.namespace("soc_log"), "")
-        self._soc_log_s = self.node.ROSParam[float](self.namespace("soc_log_s"), 60.0)
-        self._idle_floor = self.node.ROSParam[float](self.namespace("idle_floor"), 0.0)
-        self._one_need_charge = self.node.ROSParam[bool](self.namespace("one_need_charge"), False)
-        self._charge_at_start = self.node.ROSParam[bool](self.namespace("charge_at_start"), False)
-        self._stop_empty = self.node.ROSParam[bool](self.namespace("stop_empty"), False)
-        self._no_power_s = self.node.ROSParam[float](self.namespace("no_power_s"), 120.0)
-        self._no_power_rise = self.node.ROSParam[float](self.namespace("no_power_rise"), 0.1)
+        self._params = FleetParams(self.node, namespace=self.namespace())
+        self._homes = self._params.HOMES
+        self._loading = self._params.LOADING
+        self._locker = self._params.LOCKER
+        self._rate = self._params.RATE
+        self._pickup_share = self._params.PICKUP_SHARE
+        self._load_s = self._params.LOAD_S
+        self._unload_s = self._params.UNLOAD_S
+        self._charge_below = self._params.CHARGE_BELOW
+        self._charge_until = self._params.CHARGE_UNTIL
+        self._reserve = self._params.RESERVE
+        self._wh_per_m = self._params.WH_PER_M
+        self._detour = self._params.DETOUR
+        self._job_timeout = self._params.JOB_TIMEOUT
+        self._job_timeout_per_m = self._params.JOB_TIMEOUT_PER_M
+        self._jam_window_s = self._params.JAM_WINDOW_S
+        self._jam_progress_m = self._params.JAM_PROGRESS_M
+        self._jam_goal_m = self._params.JAM_GOAL_M
+        self._jam_home = self._params.JAM_HOME
+        self._leg_timeout_moving = self._params.LEG_TIMEOUT_MOVING
+        self._leg_timeout_cap = self._params.LEG_TIMEOUT_CAP
+        self._approach_m = self._params.APPROACH_M
+        self._top_up = self._params.TOP_UP
+        self._lockers = self._params.LOCKERS
+        self._job_list = self._params.JOBS
+        self._charge_rule = self._params.CHARGE_RULE
+        self._nearest_charger = self._params.NEAREST_CHARGER
+        self._charge_jam = self._params.CHARGE_JAM
+        self._soc_log = self._params.SOC_LOG
+        self._soc_log_s = self._params.SOC_LOG_S
+        self._idle_floor = self._params.IDLE_FLOOR
+        self._one_need_charge = self._params.ONE_NEED_CHARGE
+        self._charge_at_start = self._params.CHARGE_AT_START
+        self._stop_empty = self._params.STOP_EMPTY
+        self._no_power_s = self._params.NO_POWER_S
+        self._no_power_rise = self._params.NO_POWER_RISE
 
         self._chargers: list[str] = []
         self._xy: dict[str, tuple[float, float]] = {}

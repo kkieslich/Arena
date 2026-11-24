@@ -160,7 +160,7 @@ class _Space:
         s = self.search.loading
         return {"spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "goto": list(s.objects[0].goto)}
 
-    def settle_rate(self, args: argparse.Namespace, pick: Any) -> tuple[float, Any]:
+    def settle_rate(self, args: argparse.Namespace, pick: Any) -> tuple[float, Any]:  # noqa: ANN401
         """The rate `--rate` gives, else 75 % of the fleet's capacity in the wide premise layout (`search.premise_pair`),
         the layout the premise check measures the rate in; and the layouts `pick` returns at that rate. The rate sets
         how many jobs a charge is spread over, so the travel it is estimated from, so both settle together. Sets
@@ -365,7 +365,9 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
         return [robot, joint, random]
 
     rate, (robot, joint, random) = space.settle_rate(args, pick)
-    _log(f"travel model: {search.mix.top_ups_per_job:g} top-up drives bay - charger per job; travel pre-filter: at most {args.travel_slack:g} x the robot-only pick's {robot.travel_m:.1f} m = {state['cap']:.1f} m per job: {state['within']} of {len(search.candidates)} candidate layouts (valid or not); the joint search ranks every one of them")
+    _log(
+        f"travel model: {search.mix.top_ups_per_job:g} top-up drives bay - charger per job; travel pre-filter: at most {args.travel_slack:g} x the robot-only pick's {robot.travel_m:.1f} m = {state['cap']:.1f} m per job: {state['within']} of {len(search.candidates)} candidate layouts (valid or not); the joint search ranks every one of them"
+    )
     guide = SE.guideline(search) if args.guideline else None
     runs = [("robot_only", robot), *(("joint", s) for s in joint), *(("random", s) for s in random)]
     exposure: dict[str, dict[str, float]] = {}
@@ -571,18 +573,20 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
     scenario, visitors_doc, types = IN.entrance_crowd(config, floor, walls=walls, rate=rate, visitor_rate_per_h=args.visitor_rate, robots=robots)
     shares = IN.entrance_shares(config)
     lines = [f"{e.name} ({e.type}{', recipients' if e.recipients else ''}): {shares[e.name] * rate:.3f} ped/s" for e in config.facts.entrances]
-    header = "\n".join([
-        f"INFRA study crowd from the entrances of {config.path.name if config.path else site.key} (study design §2, §9), written by `flowedit infra crowd`.",
-        f"The inflow: {how}.",
-        f"Every entrance is a PEDS source and sink. Walkers come in at {rate:.4g} ped/s in all, split by entrance type",
-        "(flow_split, evenly within a group; groups without an entrance spread over the others), 70/15/15 adult /",
-        "wheelchair / long cane per entrance, and leave by another entrance in proportion to its share. Each entrance's",
-        f"area lies on the floor a walker reaches, {IN.ENTRANCE_WALL_M:g} m clear of the walls (HumanSim plans paths 0.38 m off them), without the pockets",
-        f"they close off; an entrance with under {IN.ENTRANCE_MIN_M2:g} m2 of it in its square takes a larger square, up to {IN.ENTRANCE_GROW_M[-1]:g} m.",
-        f"Parcel recipients ({args.visitor_rate:g}/h in all, locker_visitors.yaml) come in at a recipient entrance and leave by it.",
-        "Robots as in the site config's scenario. Entrances and their inflow:",
-        *[f"  {line}" for line in lines],
-    ])
+    header = "\n".join(
+        [
+            f"INFRA study crowd from the entrances of {config.path.name if config.path else site.key} (study design §2, §9), written by `flowedit infra crowd`.",
+            f"The inflow: {how}.",
+            f"Every entrance is a PEDS source and sink. Walkers come in at {rate:.4g} ped/s in all, split by entrance type",
+            "(flow_split, evenly within a group; groups without an entrance spread over the others), 70/15/15 adult /",
+            "wheelchair / long cane per entrance, and leave by another entrance in proportion to its share. Each entrance's",
+            f"area lies on the floor a walker reaches, {IN.ENTRANCE_WALL_M:g} m clear of the walls (HumanSim plans paths 0.38 m off them), without the pockets",
+            f"they close off; an entrance with under {IN.ENTRANCE_MIN_M2:g} m2 of it in its square takes a larger square, up to {IN.ENTRANCE_GROW_M[-1]:g} m.",
+            f"Parcel recipients ({args.visitor_rate:g}/h in all, locker_visitors.yaml) come in at a recipient entrance and leave by it.",
+            "Robots as in the site config's scenario. Entrances and their inflow:",
+            *[f"  {line}" for line in lines],
+        ]
+    )
     _log(header)
     if args.dry_run:
         _log("(dry run - nothing written)")
@@ -608,10 +612,7 @@ def _crowd_rate(args: argparse.Namespace, config: IN.SiteConfig) -> tuple[float,
         return IN.CROWD_RATE, f"{IN.CROWD_RATE:g} ped/s (no crowd_density in the site config)"
     density = cd.density if args.density is None else args.density
     rate = cd.rate(density)
-    return rate, (
-        f"{density:g} ped/m2 on {cd.area_m2:g} m2 = {cd.present(density):.0f} walkers present; by Little's law over the"
-        f" mean time in the site, {cd.mean_time_s:g} s (site config crowd_density), {rate:.4g} ped/s in all"
-    )
+    return rate, (f"{density:g} ped/m2 on {cd.area_m2:g} m2 = {cd.present(density):.0f} walkers present; by Little's law over the mean time in the site, {cd.mean_time_s:g} s (site config crowd_density), {rate:.4g} ped/s in all")
 
 
 def _named_layouts(text: str) -> list[tuple[str, str]]:
@@ -707,7 +708,12 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
     who = {layout_id: {seed: () if fleet_only else RC.recipients(seed, jobs[seed], serves[layout_id], mix, offset_s=args.recipient_offset, episode_s=args.duration, kinds=args.recipient_kinds) for seed in seeds} for layout_id in layouts}
     any_layout = next(iter(who.values()))
     _log(f"jobs at {args.rate:g} per hour over {len(entrances)} recipient entrances, {args.duration:g} s: " + ", ".join(f"seed {seed} {len(jobs[seed])}" for seed in seeds))
-    _log(f"recipients ({'/'.join(args.recipient_kinds)}, {args.recipient_offset:g} s after the release): " + ", ".join(f"seed {seed} {len(any_layout[seed])}" for seed in seeds) + f"; {sum(len(v) for v in any_layout.values())} in all, by group " + json.dumps({group: sum(r.group == group for v in any_layout.values() for r in v) for group in mix}))
+    _log(
+        f"recipients ({'/'.join(args.recipient_kinds)}, {args.recipient_offset:g} s after the release): "
+        + ", ".join(f"seed {seed} {len(any_layout[seed])}" for seed in seeds)
+        + f"; {sum(len(v) for v in any_layout.values())} in all, by group "
+        + json.dumps({group: sum(r.group == group for v in any_layout.values() for r in v) for group in mix})
+    )
     for layout_id, layout in layouts.items():
         _log(f"{roles[layout_id]:22s} {layout_id}: " + "; ".join(f"{locker} ({next(s.zone for s in layout.spots for o in s.objects if o.name == locker)}) serves {', '.join(es)}" for locker, es in serves[layout_id].items()))
     names = {seed: f"{space.scenario_name}__{args.tag + '__' if args.tag else ''}fleet_only" if fleet_only else RC.scenario_name(space.scenario_name, seed, args.tag) for seed in seeds}
@@ -760,7 +766,16 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         made = docs(part)
         paths = {"site": out.with_name(f"{out.stem}_site_{tag}.yaml"), "without": out.with_name(f"{out.stem}_without_{tag}.yaml"), "fleet": out.with_name(f"{out.stem}_{tag}.yaml")}
         plan(made, paths, f", part {tag} (seeds {', '.join(map(str, part))})")
-        parts.append({"tag": tag, "seeds": part, **({"suite": paths["fleet"].stem if "fleet" in made else None} if "fleet" in arms else {}), "site_suite": paths["site"].stem if "site" in made else None, "without_suite": paths["without"].stem if "without" in made else None, "episodes": sum(IN.episodes(doc) for doc in made.values())})
+        parts.append(
+            {
+                "tag": tag,
+                "seeds": part,
+                **({"suite": paths["fleet"].stem if "fleet" in made else None} if "fleet" in arms else {}),
+                "site_suite": paths["site"].stem if "site" in made else None,
+                "without_suite": paths["without"].stem if "without" in made else None,
+                "episodes": sum(IN.episodes(doc) for doc in made.values()),
+            }
+        )
     worlds = {layout_id: RC.copy_path(space.site, layout) for layout_id, layout in layouts.items()}
     keep = ("layout_id", "reach_m", "lockers", "travel_m", "floor_loss_m2", "serves", "walk", "walk_by_entrance")
     block = {key: value for key, value in fleet_block(next(iter(layouts)), seeds[0]).items() if key not in ("jobs", "lockers", "soc_log")}
@@ -873,7 +888,10 @@ def _cmd_charge_states(args: argparse.Namespace) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(doc, indent=1) + "\n")
     flat = sorted(v for state in states for v in state)
-    _log(f"{len(states)} charge states of {len(states[0])} robots from {doc['source']['rows']} rows ({doc['source']['skipped']} left out), from {args.from_s:g} s on, {args.every_s:g} s apart; charge min {flat[0]:.1f} %, median {flat[len(flat) // 2]:.1f} %, max {flat[-1]:.1f} %; by start spot " + ", ".join(f"{spot} {sum(state[i] for state in states) / len(states):.1f} %" for i, spot in enumerate(doc["spots"])))
+    _log(
+        f"{len(states)} charge states of {len(states[0])} robots from {doc['source']['rows']} rows ({doc['source']['skipped']} left out), from {args.from_s:g} s on, {args.every_s:g} s apart; charge min {flat[0]:.1f} %, median {flat[len(flat) // 2]:.1f} %, max {flat[-1]:.1f} %; by start spot "
+        + ", ".join(f"{spot} {sum(state[i] for state in states) / len(states):.1f} %" for i, spot in enumerate(doc["spots"]))
+    )
     print(f"wrote {args.out}")
     return 0
 
@@ -979,7 +997,7 @@ def _cmd_site_walls(args: argparse.Namespace) -> int:
     return 0
 
 
-def add_parser(verbs: Any) -> None:
+def add_parser(verbs: Any) -> None:  # noqa: ANN401
     """The `infra` verb and its subcommands."""
     p = verbs.add_parser("infra", help="INFRA Stage 1 suites: the site as is, the premise check, the selection and the evaluation", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation,charge-states,site-walls}")
@@ -1012,9 +1030,19 @@ def add_parser(verbs: Any) -> None:
 
     q = infra.add_parser("reference", parents=[common], help="the site as is without robots, one stage per seed", description=f"write suite {IN.REFERENCE_SUITE}: the site as is without robots at each seed, the robots parked off the map. Run it first: its flow cells are the joint search's occupancy.")
     q.set_defaults(fn=_cmd_reference)
-    q = infra.add_parser("premise", parents=[common, searched], help="the premise check: the two most different layouts with and without the fleet", description=f"write suite {IN.PREMISE_SUITE} (§10): the valid layout with every element at the narrowest section and the one with every element at the widest, saved as world copies with the crowd, each with the fleet and without robots on seeds {IN.PREMISE_SEEDS[0]}-{IN.PREMISE_SEEDS[-1]}; with the site as is from {IN.REFERENCE_SUITE}, §10's 15 episodes")
+    q = infra.add_parser(
+        "premise",
+        parents=[common, searched],
+        help="the premise check: the two most different layouts with and without the fleet",
+        description=f"write suite {IN.PREMISE_SUITE} (§10): the valid layout with every element at the narrowest section and the one with every element at the widest, saved as world copies with the crowd, each with the fleet and without robots on seeds {IN.PREMISE_SEEDS[0]}-{IN.PREMISE_SEEDS[-1]}; with the site as is from {IN.REFERENCE_SUITE}, §10's 15 episodes",
+    )
     q.set_defaults(fn=_cmd_premise)
-    q = infra.add_parser("layouts", parents=[common, searched], help="the selection: robot-only pick, joint top 10, 5 random layouts", description=f"search the site's layouts (generative/flowedit/search.py): the robot-only pick, the joint top {SE.JOINT_TOP} distinct layouts by predicted conflict exposure (worst walker group) among the layouts within {SE.TRAVEL_SLACK:g} x the robot-only travel per job, and {SE.RANDOM_LAYOUTS} random valid layouts; save them as world copies with the crowd and write suite {IN.LAYOUT_SUITE}: each with the fleet and without robots on the selection seeds; writes <suite>.layouts.json beside it")
+    q = infra.add_parser(
+        "layouts",
+        parents=[common, searched],
+        help="the selection: robot-only pick, joint top 10, 5 random layouts",
+        description=f"search the site's layouts (generative/flowedit/search.py): the robot-only pick, the joint top {SE.JOINT_TOP} distinct layouts by predicted conflict exposure (worst walker group) among the layouts within {SE.TRAVEL_SLACK:g} x the robot-only travel per job, and {SE.RANDOM_LAYOUTS} random valid layouts; save them as world copies with the crowd and write suite {IN.LAYOUT_SUITE}: each with the fleet and without robots on the selection seeds; writes <suite>.layouts.json beside it",
+    )
     q.add_argument("--occupancy", type=Path, default=None, help="the reference runs' flow cells: flow_cells.parquet or the benchmark dir holding it (all walkers: the joint ranking's one group without --group-occupancy; the random control's occupancy column)")
     q.add_argument("--group-occupancy", type=Path, action="append", default=None, help="the reference runs' walker-group cells (`evaluation infra occupancy`: infra_occupancy.parquet or the benchmark dir holding it); repeatable, read as one")
     q.add_argument("--band", type=float, default=SE.CONFLICT_BAND_M, help=f"the conflict band: walkers within this distance of a driving robot count as exposed, m (default {SE.CONFLICT_BAND_M:g})")
@@ -1027,7 +1055,11 @@ def add_parser(verbs: Any) -> None:
     q.set_defaults(fn=_cmd_layouts)
     from . import demand as DE
 
-    q = infra.add_parser("search", help="demand at the recipient entrances: the travel-optimal, pedestrian-aware and practice-based layouts per reach", description="search the site's layouts for demand at the recipient entrances (generative/flowedit/demand.py; study design Part A): per reach, the fewest lockers that give every recipient entrance one within the reach as people walk, the travel-optimal layout, the pedestrian-aware pick at each travel margin and the practice-based layout, each with its robot travel per job, the predicted exposure per walker group and the walk to the locker per group. Prints them and writes a report with --out; writes no world or suite")
+    q = infra.add_parser(
+        "search",
+        help="demand at the recipient entrances: the travel-optimal, pedestrian-aware and practice-based layouts per reach",
+        description="search the site's layouts for demand at the recipient entrances (generative/flowedit/demand.py; study design Part A): per reach, the fewest lockers that give every recipient entrance one within the reach as people walk, the travel-optimal layout, the pedestrian-aware pick at each travel margin and the practice-based layout, each with its robot travel per job, the predicted exposure per walker group and the walk to the locker per group. Prints them and writes a report with --out; writes no world or suite",
+    )
     q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
     q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): its entrances, links, courier access point and outlets")
     q.add_argument("--scenario", default=None, help="the crowd scenario whose sources and sinks no element takes (default the site config's)")
@@ -1046,32 +1078,59 @@ def add_parser(verbs: Any) -> None:
     q.add_argument("--occupancy", type=Path, default=None, help="the reference runs' flow cells (all walkers): reported as group `all`, not ranked")
     q.add_argument("--group-occupancy", type=Path, action="append", default=None, help="the reference runs' walker-group cells (`evaluation infra occupancy`); repeatable, read as one. Without them no exposure is predicted and only --rank walk ranks")
     q.add_argument("--band", type=float, default=SE.CONFLICT_BAND_M, help=f"the conflict band of the predicted exposure, m (default {SE.CONFLICT_BAND_M:g})")
-    q.add_argument("--rank", choices=("step-free", "pooled", "exposure", "walk"), default="step-free", help="the pedestrian-aware ranking, by the worst-off group: step-free (rule S: the layouts that serve every recipient entrance from within the reach step-free first, where the travel cap holds one, then pooled; default), pooled (time lost per hour on the site: time near robots times --delay-per-exposure, time on element floor times --delay-per-element, plus the recipients' walk), exposure (the first study's term alone), walk (the walk to the locker, ties by exposure)")
-    q.add_argument("--delay-per-exposure", type=_pairs, default=None, help=f"seconds of delay per second within --band of a driving robot per walker group, e.g. adult=0.3,wheelchair=0.5 (default at 2 m {','.join(f'{g}={v:g}' for g, v in DE.DELAY_PER_EXPOSURE.items())}, at 1 m the calibration; another band needs them given)")
+    q.add_argument(
+        "--rank",
+        choices=("step-free", "pooled", "exposure", "walk"),
+        default="step-free",
+        help="the pedestrian-aware ranking, by the worst-off group: step-free (rule S: the layouts that serve every recipient entrance from within the reach step-free first, where the travel cap holds one, then pooled; default), pooled (time lost per hour on the site: time near robots times --delay-per-exposure, time on element floor times --delay-per-element, plus the recipients' walk), exposure (the first study's term alone), walk (the walk to the locker, ties by exposure)",
+    )
+    q.add_argument(
+        "--delay-per-exposure", type=_pairs, default=None, help=f"seconds of delay per second within --band of a driving robot per walker group, e.g. adult=0.3,wheelchair=0.5 (default at 2 m {','.join(f'{g}={v:g}' for g, v in DE.DELAY_PER_EXPOSURE.items())}, at 1 m the calibration; another band needs them given)"
+    )
     q.add_argument("--delay-per-element", type=_pairs, default=None, help=f"seconds of delay per second on an element's floor per walker group (default {','.join(f'{g}={v:g}' for g, v in DE.DELAY_PER_ELEMENT.items())}, the calibration, the same in every band)")
     q.add_argument("--walk-speed", type=_pairs, default=None, help=f"walking speed per walker group, m/s (default {','.join(f'{g}={v:g}' for g, v in DE.WALK_SPEED_MPS.items())})")
     q.add_argument("--out", type=Path, default=None, help="the report file (JSON); an existing file is kept unless --force")
     q.add_argument("--force", action="store_true", help="replace an existing report file")
     q.set_defaults(fn=_cmd_search)
-    q = infra.add_parser("crowd", parents=[common], help="the study crowd from the site config's entrances", description="write a scenario directory <out>/<name>: every entrance of the site config a PEDS source and sink, the inflow split by entrance type (flow_split), through-walkers between entrances and locker visitors from the recipient entrances")
+    q = infra.add_parser(
+        "crowd",
+        parents=[common],
+        help="the study crowd from the site config's entrances",
+        description="write a scenario directory <out>/<name>: every entrance of the site config a PEDS source and sink, the inflow split by entrance type (flow_split), through-walkers between entrances and locker visitors from the recipient entrances",
+    )
     q.add_argument("--name", default="study_entrances", help="scenario name (default %(default)s)")
     q.add_argument("--rate", type=float, default=None, help=f"the inflow in all [ped/s] (default: the site config's crowd_density by Little's law, density x area / mean time in the site; without one {IN.CROWD_RATE:g}, study_mix_v2's)")
     q.add_argument("--density", type=float, default=None, help="the crowd density [ped/m2] the inflow keeps, in place of the site config's (crowd_density: its area and mean time set the rate)")
     q.add_argument("--visitor-rate", type=float, default=12.0, help="locker visitors per hour in all (default %(default)s)")
     q.set_defaults(fn=_cmd_crowd)
-    q = infra.add_parser("evaluation", parents=[common], help="the evaluation: the picks, the guideline layout and the site as is on fresh seeds", description=f"write suites {IN.EVALUATION_SUITE} (the joint pick, the robot-only pick and the guideline layout the selection recorded, each with the fleet and without robots) and {IN.EVALUATION_SITE_SUITE} (the site as is) on seeds {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]}, from the pick `evaluation infra pick` wrote and the selection's manifest")
+    q = infra.add_parser(
+        "evaluation",
+        parents=[common],
+        help="the evaluation: the picks, the guideline layout and the site as is on fresh seeds",
+        description=f"write suites {IN.EVALUATION_SUITE} (the joint pick, the robot-only pick and the guideline layout the selection recorded, each with the fleet and without robots) and {IN.EVALUATION_SITE_SUITE} (the site as is) on seeds {IN.EVALUATION_SEEDS[0]}-{IN.EVALUATION_SEEDS[-1]}, from the pick `evaluation infra pick` wrote and the selection's manifest",
+    )
     q.add_argument("--pick", type=Path, default=None, help="the pick file `evaluation infra pick` writes (joint_pick, robot_only); needed without --report")
     q.add_argument("--no-guideline", action="store_true", help="leave out the guideline layout the selection's manifest records (`layouts --guideline`)")
     q.add_argument("--parts", type=_weights, default=None, metavar="W1,W2", help=parts_help)
     q.add_argument("--selection", type=Path, default=None, help=f"the selection's manifest (default <imported assets root>/suites/{IN.LAYOUT_SUITE}.layouts.json)")
     from . import recipients as RC
 
-    g = q.add_argument_group("layouts of `flowedit infra search` (study design Part A)", f"with --report: save the named layouts of a search report as world copies, each with one crowd scenario per seed that holds the seed's parcel recipients (generative/flowedit/recipients.py), and write suites {IN.ENTRANCE_SUITE}_site (the site as is) and {IN.ENTRANCE_SUITE}_without (each layout without robots as a crowd-only stage) with their manifest {IN.ENTRANCE_SUITE}.layouts.json. The search space is built as the report's search built it: pass the same --site, --site-config, --scenario, --loading and --no-outlet-rule. Without --report none of these options is read")
+    g = q.add_argument_group(
+        "layouts of `flowedit infra search` (study design Part A)",
+        f"with --report: save the named layouts of a search report as world copies, each with one crowd scenario per seed that holds the seed's parcel recipients (generative/flowedit/recipients.py), and write suites {IN.ENTRANCE_SUITE}_site (the site as is) and {IN.ENTRANCE_SUITE}_without (each layout without robots as a crowd-only stage) with their manifest {IN.ENTRANCE_SUITE}.layouts.json. The search space is built as the report's search built it: pass the same --site, --site-config, --scenario, --loading and --no-outlet-rule. Without --report none of these options is read",
+    )
     g.add_argument("--report", type=Path, default=None, help="the report `flowedit infra search --out` wrote (any JSON that holds its layout records)")
     g.add_argument("--layouts", type=_named_layouts, default=None, metavar="ROLE=ID,...", help="the report's layouts to run, each as <role>=<id>, e.g. travel_optimal=83298e5c,practice_based=d837888b; the roles are the manifest's `picks`, no two layouts share one")
     g.add_argument("--without-robots-seeds", type=_seeds, default=None, help="the seeds at which each layout runs without robots as a crowd-only stage (default every seed); the manifest records them as crowd_only_seeds")
     g.add_argument("--writer-commit", default=None, help="the commit of the code that runs this command, for the manifest (a script that runs a copy of the code names the copy's commit)")
-    g.add_argument("--seed-part", type=_seed_part, action="append", default=None, metavar="TAG=SEEDS", help="also write the suites of a part of the seeds, <suite>_site_<tag> and <suite>_without_<tag>, e.g. h1=71-72: one lane of one machine, so that all runs of a seed are recorded on one machine; repeatable, the parts hold each seed once")
+    g.add_argument(
+        "--seed-part",
+        type=_seed_part,
+        action="append",
+        default=None,
+        metavar="TAG=SEEDS",
+        help="also write the suites of a part of the seeds, <suite>_site_<tag> and <suite>_without_<tag>, e.g. h1=71-72: one lane of one machine, so that all runs of a seed are recorded on one machine; repeatable, the parts hold each seed once",
+    )
     g.add_argument("--rate", type=float, default=None, help="jobs per hour in all, the same share to every recipient entrance; the recipients follow the seeds' jobs")
     g.add_argument("--pickup-share", type=float, default=IN.PICKUP_SHARE, help=f"share of pickups among the jobs (default {IN.PICKUP_SHARE:g})")
     g.add_argument("--recipient-offset", type=float, default=RC.OFFSET_S, help=f"seconds from a job's release to its recipient's arrival at the recipient entrance (default {RC.OFFSET_S:g}, the warm-up; a placeholder)")
@@ -1079,28 +1138,44 @@ def add_parser(verbs: Any) -> None:
     g.add_argument("--recipient-mix-from", default=None, help="the scenario whose sources give the recipients' walker groups (default the stage scenario); name the site's base crowd when the stage scenario holds tagged extras")
     g.add_argument("--recipient-kinds", type=lambda text: [k.strip() for k in text.split(",") if k.strip()], default=list(RC.RECIPIENT_KINDS), help=f"the job kinds that bring a recipient (default {','.join(RC.RECIPIENT_KINDS)}; delivery,pickup: every job)")
     g.add_argument("--recipient-mix", type=_shares, default=None, help="the recipients' walker groups as shares, e.g. adult=0.985,wheelchair=0.01,long_cane=0.005 (default the crowd's mix, from the scenario's sources)")
-    g.add_argument("--charge-power", type=float, default=RC.CHARGE_POWER_W, help=f"the power the copies' chargers charge with, W (default {RC.CHARGE_POWER_W:g}: the jackal's {RC.BATTERY_WH:g} Wh in {RC.CHARGE_TIME_H:g} h on top of its {RC.STANDBY_W:g} W standby draw; the first study's worlds have {IN.place.CHARGE_POWER_W:g})")
+    g.add_argument(
+        "--charge-power", type=float, default=RC.CHARGE_POWER_W, help=f"the power the copies' chargers charge with, W (default {RC.CHARGE_POWER_W:g}: the jackal's {RC.BATTERY_WH:g} Wh in {RC.CHARGE_TIME_H:g} h on top of its {RC.STANDBY_W:g} W standby draw; the first study's worlds have {IN.place.CHARGE_POWER_W:g})"
+    )
     g.add_argument("--tag", default="", help="a tag in the crowd scenarios' names, <scenario>__<tag>__s<seed>: written scenarios are never replaced, other recipient settings at a seed need another name")
     g.add_argument("--loading", type=_point, default=None, help="x,y of the loading point, snapped to the nearest valid spot (default the site config's courier access point)")
     g.add_argument("--no-outlet-rule", action="store_true", help="the report's search ran without the locker's outlet cable rule (`flowedit infra search --no-outlet-rule`)")
     g.add_argument("--no-check", action="store_true", help="skip the check of each layout's crowd scenario that the runtime runs at an episode's start")
     from . import entrance_fleet as EF
 
-    g.add_argument("--arms", type=lambda text: [a.strip() for a in text.split(",") if a.strip()], default=["site", "without"], help="the suites to write: site (the site as is), without (each layout without robots, crowd only), fleet (each layout with the fleet: the seed's jobs to the locker that serves each job's recipient entrance, robots on their own battery, charging by need); default site,without. A capacity run of one layout is --arms fleet at each job rate, with a --tag and an --out per rate")
-    g.add_argument("--charge-states", type=Path, default=None, help=f"the fleet's start charge: a file of charge states (`flowedit infra charge-states`), copied beside the suite; one state is drawn per episode seed, each robot its place in it (default: every robot starts at --start-charge)")
+    g.add_argument(
+        "--arms",
+        type=lambda text: [a.strip() for a in text.split(",") if a.strip()],
+        default=["site", "without"],
+        help="the suites to write: site (the site as is), without (each layout without robots, crowd only), fleet (each layout with the fleet: the seed's jobs to the locker that serves each job's recipient entrance, robots on their own battery, charging by need); default site,without. A capacity run of one layout is --arms fleet at each job rate, with a --tag and an --out per rate",
+    )
+    g.add_argument("--charge-states", type=Path, default=None, help="the fleet's start charge: a file of charge states (`flowedit infra charge-states`), copied beside the suite; one state is drawn per episode seed, each robot its place in it (default: every robot starts at --start-charge)")
     g.add_argument("--start-charge", type=float, default=EF.START_SOC, help=f"start charge of every robot without --charge-states, %% (default {EF.START_SOC:g}: full)")
     g.add_argument("--fleet-only", action="store_true", help="a fleet-only run: each layout with the fleet and no walkers (the site's scenario without its sources, <scenario>__fleet_only), only the fleet suite; with --charge-log the run that gives the charge states")
     g.add_argument("--charge-log", default="", help="with --fleet-only: the directory (as the recording machine sees it) the fleet logs the robots' charge to, one <stage>.csv per stage, for `flowedit infra charge-states`")
     g.add_argument("--charge-log-s", type=float, default=EF.CHARGE_LOG_S, help=f"seconds between two lines of the charge log (default {EF.CHARGE_LOG_S:g})")
     q.set_defaults(fn=_cmd_evaluation)
-    q = infra.add_parser("charge-states", help="the charge states of fleet-only runs, for the fleet's start charge", description="read the charge logs fleet-only runs wrote (`flowedit infra evaluation --report ... --fleet-only --charge-log DIR`) and write the charge states the fleet's start charge is drawn from (`--charge-states`): the robots' charges at moments of the runs, after a run-in and a fixed time apart, in the order of the robots' start spots")
+    q = infra.add_parser(
+        "charge-states",
+        help="the charge states of fleet-only runs, for the fleet's start charge",
+        description="read the charge logs fleet-only runs wrote (`flowedit infra evaluation --report ... --fleet-only --charge-log DIR`) and write the charge states the fleet's start charge is drawn from (`--charge-states`): the robots' charges at moments of the runs, after a run-in and a fixed time apart, in the order of the robots' start spots",
+    )
     q.add_argument("--log", type=Path, action="append", required=True, help="a charge log (<stage>.csv); repeatable")
     q.add_argument("--from-s", type=float, default=EF.RUN_IN_S, help=f"the run-in: rows before this many seconds of an episode are left out (default {EF.RUN_IN_S:g})")
     q.add_argument("--every-s", type=float, default=EF.STATE_EVERY_S, help=f"seconds between two states taken from an episode (default {EF.STATE_EVERY_S:g})")
     q.add_argument("--out", type=Path, required=True, help="the charge-state file (JSON)")
     q.add_argument("--force", action="store_true", help="replace an existing file")
     q.set_defaults(fn=_cmd_charge_states)
-    q = infra.add_parser("site-walls", aliases=["remove-walls"], help="take the walls the site config removes out of the site's world and its layout copies, and add the walls it adds", description="take the walls of the site config's removed_walls (objects the scan caught that are not part of the site, matched by level, kind and bounding box) out of the site's world and of every layout copy beside it (<site>__*), and add the walls of its added_walls (short walls closing gaps the site does not have, each end on another wall), in place: the wall entries in world.yaml and their pixels in map/<level>.png; everything else stays as it is. The other infra commands refuse a site world that still holds a removed wall or lacks an added one.")
+    q = infra.add_parser(
+        "site-walls",
+        aliases=["remove-walls"],
+        help="take the walls the site config removes out of the site's world and its layout copies, and add the walls it adds",
+        description="take the walls of the site config's removed_walls (objects the scan caught that are not part of the site, matched by level, kind and bounding box) out of the site's world and of every layout copy beside it (<site>__*), and add the walls of its added_walls (short walls closing gaps the site does not have, each end on another wall), in place: the wall entries in world.yaml and their pixels in map/<level>.png; everything else stays as it is. The other infra commands refuse a site world that still holds a removed wall or lacks an added one.",
+    )
     q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
     q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml)")
     q.add_argument("--world", type=Path, action="append", default=None, help="a world directory to clean instead of the site and its copies; repeatable")

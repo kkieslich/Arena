@@ -94,7 +94,7 @@ wheelchair (`PUSH_WHEELCHAIR`) walks with `walk_pushwheelchair`, stands with `st
 the `wheelchair_manual` rider she pushes keeps his hands on his thighs (`seated_wheelchair_lap`). A ped whose profile changes blends from the
 old one over `AnimationManager.PROFILE_CROSSFADE_S` (0.6 s), its finger curls with it.
 
-Last, [`wire.py`](wire.py) compiles the 42 into `ped.body` over the model's stance ([BODY.md](BODY.md)), leaving only driven joints in `joint_state`. `ped.body` feeds the ROS4HRI skeleton in rviz through `hri_producer` and the Isaac, MuJoCo and Gazebo pedestrian rigs. `fill_bodies` does the body math for the whole roster at once (`semantic_to_body_batch`, one batch per stance) and hands a ped the body pose it built for it last while its stance and angles repeat and no clip body group plays on it: a walker's angles depend on its engine gait phase only, so the second render of an engine frame builds no bodies.
+Last, [`wire.py`](wire.py) compiles the 42 into `ped.body` over the model's stance ([BODY.md](BODY.md)), leaving only driven joints in `joint_state`. `fill_bodies` poses the whole roster in one `semantic_to_bodies` batch per publish, each ped over its model's `CompiledStance`, compiled once per model. `ped.body` feeds the ROS4HRI skeleton in rviz through `hri_producer` and the Isaac, MuJoCo and Gazebo pedestrian rigs. With the env's body cache, `fill_bodies` hands a ped the body pose it built for it last while its stance and semantic angles repeat and no clip body group plays on it.
 
 A model whose bundle ships a `.rig` with drivers (wheelchair bundles: `l_wheel`, `r_wheel`) gets those joints
 set on top, whoever filled the field: [`drivers.py`](drivers.py) rolls each wheel over the distance its contact
@@ -160,8 +160,9 @@ is measured off its skin (`meshes/<name>.dae`) with the arena-assets human build
 ## Fitting a gait profile from a clip
 
 The walk and run poses `GaitGenerator` emits come from the gait profiles in [`profiles/`](profiles/)
-([`profile.py`](profile.py): a mean plus harmonics per joint, read at the gait phase). [`fit.py`](fit.py) turns a
-walking clip into such a profile:
+([`profile.py`](profile.py): a mean plus harmonics per joint, read at the gait phase). A library entry
+`{same_as: <stem>, still: true}` is that profile's mean pose with the harmonics dropped, the standing pose of a
+person holding an aid. [`fit.py`](fit.py) turns a walking clip into such a profile:
 
 ```
 python3 -m arena_runtime.humans.fit walk_slow.npy -o walk_slow.yaml --speed 0.8 --report walk_slow.json
@@ -341,6 +342,15 @@ A `regions:` source entry's `config.agent:` block uses a different, wider schema
 
 A scripted entry renders with its `model:`. A source-spawned agent has none, so it takes a model from its agent type: when the type lists `assets:` tags, one of the human bundles on disk (world-local, shared-local or already cached) whose `annotation.yaml` carries every tag is drawn per agent from the episode seed. A type without `assets:`, or tags no bundle carries (warned once per type), keeps the default model.
 
+### Held devices
+
+An agent type's `device:` block names the assistive device its pedestrians hold: the prop bone their character carries
+(`{kind: cane, bone: cane}`), or an object held in both hands (`{kind: walking_frame, model: <object>}`, centered under the
+`pose.hold` grips). `publish_arena_peds` poses the character with the joint angles it publishes, through the same forward
+kinematics the simulators draw with (`ActorPose`), and writes the device's outline on the ground into `Pedestrian.device`
+([`devices.py`](devices.py)). Bodies are loaded off the publish path, once per character. The robot's collision tracker
+tests its footprint against `Pedestrian.radius` and `Pedestrian.device` (`devices.shapes`).
+
 ### Static world objects
 
 An `objects:` scenario or world entry that pedestrians can interact with (a bench, a
@@ -406,10 +416,13 @@ is ignored.
 Enforcement is substitution at the two outbound funnels: `publish_arena_peds`
 (the bus) and `relay_pedestrian_update` (the sim). Substitution is
 copy-on-write: possessed entries swap to deep copies of the stored state,
-everything else passes through untouched, and the caller's message is never
+advanced along their stored twist since receipt for at most
+`POSSESSION_EXTRAPOLATION_S` (0.2 s), everything else passes through untouched, and the caller's message is never
 mutated (hunav hands a persistent container to both funnels). Substituted
 entries get `gait_phase` re-stamped from the base's own `GaitGenerator`
-phase table, engines never see the publisher's zero.
+phase table, engines never see the publisher's zero. Both funnels compile
+the substituted joint angles into the body pose (`wire.fill_body`), so a
+possessed walker animates in every simulator.
 
 `human/move` (`srv/MovePedestrians`, env-level) is a teleport served by the
 base, only `name` and `pose` are read. Known peds are moved in place (no
@@ -481,7 +494,7 @@ goal of every episode of the scene added, each 0.5 m clear of the walls. The 17 
 importable. The 16 on hotel, univ and the double hotel are refused, because SocNavBench plays those sequences at 15 fps
 although they were recorded at 25 fps and places the hotel as a mirror image. A scenario has no field for the time
 budget: pass `task.episode.timeout:=<s>` when launching one by hand, or run the
-[SocNavBench suite](../../../../arena_evaluation/arena_evaluation/configs/benchmark/README.md#socnavbench), whose stages carry it.
+[SocNavBench suite](../../../../arena_evaluation/arena_evaluation/configs/README.md#socnavbench), whose stages carry it.
 
 Dense crowds come from three more sources, their tracks resampled to 10 Hz with stays like the ETH and UCY ones.
 `arena asset import scenario juelich <set>/<run>` writes a run of the Juelich pedestrian dynamics archive (BaSiGo 2013
@@ -498,7 +511,8 @@ in Lyon to `madras_topview`, and `arena asset import scenario glow <YYYY-mm-ddTH
 `ArenaHumanSimulator` feeds possession back to the engine: a loop at the
 possession stream rate (20 Hz) publishes every possessed ped and every
 tracked robot on the engine's `world_state` topic, pose and world-frame
-velocity both. Possessed peds that are known engine agents go out under
+velocity both, each robot sized by its footprint's disc radius (the mobile cap's
+`radius`, else the padded footprint's circumradius, 0.3 m without a mobile cap). Possessed peds that are known engine agents go out under
 the engine's own agent id, so the engine keeps its internal copy in full
 sync: pose slaved to the feed, velocity carried through so neighboring
 agents anticipate the motion, autonomy suspended while the lease is
@@ -552,10 +566,13 @@ mechanisms):
   stands for `dwell` seconds, or up to the named cabin, where it selects its destination and waits until the
   elevator teleports it. Other cross-level legs are left to the engine's own cabin routing.
 
-The engine runs in the world frame (authored coordinates, levels laid out, no env offset). The adapter owns
-the env offset on both sides: spawn poses, waypoints, walls, world objects, regions, robot and possessed poses
-are un-shifted going in, agent poses, gesture targets, flow agents and the engine's marker layers are shifted
-coming out. Nothing engine-side knows the env.
+The engine runs in the env-local frame `<prefix>/map` (authored coordinates, levels laid out, no env offset),
+which the static `map` -> `<prefix>/map` transform anchors at the env slot reference. env.launch passes that
+frame as `humansim.frame_id`, so `agent_states`, `world_geometry`, `agent_meta`, `agent_gestures`, `interactions`
+and the engine's `viz` layers carry it, and a TF lookup into `map` places them. The adapter owns the env offset
+on both sides: spawn poses, waypoints, walls, world objects, regions, robot and possessed poses are un-shifted
+going in (`world_state` is stamped `<prefix>/map`), agent poses, gesture targets, flow agents and the engine's
+marker layers are shifted coming out and stamped `map`. Nothing engine-side knows the offset.
 
 World objects go to the engine with what the model annotation and the scenario entry say: `bounding_box`,
 `hoi`, `capacity`, `satisfies`, `interaction_radius`, `formation`, and seats. The annotation's seats are its

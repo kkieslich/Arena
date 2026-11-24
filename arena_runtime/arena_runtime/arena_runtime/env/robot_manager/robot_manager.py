@@ -40,7 +40,7 @@ from arena_runtime.env.robot_manager.controller_manager_client import Controller
 from arena_runtime.env.robot_manager.controller_transitions import next_transition
 from arena_runtime.env.robot_manager.task_runner import PhaseState, TaskRunner, Transition, standoff_pose
 from arena_runtime.node_params import NodeParams
-from arena_runtime.shared import Orientation, Pose, Position, Robot
+from arena_runtime.shared import Orientation, Pose, Position, PositionRadius, Robot, footprint_radius
 from arena_runtime.sim._interface import SimUnavailable
 
 if typing.TYPE_CHECKING:
@@ -72,14 +72,14 @@ _MOVEIT_QUIET_RULES = '+[**/moveit/**:error]'
 
 _COLLISION_MONITOR_RULES = '+[**/collision_monitor:info]'
 
-#: nav2's 0.25 m xy_goal_tolerance plus a map cell
-ZONE_GOAL_MARGIN_M = 0.3
-
 _CONTROLLER_POLL = 0.2
 _CM_CALL_TIMEOUT = 10.0
 _CM_REFUSAL_GRACE_S = 20.0
 _CM_SWITCH_TIMEOUT = 60.0
 _CM_SWITCH_TIMED_OUT = "timed out"
+#: nav2's 0.25 m xy_goal_tolerance plus a map cell
+ZONE_GOAL_MARGIN_M = 0.3
+_ZONE_TARGET_MARGINS = (ZONE_GOAL_MARGIN_M, 0.15, 0.0)
 
 _TELEPORT_TOLERANCE = 0.3
 _TELEPORT_SETTLE_TIMEOUT = 2.0
@@ -99,18 +99,6 @@ def log_level_actions(spec: str) -> list[NodeLogLevelExtension.SetGlobalLogLevel
         NodeLogLevelExtension.SetGlobalLogLevelAction(_MOVEIT_QUIET_RULES, fallback=True),
         NodeLogLevelExtension.SetGlobalLogLevelAction(_COLLISION_MONITOR_RULES, fallback=True),
     ]
-
-
-def footprint_radius(config: RobotView) -> float:
-    """Disc radius of a robot model: the mobile cap's `radius`, else the circumradius of its padded footprint."""
-    mobile = config.mobile
-    if mobile is None:
-        raise ValueError(f"robot model {config.name!r} has no mobile cap, so no footprint radius")
-    if mobile.radius is not None:
-        return mobile.radius
-    if mobile.footprint:
-        return max(math.hypot(x, y) for x, y in mobile.footprint) + (mobile.footprint_padding or 0.0)
-    raise ValueError(f"{mobile.path}: sets neither radius nor footprint")
 
 
 def _front_yaw(obstacle: Obstacle) -> float:
@@ -651,6 +639,7 @@ class RobotManager(NodeInterface):
         for adapter, result in zip(self._adapter_instances, results, strict=True):
             if isinstance(result, BaseException):
                 self._logger.error(f"adapter {adapter.kind!r} on_navigation_reset failed: {result!r}")
+
     async def _cancel_ended(self, ended: PhaseState) -> None:
         """Cancel the action of a phase that ended before its server finished, a goto that arrived keeps its planner goal."""
         from arena_runtime.env.request import TaskKind, kind_of
@@ -698,7 +687,7 @@ class RobotManager(NodeInterface):
         return phase
 
     def resolve_target(self, phase: GoToPhase) -> GoToPhase:
-        """Give a named zone, door, elevator or docked object target its dispatch pose unless it carries one, a ped target keeps following the ped. A zone's pose keeps ZONE_GOAL_MARGIN_M off its edge while the zone has a free cell there. A docked object's pose lies within half the dock's inner radius of its deepest point, facing the object, or its front where the dock covers the object's origin."""
+        """Give a named zone, door, elevator or docked object target its dispatch pose unless it carries one, a ped target keeps following the ped. A zone's pose keeps the first of _ZONE_TARGET_MARGINS off its edge that leaves a free cell clear of the other robots. A docked object's pose lies within half the dock's inner radius of its deepest point, facing the object, or its front where the dock covers the object's origin."""
         if phase.target is None or phase.pose is not None:
             return phase
         world = authored_statics(self.node._world_manager.world_compacted())
@@ -712,13 +701,14 @@ class RobotManager(NodeInterface):
                 # away from the dock's edges, so a planner's goal tolerance cannot stop the robot outside it
                 deepest = polylabel(outline)
                 areas = [outline.intersection(deepest.buffer(outline.exterior.distance(deepest) / 2))]
+                others: list[PositionRadius] = []
             else:
-                inner = outline.buffer(-ZONE_GOAL_MARGIN_M)
-                areas = [outline] if inner.is_empty else [inner, outline]
+                areas = [inner for margin in _ZONE_TARGET_MARGINS if not (inner := (outline.buffer(-margin) if margin else outline)).is_empty]
+                others = [PositionRadius(pose.position.x, pose.position.y, radius=manager.radius) for name, manager in self.node._robots_manager.managers.items() if name != self.name and (pose := manager.pose) is not None]
             position, error = None, None
             for area in areas:
                 try:
-                    position = self.node._world_manager.get_position_on_map(self.safe_distance, forbid=False, polygon=area)
+                    position = self.node._world_manager.get_position_on_map(self.safe_distance, others, forbid=False, polygon=area)
                     break
                 except RuntimeError as e:
                     error = e

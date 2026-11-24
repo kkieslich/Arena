@@ -628,7 +628,6 @@ def test_the_crowd_side_goes_from_the_site_config_into_every_suites_launch_block
     assert infra.site_config("smu_link_full").crowd_side == "left"
 
 
-
 def test_an_entrance_area_stays_on_the_floor_a_walker_reaches() -> None:
     import shapely
 

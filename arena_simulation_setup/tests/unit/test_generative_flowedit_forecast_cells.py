@@ -52,7 +52,11 @@ def _cells(world: str, seed: int, scale: float = 1.0, cell: float = 0.5, heading
 
 def _commits(arena: str = "a" * 40, humansim: str = "b" * 40, dirty: bool = False) -> dict:
     """The `commits` of arena_evaluation's run manifest."""
-    return {"arena": {"path": "/opt/arena_ws/src/Arena", "commit": arena, "dirty": dirty}, "humansim": {"path": "/opt/arena_ws/src/Arena/humansim", "commit": humansim, "dirty": False, "pinned": humansim}, "arena_evaluation": {"path": "/opt/arena_ws/src/Arena/arena_evaluation", "commit": "c" * 40, "dirty": False, "pinned": "c" * 40}}
+    return {
+        "arena": {"path": "/opt/arena_ws/src/Arena", "commit": arena, "dirty": dirty},
+        "humansim": {"path": "/opt/arena_ws/src/Arena/humansim", "commit": humansim, "dirty": False, "pinned": humansim},
+        "arena_evaluation": {"path": "/opt/arena_ws/src/Arena/arena_evaluation", "commit": "c" * 40, "dirty": False, "pinned": "c" * 40},
+    }
 
 
 def _run_dir(root: Path, name: str, frames: list[pl.DataFrame], crowd: str | None = None, commits: dict | None = None) -> Path:
@@ -153,7 +157,7 @@ def test_the_track_store_reads_several_run_dirs(tmp_path: Path) -> None:
     for name, stage, x in (("home", "w__e__s1", 1.0), ("institute", "w__e__s6", 6.0), ("again", "w__e__s1", 9.0)):
         run = tmp_path / name
         run.mkdir()
-        pl.DataFrame({"episode": [0], "stage": [stage], "planner": ["peds_only"], "robot": ["env_0_jackal"]}).write_parquet(run / "combined_metrics.parquet")
+        pl.DataFrame({"episode": [0], "stage": [stage], "planner": ["peds_only"], "env": ["env_0"]}).write_parquet(run / "flow_runs.parquet")
         derived = run / "episodes" / "episode_000" / "topics" / ".derived" / "ped_tracks.v2"
         derived.mkdir(parents=True)
         pl.DataFrame({"key": ["a"], "x": [x]}).write_parquet(derived / "env_0.parquet")
@@ -196,7 +200,7 @@ def test_the_track_store_refuses_run_dirs_of_other_commits(tmp_path: Path) -> No
     for name, humansim in (("home", "b" * 40), ("institute", "d" * 40)):
         run = tmp_path / name
         run.mkdir()
-        pl.DataFrame({"episode": [0], "stage": ["w__e__s1"], "planner": ["peds_only"], "robot": ["env_0_jackal"]}).write_parquet(run / "combined_metrics.parquet")
+        pl.DataFrame({"episode": [0], "stage": ["w__e__s1"], "planner": ["peds_only"], "env": ["env_0"]}).write_parquet(run / "flow_runs.parquet")
         (run / "manifest.yaml").write_text(yaml.safe_dump({"commits": _commits(humansim=humansim)}))
     with pytest.raises(ValueError, match="different humansim commits"):
         B.Tracks.load([tmp_path / "home", tmp_path / "institute"])

@@ -175,9 +175,12 @@ def cmd(argv: list[str]) -> None:
       rviz:
         view:=map|robot|robot3p          camera view (default: map)
         robot:=<int>|all                 robot index in fleet, 'all' fans out one window per robot
+        viewport.resolution:=WxH         viewport capture size (default: the render panel size)
       rerun:
         web_port:=<int>                  web viewer port (default: 9090, auto-bumped per env)
         grpc_port:=<int>                 gRPC stream port (default: 9876, auto-bumped per env)
+        memory_limit:=<size>             what the gRPC server buffers for viewers that connect later (default: 512MiB)
+        max_rate_hz:=<float>             most updates a second per topic and tf frame (default: 30, 0 = uncapped)
 
     Polls `ros2 topic list` for `<ns>/state/viz_manifest` topics to discover envs,
     waiting forever (10s heartbeat) until a match appears.
@@ -199,8 +202,11 @@ VIZ_KV = Kv(
         "cam": None,
         "view": Static(["map", "robot", "robot3p"]),
         "robot": Static(["all"]),
+        "viewport.resolution": None,
         "web_port": None,
         "grpc_port": None,
+        "memory_limit": None,
+        "max_rate_hz": None,
     }
 )
 

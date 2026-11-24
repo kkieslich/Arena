@@ -380,7 +380,6 @@ class Occupancy:
     @property
     def mean_density(self) -> float:
         """The mean density over the cells that hold any pedestrian time: the walked floor's."""
-        import numpy as np
 
         walked = self.density[self.density > 0]
         return float(walked.mean()) if len(walked) else 0.0
@@ -488,10 +487,7 @@ class Scored:
             "floor_loss_m2": _num(self.floor_loss_m2),
             **({"exposure": {group: _num(value) for group, value in self.exposure.items()}} if self.exposure is not None else {}),
             **({"exposure_traffic": {group: _num(value) for group, value in self.exposure_traffic.items()}} if self.exposure_traffic is not None else {}),
-            "spots": [
-                {"element": s.element.name, "spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "objects": [{"name": o.name, "model": o.model, "x": o.x, "y": o.y, "yaw": o.yaw, "goto": list(o.goto)} for o in s.objects]}
-                for s in self.layout.spots
-            ],
+            "spots": [{"element": s.element.name, "spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "objects": [{"name": o.name, "model": o.model, "x": o.x, "y": o.y, "yaw": o.yaw, "goto": list(o.goto)} for o in s.objects]} for s in self.layout.spots],
         }
 
 
@@ -1100,6 +1096,7 @@ def premise_pair(site: Site | Search, **kwargs: Any) -> tuple[Scored, Scored]:
     search = _search(site, kwargs)
     narrowest, widest = search.corridor()
     travel = search.travel()
+
     def first(order: np.ndarray) -> Scored:
         for index in order:
             index = int(index)

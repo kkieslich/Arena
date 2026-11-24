@@ -89,6 +89,7 @@ from arena_people_msgs.msg import Gesture as GestureMsg
 from arena_people_msgs.msg import Pedestrian, Pedestrians
 from arena_rclpy_mixins.Async import ClientWrapper
 from arena_rclpy_mixins.lazy import LazySubscription
+from arena_rclpy_mixins.shared import FrameNamespace
 from arena_rclpy_mixins.Time import Time
 from arena_runtime_msgs.msg import LockstepChannel
 from arena_simulation_setup.metrics import use_points
@@ -124,6 +125,7 @@ from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.rng import stable_int
 from arena_runtime.env.realizer import Realizer
 from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, ScenarioCheckError, Segment
+from arena_runtime.humans.arena_humansim.lane_config import lane_msg_from_config
 from arena_runtime.humans.itinerary import STIMULUS_TELEPORTED, ItineraryDriver, Stop, semantic_atom
 from arena_runtime.humans.support import Support, seat_stand
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
@@ -440,6 +442,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._prev_agent_states: AgentFrameMsg | None = None
         self._curr_agent_states: AgentFrameMsg | None = None
         self._engine_stamp_ns: int | None = None
+        self._engine_dt_ns: int = round(self._ENGINE_DT_DEFAULT * 1e9)
         # sim time of the last reset that removed every agent: an engine frame stamped at or before it is the old episode's
         self._removed_at_ns: int | None = None
         self._agent_gestures: dict[int, list[EngineGestureMsg]] = {}
@@ -453,7 +456,6 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._bridge_agent_ids: set[int] = set()
         # IDs of flow agents (source/sink) with a live actor in the simulator
         self._flow_agent_ids: set[int] = set()
-        # counts the resets that removed every agent: the update loop drops a pass a reset overtook
         self._removals = 0
         self._flow_meta_wait: dict[int, int] = {}
         self._tagged_models: dict[tuple[str, ...], list[HumanIdentifier]] = {}
@@ -568,6 +570,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         """Engine markers into the env frame: marker poses shift, points are pose-relative and stay."""
         cfg = self._realizer.get_config()
         for marker in msg.markers:
+            marker.header.frame_id = "map"
             marker.pose.position.x += cfg.x
             marker.pose.position.y += cfg.y
         return msg
@@ -609,14 +612,16 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return {object_id: seats for object_id, seats in self._held_seats.items() if object_id in self._seat_slots}
 
     def _agent_states_callback(self, msg: AgentFrameMsg):
-        """Cache prev/curr snapshots from arena_humansim for local interpolation; drop a frame the engine sent before the
+        """Cache prev/curr snapshots from arena_humansim for local interpolation, a frame repeating curr's stamp only republishes the roster; drop a frame the engine sent before the
         last reset that removed every agent, which would put the old episode's walkers back."""
         stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
         if self._removed_at_ns is not None and stamp_ns <= self._removed_at_ns:
             return
-        self._prev_agent_states = self._curr_agent_states
-        self._curr_agent_states = msg
-        self._engine_stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
+        curr = self._curr_agent_states
+        if curr is None or msg.header.stamp != curr.header.stamp:
+            self._prev_agent_states = curr
+            self._curr_agent_states = msg
+            self._engine_stamp_ns = stamp_ns
         # publish on receipt (the rate loop can race a stepped clock burst), but
         # coalesced: one roster compute per burst, not per engine tick
         if self._publish_pending:
@@ -673,22 +678,28 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         if response is not None and all(result.successful for result in response.results):
             self._viz_config = cfg
 
-    async def _publish_interpolated(self) -> None:
-        """Interpolate at the current sim time, never before the engine's latest frame, and publish the roster.
+    def _render_ns(self, now_ns: int) -> int:
+        """Sim time shown to receivers: one engine frame behind now, at most one engine dt, so it falls between the two newest frames."""
+        curr, prev = self._curr_agent_states, self._prev_agent_states
+        if curr is None or prev is None:
+            return now_ns
+        frame_ns = (curr.header.stamp.sec - prev.header.stamp.sec) * int(1e9) + curr.header.stamp.nanosec - prev.header.stamp.nanosec
+        return now_ns - min(max(frame_ns, 0), self._engine_dt_ns)
 
-        Without the skeleton a render of the inputs the last one had is skipped: the roster would come out the same but
-        for the animation, which it does not carry (`_render_inputs`).
+    async def _publish_interpolated(self) -> None:
+        """Interpolate one engine frame behind the current sim time and publish the roster.
+
+        Without the skeleton a render of the inputs and render time the last one had is skipped: the roster would come out
+        the same but for the animation, which it does not carry (`_render_inputs`).
         """
         now = self.node.sim_time
-        now_ns = now.sec * int(1e9) + now.nanosec
-        if self._engine_stamp_ns is not None:
-            now_ns = max(now_ns, self._engine_stamp_ns)
+        render_ns = self._render_ns(now.sec * int(1e9) + now.nanosec)
         if not self._skeleton:
-            inputs = self._render_inputs()
+            inputs = self._render_inputs(render_ns)
             last, self._rendered = self._rendered, inputs
             if inputs is not None and last is not None and all(a is b for a, b in zip(inputs[0], last[0], strict=True)) and inputs[1] == last[1]:
                 return
-        states = self._interpolate_agent_states(now_ns)
+        states = self._interpolate_agent_states(render_ns)
         if states is None:
             return
         peds = self._agent_states_to_pedestrians(states)
@@ -696,20 +707,21 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._arena_pedestrians = peds
         self.publish_arena_peds(peds)
 
-    def _render_inputs(self) -> tuple[tuple[object, ...], tuple[object, ...]] | None:
-        """Everything a render reads but the animation clock: the objects it reads that are replaced on change (compared by
-        identity, held so their ids stay theirs) and the values of the ones changed in place; None while a render also moves
-        a ped by that clock.
+    def _render_inputs(self, render_ns: int) -> tuple[tuple[object, ...], tuple[object, ...]] | None:
+        """Everything a render at `render_ns` reads but the animation clock: the objects it reads that are replaced on change
+        (compared by identity, held so their ids stay theirs) and the values of the ones changed in place; None while a
+        render also moves a ped by that clock.
 
-        The interpolation clamps to the engine's latest frame, so between frames a render differs from the last one only
-        when a frame, the gestures, names, types, sources, seats, held seats, model paths, stairs or the env offset
-        changed, or a ped rests, tilts or is possessed (their poses follow the animation clock).
+        A render differs from the last one only when its render time, a frame, the gestures, names, types, sources, seats,
+        held seats, model paths, stairs or the env offset changed, or a ped rests, tilts or is possessed (their poses
+        follow the animation clock).
         """
         if self._rests or self._tilted or len(self._possession):
             return None
         cfg = self._realizer.get_config()
         replaced = (self._curr_agent_states, self._prev_agent_states, self._agent_gestures, self._agent_types, self._agent_sources, self._seat_holds, self._known_stairs)
         in_place = (
+            render_ns,
             self._engine_stamp_ns,
             tuple(self._teleport_stamps.items()),
             tuple(self._agent_names.items()),
@@ -729,7 +741,6 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             empty = AgentFrameMsg()
             empty.header.stamp.sec = self._engine_stamp_ns // int(1e9)
             empty.header.stamp.nanosec = self._engine_stamp_ns % int(1e9)
-            empty.header.frame_id = "map"
             return empty
         prev = self._prev_agent_states
         if prev is None:
@@ -757,7 +768,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         msg = AgentFrameMsg(**{field: getattr(curr, field) for field in curr.get_fields_and_field_types() if field != "header"})
         msg.header.stamp.sec = int(pose_ns // int(1e9))
         msg.header.stamp.nanosec = int(pose_ns % int(1e9))
-        msg.header.frame_id = "map"
+        msg.header.frame_id = curr.header.frame_id
 
         fields = ("x", "y", "vx", "vy", "gait_phase") if len(curr.gait_phase) and len(prev.gait_phase) else ("x", "y", "vx", "vy")
         for field in fields:
@@ -894,6 +905,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         # gate period = engine dt: one sample per window paces the sim to the
         # engine's true coverage, so the clock cannot outrun the ped simulation
         engine_dt = await self._engine_dt()
+        self._engine_dt_ns = round(engine_dt * 1e9)
         await self._register_lockstep_channels(
             [
                 LockstepChannel(
@@ -908,7 +920,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                     name="peds",
                     topic=str(self._namespace("arena_peds")),
                     type="arena_people_msgs/msg/Pedestrians",
-                    period_s=engine_dt,
+                    period_s=2 * engine_dt,
                     hard=True,
                 ),
             ]
@@ -1093,7 +1105,6 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                                 to_spawn.append((aid, self._make_flow_dynamic_obstacle(states, index_by_id[aid], await self._flow_model(aid))))
                             spawnable = await self._ensure_spawnable([obs for _, obs in to_spawn]) if to_spawn else []
                             if self._removals != removals:
-                                # a reset removed every agent meanwhile: these agents and the roster are the old episode's
                                 continue
                             for aid, obs in to_spawn:
                                 self._flow_agent_ids.add(aid)
@@ -1121,9 +1132,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._logger.error(f"Error in pedestrian update loop: {e}\n{traceback.format_exc()}")
 
     def _named(self, peds: Pedestrians) -> Pedestrians:
-        """The roster's pedestrians under the name their simulator body has. An agent the update loop has not taken in
-        yet goes by its bare id in the roster; a body made under that name would never be deleted, it would stay
-        where the agent was first seen, moving on at that velocity, after the agent got its own body."""
+        """The roster's pedestrians that go by the name of their simulator body."""
         out = Pedestrians()
         out.header = peds.header
         out.pedestrians = [ped for ped in peds.pedestrians if self._agent_names.get(ped.id) == ped.name]
@@ -1153,7 +1162,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             return
         msg = AgentStatesMsg()
         msg.header.stamp = self.node.sim_time.to_msg()
-        msg.header.frame_id = "map"
+        msg.header.frame_id = FrameNamespace(self._realizer.get_config().prefix).tf("map")
         named = [(tracked.robot.name, tracked) for tracked in robots]
         own_names = {name for name, _ in named}
         named += [(alias, tracked) for i, tracked in enumerate(robots) if (alias := f"robot_{i}") not in own_names]
@@ -1163,7 +1172,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             a.name = name
             a.pose = self._engine_pose(tracked.pose)
             a.velocity.x, a.velocity.y = tracked.velocity
-            a.radius = 0.3
+            a.radius = tracked.radius
             msg.agents.append(a)  # pyright: ignore[reportAttributeAccessIssue]
         ids = self._agent_ids()
         for name, ped in possessed.items():
@@ -1179,7 +1188,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
     def _agent_states_to_pedestrians(self, msg: AgentFrameMsg) -> Pedestrians:
         peds = Pedestrians()
-        peds.header = msg.header
+        peds.header.stamp = msg.header.stamp
+        peds.header.frame_id = "map"
         gestures_by_id = self._agent_gestures
         self._supports = {}
         n = len(msg.agent_id)
@@ -1262,7 +1272,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {use_points.describe(findings)}. Fix them, or launch with human.check:=false (human.check.models:=warn lets models that do not resolve pass)")
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
-        """Add the regions one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.
+        """Add the sinks, then the other regions, one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.
 
         arena_humansim's services keep the rmw default request queue (KEEP_LAST, depth 10) and one executor: of more requests
         waiting out a tick it drops the oldest unanswered, so the regions are not sent all at once.
@@ -1270,9 +1280,10 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         Raises:
             RegionSetupError: at the first region arena_humansim did not add.
         """
-        for added, region in enumerate(regions):
+        ordered = [r for r in regions if r.type == "sink"] + [r for r in regions if r.type != "sink"]
+        for added, region in enumerate(ordered):
             if not await self._add_region_single(region):
-                raise RegionSetupError(f"arena_humansim did not add region {region.name!r} ({added} of {len(regions)} added)")
+                raise RegionSetupError(f"arena_humansim did not add region {region.name!r} ({added} of {len(ordered)} added)")
         return True
 
     async def _add_region_single(self, region: Region) -> bool:
@@ -1302,6 +1313,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         tmpl = flow_agent_template(cfg.get("agent", {}), region.included_from)
         self._remember_agent_type_path(tmpl.agent_type)
         src_msg.agent = tmpl
+        lane = lane_msg_from_config(region.name, cfg)
+        if lane is not None:
+            src_msg.lane = lane
 
         request.source = src_msg
         return await self._region_call(self._add_source_client, request, f"AddSource {region.name!r}")
@@ -1803,11 +1817,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._logger.warning(f"arena_humansim kept its seed, the crowd will not follow the episode seed: {reason}")
 
     async def _remove_pedestrians_impl(self) -> bool:
-        """Remove all dynamic agents from arena_humansim, and the simulator's bodies of its flow agents.
-
-        The simulator keeps a flow agent's body until it is deleted: one left in place would stand where its agent was at
-        the reset, moving on at its last velocity, seen by the robots' sensors but by no crowd measure, until an agent of a
-        later episode takes over its name."""
+        """Remove all dynamic agents from arena_humansim and the simulator bodies of its flow agents."""
         request = RemoveAgents.Request()
         request.agent_ids = []  # empty = remove all
 

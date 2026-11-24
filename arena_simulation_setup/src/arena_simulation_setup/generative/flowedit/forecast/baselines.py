@@ -71,10 +71,8 @@ class Tracks:
 
     @classmethod
     def load(cls, benchmarks: Path | Sequence[Path], planner: str | None = None) -> Tracks:
-        import polars as pl
 
         from ..suite import parse_stage_name
-
         from .evaluate import check_commits
 
         dirs = [Path(benchmarks)] if isinstance(benchmarks, (str, Path)) else [Path(b) for b in benchmarks]
@@ -82,17 +80,12 @@ class Tracks:
             check_commits(dirs)
         where: dict[tuple[str, int], Path] = {}
         for benchmark in dirs:
-            metrics = pl.read_parquet(Path(benchmark) / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
-            if planner is not None:
-                metrics = metrics.filter(pl.col("planner") == planner)
-            for episode, stage, _, robot in metrics.sort("episode").iter_rows():
+            for episode, stage, env_name in _scored_runs(Path(benchmark), planner):
                 try:
-                    key = parse_stage_name(str(stage))
+                    key = parse_stage_name(stage)
                 except ValueError:
                     continue
-                env = str(robot or "env_0").split("_")
-                env_name = "_".join(env[:2]) if len(env) >= 2 and env[0] == "env" else "env_0"
-                where.setdefault(key, Path(benchmark) / "episodes" / f"episode_{int(episode):03d}" / "topics" / ".derived" / "ped_tracks.v1" / f"{env_name}.parquet")
+                where.setdefault(key, Path(benchmark) / "episodes" / f"episode_{episode:03d}" / "topics" / ".derived" / "ped_tracks.v1" / f"{env_name}.parquet")
         return cls(where)
 
     def __call__(self, world: str, seed: int) -> pl.DataFrame | None:
@@ -107,6 +100,23 @@ class Tracks:
         newest = track_file(path.parent.parent, path.name) if path.parent.name.startswith("ped_tracks.v") else None
         path = newest or path
         return pl.read_parquet(path) if path.exists() else None
+
+
+def _scored_runs(benchmark: Path, planner: str | None) -> list[tuple[int, str, str]]:
+    """(episode, stage, env) of every scored run of a processed benchmark dir, by episode: arena_evaluation's
+    `flow_runs.parquet`, or the `combined_metrics.parquet` of a benchmark an older release processed (env from its robot)."""
+    import polars as pl
+
+    runs_file = benchmark / "flow_runs.parquet"
+    if runs_file.is_file() or not (benchmark / "combined_metrics.parquet").is_file():
+        runs = pl.read_parquet(runs_file, columns=["episode", "stage", "planner", "env"])
+    else:
+        runs = pl.read_parquet(benchmark / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
+        env = pl.col("robot").fill_null("env_0").str.extract(r"^(env_[^_]+)", 1).fill_null("env_0")
+        runs = runs.with_columns(env.alias("env")).drop("robot")
+    if planner is not None:
+        runs = runs.filter(pl.col("planner") == planner)
+    return [(int(episode), str(stage), str(env or "env_0")) for episode, stage, env in runs.sort("episode").select("episode", "stage", "env").iter_rows()]
 
 
 # --- leave one seed out ----------------------------------------------------------------------------------------------
@@ -200,9 +210,9 @@ class OnlineCliff:
 
     def pre_edit(self, world: str, fold: Fold) -> Any:  # noqa: ANN401
         """The base world's CLiFF-map from its runs at every seed outside the fold's truth, built once per seed set."""
-        from .cliff import from_tracks
-
         import attrs
+
+        from .cliff import from_tracks
 
         base = SP.base_of(world)
         seeds = tuple(outside(self.runs, base, fold.rest))
@@ -318,7 +328,7 @@ def map_score(runs: Runs, worlds: Sequence[str], seeds: Sequence[int], predict: 
     return mean(vals)
 
 
-def tune_cliff(worlds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, make: Callable[[Any], Online], start: Any, grid: Mapping[str, Sequence[Any]] = CLIFF_GRID, log: Callable[[str], None] = print) -> tuple[Any, list[dict[str, Any]]]:
+def tune_cliff(worlds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, make: Callable[[Any], Online], start: Any, grid: Mapping[str, Sequence[Any]] = CLIFF_GRID, log: Callable[[str], None] = print) -> tuple[Any, list[dict[str, Any]]]:  # noqa: ANN401
     """CliffParams by one coordinate pass over `grid` from `start`: per field in order, the value with the lowest mean curve
     over `worlds` (validation worlds and their seeds) at TUNE_COUNTS, the others at their values so far; ties keep the first."""
     import attrs
@@ -452,7 +462,7 @@ def geometry_walks(site: Site, grid: FlowGrid, settings: Mapping[str, Any], dura
     reach = np.zeros(grid.ny * grid.nx, bool)
     seen = np.unique(paths.cell[np.concatenate([np.flatnonzero(np.isfinite(trees[n][0])) for _, n in nodes])]) if nodes else np.zeros(0, np.int64)
     reach[seen[seen >= 0]] = True
-    cat = (lambda xs, dtype: np.concatenate(xs) if xs else np.zeros(0, dtype))
+    cat = lambda xs, dtype: np.concatenate(xs) if xs else np.zeros(0, dtype)
     info = {"entrances": [n for n, _ in found], "kind": kind, "walks": walked, "unreachable": unreachable}
     return Walks(grid, cat(flats, np.int64), cat(heads, np.int64), cat(secs, float), reach.reshape(grid.ny, grid.nx) & grid.room_cells(), info)
 

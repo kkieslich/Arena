@@ -32,7 +32,7 @@ Sub-wall types (see
 main:
   - material: Metal_Cast      # PlaceWallSegmentAsset; height 2 m
     height: 2
-  - model: residential_painting_1   # PlaceObstacleAsset at 50%
+  - model: painting_1   # PlaceObstacleAsset at 50%
     at: 50%
     orientation: 1.5708       # radians; rotate to face inward
     y: 0.1                    # shift 0.1 m away from the wall plane
@@ -46,7 +46,7 @@ main:
   - material: Bamboo_Planks   # 1 m wainscoting
     height: 1
     z: 0
-  - material: Mortar_White    # 0.75 m mid-band
+  - material: Mortar    # 0.75 m mid-band
     height: 0.75
     z: 1
   - material: Metal_Cast      # 0.25 m cornice

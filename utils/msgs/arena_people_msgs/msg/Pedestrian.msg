@@ -9,9 +9,6 @@ uint32 id
 geometry_msgs/Pose pose
 geometry_msgs/Twist twist
 
-# Collision radius in m, 0 = unknown.
-float32 radius
-
 # Animation/behavior states (integrated)
 uint8 IDLE = 0
 uint8 WALKING = 1  
@@ -42,6 +39,12 @@ string agent_type
 
 # Resolved local SDF path for this ped's actor, read once per name by the spawner.
 string model_uri
+
+# Body radius (m) on the ground, 0 = unknown.
+float32 radius
+
+# Held assistive device (agent type `device:`), kind empty = none.
+HeldDevice device
 
 # Active humansim interaction, -1 = none.
 int32 interaction_id -1

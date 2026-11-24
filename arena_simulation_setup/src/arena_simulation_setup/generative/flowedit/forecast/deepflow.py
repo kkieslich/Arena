@@ -51,7 +51,6 @@ The authors' code (github.com/SSSohn/LTCF) has no license, so this is a reimplem
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -387,7 +386,7 @@ def tune(inputs: Inputs, runs: Runs, doc: Mapping[str, Any], lrs: Sequence[float
         scores[lr] = {}
         log_max = float(sum(f[4] for f in found) / len(found))
 
-        def check(step: int, model: Any, lr: float = lr) -> None:  # noqa: ANN401
+        def check(step: int, model: Any, lr: float = lr, log_max: float = log_max) -> None:  # noqa: ANN401
             meta = {"log_max": log_max}
             value = map_score(runs, validation, seeds, lambda w: forecast(model, meta, inputs(w), inputs.sites.grid(SP.base_of(w))))
             scores[lr][step] = value

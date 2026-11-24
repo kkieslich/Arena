@@ -11,7 +11,7 @@ import numpy as np
 import yaml
 
 from arena_assets.rig import Rig, rig_of
-from arena_assets.utils.geom import axis_rotation, swing
+from arena_assets.utils.geom import axis_rotation, swing, unit
 from arena_simulation_setup import ASS_DIR
 from arena_simulation_setup.utils.geometry import Orientation
 
@@ -83,6 +83,7 @@ _CURL_GAIN = (1.0, 1.0, 0.7)
 _SPREAD_SPLIT = {"index": 1.0, "middle": 1.0 / 3.0, "ring": -1.0 / 3.0, "pinky": -1.0}
 _WRIST_OF = {f"{side}_{digit}{k}": f"{side}_wrist" for side in _SIDES.values() for digit in FINGERS for k in (1, 2, 3)}
 DIGIT_JOINTS: tuple[str, ...] = tuple(_WRIST_OF)
+POSED_JOINTS: tuple[str, ...] = (*BODY_JOINTS, *DIGIT_JOINTS)
 
 
 def quat_to_matrix(q: Sequence[float] | np.ndarray) -> np.ndarray:
@@ -217,15 +218,94 @@ def _curl_axis(s: str, digit: str) -> np.ndarray:
     return -_MIRROR[s] * (_Z if digit == "thumb" else _X)
 
 
-def _digit(s: str, digit: str, k: int, angles: Mapping[str, float]) -> np.ndarray:
-    m = axis_rotation(_curl_axis(s, digit), _CURL_GAIN[k - 1] * float(angles.get(f"{s}_curl_{digit}", 0.0)))
-    if k == 1 and digit in _SPREAD_SPLIT:
-        m = axis_rotation(-_Y, _SPREAD_SPLIT[digit] * float(angles.get(f"{s}_spread", 0.0))) @ m
-    return m
+def _factors() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per posed joint, the cross-product matrices of the axes, the DOF indices and the gains of the up to three rotations its semantic rotation composes."""
+    chains: dict[str, list[tuple[np.ndarray, str, float]]] = {group.joint: [(axis, dof, 1.0) for dof, axis in zip(group.dofs, group.axes, strict=True)] for group in _GROUPS}
+    for s, side in _SIDES.items():
+        chains[f"{side}_shoulder"] = [(_Z, f"{s}_y_shoulder", 1.0), (-_Y, f"{s}_p_shoulder", 1.0), (-_Z, f"{s}_r_shoulder", 1.0)]
+        for digit in FINGERS:
+            for k in (1, 2, 3):
+                curl = (_curl_axis(s, digit), f"{s}_curl_{digit}", _CURL_GAIN[k - 1])
+                chains[f"{side}_{digit}{k}"] = [(-_Y, f"{s}_spread", _SPREAD_SPLIT[digit]), curl] if k == 1 and digit in _SPREAD_SPLIT else [curl]
+    chains["neck"] = [(_Z, "y_head", _NECK_YAW), (-_Y, "p_head", _NECK_PITCH)]
+    chains["head"] = [(_X, "r_head", 1.0), (_Z, "y_head", 1.0 - _NECK_YAW), (-_Y, "p_head", 1.0 - _NECK_PITCH)]
+    cross = np.zeros((len(POSED_JOINTS), 3, 3, 3))
+    dof = np.zeros((len(POSED_JOINTS), 3), dtype=np.intp)
+    gain = np.zeros((len(POSED_JOINTS), 3))
+    for j, joint in enumerate(POSED_JOINTS):
+        for slot, (axis, name, g) in enumerate(chains.get(joint, ())):
+            x, y, z = unit(axis)
+            cross[j, slot] = ((0.0, -z, y), (z, 0.0, -x), (-y, x, 0.0))
+            dof[j, slot] = SEMANTIC_DOFS.index(name)
+            gain[j, slot] = g
+    return cross, dof, gain
 
 
-def _arm(y: float, p: float, r: float) -> np.ndarray:
-    return axis_rotation(_Z, y) @ axis_rotation(-_Y, p) @ axis_rotation(-_Z, r)
+_CROSS, _FACTOR_DOF, _FACTOR_GAIN = _factors()
+_CROSS_SQUARED = _CROSS @ _CROSS
+
+
+@attrs.frozen(eq=False)
+class CompiledStance:
+    """A stance as the constant rotations around each posed joint's semantic one, `left @ semantic @ right` in POSED_JOINTS order."""
+
+    left: np.ndarray
+    right: np.ndarray
+
+
+def compile_stance(stance: Mapping[str, np.ndarray]) -> CompiledStance:
+    """The stance factors `semantic_to_bodies` poses over."""
+    identity = np.eye(3)
+    left: list[np.ndarray] = []
+    right: list[np.ndarray] = []
+    for joint, parent in BODY_PARENTS.items():
+        left.append(stance.get(parent, identity).T if parent is not None else identity)
+        right.append(stance.get(joint, identity))
+    for joint in _WRIST_OF:
+        frame = _digit_frame(stance, joint)
+        left.append(_held(stance, OPTIONAL_PARENTS[joint]).T @ frame)
+        right.append(frame.T @ _held(stance, joint))
+    return CompiledStance(left=np.array(left), right=np.array(right))
+
+
+DEFAULT_COMPILED_STANCE = compile_stance(DEFAULT_STANCE)
+
+
+def _matrices_to_quats(m: np.ndarray) -> np.ndarray:
+    """x y z w quaternions of a stack of rotation matrices, w >= 0."""
+    m00, m11, m22 = m[..., 0, 0], m[..., 1, 1], m[..., 2, 2]
+    trace = m00 + m11 + m22
+    c0 = trace > 0.0
+    c1 = ~c0 & (m00 > m11) & (m00 > m22)
+    c2 = ~c0 & ~c1 & (m11 > m22)
+    cases = [c0, c1, c2]
+    s = 2.0 * np.sqrt(np.select(cases, [trace + 1.0, 1.0 + m00 - m11 - m22, 1.0 + m11 - m00 - m22], 1.0 + m22 - m00 - m11))
+    a, b, c = m[..., 2, 1] - m[..., 1, 2], m[..., 0, 2] - m[..., 2, 0], m[..., 1, 0] - m[..., 0, 1]
+    d, e, f = m[..., 0, 1] + m[..., 1, 0], m[..., 0, 2] + m[..., 2, 0], m[..., 1, 2] + m[..., 2, 1]
+    quarter = 0.25 * s
+    w = np.select(cases, [quarter, a / s, b / s], c / s)
+    q = np.stack(
+        [
+            np.select(cases, [a / s, quarter, d / s], e / s),
+            np.select(cases, [b / s, d / s, quarter], f / s),
+            np.select(cases, [c / s, e / s, f / s], quarter),
+            w,
+        ],
+        axis=-1,
+    )
+    return q / np.copysign(np.linalg.norm(q, axis=-1), w)[..., None]
+
+
+def semantic_to_bodies(angles: np.ndarray, stances: Sequence[CompiledStance]) -> np.ndarray:
+    """Local x y z w quaternions (N, POSED_JOINTS, 4) of N bodies from their (N, SEMANTIC_DOFS) angles, each over its own stance."""
+    if not stances:
+        return np.empty((0, len(POSED_JOINTS), 4))
+    theta = np.asarray(angles, dtype=float)[:, _FACTOR_DOF] * _FACTOR_GAIN
+    factors = np.eye(3) + np.sin(theta)[..., None, None] * _CROSS + (1.0 - np.cos(theta))[..., None, None] * _CROSS_SQUARED
+    semantic = factors[:, :, 0] @ factors[:, :, 1] @ factors[:, :, 2]
+    left = np.stack([stance.left for stance in stances])
+    right = np.stack([stance.right for stance in stances])
+    return _matrices_to_quats(left @ semantic @ right)
 
 
 def _wrap(angle: float) -> float:
@@ -269,26 +349,6 @@ def joint_angles(joint: str, rotation: np.ndarray) -> dict[str, float]:
     return dict(zip(group.dofs, _decompose(rotation, group.axes), strict=True))
 
 
-def _semantic_rotations(angles: Mapping[str, float]) -> dict[str, np.ndarray]:
-    """Each driven joint's rotation in its semantic frame, aligned with the body at the stance."""
-    out: dict[str, np.ndarray] = {}
-    for group in _GROUPS:
-        m = np.eye(3)
-        for dof, axis in zip(group.dofs, group.axes, strict=True):
-            m = m @ axis_rotation(axis, float(angles.get(dof, 0.0)))
-        out[group.joint] = m
-    for s, side in _SIDES.items():
-        out[f"{side}_shoulder"] = _arm(*(float(angles.get(f"{s}_{dof}", 0.0)) for dof in ("y_shoulder", "p_shoulder", "r_shoulder")))
-    for s, side in _SIDES.items():
-        for digit in FINGERS:
-            for k in (1, 2, 3):
-                out[f"{side}_{digit}{k}"] = _digit(s, digit, k, angles)
-    roll, yaw, pitch = (float(angles.get(dof, 0.0)) for dof in ("r_head", "y_head", "p_head"))
-    out["neck"] = axis_rotation(_Z, _NECK_YAW * yaw) @ axis_rotation(-_Y, _NECK_PITCH * pitch)
-    out["head"] = axis_rotation(_X, roll) @ axis_rotation(_Z, (1.0 - _NECK_YAW) * yaw) @ axis_rotation(-_Y, (1.0 - _NECK_PITCH) * pitch)
-    return out
-
-
 JOINT_DOFS: dict[str, tuple[str, ...]] = {
     **{group.joint: group.dofs for group in _GROUPS},
     **{f"{side}_shoulder": (f"{s}_y_shoulder", f"{s}_p_shoulder", f"{s}_r_shoulder") for s, side in _SIDES.items()},
@@ -303,110 +363,9 @@ def semantic_to_body(angles: Mapping[str, float], stance: Mapping[str, np.ndarra
     unknown = sorted(set(angles) - set(SEMANTIC_DOFS))
     if unknown:
         raise ValueError(f"unknown semantic DOFs {unknown}, JOINTS.md has {list(SEMANTIC_DOFS)}")
-    semantic = _semantic_rotations(angles)
-    identity = np.eye(3)
-    out: dict[str, np.ndarray] = {}
-    for joint, parent in BODY_PARENTS.items():
-        above = stance.get(parent, identity) if parent is not None else identity
-        out[joint] = matrix_to_quat(above.T @ semantic.get(joint, identity) @ stance.get(joint, identity))
-    for joint in _WRIST_OF:
-        frame = _digit_frame(stance, joint)
-        out[joint] = matrix_to_quat(_held(stance, OPTIONAL_PARENTS[joint]).T @ frame @ semantic[joint] @ frame.T @ _held(stance, joint))
-    return out
-
-
-BODY_POSE_JOINTS: tuple[str, ...] = (*BODY_PARENTS, *_WRIST_OF)
-"""The joints `semantic_to_body` returns, in its order."""
-_DOF_COLUMN = {dof: i for i, dof in enumerate(SEMANTIC_DOFS)}
-
-
-def _rotations(axis: np.ndarray, angles: np.ndarray) -> np.ndarray | None:
-    """`axis_rotation` of every angle, (n, 3, 3), None when all of them are 0 (identity)."""
-    if not angles.any():
-        return None
-    a = axis / np.linalg.norm(axis)
-    k = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
-    return np.eye(3) + np.sin(angles)[:, None, None] * k + (1.0 - np.cos(angles))[:, None, None] * (k @ k)
-
-
-def _chain(*rotations: np.ndarray | None) -> np.ndarray | None:
-    """Product of rotations in order, the identities (None) left out, None when all are identities."""
-    out: np.ndarray | None = None
-    for m in rotations:
-        if m is not None:
-            out = m if out is None else out @ m
-    return out
-
-
-def _matrices_to_quats(m: np.ndarray) -> np.ndarray:
-    """`matrix_to_quat` of every (n, 3, 3) matrix, (n, 4)."""
-    trace = m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2]
-    q = np.empty((len(m), 4))
-    first = trace > 0.0
-    second = ~first & (m[:, 0, 0] > m[:, 1, 1]) & (m[:, 0, 0] > m[:, 2, 2])
-    third = ~first & ~second & (m[:, 1, 1] > m[:, 2, 2])
-    fourth = ~first & ~second & ~third
-    if first.any():
-        r = m[first]
-        s = 2.0 * np.sqrt(trace[first] + 1.0)
-        q[first] = np.stack([(r[:, 2, 1] - r[:, 1, 2]) / s, (r[:, 0, 2] - r[:, 2, 0]) / s, (r[:, 1, 0] - r[:, 0, 1]) / s, 0.25 * s], axis=1)
-    if second.any():
-        r = m[second]
-        s = 2.0 * np.sqrt(1.0 + r[:, 0, 0] - r[:, 1, 1] - r[:, 2, 2])
-        q[second] = np.stack([0.25 * s, (r[:, 0, 1] + r[:, 1, 0]) / s, (r[:, 0, 2] + r[:, 2, 0]) / s, (r[:, 2, 1] - r[:, 1, 2]) / s], axis=1)
-    if third.any():
-        r = m[third]
-        s = 2.0 * np.sqrt(1.0 + r[:, 1, 1] - r[:, 0, 0] - r[:, 2, 2])
-        q[third] = np.stack([(r[:, 0, 1] + r[:, 1, 0]) / s, 0.25 * s, (r[:, 1, 2] + r[:, 2, 1]) / s, (r[:, 0, 2] - r[:, 2, 0]) / s], axis=1)
-    if fourth.any():
-        r = m[fourth]
-        s = 2.0 * np.sqrt(1.0 + r[:, 2, 2] - r[:, 0, 0] - r[:, 1, 1])
-        q[fourth] = np.stack([(r[:, 0, 2] + r[:, 2, 0]) / s, (r[:, 1, 2] + r[:, 2, 1]) / s, 0.25 * s, (r[:, 1, 0] - r[:, 0, 1]) / s], axis=1)
-    q /= np.sqrt(np.einsum("ni,ni->n", q, q))[:, None]
-    q[q[:, 3] < 0.0] *= -1.0
-    return q
-
-
-def semantic_to_body_batch(angles: np.ndarray, stance: Mapping[str, np.ndarray] = DEFAULT_STANCE) -> np.ndarray:
-    """`semantic_to_body` of many poses over one stance: (n, len(SEMANTIC_DOFS)) angles in SEMANTIC_DOFS order give (n, len(BODY_POSE_JOINTS), 4) x y z w quaternions in BODY_POSE_JOINTS order.
-
-    Equal to `semantic_to_body` pose by pose up to rounding (1e-12), and each pose's quaternions do not depend on the other poses of the batch.
-    """
-    angles = np.asarray(angles, dtype=float).reshape(-1, len(SEMANTIC_DOFS))
-    n = len(angles)
-
-    def column(dof: str, gain: float = 1.0) -> np.ndarray:
-        values = angles[:, _DOF_COLUMN[dof]]
-        return values if gain == 1.0 else gain * values
-
-    semantic: dict[str, np.ndarray | None] = {}
-    for group in _GROUPS:
-        semantic[group.joint] = _chain(*(_rotations(axis, column(dof)) for dof, axis in zip(group.dofs, group.axes, strict=True)))
-    for s, side in _SIDES.items():
-        semantic[f"{side}_shoulder"] = _chain(_rotations(_Z, column(f"{s}_y_shoulder")), _rotations(-_Y, column(f"{s}_p_shoulder")), _rotations(-_Z, column(f"{s}_r_shoulder")))
-    for s, side in _SIDES.items():
-        for digit in FINGERS:
-            for k in (1, 2, 3):
-                curl = _rotations(_curl_axis(s, digit), column(f"{s}_curl_{digit}", _CURL_GAIN[k - 1]))
-                spread = _rotations(-_Y, column(f"{s}_spread", _SPREAD_SPLIT[digit])) if k == 1 and digit in _SPREAD_SPLIT else None
-                semantic[f"{side}_{digit}{k}"] = _chain(spread, curl)
-    semantic["neck"] = _chain(_rotations(_Z, column("y_head", _NECK_YAW)), _rotations(-_Y, column("p_head", _NECK_PITCH)))
-    semantic["head"] = _chain(_rotations(_X, column("r_head")), _rotations(_Z, column("y_head", 1.0 - _NECK_YAW)), _rotations(-_Y, column("p_head", 1.0 - _NECK_PITCH)))
-
-    # the products run in semantic_to_body's order; an identity stays in them, so a pose's result is the same in any batch
-    identity = np.eye(3)
-    matrices = np.empty((n, len(BODY_POSE_JOINTS), 3, 3))
-    for j, joint in enumerate(BODY_POSE_JOINTS):
-        rotation = semantic.get(joint)
-        middle = np.broadcast_to(identity, (n, 3, 3)) if rotation is None else rotation
-        if joint in BODY_PARENTS:
-            parent = BODY_PARENTS[joint]
-            above = stance.get(parent, identity) if parent is not None else identity
-            matrices[:, j] = (above.T @ middle) @ stance.get(joint, identity)
-        else:
-            frame = _digit_frame(stance, joint)
-            matrices[:, j] = (((_held(stance, OPTIONAL_PARENTS[joint]).T @ frame) @ middle) @ frame.T) @ _held(stance, joint)
-    return _matrices_to_quats(matrices.reshape(-1, 3, 3)).reshape(n, len(BODY_POSE_JOINTS), 4)
+    row = np.array([[float(angles.get(dof, 0.0)) for dof in SEMANTIC_DOFS]])
+    compiled = DEFAULT_COMPILED_STANCE if stance is DEFAULT_STANCE else compile_stance(stance)
+    return dict(zip(POSED_JOINTS, semantic_to_bodies(row, [compiled])[0], strict=True))
 
 
 def body_to_semantic(rotations: Mapping[str, Sequence[float] | np.ndarray], stance: Mapping[str, np.ndarray] = DEFAULT_STANCE) -> dict[str, float]:

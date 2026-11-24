@@ -90,10 +90,10 @@ arena launch \
 | `world:=map_empty` | Resolved to `arena_simulation_setup/worlds/map_empty/worlds/map_empty.world`; falls back to `configs/gazebo/empty.sdf` if absent |
 | `robot.mobile.local_planner:=teb` | TEB local planner; `mobile` adapter defaults to `nav2` for gazebo, the override lands as ROS param `robot.mobile.local_planner` and is forwarded to nav2's bringup |
 | `headless` | Omitted → `false` (sim GUI visible, rviz shown). Pass `headless:=true` to hide the sim GUI (viz also suppressed unless `viz:=true` is set explicitly) |
-| `lockstep:=true` | Start the lockstep scheduler at bringup: the sim advances tick by tick, gated on every registered hard channel, instead of free-running. Comes up paused (frozen at tick zero) unless `lockstep.paused:=false`. Continue with `arena lockstep resume`. Toggle later with `arena lockstep on\|off` |
-| `lockstep.paused:=false` | Autostarted lockstep begins stepping immediately instead of waiting for `arena lockstep resume` |
+| `lockstep:=false` | Free-run the sim instead of the default lockstep scheduler, which advances it tick by tick, gated on every registered hard channel, from bringup on. `arena train` brings the runtime up without it. Toggle later with `arena lockstep on\|off` |
+| `lockstep.paused:=true` | The autostarted lockstep comes up paused (frozen at tick zero) until `arena lockstep resume` |
 | `lockstep.channels:="a;b"` | Semicolon-separated `name\|topic\|type\|period_s\|hard-or-soft` entries registered under caller `launch`, extra channels, producers self-register their own. `{env}` expands per env |
-| `lockstep.rtf:=N` | Target real-time factor for the lockstep scheduler, 0 or empty = unpaced (wall rate while no channel is registered) |
+| `lockstep.rtf:=N` | Target real-time factor for the lockstep scheduler, default 1, 0 or empty = unpaced (wall rate while no channel is registered) |
 | `env.bootstrap_timeout:=N` | Seconds an env may spend never-ACTIVE before eviction, measured from reservation, empty = node default (never) |
 | `env.heartbeat_timeout:=N` | Seconds of wall-clock heartbeat silence before a ready env is evicted, empty = node default (30) |
 
@@ -268,8 +268,10 @@ via `/arena/spawn_env`.
 | `humansim.<arg>` | engine default | Any launch arg of the `arena` human backend. The prefix is stripped and the arg is forwarded to [arena_humansim.launch.py](../humansim/arena_humansim/launch/arena_humansim.launch.py), e.g. `humansim.local_planner:=orca`, `humansim.local_planner.relaxation_time:=0.7` or `humansim.global_planner.resolution:=0.1` (finer planning grid, opens 1 m doors to pedestrians). The same keys work per episode as `QueueEpisode.human_params`. `mode`, `use_sim_time`, `rviz`, and `namespace` are pinned. |
 | `humansim.markers` | `1` | Debug marker level of the `arena` human backend: `0` = off (also hides its rviz panels), `1` = agent bodies, headings and infrastructure, `2` = adds goals, paths, waypoints, vision cones and force vectors. Lower it to cut per-tick marker cost in crowded scenarios. |
 | `viz.view` | `map` | Camera view in rviz: `map` (TopDownOrtho), `robot` (Orbit on robot base), `robot3p` (ThirdPersonFollower on robot base). |
+| `viz.viewport.resolution` | panel size | Size of the rviz viewport capture, `WxH`, independent of the window. Empty renders at the render panel size. |
 | `viz.robot` | `0` | Robot index in the fleet for `viz.view:=robot*`. `all` spawns one rviz window per robot. Ignored when `view=map`. |
 | `viz.cam` | off | Camera asset to play at every episode start: a name resolved scenario, then world, then global, else an index into the most specific tier, else its first asset. Starts one `arena cam serve` per env, see [Playing with the episode](../utils/arena_cam/arena_cam/README.md#playing-with-the-episode). |
+| `viz.cam.record` | off | Directory every `viz.cam` take is recorded into, one file per camera at `env_<N>/<world>/<scenario>/ep<NNN>-<camera>.mp4`, relative to `$ARENA_DATA_DIR/recordings`. Needs `lockstep:=true`, cameras filmed through the sim camera record on env 0 only, see [Recording with the episode](../utils/arena_cam/arena_cam/README.md#recording-with-the-episode). |
 
 Examples:
 
@@ -331,8 +333,8 @@ Backend-specific knobs pass straight through:
 
 | Backend | Args | Notes |
 |---|---|---|
-| `rviz` | `view:=map\|robot\|robot3p`, `robot:=<int>\|all` | `robot:=all` fans out one window per robot. |
-| `rerun` | `web_port:=<int>`, `grpc_port:=<int>` | Defaults 9090/9876; auto-bumped per env under `--all` to avoid collisions. Requires `pip install 'rerun-sdk>=0.38'` once. |
+| `rviz` | `view:=map\|robot\|robot3p`, `robot:=<int>\|all`, `viewport.resolution:=WxH` | `robot:=all` fans out one window per robot. |
+| `rerun` | `web_port:=<int>`, `grpc_port:=<int>`, `memory_limit:=<size>`, `max_rate_hz:=<float>` | Ports default to 9090/9876, auto-bumped per env under `--all` to avoid collisions. `memory_limit` is what the gRPC server buffers for viewers that connect later (default 512MiB), `max_rate_hz` caps updates per topic and tf frame (default 30, 0 = uncapped). Requires `pip install 'rerun-sdk>=0.38'` once. |
 
 Rerun opens a browser-based viewer (no X server, container-friendly); for
 the default `web_port:=9090` go to `http://localhost:9090/`.
@@ -373,7 +375,7 @@ log_level:=debug     # verbose output from all nodes
 use_sim_time:=false  # real-time clock (unusual, only for real robots)
 complexity:=2        # AMCL (position unknown); 3 = SLAM
 record.dir:=/tmp/arena_run  # enable data recording (record.auto:=false keeps the recorder off)
-task.episode.fail_on_collision:=true  # abort the episode as FAILED when the robot footprint contacts a wall, static obstacle, or pedestrian (default false)
+task.episode.fail_on_collision:=true  # abort the episode as FAILED when the robot footprint contacts a wall, static obstacle, pedestrian or held device (default false)
 ```
 
 ### sim:=
@@ -394,13 +396,26 @@ Default is `arena settings sim [auto|dummy|<simulator>]`, read by every launch w
 | `sim.flatsim.dynamics` | `rigid` | Runtime argument. `rigid`: walls and obstacles stop or push the robot, pedestrians touch it without pushing. `kinematic`: the robot passes through and only the collision tracker reports. |
 | `sim.flatsim.physics` | `auto` | Runtime argument. `box2d`: the world steps on the CPU. `warp`: physics and ray casts run on the GPU, on the CPU without one. `auto`: `warp` when GPU passthrough is on (`arena feature docker gpu on`), else `box2d`. |
 
+### sim.viewport.resolution
+
+Render size of the simulator viewport, `WxH` (for example `1920x1080`), a
+runtime argument. Viewport captures and `arena cam` takes come out at exactly
+that size. Empty keeps each simulator's default.
+
+| Simulator | Effect | Default |
+|---|---|---|
+| `gazebo` | Drops the GUI's docked panels and sizes the window to `W+1` by `H+48` (split handle and title bar), so the screen must be at least that large. No effect under `headless:=true`. | stock layout |
+| `isaac` | Render size of the GUI viewport. Also takes `dynamic` (fill the window). | preset |
+| `mujoco` | Size of the offscreen capture buffer, independent of the viewer window. | `1920x1080` |
+
+The rviz viewport has its own key with the same grammar, `viz.viewport.resolution`.
+
 ### sim.isaac.*
 
 | Key | Default | Meaning |
 |---|---|---|
 | `sim.isaac.physics` | `physx` | Physics engine, `physx` or `newton`. |
-| `sim.isaac.viewport.preset` | `photoreal` | Base viewport render preset, `photoreal` or `boring`. The keys below override single fields of the chosen preset and keep the preset value when empty. |
-| `sim.isaac.viewport.resolution` | preset | Render size of the GUI viewport, `WxH` (for example `1920x1080`) or `dynamic` (fill the window). Recordings capture the viewport, so this is the recording resolution. |
+| `sim.isaac.viewport.preset` | `photoreal` | Base viewport render preset, `photoreal` or `boring`. The keys below and `sim.viewport.resolution` override single fields of the chosen preset and keep the preset value when empty. |
 | `sim.isaac.viewport.scale` | preset | Resolution scale factor applied on top of the render size. |
 | `sim.isaac.viewport.dlss` | preset | DLSS mode, `auto`, `quality`, `balanced` or `performance`. |
 | `sim.isaac.viewport.lighting` | preset | Lighting rig, `lights_off`, `camera_light`, `stage_lights`, `colored_lights`, `default` or `grey_studio`. |
@@ -457,7 +472,7 @@ top-level key there is overridable by the same name with the cap prefix.
 
 Contestant args in benchmark YAMLs use the same shapes and the same forwarding
 rules (see
-[benchmark README](../arena_evaluation/arena_evaluation/configs/benchmark/README.md#contestant-args)).
+[benchmark README](../arena_evaluation/arena_evaluation/configs/README.md#contestant-args)).
 
 ### robot:=auto
 
@@ -501,6 +516,7 @@ given) and will be removed in a future release.
 | Old | New |
 |---|---|
 | `isaac.physics` | `sim.isaac.physics` |
+| `sim.isaac.viewport.resolution` | `sim.viewport.resolution` |
 | `record_data_dir` | `record.dir` |
 | `disable_auto_recorder` | `record.auto` (inverted: `disable_auto_recorder:=true` is `record.auto:=false`, default `true`) |
 | `env_n` | `env.n` |
@@ -557,7 +573,7 @@ common entry points. Verbs relevant to bringup:
 | `arena robot <model>\|rm\|ls` | `runtime/spawn_robot`, `runtime/despawn_robot`, `state/robots` | Spawn, despawn, or list robots in a running fleet; see [arena robot](#arena-robot). |
 | `arena cleanup <env_id>` | `/arena/cleanup_namespace` service | Force-clean an env's namespace by id (calls the service for both the `env_<id>_` and `env_<id>/` prefixes, covering gazebo and isaac layouts). |
 | `arena train [args]` | `arena_training` feature launcher | RL training entry, see section 7 above. |
-| `arena fork new\|ls\|exec\|down` | fork containers in `build/.forks` | Isolated containers on snapshots of the dev tree, see [Forks](../README.md#forks). |
+| `arena fork new\|ls\|exec\|down` | fork containers in `build/.forks` | Isolated containers on snapshots of the dev tree or of another fork, see [Forks](../README.md#forks). |
 
 None of these verbs killall anything. `arena launch` checks for an existing
 runtime via `/arena/register_env`: if present, it attaches additively
@@ -582,8 +598,7 @@ completes straight to `key:=`, and `:` after a group name picks the group's own 
 
 ## Benchmark mode
 
-Benchmark runs are driven by the `arena evaluation benchmark` CLI verb. Requires
-`arena feature evaluation install` first.
+Benchmark runs are driven by the `arena evaluation benchmark` CLI verb.
 
 ```bash
 arena evaluation benchmark sim:=gazebo headless:=true suite:=basic contest:=basic
@@ -596,4 +611,4 @@ arena evaluation benchmark sim:=gazebo suite:=basic contest:=basic --lanes 4
 ```
 
 Suite and contest config, runner semantics, and output layout are documented in
-[arena_evaluation/configs/benchmark/](../arena_evaluation/arena_evaluation/configs/benchmark/README.md).
+[arena_evaluation/configs/](../arena_evaluation/arena_evaluation/configs/README.md).

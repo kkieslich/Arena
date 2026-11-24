@@ -42,7 +42,7 @@ from arena_simulation_setup.tree.World.Scenario import parse_scenario
 
 from . import place, site_walls
 from . import suite as SU
-from .search import HOMES, LOADING, SEARCHED, Placement, Scored
+from .search import HOMES, Placement, Scored
 
 if TYPE_CHECKING:
     import shapely

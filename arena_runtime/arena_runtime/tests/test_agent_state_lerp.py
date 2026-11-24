@@ -12,6 +12,7 @@ pytest.importorskip("rclpy")
 from arena_humansim.core.interaction_kinds import InteractionType
 from arena_humansim_msgs.msg import AgentFrame, AgentGestures, AgentMeta, AgentState, Gesture
 from geometry_msgs.msg import Point
+from visualization_msgs.msg import Marker, MarkerArray
 from arena_runtime.env.realizer import Realizer
 from arena_runtime.humans.arena_humansim.arena_humansim import ArenaHumanSimulator, Seat, SeatHold
 from arena_runtime.humans.profile import default_profile
@@ -22,6 +23,7 @@ INTERPOLATED = {"header", "x", "y", "theta", "vx", "vy", "gait_phase"}
 
 def _frame(sec: int, nanosec: int = 0, **columns: list) -> AgentFrame:
     msg = AgentFrame(**columns)
+    msg.header.frame_id = "env_0/map"
     msg.header.stamp.sec = sec
     msg.header.stamp.nanosec = nanosec
     return msg
@@ -33,11 +35,14 @@ def _adapter(prev: AgentFrame | None = None, curr: AgentFrame | None = None, ori
     adapter._prev_agent_states = prev
     adapter._curr_agent_states = curr
     adapter._engine_stamp_ns = engine_stamp_ns
+    adapter._engine_dt_ns = 50_000_000
+    adapter._removed_at_ns = None
     adapter._agent_gestures = {}
     adapter._agent_names = {}
     adapter._agent_types = {}
     adapter._agent_type_paths = {}
     adapter._pose_profiles = {}
+    adapter._devices = {}
     adapter._seats = {}
     adapter._seat_holds = {}
     adapter._realizer = Realizer(Realizer._Configuration(x=origin[0], y=origin[1], prefix="env_0"))
@@ -133,10 +138,41 @@ def test_lerp_stamps_the_lerped_pose_time() -> None:
 
     lerped = adapter._interpolate_agent_states(5 * 10**9)
     assert (lerped.header.stamp.sec, lerped.header.stamp.nanosec) == (5, 0)
-    assert lerped.header.frame_id == "map"
+    assert lerped.header.frame_id == "env_0/map"
 
     clamped = adapter._interpolate_agent_states(6 * 10**9)
     assert (clamped.header.stamp.sec, clamped.header.stamp.nanosec) == (5, 50_000_000)
+
+
+def test_render_time_trails_now_by_one_engine_frame_so_every_sample_advances() -> None:
+    columns = {"agent_id": [1], "y": [0.0], "theta": [0.0], "vx": [1.0], "vy": [0.0]}
+    prev = _frame(10, 0, x=[0.0], **columns)
+    curr = _frame(10, 50_000_000, x=[0.05], **columns)
+    adapter = _adapter(prev, curr, engine_stamp_ns=10 * 10**9 + 50_000_000)
+
+    xs = []
+    for now_ns in range(10 * 10**9 + 50_000_000, 10 * 10**9 + 100_000_000, 10_000_000):
+        lerped = adapter._interpolate_agent_states(adapter._render_ns(now_ns))
+        xs.append(lerped.x[0])
+
+    assert xs == pytest.approx([0.0, 0.01, 0.02, 0.03, 0.04])
+
+
+def test_render_time_trails_a_coalesced_frame_by_one_engine_dt_only() -> None:
+    columns = {"agent_id": [1], "y": [0.0], "theta": [0.0], "vx": [1.0], "vy": [0.0]}
+    prev = _frame(10, 0, x=[0.0], **columns)
+    curr = _frame(10, 100_000_000, x=[0.1], **columns)
+    adapter = _adapter(prev, curr, engine_stamp_ns=10 * 10**9 + 100_000_000)
+
+    render_ns = adapter._render_ns(10 * 10**9 + 100_000_000)
+
+    assert render_ns == 10 * 10**9 + 50_000_000
+    assert adapter._interpolate_agent_states(render_ns).x[0] == pytest.approx(0.05)
+
+
+def test_render_time_without_two_frames_is_now() -> None:
+    curr = _frame(1, agent_id=[1], x=[1.0], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0])
+    assert _adapter(None, curr)._render_ns(123) == 123
 
 
 def test_lerp_without_prev_returns_curr() -> None:
@@ -171,6 +207,24 @@ def test_gestures_attach_to_their_owner_in_env_frame() -> None:
     assert (peds[1].twist.linear.x, peds[2].twist.linear.y) == (0.5, 0.25)
     assert [peds[i].animation_state for i in (1, 2, 3)] == [1, 2, 0]
     assert [peds[i].name for i in (1, 2, 3)] == ["1", "env_0/ped_2", "3"]
+
+
+def test_pedestrians_from_the_engine_frame_are_stamped_in_the_global_map() -> None:
+    frame = _frame(7, 25, agent_id=[1], x=[1.0], y=[2.0], theta=[0.0], vx=[0.0], vy=[0.0], animation_state=[0])
+    peds = _adapter(origin=(100.0, 50.0))._agent_states_to_pedestrians(frame)
+
+    assert peds.header.frame_id == "map"
+    assert (peds.header.stamp.sec, peds.header.stamp.nanosec) == (7, 25)
+    assert (peds.pedestrians[0].pose.position.x, peds.pedestrians[0].pose.position.y) == (101.0, 52.0)
+
+
+def test_engine_markers_are_shifted_into_the_global_map() -> None:
+    marker = Marker()
+    marker.header.frame_id = "env_0/map"
+    marker.pose.position.x, marker.pose.position.y = 1.0, 2.0
+    out = _adapter(origin=(100.0, 50.0))._markers_from_engine(MarkerArray(markers=[marker]))
+
+    assert [(m.header.frame_id, m.pose.position.x, m.pose.position.y) for m in out.markers] == [("map", 101.0, 52.0)]
 
 
 def test_gestures_replace_on_each_update() -> None:
@@ -274,6 +328,25 @@ def test_lerp_snaps_a_jump_its_speed_cannot_explain_and_sweeps_a_fast_walk() -> 
     assert list(lerped.x) == pytest.approx([20.0, 1.0])
 
 
+def test_a_repeated_frame_republishes_without_shifting_the_interpolation_pair() -> None:
+    """The engine answers a repeated clock with its last frame: the roster goes out again, the lerp pair stays."""
+    columns = {"agent_id": [1], "y": [0.0], "theta": [0.0], "vx": [1.0], "vy": [0.0]}
+    prev, curr = _frame(1, x=[0.0], **columns), _frame(2, x=[1.0], **columns)
+    adapter = _adapter(prev, curr, engine_stamp_ns=2_000_000_000)
+    adapter._publish_pending = True
+    adapter._agent_states_callback(_frame(2, x=[1.0], **columns))
+    assert adapter._prev_agent_states is prev
+    assert adapter._curr_agent_states is curr
+    newer = _frame(3, x=[2.0], **columns)
+    adapter._agent_states_callback(newer)
+    assert adapter._prev_agent_states is curr
+    assert adapter._curr_agent_states is newer
+    assert adapter._engine_stamp_ns == 3_000_000_000
+
+
+RENDER_NS = int(1e9)
+
+
 def _render_adapter() -> ArenaHumanSimulator:
     from arena_runtime.humans.possession import PossessionTable
 
@@ -293,24 +366,26 @@ def _same(a: tuple | None, b: tuple | None) -> bool:
 
 def test_render_inputs_repeat_until_something_a_render_reads_changes() -> None:
     adapter = _render_adapter()
-    first = adapter._render_inputs()
-    assert _same(adapter._render_inputs(), first)
+    first = adapter._render_inputs(RENDER_NS)
+    assert _same(adapter._render_inputs(RENDER_NS), first)
     adapter._agent_names[1] = "arena/env_0/flow_1"
-    named = adapter._render_inputs()
+    named = adapter._render_inputs(RENDER_NS)
     assert not _same(named, first)
     adapter._agent_gestures = {}
-    assert not _same(adapter._render_inputs(), named)
-    gestured = adapter._render_inputs()
+    assert not _same(adapter._render_inputs(RENDER_NS), named)
+    gestured = adapter._render_inputs(RENDER_NS)
     adapter._prev_agent_states, adapter._curr_agent_states = adapter._curr_agent_states, _frame(2, agent_id=[1], x=[0.2], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0])
     adapter._engine_stamp_ns = int(2e9)
-    assert not _same(adapter._render_inputs(), gestured)
+    assert not _same(adapter._render_inputs(RENDER_NS), gestured)
+    framed = adapter._render_inputs(RENDER_NS)
+    assert not _same(adapter._render_inputs(RENDER_NS + 1), framed)
 
 
 def test_no_render_inputs_while_a_ped_rests_tilts_or_is_possessed() -> None:
     adapter = _render_adapter()
     adapter._rests = {1: object()}
-    assert adapter._render_inputs() is None
+    assert adapter._render_inputs(RENDER_NS) is None
     adapter._rests, adapter._tilted = {}, True
-    assert adapter._render_inputs() is None
+    assert adapter._render_inputs(RENDER_NS) is None
     adapter._tilted = False
-    assert adapter._render_inputs() is not None
+    assert adapter._render_inputs(RENDER_NS) is not None

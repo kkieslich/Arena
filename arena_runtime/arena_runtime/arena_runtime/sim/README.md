@@ -40,6 +40,8 @@ Defined in [`_interface.py`](_interface.py):
 | `robot_move` | `(Sequence[Robot]) -> Sequence[bool]` |
 | `robot_delete` | `(Sequence[Robot]) -> Sequence[bool]` |
 
+Gazebo spawns a robot from its URDF with the `<dynamics damping>` of the joints ros2_control commands by position set to 0 (`_free_position_joints`), where Isaac and MuJoCo drop it, so the damping cannot hold an arm back from its trajectory. It zeroes the attribute rather than dropping it because urdfdom rejects a `<dynamics>` with neither damping nor friction.
+
 ### `WorldITF`
 
 [`_interface.py`](_interface.py)
@@ -308,18 +310,27 @@ Overridable hooks (concrete default no-ops):
 | `after_reset_episode()` | episode-boundary hook after every reset; default no-op |
 | `step(n=1)` | advance simulation by `n` ticks; default no-op returns `True` |
 
+Gazebo, Isaac and MuJoCo launch each robot's stack (robot_state_publisher, controller_manager, urdf_publisher, twist_stamper, odom_relay) through `BaseSim._track_robot_stack`, which stops the stack of the robot's previous spawn first, and `robot_delete` stops it through `BaseSim._stop_robot_stacks`. Isaac's `remove_world` calls `ResetWorld` for the legacy `/World/Walls`, `Doors`, `Floors` and `Elevators` roots and `DeletePrims` for the env's own `env_<id>/Walls`, `Floors` and `Ceilings` roots.
+
 ## Lockstep
 
 `SimLifecycle.step_seconds(seconds) -> float` advances a held sim by an exact
-sim-time delta, quantized to whole physics steps (`physics_dt` rosparam,
-default 0.0333 matching `empty.sdf`). The base raises `NotImplementedError`.
+sim-time delta, quantized to whole physics steps of `SimLifecycle.physics_dt`,
+the sim's own step: MuJoCo 0.002 s, Isaac one rendered frame of 0.02 s, and for Gazebo, flatsim and
+dummy the `physics_dt` rosparam (default 0.0333, matching `empty.sdf`). The
+lockstep ledger steps in the same quantum. The base raises `NotImplementedError`.
 Gazebo sends one `ControlWorld` request with `pause=True` and `multi_step=n`
 (both fields in the same message, else gz free-runs). A step of more than one
 tick first raises gz `real_time_factor` so the limiter does not pace it, and
 the next unpause restores it. A single-tick step leaves the factor alone. A step
 returns once `/clock` carries its target, and the next unpause first waits for
 `/world/default/stats` to report gz paused at or past that target, since gz undoes
-an unpause that lands while a batch is still running. Isaac calls
+an unpause that lands while a batch is still running. An unpause then waits up to
+2 s for `/clock` to move and resends itself up to three times while it stays
+frozen and no pause came after it. A pause does not drop queued `multi_step`
+iterations, and gz pauses itself when they run out, so after an unpause the host
+watches the stats until the clock has run 10 s and unpauses gz again whenever
+two reports show it paused with no pause or step called since. Isaac calls
 `/isaac/StepSimulationN` and awaits `/clock` reaching the projected target.
 MuJoCo calls `/mujoco/Step` with `seconds / 0.002` physics steps (the server
 publishes `/clock` and drains its sensor and control pumps every 20 ms of sim
@@ -343,7 +354,8 @@ during a reset hold (see the [manager README](../../../../arena_runtime/arena_ru
 
 Components self-register their data channels via
 `sim_lifecycle/lockstep/register` (LockstepRegister: `caller`, `env`,
-`channels[]` of `{name, topic, type, period_s, hard}`. Re-registering under
+`channels[]` of `{name, topic, type, period_s, hard}`, a `type` without a
+`std_msgs/Header header` is refused). Re-registering under
 a `caller` replaces its set, an empty `channels[]` clears it, per-env
 registrations drop when their env despawns, and registrations merge into a
 running lockstep live. A gate needs only each message's `header.stamp`: the scheduler
@@ -391,7 +403,9 @@ latest stamp is newer than `T - period_s`, compared at the clock's
 nanosecond resolution: the gate asks whether the producer has covered the
 clock, never whether it landed on a window boundary, so a producer whose
 own grid is phased against the ledger's cannot deadlock the run. Windows
-only pick the step sizes the scheduler takes, and a covered hard channel's
+only pick the step sizes the scheduler takes: each step is a whole number of
+`physics_dt` steps up to the earliest due channel, so every channel due
+inside that last step, across all envs, shares one tick. A covered hard channel's
 next check falls at its latest stamp plus `period_s`, so one beat never
 covers more than one period past its stamp, even when physics steps
 overshoot the due tick. A producer driven by the sim
@@ -399,12 +413,25 @@ clock registers `period_s` equal to its own tick length, which paces the
 sim to the producer's true coverage. An elapsed-based rate loop registers
 a period strictly above its interval. The arena_humansim engine ticks off
 `/clock` itself rather than an rcl timer, so a clock the gate is holding
-still owes it the tick the gate is waiting for.
+still owes it the tick the gate is waiting for, and it answers a repeated
+clock, which the gate sends while it waits, with its last frame. A producer
+that beats from an rcl timer on the sim clock (the hearing belief and policy
+nodes) gets it from `TimeNode.create_timer`, which drops the `EventsExecutor`'s
+repeated dispatch of a ready timer, so the timer never runs a period past the
+clock the gate holds, and stamps from `TimeNode.sim_time`, which already holds
+the time that fired the timer. These producers, the hearing front-ends and every
+`LockstepBeat` publish their beat through `ClockEcho`, so like the engine they
+answer a repeated clock with their last beat and one lost message does not hold
+the gate.
 
-`sim_lifecycle/lockstep/start` (LockstepStart: `target_rtf`, `ungated`)
-starts a run or reconfigures one in place: `target_rtf` of 0 is unpaced
+`sim_lifecycle/lockstep/start` (LockstepStart: `target_rtf`, `ungated`, `driven`)
+starts a run or reconfigures one in place, and a start with the running
+config only resumes it: `target_rtf` of 0 is unpaced
 while gates hold the pace and wall rate while no channel is registered,
-`ungated` free-steps ignoring every gate. Hard channels freeze-and-wait: the
+`ungated` free-steps ignoring every gate. A paced run sleeps against a wall
+schedule of the sim time it advanced, so a tick that overruns its share is
+repaid from the slack of the next ones, up to 0.25 s of wall time, and a pause,
+foreign hold or rebase restarts the schedule. Hard channels freeze-and-wait: the
 scheduler will not advance past a tick until every hard channel has a
 `header.stamp` covering it, so the weakest hard producer sets the pace by
 design. `soft` channels are observed and reported only. The scheduler also
@@ -412,16 +439,26 @@ idles while a foreign hold is open (episode resets) and rebases its window
 grid to whatever sim time passed meanwhile. An unpause window never unpauses
 the sim during a run: the scheduler keeps stepping for it, also under a
 foreign hold or `pause`, gated on every hard channel except those registered
-in the window holder's env. A failed step is retried under the run's hold
+in the window holder's env, which stay subscribed and keep their latest stamp
+for when the window closes. A failed step is retried under the run's hold
 after 1, 2, 4, 8 and 16 s, rebasing on the clock first, and a sixth
 consecutive failure ends the run and counts one lifecycle failure.
+A `driven` run is unpaced and steps only for requests and open unpause
+windows: `sim_lifecycle/lockstep/advance` (LockstepAdvance: `seconds`)
+queues sim time, rounded up to whole physics steps, steps it in one call
+and answers with the seconds advanced once every hard channel that came due
+inside it covers its last tick. Requests run in order, a foreign hold delays them, and a stop,
+reconfigure or crash fails the pending ones. arena_training's lockstep envs
+step the sim this way, one request per vec step, and gate on their own
+observation streams.
 `sim_lifecycle/lockstep/stop` ends the run and restores the pre-run
 pause state and gz `real_time_factor`, responding as soon as the hold is
 released (the guard against a draining gz chunk re-pausing the world runs
 in the background). `sim_lifecycle/lockstep/pause` /
 `sim_lifecycle/lockstep/resume` freeze and unfreeze the clock within a run
 without ending it. Status is the latched `/arena/state/lockstep` topic
-(LockstepStatus): `active`, `paused`, `ungated`, `target_rtf`,
+(LockstepStatus): `active`, `paused`, `ungated`, `driven`, `target_rtf`,
+`pending` (sim seconds owed to advance requests),
 `measured_rtf`, `tick`, `registrations`, `waiting_on`, `arrived`, and the
 run's cumulative counters: `gated_ticks` (ticks that waited on a hard
 channel) and `counts` (per channel topic, the ticks it was `due` on and
@@ -429,12 +466,32 @@ the messages `received`), both reset when a run starts.
 
 `lockstep.autostart`/`lockstep.channels`/`lockstep.target_rtf`/
 `lockstep.paused` params are read once at bringup (launch args
-`lockstep:=true lockstep.channels:="..."`), registering the channels under
+`lockstep`, `lockstep.rtf`, `lockstep.paused` and `lockstep.channels:="..."`,
+by default a run starts unpaused at rtf 1, `arena train` starts none), registering the channels under
 caller `launch`. Channel specs are `name|topic|type|period_s|hard-or-soft`
 with `{env}` expanded per env. CLI: `arena lockstep run [rtf:=N] [ungated]`
 (blocks, ctrl-c pauses), `on [rtf:=N] [ungated]`, `off`, `pause`, `resume`,
 `status`, and `arena lockstep gate [engine|peds|<spec> ...]` to register
 extra channels under caller `cli`.
+
+## Robot control and physics per simulator
+
+| | MuJoCo | Isaac | Gazebo |
+| --- | --- | --- | --- |
+| physics step | 0.002 s (`scene.PHYSICS_DT`) | 0.004 s (`run_isaacsim.PHYSICS_DT`), five per rendered frame of 0.02 s (`RENDERING_DT`), one solver substep under newton | 0.0333 s (`empty.sdf` `max_step_size`) |
+| lockstep quantum | the physics step | the rendered frame (0.02 s) | the physics step |
+| position servo | PD, revolute kp 100 N m/rad per N m of effort and kd kp/20, prismatic sized for a 2 mm sag and critically damped, force clamped to the effort | the same drive | gz_ros2_control position mode: velocity target `0.1 x update_rate x error`, force clamped to the effort |
+| servo rate (revolute) | 20 per s | 20 per s | 2 per s per 10 Hz of the controller manager's `update_rate` (20 per s at go1's 200 Hz, 5 per s at 50 Hz) |
+| gravity compensation | none | none | none |
+| joint armature | `max(URDF, min(0.2, effort / 50))` kg m^2 | URDF | URDF |
+| command and joint state exchange | every 0.02 s of sim time | every rendered frame (0.02 s) | every physics step |
+| camera rate | URDF `update_rate`, checked every 0.02 s tick | the divisor of the 50 Hz render rate nearest the URDF `update_rate` (a 30 Hz camera runs at 25 Hz) | URDF `update_rate` |
+| `odom` with `odom_topic: odom` | ground truth from the free joint | ground truth from the articulation | `pose_to_tf` from the model pose, twist differenced |
+| command interfaces | position, velocity | position, velocity | position, velocity (effort unused) |
+
+Gains are derived from the URDF only, no robot sets them per joint.
+
+In Gazebo a joint below its URDF position limit gets no servo force (DART 6.13 `JointConstraint::update` handles it as a limit only), so a loaded position joint that a spawn transient pushes onto its limit stays there. A robot's URDF limits therefore sit outside the range its caps command, as TIAGo's torso stops at -0.05 m below its `[0.0, 0.35]` lift range.
 
 ## Sim-paused invariant
 
@@ -456,7 +513,7 @@ controller activation lives inside the robot bring-up unpause window.
 | --- | --- | --- | --- |
 | `dummy` | `DummySimulator` | [`dummy_simulator.py`](dummy_simulator.py) | no-op entity verbs; `DummyHost` publishes a synthetic `/clock` (wall time minus paused time plus stepped time, also while paused) and supports `step_seconds` |
 | `flatsim` | `FlatsimSimulator` | [`flatsim_simulator/flatsim_simulator.py`](flatsim_simulator/flatsim_simulator.py) | client of the flatsim server (2D Box2D, no renderer), one world for every env. `FlatsimHost` pauses and steps the server, which owns `/clock`. Optional feature |
-| `gazebo` | `GazeboSimulator` | [`gazebo_simulator/gazebo_simulator.py`](gazebo_simulator/gazebo_simulator.py) | Gazebo (Ignition) via gz-transport. Discovery runs on a port pair per ROS domain (`GZ_DISCOVERY_MSG_PORT` = 5500 + 2 x `ROS_DOMAIN_ID`, `GZ_DISCOVERY_SRV_PORT` one above, below the DDS port blocks), set by `source arena`, by the `arena launch` / `arena env` supervisor for every process it spawns, and by `arena_runtime.launch.py` for everything it starts, so forks and lanes never receive each other's gz discovery. A shell that changes `ROS_DOMAIN_ID` after sourcing re-exports both before calling the `gz` CLI. `pose_to_tf` turns the bridged model pose into `odom -> base` and republishes a ros2_control robot's controller odometry on `odom` with that pose and those frames, so the pose follows teleports and the twist stays the wheel reading |
+| `gazebo` | `GazeboSimulator` | [`gazebo_simulator/gazebo_simulator.py`](gazebo_simulator/gazebo_simulator.py) | Gazebo (Ignition) via gz-transport. Discovery runs on a port pair per ROS domain (`GZ_DISCOVERY_MSG_PORT` = 5500 + 2 x `ROS_DOMAIN_ID`, `GZ_DISCOVERY_SRV_PORT` one above, below the DDS port blocks), set by `source arena`, by the `arena launch` / `arena env` supervisor for every process it spawns, and by `arena_runtime.launch.py` for everything it starts, so forks and lanes never receive each other's gz discovery. A shell that changes `ROS_DOMAIN_ID` after sourcing re-exports both before calling the `gz` CLI. `pose_to_tf` turns the bridged model pose into `odom -> base` and republishes a ros2_control robot's controller odometry on `odom` with that pose and those frames, so the pose follows teleports and the twist stays the wheel reading. A robot with no controller odometry (`odom_topic: odom`, go1 and a1) gets the pose itself on `odom` with the twist differenced between consecutive poses in the base frame, the ground truth MuJoCo and Isaac publish for it |
 | `isaac` | `IsaacSimulator` | [`isaac_simulator.py`](isaac_simulator.py) | Isaac Sim integration |
 | `mujoco` | `MujocoSimulator` | [`mujoco_simulator.py`](mujoco_simulator.py) | MuJoCo server over the `/mujoco` services, see [arena_mujoco](../../../../arena_mujoco/README.md) |
 
@@ -507,9 +564,10 @@ are what Arena sends it.
   gain, a first-order `lag`, a `traction` cap on planar acceleration, the
   `pivot` x the body turns about and the command `timeout`. A diff drive has
   lateral bounds `[0, 0]`. A robot without the block is unbounded and moves
-  sideways only when `is_holonomic`. The base controller does not run. The adapter
-  launches `robot_state_publisher`, the server gets the URDF and the tf topic
-  of the env.
+  sideways only when `is_holonomic`. The base controller does not run. The
+  cap's `min_turning_radius` bounds the turn rate of a car-like base at its
+  forward speed over that radius. The adapter launches `robot_state_publisher`,
+  the server gets the URDF and the tf topic of the env.
 - Arm, torso and gripper joints: a ros2_control robot with controllers besides its
   base controller and `joint_state_broadcaster` gets a `controller_manager` on `mock_components/GenericSystem`
   (`mock_arm_hardware` in [_urdf.py](_urdf.py)), which keeps only the position-commanded
@@ -566,3 +624,5 @@ async def lazy_mysim(**kwargs: typing.Unpack[SimKwargs]) -> BaseSim:
 ```
 
 4. Add `MY_SIM = "my_sim"` to `SimSimulator` in `arena_bringup/constants.py`.
+
+Build a robot's robot_state_publisher with `_control.state_publisher_node`, whose `publish_frequency` of 1000 Hz puts every joint_states message on /tf instead of rsp's 20 Hz default.

@@ -8,8 +8,18 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import attrs
+from arena_humansim.core.agents import BUILTIN_AGENTS
 
-from ..populate import KINEMATICS, MODELS
+KINEMATICS: dict[str, tuple[float, float, float, float]] = {name: (speed.mean, speed.std, speed.clip_low, speed.clip_high) for name in ("adult", "elder", "child", "hurried", "distracted") for speed in (BUILTIN_AGENTS[name].desired_velocity,)}
+
+MODELS: tuple[str, ...] = (
+    "Hospital/nurse_female_caucasian_young",
+    "Hospital/doctor_male_caucasian_middleage",
+    "worker_male_caucasian_young",
+    "Office/office_female_caucasian_young",
+    "worker_male_asian_middleage",
+    "casual_female_caucasian_young",
+)
 
 TIER_NAMES = ("low", "mid", "high")
 
@@ -46,8 +56,8 @@ TUNABLE = frozenset({"speed", "max_speed", "vision_range", "vision_fov", "repuls
 
 ADULT_SPEED = KINEMATICS["adult"][0]
 
-_MEDICAL = ("female_adult_medical_01", "male_adult_medical_01")
-_CIVIL = tuple(m for m in MODELS if "medical" not in m)
+_MEDICAL = ("Hospital/nurse_female_caucasian_young", "Hospital/doctor_male_caucasian_middleage")
+_CIVIL = tuple(m for m in MODELS if m not in _MEDICAL)
 
 
 @attrs.frozen(kw_only=True)

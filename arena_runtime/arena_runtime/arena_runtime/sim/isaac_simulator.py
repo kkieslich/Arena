@@ -93,6 +93,7 @@ from arena_runtime.sim._control import (
     effective_control_yaml,
     odom_relay_node,
     robot_controllers,
+    state_publisher_node,
     twist_stamper_node,
 )
 from arena_runtime.sim._interface import offset_pose, resolve_obstacle_box
@@ -105,14 +106,22 @@ IsaacSimulator is per-env on arena_env_node and adapts env-namespace state (per-
 """
 
 
-# matches World(physics_dt=rendering_dt=1/60) pinned in run_isaacsim.py
-_ISAAC_PHYSICS_HZ = 60.0
+# one step is one rendered frame, matches rendering_dt in run_isaacsim.py
+_ISAAC_FRAME_HZ = 50.0
 _ISAAC_EXPOSURE_GAIN = 5.0
 _TILT_EPS = 1e-9
 _MAP_OFFSET_TIMEOUT_S = 10.0
+_WORLD_ROOTS = ('Walls', 'Floors', 'Ceilings')
+
+
+def world_roots(env_id: int | str) -> list[str]:
+    """Prim names of the world geometry roots one env owns."""
+    return [Namespace(f"env_{env_id}")(root) for root in _WORLD_ROOTS]
 
 
 class IsaacHost(SimLifecycle):
+    physics_dt = 1.0 / _ISAAC_FRAME_HZ
+
     def __init__(self, node: ArenaMixinNode) -> None:
         self._node = node
         self._logger = node.get_logger().get_child(type(self).__name__)
@@ -157,16 +166,16 @@ class IsaacHost(SimLifecycle):
         return 1 if res.ret[0] else 0
 
     async def step_seconds(self, seconds: float) -> float:
-        n = max(1, round(seconds * _ISAAC_PHYSICS_HZ))
+        n = max(1, round(seconds * _ISAAC_FRAME_HZ))
         start = self._node.sim_time
         res = await self._step_client.call_forever(StepSimulation.Request(steps=n))
         if not res.success:
             raise RuntimeError(res.error_msg)
-        reported = res.target_sim_time - n / _ISAAC_PHYSICS_HZ
-        if not self._clock_skew_logged and abs(reported - start.to_seconds()) > 1.0 / _ISAAC_PHYSICS_HZ:
+        reported = res.target_sim_time - n / _ISAAC_FRAME_HZ
+        if not self._clock_skew_logged and abs(reported - start.to_seconds()) > 1.0 / _ISAAC_FRAME_HZ:
             self._clock_skew_logged = True
             self._logger.warning(f"isaac sim time {reported:.3f}s vs /clock {start.to_seconds():.3f}s, stepping on /clock")
-        target = start + Time.from_float((n - 0.5) / _ISAAC_PHYSICS_HZ)
+        target = start + Time.from_float((n - 0.5) / _ISAAC_FRAME_HZ)
         while not await self._node.await_sim_time(target, freeze_timeout=10.0):
             self._node.get_logger().warning(f"waiting on isaac sim clock >= {target.to_seconds():.3f}s (at {self._node.sim_time.to_seconds():.3f}s)")
         return (self._node.sim_time - start).to_seconds()
@@ -359,19 +368,7 @@ class IsaacSimulator(BaseSim, NodeInterface):
         ld = launch.LaunchDescription()
         ld.add_action(launch_ros.actions.PushRosNamespace(namespace=ns))
 
-        ld.add_action(
-            launch_ros.actions.Node(
-                package='robot_state_publisher',
-                executable='robot_state_publisher',
-                name='robot_state_publisher',
-                output='screen',
-                parameters=[
-                    {'use_sim_time': True},
-                    {'robot_description': description},
-                    {'frame_prefix': robot.frame.tf()},
-                ],
-            )
-        )
+        ld.add_action(state_publisher_node(description, robot.frame.tf()))
 
         control_spec = robot_params.control
         if control_spec is not None and control_spec.is_ros2_control:
@@ -430,7 +427,7 @@ class IsaacSimulator(BaseSim, NodeInterface):
             if control_spec.odom_topic != "odom":
                 ld.add_action(odom_relay_node(control_spec.odom_topic))
 
-        await self.node.do_launch(ld)
+        await self._track_robot_stack(robot.sim_path, ld)
 
     async def obstacle_spawn(self, obstacles: Sequence[Obstacle]) -> Sequence[bool]:
 
@@ -566,11 +563,13 @@ class IsaacSimulator(BaseSim, NodeInterface):
             self._robot_prims.pop(robot.sim_path, None)
             self._map_offsets.pop(robot.sim_path, None)
             self._map_offset_calls.pop(robot.sim_path, None)
+        await self._stop_robot_stacks(r.sim_path for r in robots)
         return await asyncio.gather(*(self._delete_entity(self._NS_ROBOT(r.name)) for r in robots))
 
     async def remove_world(self) -> bool:
         res = await self._clients.ResetWorld.call_timeout(ResetWorld.Request())
-        return bool(res) and res.ret
+        deleted = await self._clients.DeletePrims.call_timeout(DeletePrims.Request(names=world_roots(self._env_id)))
+        return bool(res) and res.ret and deleted is not None and all(deleted.ret)
 
     async def spawn_walls(self, walls: Sequence[WallDefinition], clear_existing: bool = True) -> bool:
         if clear_existing:

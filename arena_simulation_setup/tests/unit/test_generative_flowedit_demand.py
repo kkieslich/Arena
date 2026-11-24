@@ -135,13 +135,15 @@ def _first_valid(space: EntranceSearch, listed: list[tuple[float, float, tuple[i
 
 
 def test_recipient_entrances_are_the_building_doors_and_lifts() -> None:
-    facts = place.SiteFacts((
-        Entrance("door", "building", ((1.0, 1.0),)),
-        Entrance("exit", "mrt", ((2.0, 1.0),)),
-        Entrance("lift_a", "lift", ((3.0, 1.0),), level="1"),
-        Entrance("cafe", "shop", ((4.0, 1.0),)),
-        Entrance("lift_b", "lift", ((5.0, 1.0),), recipients=True),
-    ))
+    facts = place.SiteFacts(
+        (
+            Entrance("door", "building", ((1.0, 1.0),)),
+            Entrance("exit", "mrt", ((2.0, 1.0),)),
+            Entrance("lift_a", "lift", ((3.0, 1.0),), level="1"),
+            Entrance("cafe", "shop", ((4.0, 1.0),)),
+            Entrance("lift_b", "lift", ((5.0, 1.0),), recipients=True),
+        )
+    )
     assert [e.name for e in demand.recipient_entrances(facts)] == ["door", "lift_a", "lift_b"]
     assert [e.name for e in demand.recipient_entrances(facts, level="0")] == ["door", "lift_b"]
     assert [e.name for e in demand.recipient_entrances(facts, types=("shop",))] == ["cafe"]
@@ -537,16 +539,20 @@ def test_cli_search_reports_the_layouts_per_reach(hospital_copy: Path, tmp_path:
     far = int(np.argmax(np.linalg.norm(gotos - gotos[0], axis=1)))
     x, y = loading.objects[0].goto
     config = tmp_path / "site.yaml"
-    config.write_text(yaml.safe_dump({
-        "site": site.key,
-        "scenario": "mix",
-        "courier_access": [x, y],
-        "entrances": [
-            {"name": "ward", "type": "building", "at": [float(v) for v in gotos[0]]},
-            {"name": "lift", "type": "lift", "at": [float(v) for v in gotos[far]]},
-            {"name": "kiosk", "type": "shop", "at": [float(v) for v in gotos[len(gotos) // 2]]},
-        ],
-    }))
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "site": site.key,
+                "scenario": "mix",
+                "courier_access": [x, y],
+                "entrances": [
+                    {"name": "ward", "type": "building", "at": [float(v) for v in gotos[0]]},
+                    {"name": "lift", "type": "lift", "at": [float(v) for v in gotos[far]]},
+                    {"name": "kiosk", "type": "shop", "at": [float(v) for v in gotos[len(gotos) // 2]]},
+                ],
+            }
+        )
+    )
     out = tmp_path / "report.json"
     args = ["infra", "search", "--site", str(hospital_copy), "--site-config", str(config), "--reach", "0.01,8", "--margins", "1.1,1.5", "--rate", "6", "--charging-trips", "0.1", "--rank", "walk", "--out", str(out)]
     assert cli.main(args) == 0

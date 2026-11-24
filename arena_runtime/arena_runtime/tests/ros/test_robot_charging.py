@@ -150,7 +150,7 @@ def test_the_start_charge_range_defaults_to_40_to_100_percent_and_takes_launch_v
 
 @pytest.mark.parametrize(("key", "value"), [("min", -1.0), ("max", 150.0)])
 def test_a_start_charge_bound_outside_0_to_100_percent_is_refused(key: str, value: float) -> None:
-    with pytest.raises(RuntimeError, match=f"task.episode.battery.soc.{key} failed"):
+    with pytest.raises(ValueError, match="expected a percentage between 0 and 100"):
         _soc_range(**{key: value})
 
 
@@ -180,7 +180,8 @@ def test_the_battery_capacity_defaults_to_0_for_the_robots_own_and_takes_launch_
 
 @pytest.mark.parametrize("value", [-1.0, math.inf, math.nan, True], ids=["negative", "inf", "nan", "bool"])
 def test_a_battery_capacity_below_0_or_not_a_finite_number_is_refused(value: object) -> None:
-    with pytest.raises(RuntimeError, match="task.episode.battery.capacity_wh failed"):
+    # the type check of the param refuses a value that is not a finite number, the param's own parse a negative one
+    with pytest.raises((ValueError, RuntimeError), match=r"expected a battery capacity in Wh of at least 0|task\.episode\.battery\.capacity_wh"):
         _capacity(value)
 
 

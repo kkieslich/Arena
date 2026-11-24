@@ -26,7 +26,7 @@ from arena_rclpy_mixins.registry import AsyncFactoryRegistry as Registry
 from arena_rclpy_mixins.shared import Namespace
 from arena_runtime_msgs.msg import LockstepChannel
 from arena_simulation_setup.shared import Placement, Stairs, stair_height
-from arena_simulation_setup.shared.body import DEFAULT_STANCE, load_stance
+from arena_simulation_setup.shared.body import DEFAULT_COMPILED_STANCE, CompiledStance, compile_stance, load_stance
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
 from arena_simulation_setup.tree.World.Scenario import TeleportZone
 from arena_simulation_setup.utils.models import ModelType
@@ -41,21 +41,24 @@ from arena_runtime._node import NodeInterface
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.realizer import Realizer
 from arena_runtime.humans.animation_manager import AnimationManager
+from arena_runtime.humans.devices import DeviceSpec, HeldBodies
+from arena_runtime.humans.devices import place as place_device
+from arena_runtime.humans.devices import shift as shift_device
 from arena_runtime.humans.drivers import DrivenJoints, Drivers, JoystickDriver, load_drivers, with_driven
 from arena_runtime.humans.gestures import Channel, GestureLayer, GestureRequest
 from arena_runtime.humans.hands import POINT_CLIP, Grip, clip_pose, held_pose
 from arena_runtime.humans.itinerary import semantic_atom
 from arena_runtime.humans.possession import PossessionTable
-from arena_runtime.humans.profile import PoseProfile, agent_type_pose_section, default_profile, resolve_pose_profile
+from arena_runtime.humans.profile import PoseProfile, agent_type_device_section, agent_type_pose_section, default_profile, resolve_pose_profile
 from arena_runtime.humans.support import LIE_S, SETTLE_S, SIT_CLIP, SQUAT_CLIP, TYPICAL_BODY, BodyMeasurements, SeatPlan, Support, blend_pose, load_body, plan_seat, rise_seconds, seat_depth, supported_pose, tilted_pose
 from arena_runtime.humans.utils import (
     KnownObstacle,
     KnownObstacles,
     ObstacleLayer,
 )
-from arena_runtime.humans.wire import BodyCache, fill_bodies
+from arena_runtime.humans.wire import BodyCache, fill_bodies, fill_body
 from arena_runtime.lockstep import register_channels
-from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
+from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall, footprint_radius
 from arena_runtime.sim import BaseSim
 
 if typing.TYPE_CHECKING:
@@ -95,6 +98,7 @@ def placed_peds(msg: Pedestrians, placement: Placement) -> Pedestrians:
     placed = copy.deepcopy(msg)
     for ped in placed.pedestrians:
         position = placement.place(Position(ped.pose.position.x, ped.pose.position.y, ped.pose.position.z))
+        shift_device(ped.device, position.x - ped.pose.position.x, position.y - ped.pose.position.y)
         ped.pose.position.x, ped.pose.position.y, ped.pose.position.z = position.x, position.y, position.z
     return placed
 
@@ -103,6 +107,10 @@ def stair_running(stair: Stairs, stairs: Iterable[Stairs], running: Mapping[str,
     """Whether a stair half's belt moves: not once it, the half it boards or a half boarding it is reported stopped."""
     linked = {stair.name, stair.to} | {other.name for other in stairs if other.to == stair.name}
     return all(running.get(name, True) for name in linked if name)
+
+
+DEFAULT_ROBOT_RADIUS = 0.3
+DEVICE_RANGE = 2.0
 
 
 @attrs.define
@@ -114,6 +122,7 @@ class TrackedRobot:
     pose: Pose
     velocity: tuple[float, float] = (0.0, 0.0)
     stamp: float | None = None
+    radius: float = DEFAULT_ROBOT_RADIUS
 
     def place(self, pose: Pose) -> None:
         """Teleport to pose, at rest until TF reports the next one."""
@@ -255,8 +264,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         self._gait = AnimationManager(logger=self._logger, fps=20.0)
         self._gait_prev_stamp: dict[int, float] = {}
         self._pose_profiles: dict[str, PoseProfile] = {}
+        self._devices: dict[str, DeviceSpec | None] = {}
+        self._held_bodies = HeldBodies(self._logger.warning)
         self._driven = DrivenJoints()
-        self._stances: dict[str, Mapping[str, np.ndarray]] = {}
+        self._stances: dict[str, CompiledStance] = {}
         self._drivers: dict[str, Drivers] = {}
         self._bodies: dict[str, BodyMeasurements] = {}
         self._seat_plans: dict[int, SeatPlan] = {}
@@ -304,8 +315,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         Without the skeleton (`human.skeleton:=false`) the animation runs and places resting and tilted peds all the same,
         and the roster goes out without joint states or body poses, no animation_states beside it.
         """
-        now = self.node.get_clock().now()
-        now_sec = now.nanoseconds * 1e-9
+        now = self.node.sim_time
+        now_sec = now.to_seconds()
         stamp = now.to_msg()
         for name, last_state in self._possession.expire(now_sec):
             self._on_ped_released(name, last_state)
@@ -357,8 +368,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             )
             phase = float(ped.gait_phase) if ped.gait_phase != 0.0 else None
             profile = self._pose_profile_for(ped.agent_type).while_in(self._interaction(ped))
-            # without the skeleton the angles only serve to place a resting or tilted ped (a tilt comes with angles)
-            needs_angles = self._skeleton or support is not None or ped.id in self._rests
+            # without the skeleton the angles only serve to place a resting or tilted ped (a tilt comes with angles) and to pose a held device
+            needs_angles = self._skeleton or support is not None or ped.id in self._rests or self._device_for(ped.agent_type) is not None
             angles = self._gait.compute(ped.id, ped.animation_state, speed, dt, gesture=gesture, phase=phase, profile=profile, angles=needs_angles)
             generated.add(ped.id)
             ped.gait_phase = self._gait.phase(ped.id)
@@ -402,6 +413,13 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             if ped.id in tilts and self._support(ped) is None:
                 self._tilt_body(ped, tilts[ped.id])
             self._place_resting(ped, now_sec)
+
+        robots: list[tuple[float, float, float]] | None = None
+        for ped in out.pedestrians:
+            if (device := self._device_for(ped.agent_type)) is not None:
+                if robots is None:
+                    robots = [(t.pose.position.x, t.pose.position.y, t.radius + DEVICE_RANGE) for t in self.tracked_robots()]
+                self._hold_device(ped, device, robots)
 
         if self._skeleton:
             fill_bodies(
@@ -477,6 +495,18 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
     def _support(self, ped: Pedestrian) -> Support | None:
         """Seat or bed the ped rests on, None while it is on its feet."""
         return None
+
+    def _hold_device(self, ped: Pedestrian, device: DeviceSpec, robots: Sequence[tuple[float, float, float]]) -> None:
+        """Pose `ped`'s device into `ped.device` when a robot (x, y, reach) is near enough to touch it."""
+        x, y = ped.pose.position.x, ped.pose.position.y
+        if not ped.model_uri or not ped.joint_state.name or not any(math.hypot(x - rx, y - ry) <= reach for rx, ry, reach in robots):
+            return
+        if (held := self._held_bodies.get(ped.model_uri, device)) is None:
+            return
+        angles = dict(zip(ped.joint_state.name, ped.joint_state.position, strict=True))
+        outline = held.footprint(angles, self._pose_profile_for(ped.agent_type).while_in(self._interaction(ped)).hold)
+        if len(outline) >= 3:
+            place_device(ped, held.kind, outline, Orientation.from_msg(ped.pose.orientation).to_yaw())
 
     def _interaction(self, ped: Pedestrian) -> str | None:
         """Name of the interaction the ped is in, the key of its pose profile's `while` section, None outside one."""
@@ -562,15 +592,15 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             self._bodies[model_uri] = body
         return body
 
-    def _stance_for(self, model_uri: str) -> Mapping[str, np.ndarray]:
+    def _stance_for(self, model_uri: str) -> CompiledStance:
         """Stance of a ped model, read once per model, the default one when its rig file is rejected."""
         stance = self._stances.get(model_uri)
         if stance is None:
             try:
-                stance = load_stance(model_uri)
+                stance = compile_stance(load_stance(model_uri))
             except (OSError, ValueError) as e:
                 self._logger.warning(f"rig stance of {model_uri!r} rejected ({e}), it uses the default stance")
-                stance = DEFAULT_STANCE
+                stance = DEFAULT_COMPILED_STANCE
             self._stances[model_uri] = stance
         return stance
 
@@ -598,11 +628,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         if not agent_type:
             return default_profile()
         try:
-            builtin_dir: Path | None = Path(get_package_share_directory("arena_humansim")) / "config" / "agent_types"
-        except PackageNotFoundError:
-            builtin_dir = None
-        try:
-            section = agent_type_pose_section(agent_type, builtin_dir)
+            section = agent_type_pose_section(agent_type, self._builtin_agent_types())
             if section is None:
                 self._logger.warning(f"agent type {agent_type!r} not found, using the default pose profile")
                 return default_profile()
@@ -626,9 +652,34 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         return profile
 
     def preload_pose_profiles(self, agent_types: Iterable[str]) -> None:
-        """Resolve pose profiles before the publish tick, which only reads them (a held grip is solved once per type)."""
+        """Resolve pose profiles and device blocks before the publish tick, which only reads them (a held grip is solved once per type)."""
         for agent_type in set(agent_types):
             self._pose_profile_for(agent_type)
+            self._device_for(agent_type)
+
+    def _device_for(self, agent_type: str) -> DeviceSpec | None:
+        """The device an agent type holds (its `device:` block), resolved once per type, None without one or when it is rejected."""
+        if agent_type in self._devices:
+            return self._devices[agent_type]
+        device: DeviceSpec | None = None
+        if agent_type:
+            try:
+                section = agent_type_device_section(agent_type, self._builtin_agent_types())
+                device = None if section is None else DeviceSpec.parse(section)
+                if device is not None and device.model and not self._pose_profile_for(agent_type).hold:
+                    raise ValueError(f"{device.kind} held in both hands needs the type's pose.hold")
+            except (ValueError, TypeError, OSError, yaml.YAMLError) as e:
+                device = None
+                self._logger.warning(f"agent type {agent_type!r} device rejected ({e}), it holds none")
+        self._devices[agent_type] = device
+        return device
+
+    @staticmethod
+    def _builtin_agent_types() -> Path | None:
+        try:
+            return Path(get_package_share_directory("arena_humansim")) / "config" / "agent_types"
+        except PackageNotFoundError:
+            return None
 
     def held_seats(self) -> dict[str, list[int]]:
         """Indices into each object's annotated sit slots that agents hold, by object sim path."""
@@ -744,7 +795,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     def _now_s(self) -> float:
         """Sim-clock seconds from the node clock."""
-        return self.node.get_clock().now().nanoseconds * 1e-9
+        return self.node.sim_time.to_seconds()
 
     def _warn_new(self, names: frozenset[str], warned: set[str], reason: str) -> None:
         for name in sorted(names - warned):
@@ -799,13 +850,18 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         return response
 
     async def relay_pedestrian_update(self, msg: Pedestrians) -> Sequence[bool]:
-        """Sim-side funnel: expire and substitute possessed peds, then forward to the physics sim."""
+        """Sim-side funnel: expire and substitute possessed peds, compile their joint angles into body poses, then forward to the physics sim."""
         now = self._now_s()
         for name, last_state in self._possession.expire(now):
             self._on_ped_released(name, last_state)
         out = Pedestrians()
         out.header = msg.header
         out.pedestrians = self._possession.substitute(msg.pedestrians, now)
+        possessed = self._possession.possessed(now)
+        for ped in out.pedestrians:
+            if ped.name in possessed:
+                ped.model_uri = self._ped_model_uris.get(ped.name, "")
+                fill_body(ped, self._stance_for(ped.model_uri))
         return await self._simulator.pedestrian_update(out)
 
     def possessed_peds(self) -> dict[str, Pedestrian]:
@@ -1397,12 +1453,18 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
     async def _track_robots(self, robots: Sequence[Robot]) -> Sequence[bool]:
         for robot in robots:
             tf_frame: str | None = None
+            radius = DEFAULT_ROBOT_RADIUS
             try:
                 view = await robot.model.resolve()
                 tf_frame = robot.frame(view.model_params.base_frame).raw()
             except Exception as e:
-                self._logger.warning(f"robot {robot.name!r}: base frame unresolved ({e}), using spawn pose only")
-            self._robots[robot.name] = TrackedRobot(robot=robot, tf_frame=tf_frame, pose=copy.deepcopy(robot.pose))
+                self._logger.warning(f"robot {robot.name!r}: base frame unresolved ({e}), using the spawn pose only and a {radius} m radius")
+            else:
+                try:
+                    radius = footprint_radius(view)
+                except ValueError as e:
+                    self._logger.warning(f"robot {robot.name!r}: {e}, sized {radius} m in the human simulator")
+            self._robots[robot.name] = TrackedRobot(robot=robot, tf_frame=tf_frame, pose=copy.deepcopy(robot.pose), radius=radius)
         return await self._spawn_robot_impl(robots)
 
     async def _untrack_robots(self, robots: Sequence[Robot]) -> Sequence[bool]:

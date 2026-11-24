@@ -118,7 +118,7 @@ def test_a_timed_out_region_is_sent_again_in_place_before_the_next() -> None:
 def test_a_region_the_engine_never_answers_fails_the_setup_and_nothing_after_it_is_sent() -> None:
     sources = _Client(lose={"src_04": REGION_CALL_ATTEMPTS})
     sim = _adapter(add_source=sources)
-    with pytest.raises(RegionSetupError, match=r"did not add region 'src_04' \(5 of 29 added\)"):
+    with pytest.raises(RegionSetupError, match=r"did not add region 'src_04' \(9 of 29 added\)"):
         asyncio.run(sim.setup_regions(_twin()))
     assert sources.names[-REGION_CALL_ATTEMPTS:] == ["src_04"] * REGION_CALL_ATTEMPTS
     assert "src_05" not in sources.names

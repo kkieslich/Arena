@@ -36,7 +36,7 @@ BAY_DOCK = [[-0.6, -0.5], [0.6, -0.5], [0.6, 0.5], [-0.6, 0.5]]
 BAY_YAW = math.pi / 2
 
 
-def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0, objects: tuple[Obstacle, ...] = ()) -> SimpleNamespace:
+def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0, others: tuple[tuple[str, float, float, float], ...] = (), objects: tuple[Obstacle, ...] = ()) -> SimpleNamespace:
     grid = np.full((100, 100), WorldOccupancy.EMPTY, dtype=np.uint8)
     world_manager = WorldManager.__new__(WorldManager)
     world_manager._map = WorldMap(occupancy=WorldLayers(walls=WorldOccupancy(grid)), origin=Position(0.0, 0.0), resolution=RES, time=Time())
@@ -50,7 +50,8 @@ def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0, o
     world_manager._world = World(levels={"0": Level(id="0", zones=[Zone(name="room", polygon=ROOM)], objects=[charger, *objects])})
     rng = EpisodeRng()
     rng.reseed(seed)
-    node = SimpleNamespace(_world_manager=world_manager, conf=SimpleNamespace(General=SimpleNamespace(RNG=rng)))
+    robots_manager = SimpleNamespace(managers={name: SimpleNamespace(pose=Pose(position=Position(x, y), orientation=Orientation.identity()), radius=radius) for name, x, y, radius in others})
+    node = SimpleNamespace(_world_manager=world_manager, _robots_manager=robots_manager, conf=SimpleNamespace(General=SimpleNamespace(RNG=rng)))
     world_manager._NodeInterface__node = node
     return SimpleNamespace(node=node, name="jackal_0", safe_distance=SAFE)
 
@@ -100,7 +101,7 @@ def test_docked_object_target_over_the_objects_origin_faces_its_front(model: str
     (bundle / "annotation.yaml").write_text(yaml.safe_dump({"name": model, "face": face}))
     bay = Obstacle(name=f"{WORLD_ENTITY_PREFIX}bay_1", model=f"Common/Object/{model}", pose=Pose(position=Position(2.0, 4.0), orientation=Orientation.from_yaw(BAY_YAW)), dock=BAY_DOCK)
     for seed in range(5):
-        phase = RobotManager.resolve_target(_manager(None, seed, (bay,)), GoToPhase(target="bay_1"))
+        phase = RobotManager.resolve_target(_manager(None, seed, objects=(bay,)), GoToPhase(target="bay_1"))
         position = phase.pose.position
         assert math.dist((position.x, position.y), (2.0, 4.0)) <= 0.25 + RES
         assert math.remainder(phase.pose.orientation.to_yaw() - BAY_YAW - front, math.tau) == pytest.approx(0.0, abs=1e-9)
@@ -109,6 +110,21 @@ def test_docked_object_target_over_the_objects_origin_faces_its_front(model: str
 def test_docked_object_target_without_a_free_cell_near_its_middle_names_it() -> None:
     with pytest.raises(ValueError, match="goto target 'charger_1' has no free cell with 0.30 m clearance"):
         RobotManager.resolve_target(_manager((2.5, 1.5, 4.5, 2.5)), GoToPhase(target="charger_1"))
+
+
+def test_zone_target_avoids_the_cells_other_robots_occupy() -> None:
+    others = (("jackal_1", 2.0, 2.0, 0.5),)
+    for seed in range(20):
+        phase = RobotManager.resolve_target(_manager(None, seed, others), GoToPhase(target="room"))
+        assert math.hypot(phase.pose.position.x - 2.0, phase.pose.position.y - 2.0) >= 0.5 - RES
+
+
+def test_zone_target_reserves_nothing_in_the_task_obstacle_layer() -> None:
+    manager = _manager(None)
+    before = manager.node._world_manager._map.occupancy.grid.copy()
+    for _ in range(5):
+        RobotManager.resolve_target(manager, GoToPhase(target="room"))
+    assert np.array_equal(manager.node._world_manager._map.occupancy.grid, before)
 
 
 def test_unknown_target_is_left_for_the_ped_follower() -> None:

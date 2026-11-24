@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import yaml
+from arena_simulation_setup.metrics import use_points
 from arena_simulation_setup.metrics.use_points import WALKER_CLEARANCE, Finding, agent_radius, blocking, check_scenario, describe, line_slots, object_points, route_clearance
 from arena_simulation_setup.shared import Obstacle
 from arena_simulation_setup.tree.World import WorldView
@@ -95,7 +96,9 @@ def test_a_counter_across_the_doorway_cuts_off_the_room_behind_it(tmp_path: Path
     assert ("room", "floor") in _points(findings)
 
 
-def test_a_model_that_does_not_resolve_is_named_once_with_what_the_buckets_answered(tmp_path: Path) -> None:
+def test_a_model_that_does_not_resolve_is_named_once_with_what_the_buckets_answered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # no bucket answers, as on a machine with an asset cache directory and the network off
+    monkeypatch.setattr(use_points.NetResolver, "answers", staticmethod(lambda model: []))
     lost = [{"name": f"cooler_{i}", "model": "Common/no_such_model", "pose": [3.0, 1.0 + i, 0.0]} for i in range(3)]
     findings = check_scenario(_world(tmp_path, {"objects": lost}), "s")
     assert [(f.object, f.point) for f in findings] == [(f"cooler_{i}", "model") for i in range(3)] and all(math.isnan(f.distance) for f in findings)

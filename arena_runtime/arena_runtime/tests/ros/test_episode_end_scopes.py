@@ -41,6 +41,7 @@ def _node_stub(publisher, runner, loop: asyncio.AbstractEventLoop):
     stub._env_id = 0
     stub._semantics_dirty = True
     stub._stimuli_fired = {}
+    stub._task_entities = {}
     stub._pub_state_semantics = publisher
     stub.get_logger = lambda: SimpleNamespace(warn=lambda *a, **kw: None)
     return stub

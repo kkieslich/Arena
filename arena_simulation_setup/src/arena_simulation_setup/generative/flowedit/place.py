@@ -482,7 +482,7 @@ def cut_off_zones(site: Site, level_id: str, radius: float | None = None) -> tup
     at least 2 m^2, traversable on the walls alone, with no cell in the dominant component (`NavrBase.cut_off_zones`),
     on the walls and doors only, so a room behind a narrow passage or up a stair counts whatever furniture stands in
     it. Cached per site."""
-    from arena_simulation_setup.metrics.navr_filter import WHEELCHAIR_RADIUS, NavrBase
+    from arena_simulation_setup.metrics.navr_filter import WHEELCHAIR_RADIUS
 
     radius = WHEELCHAIR_RADIUS if radius is None else float(radius)
     key = (*_site_key(site), level_id, radius)
@@ -700,10 +700,7 @@ def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], 
     docks = [o.dock for o in objects]
     out: dict[Rule, Verdict] = {}
     out[Rule.AGAINST_WALL] = ok(against)
-    out[Rule.NO_OVERLAP] = ok(
-        all(ctx.floor_inner.covers(f) and not ctx.walls.intersects(f) and not ctx.doors.intersects(f) and not ctx.obstacle_union.intersects(f.buffer(gen.MARGIN_M)) for f in footprints)
-        and not any(_overlaps(a, b) for i, a in enumerate(footprints) for b in footprints[i + 1 :])
-    )
+    out[Rule.NO_OVERLAP] = ok(all(ctx.floor_inner.covers(f) and not ctx.walls.intersects(f) and not ctx.doors.intersects(f) and not ctx.obstacle_union.intersects(f.buffer(gen.MARGIN_M)) for f in footprints) and not any(_overlaps(a, b) for i, a in enumerate(footprints) for b in footprints[i + 1 :]))
     out[Rule.CLEAR_ZONE] = ok(clear.is_empty or (free_floor(clear) and not ctx.doors.intersects(clear)))
     out[Rule.TURNING_CIRCLE] = ok(turning is None or free_floor(turning))
     out[Rule.CORRIDOR_WIDTH] = ok(corridor >= corridor_min_m)

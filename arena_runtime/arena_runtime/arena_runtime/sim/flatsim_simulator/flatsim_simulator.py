@@ -37,7 +37,7 @@ from arena_runtime.humans import ped_radius
 from arena_runtime.node_params import NodeParams
 from arena_runtime.shared import DynamicObstacle, Floor, ModelType, Obstacle, Pose, Robot, Wall
 from arena_runtime.sim import BaseSim, SimKwargs, SimLifecycle, SimUnavailable
-from arena_runtime.sim._control import effective_control_yaml, robot_controllers
+from arena_runtime.sim._control import effective_control_yaml, robot_controllers, state_publisher_node
 from arena_runtime.sim._interface import robot_footprint_radius
 from arena_runtime.sim._urdf import mock_arm_hardware
 
@@ -72,7 +72,7 @@ class FlatsimHost(SimLifecycle):
     CLOCK_TIMEOUT = 5.0
 
     def __init__(self, physics_dt: float, node: ArenaMixinNode) -> None:
-        self._dt = physics_dt
+        self.physics_dt = physics_dt
         self._node = node
         self._control = node.create_client_wrapper(ControlWorld, f'{SERVER}/control_world', qos_profile=SERVICE_QOS)
         self._delete_prefix = node.create_client_wrapper(DeletePrefix, f'{SERVER}/delete_prefix', qos_profile=SERVICE_QOS)
@@ -98,18 +98,18 @@ class FlatsimHost(SimLifecycle):
 
     async def step_seconds(self, seconds: float) -> float:
         """Take whole physics steps on the paused server, returns once /clock carries the last one."""
-        n = round(seconds / self._dt)
+        n = round(seconds / self.physics_dt)
         if seconds > 0:
             n = max(1, n)
         if n <= 0:
             return 0.0
-        chunk = max(1, round(1.0 / self._dt))
+        chunk = max(1, round(1.0 / self.physics_dt))
         reached = self._node.sim_time
         for start in range(0, n, chunk):
             reached = await self._send(True, min(chunk, n - start))
         if not await self._node.await_sim_time(reached - Time.from_float(_EPS), freeze_timeout=self.CLOCK_TIMEOUT):
             raise SimUnavailable(f'flatsim: /clock silent for {self.CLOCK_TIMEOUT}s after a step')
-        return n * self._dt
+        return n * self.physics_dt
 
     def env_prefix(self, env_id: int) -> str:
         return env_prefix(env_id)
@@ -267,19 +267,7 @@ class FlatsimSimulator(BaseSim):
         """Launch robot_state_publisher in the robot namespace, and a mock-hardware controller_manager for a ros2_control robot."""
         ld = launch.LaunchDescription()
         ld.add_action(launch_ros.actions.PushRosNamespace(namespace=str(self.node.service_namespace(robot.name))))
-        ld.add_action(
-            launch_ros.actions.Node(
-                package='robot_state_publisher',
-                executable='robot_state_publisher',
-                name='robot_state_publisher',
-                output='screen',
-                parameters=[
-                    {'use_sim_time': True},
-                    {'robot_description': description},
-                    {'frame_prefix': robot.frame.tf()},
-                ],
-            )
-        )
+        ld.add_action(state_publisher_node(description, robot.frame.tf()))
         robot_config = arena_robots.Robot.RobotIdentifier(robot.model.name).resolve_sync()
         control_spec = robot_config.model_params.control
         if control_spec is not None and control_spec.is_ros2_control and control_spec.config is not None and self.robot_controllers(robot):
@@ -354,7 +342,7 @@ class FlatsimSimulator(BaseSim):
                 yaw=robot.pose.orientation.to_yaw(),
                 footprint=Ring(x=[float(point[0]) for point in footprint], y=[float(point[1]) for point in footprint]),
                 radius=robot_footprint_radius(robot_params),
-                drive=drive_model(mobile.planar, holonomic=mobile.is_holonomic),
+                drive=drive_model(mobile.planar, holonomic=mobile.is_holonomic, min_turning_radius=mobile.min_turning_radius),
                 urdf=description,
                 sensors=self._sensors(robot, robot_config),
             )
@@ -493,8 +481,7 @@ class FlatsimSimulator(BaseSim):
         return True
 
     async def remove_world(self) -> bool:
-        """Remove the world's walls and floors and every pedestrian disc: a disc no one deletes stays in the server, seen
-        by the robots' sensors, after its pedestrian is gone; the pedestrians of the next world bring their own."""
+        """Remove the walls, floors and every pedestrian disc."""
         names, self._wall_names, self._floor_names = [*self._wall_names, *self._floor_names], [], []
         discs = list(self._pedestrians)
         self._pedestrians.clear()

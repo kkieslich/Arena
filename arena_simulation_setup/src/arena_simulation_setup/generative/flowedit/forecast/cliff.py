@@ -95,6 +95,10 @@ class CliffParams:
         return cls(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in doc.items() if k in attrs.fields_dict(cls)})
 
 
+#: The settings `CliffMap.empty` and `from_tracks` default to
+DEFAULT_PARAMS = CliffParams()
+
+
 # --- observations ----------------------------------------------------------------------------------------------------
 
 
@@ -378,7 +382,7 @@ class CliffMap:
     _dirty: Any = None
 
     @classmethod
-    def empty(cls, grid: FlowGrid, params: CliffParams = CliffParams()) -> CliffMap:
+    def empty(cls, grid: FlowGrid, params: CliffParams = DEFAULT_PARAMS) -> CliffMap:
         import numpy as np
 
         L, J = grid.ny * grid.nx, params.max_components
@@ -473,9 +477,7 @@ class CliffMap:
             ur = np.broadcast_to(r[:, :, None, None], ut.shape)
             s1 = resp.sum(axis=(1, 3)) / n[:, None]
             s2 = np.stack([(resp * ut).sum(axis=(1, 3)), (resp * ur).sum(axis=(1, 3))], -1) / n[:, None, None]
-            s3 = np.stack(
-                [np.stack([(resp * ut * ut).sum(axis=(1, 3)), (resp * ut * ur).sum(axis=(1, 3))], -1), np.stack([(resp * ut * ur).sum(axis=(1, 3)), (resp * ur * ur).sum(axis=(1, 3))], -1)], -2
-            ) / n[:, None, None, None]
+            s3 = np.stack([np.stack([(resp * ut * ut).sum(axis=(1, 3)), (resp * ut * ur).sum(axis=(1, 3))], -1), np.stack([(resp * ut * ur).sum(axis=(1, 3)), (resp * ur * ur).sum(axis=(1, 3))], -1)], -2) / n[:, None, None, None]
             # the model's statistics: what its M-step reads back
             h1 = m
             h2 = m[..., None] * mu
@@ -562,7 +564,7 @@ class CliffMap:
         return out.reshape(g.ny, g.nx, BINS)
 
 
-def from_tracks(grid: FlowGrid, tracks: Iterable[pl.DataFrame], params: CliffParams = CliffParams(), seed: int = 0) -> CliffMap:
+def from_tracks(grid: FlowGrid, tracks: Iterable[pl.DataFrame], params: CliffParams = DEFAULT_PARAMS, seed: int = 0) -> CliffMap:
     """A CLiFF-map built in one iteration from every observation of `tracks` (the history model of a pre-edit map)."""
     obs = Observations.concat(o for t in tracks for o in track_observations(t, params.rate_hz).values())
     return CliffMap.empty(grid, params).update(obs, seed)

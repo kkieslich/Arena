@@ -42,7 +42,6 @@ from arena_runtime_msgs.srv import LifecycleHold, LifecycleStep
 from builtin_interfaces.msg import Time as RosTime
 from geometry_msgs.msg import Point, PoseStamped
 from hri_msgs.msg import IdsList
-from rclpy.duration import Duration
 from viewport_control_msgs.msg import ViewportView
 from viewport_control_msgs.srv import (
     ViewportCapture,
@@ -470,12 +469,12 @@ class CamNode(ArenaMixinNode):
     async def play(self, timeline: Camera) -> bool:
         """Run one take on the connected surfaces. True when it ran and every recording finished usable."""
         self._timeline, self._error, self._off_stamp, self._off_most = timeline, None, 0, 0.0
+        if self.ride_only:
+            self._lockstep = self._scheduler_active
         takes = self._make_takes(timeline)
         if takes is None:
             return False
         self._takes, self.shared = takes, len(takes) > 1
-        if self.ride_only:
-            self._lockstep = self._scheduler_active
         if self._record is not None and not await self._open_recorders():
             return False
         names = ", ".join(endpoint.ns for endpoint in self._endpoints)
@@ -530,6 +529,7 @@ class CamNode(ArenaMixinNode):
             if not await endpoint.capture.ensure(timeout_sec=10.0):
                 self.get_logger().error(f"no {endpoint.ns}/viewport/capture service, rebuild the plugin for record mode")
                 return False
+        self._record.parent.mkdir(parents=True, exist_ok=True)
         for (take, endpoint), path in zip(pairs, paths, strict=True):
             take.recorders[endpoint.ns] = Recorder(str(path), self.fps)
             self.get_logger().info(f"recording {take.tag(endpoint.ns)} to {path}")
@@ -591,7 +591,7 @@ class CamNode(ArenaMixinNode):
         if self._beat_pub is None:
             self._beat_pub = self.create_publisher(LockstepHeartbeat, topic, 10)
         self._follower = True
-        self._lockstep_time = await self._first_beat(topic)
+        self._lockstep_time = await self._first_beat()
         self.get_logger().info(f"riding active lockstep run: cam gated at {self.fps:g} fps")
         try:
             await self._run_takes()
@@ -599,12 +599,12 @@ class CamNode(ArenaMixinNode):
             self._follower = False
             await register_channels(self, [], env=self.channel_env, caller=topic, timeout=60.0)
 
-    async def _first_beat(self, topic: str) -> Time | None:
+    async def _first_beat(self) -> Time | None:
         """Beat the current tick so even the first frame lands on a tick the run froze on, None when the scheduler never subscribed."""
         assert self._beat_pub is not None
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _BEAT_MATCH_TIMEOUT
-        while self.count_subscribers(topic) == 0:
+        while self._beat_pub.get_subscription_count() == 0:
             if loop.time() > deadline:
                 return None
             await asyncio.sleep(0.01)
@@ -897,7 +897,7 @@ class CamNode(ArenaMixinNode):
     def keyframe_stamp(self) -> RosTime:
         """The target time of a keyframe sent now. A gated frame shows at once, since lockstep already paces it."""
         lead = 0.0 if self._lockstep else self.lead
-        return (self.get_clock().now() + Duration(seconds=lead)).to_msg()
+        return (self.sim_time + Time.from_float(lead)).to_msg()
 
     async def set_projection(self, projection: str, endpoints: Iterable[_Endpoint]) -> bool:
         ok = True
