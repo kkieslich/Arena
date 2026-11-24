@@ -33,7 +33,7 @@ from flatsim_msgs.msg import Box, Disc, Discs, EntityPose, EntityPoses, Fan, Out
 from flatsim_msgs.msg import Floor as FloorMsg
 from flatsim_msgs.srv import AddFloors, AddOutlines, ControlWorld, DeleteEntities, DeletePrefix, DeleteRobot, Republish, SetRobotPose, SpawnBoxes, SpawnRobot
 
-from arena_runtime.humans import PED_RADIUS
+from arena_runtime.humans import ped_radius
 from arena_runtime.node_params import NodeParams
 from arena_runtime.shared import DynamicObstacle, Floor, ModelType, Obstacle, Pose, Robot, Wall
 from arena_runtime.sim import BaseSim, SimKwargs, SimLifecycle, SimUnavailable
@@ -148,9 +148,9 @@ def _outline(name: str, rings: Iterable[Sequence[Point]], extent: Extent) -> Out
     return Outline(name=name, rings=[Ring(x=[point[0] for point in ring], y=[point[1] for point in ring]) for ring in rings], z_min=extent[0], z_max=extent[1])
 
 
-def _disc(name: str, pose: Pose, velocity: Point = (0.0, 0.0)) -> Disc:
+def _disc(name: str, pose: Pose, radius: float, velocity: Point = (0.0, 0.0)) -> Disc:
     z_min, z_max = _ped_extent(pose.position.z)
-    return Disc(name=name, radius=PED_RADIUS, x=pose.position.x, y=pose.position.y, vx=velocity[0], vy=velocity[1], z_min=z_min, z_max=z_max)
+    return Disc(name=name, radius=ped_radius(radius), x=pose.position.x, y=pose.position.y, vx=velocity[0], vy=velocity[1], z_min=z_min, z_max=z_max)
 
 
 def _answer[T](response: T | None) -> T:
@@ -187,7 +187,7 @@ class FlatsimSimulator(BaseSim):
         self._poses = self.node.create_publisher(EntityPoses, f'{SERVER}/poses', reliable(_TOPIC_QUEUE))
 
         self._robots: dict[str, LaunchHandle] = {}
-        self._pedestrians: set[str] = set()
+        self._pedestrians: dict[str, float] = {}  # disc name -> its last known radius, 0 = unknown
         self._wall_counter = itertools.count()
         self._wall_names: list[str] = []
         self._floor_names: list[str] = []
@@ -413,26 +413,43 @@ class FlatsimSimulator(BaseSim):
         return await self._remove([self._name(obstacle.sim_path) for obstacle in obstacles])
 
     async def pedestrian_spawn(self, pedestrians: Sequence[DynamicObstacle]) -> Sequence[bool]:
-        discs = [_disc(self._name(pedestrian.sim_path), pedestrian.pose) for pedestrian in pedestrians]
-        self._pedestrians.update(disc.name for disc in discs)
-        self._discs.publish(Discs(discs=discs))
+        names = [self._name(pedestrian.sim_path) for pedestrian in pedestrians]
+        for name in names:
+            self._pedestrians.setdefault(name, 0.0)
+        self._discs.publish(Discs(discs=[_disc(name, pedestrian.pose, self._pedestrians[name]) for name, pedestrian in zip(names, pedestrians, strict=True)]))
         return tuple(True for _ in pedestrians)
 
     async def pedestrian_move(self, pedestrians: Sequence[DynamicObstacle]) -> Sequence[bool]:
-        known = [self._name(pedestrian.sim_path) in self._pedestrians for pedestrian in pedestrians]
-        self._discs.publish(Discs(discs=[_disc(self._name(pedestrian.sim_path), pedestrian.pose) for pedestrian, ok in zip(pedestrians, known, strict=True) if ok]))
+        names = [self._name(pedestrian.sim_path) for pedestrian in pedestrians]
+        known = [name in self._pedestrians for name in names]
+        self._discs.publish(Discs(discs=[_disc(name, pedestrian.pose, self._pedestrians[name]) for name, pedestrian, ok in zip(names, pedestrians, known, strict=True) if ok]))
         return tuple(known)
 
     async def pedestrian_delete(self, pedestrians: Sequence[DynamicObstacle]) -> Sequence[bool]:
         names = [self._name(pedestrian.sim_path) for pedestrian in pedestrians]
         known = tuple(name in self._pedestrians for name in names)
-        self._pedestrians.difference_update(names)
+        for name in names:
+            self._pedestrians.pop(name, None)
         self._discs.publish(Discs(removed=names))
         return known
 
     async def pedestrian_update(self, pedestrians: Pedestrians) -> Sequence[bool]:
-        discs = [_disc(self._name(pedestrian.name), Pose.from_msg(pedestrian.pose), (pedestrian.twist.linear.x, pedestrian.twist.linear.y)) for pedestrian in pedestrians.pedestrians]
-        self._pedestrians.update(disc.name for disc in discs)
+        discs: list[Disc] = []
+        resized: list[str] = []
+        for pedestrian in pedestrians.pedestrians:
+            name = self._name(pedestrian.name)
+            known = self._pedestrians.get(name)
+            # a message without a radius (a teleport, a possessed ped) keeps the disc's size
+            radius = pedestrian.radius if pedestrian.radius > 0.0 else known or 0.0
+            if known is not None and ped_radius(radius) != ped_radius(known):
+                resized.append(name)
+            self._pedestrians[name] = radius
+            position = pedestrian.pose.position
+            z_min, z_max = _ped_extent(position.z)
+            discs.append(Disc(name=name, radius=ped_radius(radius), x=position.x, y=position.y, vx=pedestrian.twist.linear.x, vy=pedestrian.twist.linear.y, z_min=z_min, z_max=z_max))
+        if resized:
+            # the server sizes a disc only when it first sees it
+            self._discs.publish(Discs(removed=resized))
         self._discs.publish(Discs(discs=discs))
         return tuple(True for _ in pedestrians.pedestrians)
 

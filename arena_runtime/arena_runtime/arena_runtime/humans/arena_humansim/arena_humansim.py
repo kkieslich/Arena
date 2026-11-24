@@ -6,6 +6,7 @@ import math
 import traceback
 import typing
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import attrs
 import numpy as np
@@ -89,19 +90,22 @@ from arena_people_msgs.msg import Pedestrian, Pedestrians
 from arena_rclpy_mixins.Async import ClientWrapper
 from arena_rclpy_mixins.lazy import LazySubscription
 from arena_rclpy_mixins.shared import FrameNamespace
+from arena_rclpy_mixins.Time import Time
 from arena_runtime_msgs.msg import LockstepChannel
+from arena_simulation_setup.metrics import use_points
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET, CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, Stairs
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
+from arena_simulation_setup.tree.World import World, WorldView
 from arena_simulation_setup.tree.World.model import elevator_doorway_pose
-from arena_simulation_setup.utils.affordance import AffordanceClaims, AffordanceKind, AffordanceSlot, SlotOccupied, conflicts, has_z, max_occupancy, placed_slots
+from arena_simulation_setup.tree.World.Scenario import Scenario, TeleportZone
+from arena_simulation_setup.utils import affordance
+from arena_simulation_setup.utils.affordance import AffordanceClaims, AffordanceKind, AffordanceSlot, SlotOccupied, conflicts, has_z, max_occupancy, placed_slots, seat_reach, seat_slot
+from arena_simulation_setup.utils.face import front_angle, queue_theta
 from geometry_msgs.msg import (
     Point,
     Point32,
-    Quaternion,
-    Twist,
     Vector3,
 )
-from geometry_msgs.msg import Pose as PoseMsg
 from geometry_msgs.msg import (
     Pose2D as Pose2DMsg,
 )
@@ -120,15 +124,24 @@ from visualization_msgs.msg import MarkerArray
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.rng import stable_int
 from arena_runtime.env.realizer import Realizer
-from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, Segment
+from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, ScenarioCheckError, Segment
 from arena_runtime.humans.arena_humansim.lane_config import lane_msg_from_config
 from arena_runtime.humans.itinerary import STIMULUS_TELEPORTED, ItineraryDriver, Stop, semantic_atom
-from arena_runtime.humans.support import Support, front_angle, seat_stand
+from arena_runtime.humans.support import Support, seat_stand
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
 
 from .agent import ArenaHumanDynamicObstacle, agent_type_def, agent_type_stimuli, flow_agent_template, path_agent_type_name
+from .rng_keys import AgentSource, flow_model_key, seats_key, walker_key
+
+try:
+    from arena_humansim_msgs.srv import StartClock
+except ImportError:  # an engine built before start_clock: its crowd starts at its first clock after a reset
+    StartClock = None
 
 _DEFERRED_ID_BASE = 1 << 24
+
+# a region call is keyed by the region's name (the engine replaces a source or sink of that name), so one that timed out is sent again
+REGION_CALL_ATTEMPTS = 3
 
 _QUEUE_FRONT_OFFSET = 0.7
 TELEPORT_JUMP_M = 2.0
@@ -167,10 +180,13 @@ class PedMechanics:
         return stops if any(stop.holds for stop in stops) else None
 
 
+class _TargetOnly(Exception):
+    """A target-only object (empty model) has no annotation to read: it is a world object without an obstacle."""
+
+
 def facing_pose(pose: Pose2DMsg, front: float) -> Pose2DMsg:
-    """The pose the engine approaches and queues an object from: it lines people up behind its theta, so theta turns until that side is the front at angle front in the object's frame."""
-    theta = pose.theta + front - math.pi
-    return Pose2DMsg(x=pose.x, y=pose.y, theta=math.atan2(math.sin(theta), math.cos(theta)))
+    """The pose the engine approaches and queues an object from (`queue_theta`)."""
+    return Pose2DMsg(x=pose.x, y=pose.y, theta=queue_theta(pose.theta, front))
 
 
 def seat_capacity(humansim: Mapping[str, typing.Any], slots: Sequence[AffordanceSlot]) -> int:
@@ -187,9 +203,6 @@ def slot_height(slot: AffordanceSlot) -> float:
     return slot.bbox[2][1] if has_z(slot.bbox) else math.nan
 
 
-SEAT_SLOT_REACH = 0.15  # m, a scenario seat this close to a sit slot's footprint takes that slot's height
-
-
 def seat_height(seat: Pose, slots: Sequence[AffordanceSlot]) -> float:
     """Surface height of a scenario seat in the object frame, NaN when unknown.
 
@@ -202,35 +215,9 @@ def seat_height(seat: Pose, slots: Sequence[AffordanceSlot]) -> float:
     return math.nan if slot is None else slot_height(slot)
 
 
-def seat_slot(seat: Pose, slots: Sequence[AffordanceSlot]) -> AffordanceSlot | None:
-    """The sit slot with a z range a scenario seat lies in or next to (within SEAT_SLOT_REACH), the nearest center among overlapping ones."""
-    xy = (seat.position.x, seat.position.y)
-    near = [slot for slot in slots if has_z(slot.bbox) and slot.distance(xy) <= SEAT_SLOT_REACH]
-    return min(near, key=lambda slot: (slot.distance(xy), math.dist(slot.center, xy))) if near else None
-
-
-def box_reach(seat: Pose, box: Sequence[Sequence[float]], behind: bool = False) -> float:
-    """How far ahead of a seat along its facing, or behind it, an object-frame box ends."""
-    yaw = seat.orientation.to_yaw() + (math.pi if behind else 0.0)
-    reach = math.inf
-    for (low, high), at, step in zip(box[:2], (seat.position.x, seat.position.y), (math.cos(yaw), math.sin(yaw)), strict=True):
-        if step > 1e-9:
-            reach = min(reach, (high - at) / step)
-        elif step < -1e-9:
-            reach = min(reach, (low - at) / step)
-    return max(0.0, reach)
-
-
-def seat_reach(seat: Pose, slot: AffordanceSlot, behind: bool = False) -> float:
-    """How far ahead of a seat along its facing, or behind it, its slot's box ends, in the object frame."""
-    return box_reach(seat, slot.bbox, behind)
-
-
 def seat_approach(seat: Pose, front: float | None, bounding_box: Sequence[Sequence[float]] | None) -> float:
     """Where a sitter stands ahead of a seat before it sits (`seat_stand`), never inside the object's bounding box, 0 for a seat outside every slot."""
-    if front is None:
-        return 0.0
-    return max(seat_stand(front), 0.0 if bounding_box is None else box_reach(seat, bounding_box))
+    return affordance.seat_approach(seat, front, bounding_box, seat_stand)
 
 
 @attrs.frozen
@@ -337,6 +324,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
     SERVICE_SET_TELEPORT_ZONES = "set_teleport_zones"
     SERVICE_SET_ZONE_ACCESS = "set_zone_access"
     SERVICE_TELEPORT_AGENTS = "teleport_agents"
+    SERVICE_START_CLOCK = "start_clock"
     TAKES_STIMULI = True
 
     def __init__(self, **kwargs: typing.Unpack[HumanSimulatorOptions]) -> None:
@@ -423,6 +411,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self.node.service_namespace("arena_humansim_viz", "set_parameters"),
         )
         self._viz_config: Realizer._Configuration | None = None
+        self._rendered: tuple[tuple[object, ...], tuple[object, ...]] | None = None
         self._viz_config_task: asyncio.Task[None] | None = None
         self._publish_pending = False
         self._notify_stimulus_client: ClientWrapper = self.node.create_client_wrapper(
@@ -441,6 +430,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             TeleportAgents,
             self.node.service_namespace(self.SERVICE_TELEPORT_AGENTS),
         )
+        self._start_clock_client: ClientWrapper | None = None if StartClock is None else self.node.create_client_wrapper(StartClock, self.node.service_namespace(self.SERVICE_START_CLOCK))
+        # whether the engine waits for start_clock after every remove-all, set in setup()
+        self._clock_on_request = False
 
         self._spawns_in_flight: int = 0
         self._contact_config: tuple[str, float] = ("enabled", 1.2)
@@ -451,8 +443,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._curr_agent_states: AgentFrameMsg | None = None
         self._engine_stamp_ns: int | None = None
         self._engine_dt_ns: int = round(self._ENGINE_DT_DEFAULT * 1e9)
+        # sim time of the last reset that removed every agent: an engine frame stamped at or before it is the old episode's
+        self._removed_at_ns: int | None = None
         self._agent_gestures: dict[int, list[EngineGestureMsg]] = {}
         self._agent_types: dict[int, str] = {}
+        self._agent_sources: dict[int, AgentSource] = {}
         self._agent_type_paths: dict[str, str] = {}
         self._arena_pedestrians: Pedestrians = Pedestrians()
         self._arena_pedestrians.header.frame_id = "map"
@@ -502,6 +497,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._seat_slots: dict[str, list[AffordanceSlot]] = {}
         self._seats: dict[str, list[Seat]] = {}
         self._warned_faces: set[str] = set()
+        self._warned_models: set[str] = set()
         self._seat_holds: dict[int, SeatHold] = {}
         self._supports: dict[int, Support] = {}
         self._seat_violation_reported = False
@@ -616,12 +612,16 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return {object_id: seats for object_id, seats in self._held_seats.items() if object_id in self._seat_slots}
 
     def _agent_states_callback(self, msg: AgentFrameMsg):
-        """Cache prev/curr snapshots from arena_humansim for local interpolation, a frame repeating curr's stamp only republishes the roster."""
+        """Cache prev/curr snapshots from arena_humansim for local interpolation, a frame repeating curr's stamp only republishes the roster; drop a frame the engine sent before the
+        last reset that removed every agent, which would put the old episode's walkers back."""
+        stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
+        if self._removed_at_ns is not None and stamp_ns <= self._removed_at_ns:
+            return
         curr = self._curr_agent_states
         if curr is None or msg.header.stamp != curr.header.stamp:
             self._prev_agent_states = curr
             self._curr_agent_states = msg
-            self._engine_stamp_ns = msg.header.stamp.sec * int(1e9) + msg.header.stamp.nanosec
+            self._engine_stamp_ns = stamp_ns
         # publish on receipt (the rate loop can race a stepped clock burst), but
         # coalesced: one roster compute per burst, not per engine tick
         if self._publish_pending:
@@ -638,9 +638,14 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._agent_gestures = grouped
 
     def _agent_meta_callback(self, msg: AgentMetaMsg):
-        """Latest agent type per engine agent."""
-        types = msg.agent_type if len(msg.agent_type) == len(msg.agent_id) else [""] * len(msg.agent_id)
+        """Latest agent type, and the source and release index the engine draws a released agent from, per engine agent."""
+        n = len(msg.agent_id)
+        types = msg.agent_type if len(msg.agent_type) == n else [""] * n
         self._agent_types = dict(zip(msg.agent_id, types, strict=True))
+        sources = msg.source_name if len(msg.source_name) == n else [""] * n
+        seqs = msg.source_seq if len(msg.source_seq) == n else [0] * n
+        names = msg.name if len(msg.name) == n else [""] * n
+        self._agent_sources = {int(i): AgentSource(str(s), int(q), self._realizer.unprefix(str(m))) for i, s, q, m in zip(msg.agent_id, sources, seqs, names, strict=True)}
         self.preload_pose_profiles(self._agent_type_of(agent_id) for agent_id in msg.agent_id)
 
     def _remember_agent_type_path(self, agent_type: str) -> None:
@@ -682,15 +687,50 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return now_ns - min(max(frame_ns, 0), self._engine_dt_ns)
 
     async def _publish_interpolated(self) -> None:
-        """Interpolate one engine frame behind the current sim time and publish the roster."""
+        """Interpolate one engine frame behind the current sim time and publish the roster.
+
+        Without the skeleton a render of the inputs and render time the last one had is skipped: the roster would come out
+        the same but for the animation, which it does not carry (`_render_inputs`).
+        """
         now = self.node.sim_time
-        states = self._interpolate_agent_states(self._render_ns(now.sec * int(1e9) + now.nanosec))
+        render_ns = self._render_ns(now.sec * int(1e9) + now.nanosec)
+        if not self._skeleton:
+            inputs = self._render_inputs(render_ns)
+            last, self._rendered = self._rendered, inputs
+            if inputs is not None and last is not None and all(a is b for a, b in zip(inputs[0], last[0], strict=True)) and inputs[1] == last[1]:
+                return
+        states = self._interpolate_agent_states(render_ns)
         if states is None:
             return
         peds = self._agent_states_to_pedestrians(states)
         async with self._agents_lock:
             self._arena_pedestrians = peds
         self.publish_arena_peds(peds)
+
+    def _render_inputs(self, render_ns: int) -> tuple[tuple[object, ...], tuple[object, ...]] | None:
+        """Everything a render at `render_ns` reads but the animation clock: the objects it reads that are replaced on change
+        (compared by identity, held so their ids stay theirs) and the values of the ones changed in place; None while a
+        render also moves a ped by that clock.
+
+        A render differs from the last one only when its render time, a frame, the gestures, names, types, sources, seats,
+        held seats, model paths, stairs or the env offset changed, or a ped rests, tilts or is possessed (their poses
+        follow the animation clock).
+        """
+        if self._rests or self._tilted or len(self._possession):
+            return None
+        cfg = self._realizer.get_config()
+        replaced = (self._curr_agent_states, self._prev_agent_states, self._agent_gestures, self._agent_types, self._agent_sources, self._seat_holds, self._known_stairs)
+        in_place = (
+            render_ns,
+            self._engine_stamp_ns,
+            tuple(self._teleport_stamps.items()),
+            tuple(self._agent_names.items()),
+            tuple(self._agent_type_paths.items()),
+            tuple(self._ped_model_uris.items()),
+            tuple(self._seats.items()),
+            (cfg.x, cfg.y, cfg.prefix),
+        )
+        return replaced, in_place
 
     def _interpolate_agent_states(self, now_ns: int) -> AgentFrameMsg | None:
         """Lerp between prev and curr agent states at the given timestamp, an empty frame at the engine's latest stamp once its agents are removed."""
@@ -741,6 +781,35 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         theta[ci] = prev_theta + alpha * d_theta
         msg.theta = array.array("d", theta.tobytes())
         return msg
+
+    async def _hold_clock_until_start(self) -> None:
+        """Have the engine hold its tick clock after every remove-all until `start_clock` gives it the episode start.
+
+        Without it the engine's first tick after the reset's remove-all lands wherever the clock is then, and the reset moves
+        the clock by a varying amount afterwards (robot placement steps, bringup windows): the crowd starts a varying number of
+        ticks and a varying phase of a tick before the episode, so the same world and seed do not give the same crowd.
+        """
+        if self._start_clock_client is None:
+            self._logger.warning("arena_humansim_msgs has no StartClock: the crowd starts at the engine's first clock after a reset, so seed-paired episodes can differ")
+            return
+        request = SetParametersAtomically.Request(parameters=[Parameter("start_on_request", value=True).to_parameter_msg()])
+        response = await self._set_params_client.call_timeout(request)
+        if response is None or not response.result.successful:
+            reason = response.result.reason if response is not None else "timeout"
+            self._logger.warning(f"arena_humansim does not hold its clock for the episode start ({reason}): the crowd starts at its first clock after a reset, so seed-paired episodes can differ")
+            return
+        await self._start_clock_client.ensure()
+        self._clock_on_request = True
+
+    async def start_clock(self, epoch: Time) -> None:
+        """Start the engine's tick clock, held since the reset's remove-all, at the episode start: its first tick is stamped `epoch`."""
+        if not self._clock_on_request or self._start_clock_client is None:
+            return
+        assert StartClock is not None
+        response = await self._start_clock_client.call_timeout(StartClock.Request(epoch=epoch.to_msg()))
+        if response is None or not response.success:
+            # a reset that failed before its remove-all leaves the engine ticking; a held one would stall the lockstep gate
+            self._logger.error(f"arena_humansim did not start its clock at {epoch.to_seconds():.3f} s: {'timeout' if response is None else response.message}")
 
     _ENGINE_DT_DEFAULT = 0.05
 
@@ -831,6 +900,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             )
         )
         self._logger.info("All arena_humansim services available")
+        await self._hold_clock_until_start()
 
         # gate period = engine dt: one sample per window paces the sim to the
         # engine's true coverage, so the clock cannot outrun the ped simulation
@@ -941,7 +1011,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                 self._warned_untagged_types.add(agent_type)
                 self._logger.warning(f"agent type {agent_type!r} asks for a human model tagged {list(definition.assets)}, no bundle on disk carries them; using {self.FLOW_MODEL!r}")
             return self.FLOW_MODEL
-        rng = self.node.conf.General.RNG.stream("humansim", "flow-model", agent_id)
+        rng = self.node.conf.General.RNG.stream(*flow_model_key(agent_id, self._agent_sources.get(agent_id, AgentSource())))
         return matches[int(rng.integers(len(matches)))]
 
     # The engine runs in the world frame (authored coordinates, levels laid out), this adapter owns the env offset:
@@ -991,7 +1061,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                 heights = [seat_height(seat, slots) for seat in seats]
                 edges: list[tuple[float, float] | None] = [None if (slot := seat_slot(seat, slots)) is None else (seat_reach(seat, slot), seat_reach(seat, slot, behind=True)) for seat in seats]
             else:
-                rng = self.node.conf.General.RNG.stream("humansim", "seats", obstacle.sim_path)
+                rng = self.node.conf.General.RNG.stream(*seats_key(self._realizer.unprefix(obstacle.sim_path)))
                 seats = [slot.pose(rng) for slot in slots]
                 heights = [slot_height(slot) for slot in slots]
                 edges = [(seat_reach(seat, slot), seat_reach(seat, slot, behind=True)) for seat, slot in zip(seats, slots, strict=True)]
@@ -1146,14 +1216,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             if override is not None:
                 x, y = override.at.x, override.at.y
 
-            ped.pose = PoseMsg(
-                position=Point(x=x, y=y, z=0.0),
-                orientation=Quaternion(
-                    z=math.sin(yaw / 2.0),
-                    w=math.cos(yaw / 2.0),
-                ),
-            )
-            ped.twist = Twist(linear=Vector3(x=vx, y=vy, z=0.0))
+            # into the message's own (default) pose and twist: the same values, five fewer messages per ped and render
+            position, orientation, linear = ped.pose.position, ped.pose.orientation, ped.twist.linear
+            position.x, position.y = x, y
+            orientation.z, orientation.w = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+            linear.x, linear.y = vx, vy
 
             ped.animation_state = animation_state
             ped.gestures = gestures
@@ -1179,19 +1246,45 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         return shape
 
     def _polygon_centroid(self, polygon: Sequence[Position]) -> tuple[float, float]:
-        """Compute centroid of a polygon."""
-        if not polygon:
-            return 0.0, 0.0
-        cx = sum(p.x for p in polygon) / len(polygon)
-        cy = sum(p.y for p in polygon) / len(polygon)
-        return cx, cy
+        """The point a region is sent around (`use_points.region_point`).
+
+        arena_humansim takes the pose as the region's goal. A walker bound for a sink heads for the sink's pose and is
+        removed only while that waypoint lies inside the sink's polygon, so a sink posed outside its own polygon (the mean of
+        a concave region's vertices, e.g. a square cut to the floor along a wall) never removes anyone.
+        """
+        return use_points.region_point([(p.x, p.y) for p in polygon])
+
+    async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
+        """Raise ScenarioCheckError listing what of `scenario` the crowd cannot reach (`use_points.check`), unless `human.check` is
+        off; models that do not resolve only warn, once per model, under `human.check.models:=warn`."""
+        if not self.node.conf.Human.CHECK.value:
+            return
+        findings = await asyncio.to_thread(use_points.check, view, world, scenario, scenario_dir=scenario_dir, origins=origins, stand=seat_stand)
+        if self.node.conf.Human.CHECK_MODELS.value == "warn":
+            models = [f for f in findings if f.point == "model" and f.why not in self._warned_models]
+            self._warned_models.update(f.why for f in models)
+            if models:
+                self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r} (human.check.models:=warn): {use_points.describe(models)}")
+            findings = [f for f in findings if f.point != "model"]
+        if detours := [f for f in findings if f.detour]:
+            self._logger.warning(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: walkers may take detours, outside the building too: {use_points.describe(detours)}")
+        if findings := use_points.blocking(findings):
+            raise ScenarioCheckError(f"scenario {scenario_dir.name!r} of world {view.path.name!r}: {use_points.describe(findings)}. Fix them, or launch with human.check:=false (human.check.models:=warn lets models that do not resolve pass)")
 
     async def _add_regions_impl(self, regions: Sequence[Region]) -> bool:
-        sinks = [r for r in regions if r.type == "sink"]
-        others = [r for r in regions if r.type != "sink"]
-        sink_results = await asyncio.gather(*(self._add_region_single(r) for r in sinks))
-        other_results = await asyncio.gather(*(self._add_region_single(r) for r in others))
-        return all(sink_results) and all(other_results)
+        """Add the sinks, then the other regions, one at a time in scenario order, the engine registering its sources (and numbering their agents) in that order.
+
+        arena_humansim's services keep the rmw default request queue (KEEP_LAST, depth 10) and one executor: of more requests
+        waiting out a tick it drops the oldest unanswered, so the regions are not sent all at once.
+
+        Raises:
+            RegionSetupError: at the first region arena_humansim did not add.
+        """
+        ordered = [r for r in regions if r.type == "sink"] + [r for r in regions if r.type != "sink"]
+        for added, region in enumerate(ordered):
+            if not await self._add_region_single(region):
+                raise RegionSetupError(f"arena_humansim did not add region {region.name!r} ({added} of {len(ordered)} added)")
+        return True
 
     async def _add_region_single(self, region: Region) -> bool:
         if region.type == "source":
@@ -1225,18 +1318,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             src_msg.lane = lane
 
         request.source = src_msg
-        try:
-            response = await self._add_source_client.call_timeout(request)
-            if response is None:
-                self._logger.error("AddSource timed out")
-                return False
-            if response.success:
-                return True
-            self._logger.error(f"AddSource failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"AddSource call failed: {e}")
-            return False
+        return await self._region_call(self._add_source_client, request, f"AddSource {region.name!r}")
 
     async def _add_sink_region(self, region: Region) -> bool:
         request = AddSink.Request()
@@ -1252,59 +1334,42 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         sink_msg.capacity = cfg.get("capacity", -1)
 
         request.sink = sink_msg
-        try:
-            response = await self._add_sink_client.call_timeout(request)
-            if response is None:
-                self._logger.error("AddSink timed out")
+        return await self._region_call(self._add_sink_client, request, f"AddSink {region.name!r}")
+
+    async def _region_call(self, client: ClientWrapper, request: object, what: str) -> bool:
+        """Whether arena_humansim took one region call, sent again in place up to REGION_CALL_ATTEMPTS times in all while it times out."""
+        for attempt in range(1, REGION_CALL_ATTEMPTS + 1):
+            try:
+                response = await client.call_timeout(request)
+            except Exception as e:
+                self._logger.error(f"{what} call failed: {e}")
                 return False
-            if response.success:
-                return True
-            self._logger.error(f"AddSink failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"AddSink call failed: {e}")
-            return False
+            if response is None:
+                if attempt < REGION_CALL_ATTEMPTS:
+                    self._logger.warning(f"{what} timed out (attempt {attempt} of {REGION_CALL_ATTEMPTS}), sending it again")
+                continue
+            if not response.success:
+                self._logger.error(f"{what} failed: {response.message}")
+                return False
+            return True
+        self._logger.error(f"{what} timed out {REGION_CALL_ATTEMPTS} times")
+        return False
 
     async def _remove_regions_impl(self, regions: Sequence[Region]) -> bool:
-        sources = [r.name for r in regions if r.type == "source"]
-        sinks = [r.name for r in regions if r.type == "sink"]
-        results = await asyncio.gather(
-            *(self._remove_source_by_name(name) for name in sources),
-            *(self._remove_sink_by_name(name) for name in sinks),
-        )
-        return all(results) if results else True
+        """Clear every source and every sink of the engine, one call each (an empty name clears all), when there are regions to remove.
 
-    async def _remove_source_by_name(self, name: str) -> bool:
-        request = RemoveSource.Request()
-        request.name = name
-        try:
-            response = await self._remove_source_client.call_timeout(request)
-            if response is None:
-                self._logger.error("RemoveSource timed out")
-                return False
-            if response.success:
-                return True
-            self._logger.error(f"RemoveSource failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"RemoveSource call failed: {e}")
-            return False
+        The answer comes after the engine cleared them, so a next episode starts from none of the last one's regions.
 
-    async def _remove_sink_by_name(self, name: str) -> bool:
-        request = RemoveSink.Request()
-        request.name = name
-        try:
-            response = await self._remove_sink_client.call_timeout(request)
-            if response is None:
-                self._logger.error("RemoveSink timed out")
-                return False
-            if response.success:
-                return True
-            self._logger.error(f"RemoveSink failed: {response.message}")
-            return False
-        except Exception as e:
-            self._logger.error(f"RemoveSink call failed: {e}")
-            return False
+        Raises:
+            RegionSetupError: arena_humansim did not confirm a clear.
+        """
+        if not regions:
+            return True
+        if not await self._region_call(self._remove_source_client, RemoveSource.Request(name=""), "RemoveSource (all)"):
+            raise RegionSetupError(f"arena_humansim did not clear its sources ({len(regions)} regions to remove)")
+        if not await self._region_call(self._remove_sink_client, RemoveSink.Request(name=""), "RemoveSink (all)"):
+            raise RegionSetupError(f"arena_humansim did not clear its sinks ({len(regions)} regions to remove)")
+        return True
 
     async def _spawn_obstacles_impl(self, obstacles: Sequence[Obstacle]) -> Sequence[Obstacle | None]:
         """Send obstacle configs (pose + bounding box + metadata) to arena_humansim.
@@ -1333,6 +1398,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                 bounding_box = None
                 annotation: dict = {}
                 try:
+                    if obstacle.target_only:
+                        # no model: a world object with its demand, no obstacle
+                        raise _TargetOnly
                     if isinstance(resolved, BaseException):
                         raise resolved
                     with open(resolved / "annotation.yaml") as f:
@@ -1353,6 +1421,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                     msg.interaction_types = [str(h) for h in annotation.get("hoi", [])]
                     msg.obstacle_type = obstacle_type
                     obstacles_request.obstacles.append(msg)  # pyright: ignore[reportAttributeAccessIssue]
+                except _TargetOnly:
+                    pass
                 except Exception as e:
                     self._logger.warning(f"Failed to build obstacle bbox for '{obstacle.sim_path}': {e}")
 
@@ -1442,7 +1512,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             agent_msg.velocity = Vector3(x=0.0, y=0.0, z=0.0)
 
             parsed = ArenaHumanDynamicObstacle.from_dynamic_obstacle(obstacle)
-            params = parsed.sample_params(self.node.conf.General.RNG.stream("humansim", obstacle.sim_path)) if parsed is not None else None
+            params = parsed.sample_params(self.node.conf.General.RNG.stream(*walker_key(self._realizer.unprefix(obstacle.sim_path)))) if parsed is not None else None
 
             if parsed is not None and params is not None:
                 agent_msg.desired_velocity = params.desired_velocity
@@ -1653,8 +1723,28 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             belt=stair.belt if running else 0.0,
         )
 
+    def _scenario_zone_msg(self, zone: TeleportZone) -> TeleportZoneMsg:
+        """A scenario teleport zone (realized) in the engine frame."""
+
+        def pose(p: tuple[float, float, float]) -> Pose2DMsg:
+            x, y = self._to_engine(p[0], p[1])
+            return Pose2DMsg(x=x, y=y, theta=p[2])
+
+        return TeleportZoneMsg(
+            name=zone.name,
+            destinations=list(zone.destinations),
+            entry=pose(zone.entry),
+            wait=pose(zone.wait),
+            hold=pose(zone.hold),
+            footprint=[Point32(x=x, y=y, z=0.0) for x, y in (self._to_engine(px, py) for px, py in zone.footprint)],
+            open=zone.open,
+            delay=zone.delay,
+            kind=zone.kind,
+            belt=zone.belt,
+        )
+
     async def _set_elevators_impl(self, elevators: Sequence[Elevator]) -> bool:
-        request = SetTeleportZones.Request(zones=[self._zone_msg(elevator) for elevator in elevators] + [self._stair_zone_msg(stair) for stair in self._known_stairs if stair.kind != 'ramp'])
+        request = SetTeleportZones.Request(zones=[self._zone_msg(elevator) for elevator in elevators] + [self._stair_zone_msg(stair) for stair in self._known_stairs if stair.kind != 'ramp'] + [self._scenario_zone_msg(zone) for zone in self._scenario_zones])
         try:
             response = await self._set_teleport_zones_client.call_timeout(request)
         except Exception as e:
@@ -1735,6 +1825,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             await self._seed_engine()
             response = await self._remove_client.call_timeout(request)
             self._removals += 1
+            now = self.node.sim_time
+            self._removed_at_ns = now.sec * int(1e9) + now.nanosec
             flow = [self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))) for aid in sorted(self._flow_agent_ids)]
             self._next_deferred_id = _DEFERRED_ID_BASE
             self._deferred_spawns.clear()
@@ -1751,12 +1843,16 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._curr_agent_states = None
             self._agent_gestures = {}
             self._agent_types = {}
+            self._agent_sources = {}
             self._seat_violation_reported = False
             self._apply_interactions({}, {})
             self._arena_pedestrians = Pedestrians()
             self._arena_pedestrians.header.frame_id = "map"
             if flow:
-                await self._simulator.pedestrian_delete(flow)
+                try:
+                    await self._simulator.pedestrian_delete(flow)
+                except Exception as e:
+                    self._logger.error(f"deleting the simulator bodies of {len(flow)} removed walkers failed: {e}")
             await self._publish_interpolated()
             if response is None:
                 self._logger.error("RemoveAgents timed out")

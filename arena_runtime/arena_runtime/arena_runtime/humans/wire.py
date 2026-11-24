@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 
 import numpy as np
 from arena_people_msgs.msg import BodyPose, Pedestrian
@@ -14,29 +14,41 @@ from arena_runtime.humans.animation_manager import BodyLayer, nlerp
 _SEMANTIC = frozenset(SEMANTIC_DOFS)
 _POSED_INDEX = {joint: i for i, joint in enumerate(POSED_JOINTS)}
 
+BodyCache = MutableMapping[int, tuple[tuple[int, tuple[float, ...]], BodyPose]]
+"""The last layer-free body pose built per ped id, under the stance and semantic angles it was built from."""
+
 
 def fill_body(ped: Pedestrian, stance: CompiledStance, layers: Sequence[BodyLayer] = ()) -> None:
     """Move the semantic DOFs of a ped's joint_state into its body pose, joint_state keeping only the driven joints, clip body groups blended over it."""
     fill_bodies([ped], [stance], [layers])
 
 
-def fill_bodies(peds: Sequence[Pedestrian], stances: Sequence[CompiledStance], layers: Sequence[Sequence[BodyLayer]]) -> None:
-    """`fill_body` of every ped in one batch, a ped without semantic DOFs left as it is."""
-    posed: list[tuple[Pedestrian, Sequence[BodyLayer]]] = []
+def fill_bodies(peds: Sequence[Pedestrian], stances: Sequence[CompiledStance], layers: Sequence[Sequence[BodyLayer]], cache: BodyCache | None = None) -> None:
+    """`fill_body` of every ped in one batch, a ped without semantic DOFs left as it is.
+
+    With a cache, a ped without layers whose stance and semantic angles repeat the last ones gets that body pose again
+    instead of a new one (the same values, built once).
+    """
+    posed: list[tuple[Pedestrian, Sequence[BodyLayer], tuple[int, tuple[float, ...]]]] = []
     rows: list[list[float]] = []
     posed_stances: list[CompiledStance] = []
     for ped, stance, ped_layers in zip(peds, stances, layers, strict=True):
         angles = dict(zip(ped.joint_state.name, ped.joint_state.position, strict=True))
         if _SEMANTIC.isdisjoint(angles):
             continue
-        rows.append([float(angles.get(dof, 0.0)) for dof in SEMANTIC_DOFS])
-        posed.append((ped, ped_layers))
-        posed_stances.append(stance)
+        row = [float(angles.get(dof, 0.0)) for dof in SEMANTIC_DOFS]
         driven = {name: value for name, value in angles.items() if name not in _SEMANTIC}
         ped.joint_state.name, ped.joint_state.position = list(driven), list(driven.values())
+        key = (id(stance), tuple(row))
+        if cache is not None and not ped_layers and (hit := cache.get(ped.id)) is not None and hit[0] == key:
+            ped.body = hit[1]
+            continue
+        rows.append(row)
+        posed.append((ped, ped_layers, key))
+        posed_stances.append(stance)
     if not posed:
         return
-    for (ped, ped_layers), quats in zip(posed, semantic_to_bodies(np.array(rows), posed_stances), strict=True):
+    for (ped, ped_layers, key), quats in zip(posed, semantic_to_bodies(np.array(rows), posed_stances), strict=True):
         pelvis = np.zeros(3)
         for layer in ped_layers:
             for joint, (quat, weight) in layer.rotations.items():
@@ -49,3 +61,5 @@ def fill_bodies(peds: Sequence[Pedestrian], stances: Sequence[CompiledStance], l
             rotations=[Quaternion(x=x, y=y, z=z, w=w) for x, y, z, w in quats.tolist()],
             root_offset=Vector3(x=float(pelvis[0]), y=float(pelvis[1]), z=float(pelvis[2])),
         )
+        if cache is not None and not ped_layers:
+            cache[ped.id] = (key, ped.body)

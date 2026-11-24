@@ -400,3 +400,15 @@ def test_a_batch_poses_each_body_over_its_own_stance() -> None:
 
 def test_an_empty_batch_poses_no_body() -> None:
     assert semantic_to_bodies(np.empty((0, len(SEMANTIC_DOFS))), []).shape == (0, len(POSED_JOINTS), 4)
+
+
+def test_a_pose_comes_out_of_the_batch_the_same_bits_as_alone() -> None:
+    """A ped's body does not depend on who else is in the roster, so a cached body equals a fresh one exactly."""
+    rng = np.random.default_rng(9)
+    angles = rng.uniform(-1.5, 1.5, size=(40, len(SEMANTIC_DOFS)))
+    angles[rng.random(angles.shape) < 0.3] = 0.0
+    angles[:8] = 0.0
+    stance = compile_stance(_stance(3))
+    batch = semantic_to_bodies(angles, [stance] * len(angles))
+    for i, row in enumerate(angles):
+        assert np.array_equal(semantic_to_bodies(row[None], [stance])[0], batch[i])

@@ -15,6 +15,7 @@ CRATE = (5.5, 2.5)
 BY_PED = (2.0, 8.2)
 HALF_WIDTH = 0.2078
 PED_RADIUS = 0.3
+WHEELCHAIR_RADIUS = 0.325
 
 
 async def _until(pred: typing.Callable[[], bool], what: str, timeout: float = 20.0) -> None:
@@ -27,11 +28,12 @@ async def _until(pred: typing.Callable[[], bool], what: str, timeout: float = 20
 
 
 class Stage:
-    def __init__(self, node, env, probe) -> None:
+    def __init__(self, node, env, human, probe) -> None:
         import std_msgs.msg
 
         self.node = node
         self.env = env
+        self.human = human
         self.probe = probe
         self.reset_end = probe.create_publisher(std_msgs.msg.Empty, "/reset_end", 1)
         self.reset_start = probe.create_publisher(std_msgs.msg.Empty, "/reset_start", 1)
@@ -98,20 +100,20 @@ class Stage:
         self.armed_ns = tracker._valid_after.to_nanoseconds()
 
     async def peds(self, tracker, *peds: tuple) -> None:
-        """Publish pedestrians (name, x, y[, held device])."""
+        """Publish a roster (name, x, y[, radius][, held device]) the way the env's human simulator does, which hands it to the trackers in-process."""
         from arena_people_msgs.msg import HeldDevice, Pedestrian, Pedestrians
 
-        publisher = self.probe.create_publisher(Pedestrians, "/arena_peds", 10)
         msg = Pedestrians()
-        for name, x, y, *device in peds:
-            ped = Pedestrian(name=name, device=device[0] if device else HeldDevice())
+        for i, (name, x, y, *extra) in enumerate(peds):
+            radius = next((float(v) for v in extra if isinstance(v, (int, float))), 0.0)
+            device = next((v for v in extra if isinstance(v, HeldDevice)), HeldDevice())
+            ped = Pedestrian(name=name, id=i, radius=radius, device=device)
             ped.pose.position.x = x
             ped.pose.position.y = y
             ped.pose.orientation.w = 1.0
             msg.pedestrians.append(ped)
-        await _until(lambda: publisher.get_subscription_count() >= len(self.trackers), "the arena_peds subscriptions")
-        publisher.publish(msg)
-        await _until(lambda: tracker._peds_msg is not None and len(tracker._peds_msg.pedestrians) == len(peds), "the pedestrians to arrive")
+        self.human.publish_arena_peds(msg)
+        assert tracker._peds_msg is not None and len(tracker._peds_msg.pedestrians) == len(peds)
 
     async def tick(self, tracker, received: list) -> list:
         seen = len(received)
@@ -180,7 +182,7 @@ def on_stage(world_dir):
                 human = NoopHumanSimulator(node=node, namespace=node._namespace, simulator=sim, realizer=realizer, acoustics=acoustics)
                 env = EnvironmentManager(node=node, simulator=sim, human_simulator=human, realizer=realizer)
                 await env.spawn_world_obstacles(_level(), "", None, _world_map())
-                stage = Stage(node, env, probe)
+                stage = Stage(node, env, human, probe)
                 await body(stage)
             finally:
                 node._heartbeat_stop.set()
@@ -317,6 +319,21 @@ def test_pedestrian_just_beyond_its_radius_does_not_collide(on_stage):
         await stage.peds(tracker, ("walker", BY_PED[0], BY_PED[1] + HALF_WIDTH + PED_RADIUS + 0.01))
         stage.place(rm, *BY_PED)
         assert await stage.tick(tracker, received) == []
+
+    on_stage(body)
+
+
+def test_pedestrian_collides_within_its_own_radius_beyond_the_default(on_stage):
+    import arena_robots_msgs.msg
+
+    async def body(stage: Stage):
+        rm, tracker = stage.robot_manager()
+        received = await stage.listen(tracker)
+        await stage.arm(tracker)
+        beyond_default = BY_PED[1] + HALF_WIDTH + PED_RADIUS + 0.01
+        await stage.peds(tracker, ("wheelchair", BY_PED[0], beyond_default, WHEELCHAIR_RADIUS))
+        stage.place(rm, *BY_PED)
+        assert [_event(e) for e in await stage.tick(tracker, received)] == [(arena_robots_msgs.msg.CollisionEvent.KIND_PEDESTRIAN, "wheelchair", 0.0, (BY_PED[0], beyond_default))]
 
     on_stage(body)
 

@@ -144,6 +144,14 @@ class Realizer:
         """Public: return the env-prefixed identifier for ``s`` (no pose realization)."""
         return self._prefix(*s)
 
+    def unprefix(self, name: str) -> str:
+        """The inverse of `prefix`: `name` without this env's prefix and outer slashes, other names unchanged but for those slashes."""
+        path = name.strip("/")
+        prefix = self._config.prefix.strip("/")
+        if prefix and (path == prefix or path.startswith(f"{prefix}/")):
+            return path[len(prefix) :].lstrip("/")
+        return path
+
     def _realize_position(self, position: Position, level_id: str = "") -> Position:
         level_x, level_y = self.get_level_origin(level_id)
         return Position(

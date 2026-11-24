@@ -19,7 +19,7 @@ import rclpy.time
 import tf2_ros
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
-from arena_people_msgs.msg import AnimationSlot, AnimationState, AnimationStates, Pedestrian, Pedestrians
+from arena_people_msgs.msg import AnimationSlot, AnimationState, AnimationStates, BodyPose, Pedestrian, Pedestrians
 from arena_people_msgs.srv import MovePedestrians
 from arena_rclpy_mixins.lazy import LazyPublisher
 from arena_rclpy_mixins.registry import AsyncFactoryRegistry as Registry
@@ -28,11 +28,13 @@ from arena_runtime_msgs.msg import LockstepChannel
 from arena_simulation_setup.shared import Placement, Stairs, stair_height
 from arena_simulation_setup.shared.body import DEFAULT_COMPILED_STANCE, CompiledStance, compile_stance, load_stance
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
+from arena_simulation_setup.tree.World.Scenario import TeleportZone
 from arena_simulation_setup.utils.models import ModelType
 from geometry_msgs.msg import Point as PointMsg
 from geometry_msgs.msg import Pose as PoseMsg
 from geometry_msgs.msg import Quaternion as QuaternionMsg
 from rcl_interfaces.msg import Parameter as ParameterMsg
+from sensor_msgs.msg import JointState
 from visualization_msgs.msg import MarkerArray
 
 from arena_runtime._node import NodeInterface
@@ -54,17 +56,30 @@ from arena_runtime.humans.utils import (
     KnownObstacles,
     ObstacleLayer,
 )
-from arena_runtime.humans.wire import fill_bodies, fill_body
+from arena_runtime.humans.wire import BodyCache, fill_bodies, fill_body
 from arena_runtime.lockstep import register_channels
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall, footprint_radius
 from arena_runtime.sim import BaseSim
 
 if typing.TYPE_CHECKING:
-    from arena_simulation_setup.tree.World.Scenario import TimelineEntry
+    from arena_rclpy_mixins.Time import Time
+    from arena_simulation_setup.tree.World import World, WorldView
+    from arena_simulation_setup.tree.World.Scenario import Scenario, TimelineEntry
 
     from arena_runtime.acoustics import BaseAcousticsSimulator, PedestrianHearing
 
-PED_RADIUS = 0.3
+PED_RADIUS = 0.3  # m, a typical pedestrian, and one whose radius is unknown
+
+
+def ped_radius(radius: float) -> float:
+    """A pedestrian's collision radius in m, PED_RADIUS where its message says 0 (unknown)."""
+    return radius if radius > 0.0 else PED_RADIUS
+
+
+def wire_radius(radius: float) -> float:
+    """`Pedestrian.radius` as arena_peds carries it (float32), for in-process listeners that stand in for a subscription."""
+    return float(np.float32(radius))
+
 
 Segment = tuple[tuple[float, float], tuple[float, float]]
 
@@ -137,6 +152,14 @@ class TrackedRobot:
         self.stamp = stamp
 
 
+class RegionSetupError(RuntimeError):
+    """The human simulator did not take every region of the episode, or did not drop the last one's: the episode would run with a partial or stale crowd."""
+
+
+class ScenarioCheckError(ValueError):
+    """The scenario sends the crowd somewhere it cannot reach (a dead queue, a cut-off room) or holds a model that does not resolve: the episode would run with walkers that wait forever."""
+
+
 class HumanSimulatorOptions(typing.TypedDict):
     node: rclpy.node.Node
     namespace: Namespace
@@ -144,6 +167,7 @@ class HumanSimulatorOptions(typing.TypedDict):
     realizer: Realizer
     acoustics: BaseAcousticsSimulator
     robots_visible: typing.NotRequired[bool]
+    skeleton: typing.NotRequired[bool]
 
 
 @attrs.define
@@ -171,7 +195,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
     _known_walls: KnownObstacles[Wall]
     _known_doors: KnownObstacles[Door]
 
-    def __init__(self, *args: object, namespace: Namespace, simulator: BaseSim, realizer: Realizer, acoustics: BaseAcousticsSimulator, robots_visible: bool = True, **kwargs: object) -> None:
+    def __init__(self, *args: object, namespace: Namespace, simulator: BaseSim, realizer: Realizer, acoustics: BaseAcousticsSimulator, robots_visible: bool = True, skeleton: bool = True, **kwargs: object) -> None:
         """
         Initialize human simulator.
 
@@ -181,12 +205,15 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             realizer: per-env Realizer (used to stamp sim_path on runtime-spawned obstacles)
             acoustics: acoustics simulator, the source of pedestrian hearing
             robots_visible: whether the backend tells its pedestrians where the robots are
+            skeleton: whether arena_peds carries each ped's skeleton (joint_state, body) and animation_states is published
         """
         super().__init__(*args, **kwargs)
         self._simulator = simulator
         self._namespace = namespace
         self._realizer = realizer
         self._robots_visible = robots_visible
+        self._skeleton = skeleton
+        self._tilted = False
 
         self._known_obstacles = KnownObstacles[Obstacle]()
         self._known_walls = KnownObstacles[Wall]()
@@ -194,6 +221,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         self._wall_counter = itertools.count()
         self._known_regions: dict[str, Region] = {}
         self._known_elevators: tuple[Elevator, ...] = ()
+        #: the scenario's own teleport zones (stair and escalator halves of one level), realized, sent with the elevators
+        self._scenario_zones: tuple[TeleportZone, ...] = ()
         self._known_stairs: tuple[Stairs, ...] = ()
         self._stair_running: dict[str, bool] = {}
         self._robots: dict[str, TrackedRobot] = {}
@@ -225,7 +254,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             ),
         )
         self._ped_positions_xy: dict[str, tuple[float, float]] = {}
+        self._ped_radii: dict[str, float] = {}
         self._held_seats_listeners: list[typing.Callable[[], None]] = []
+        self._arena_peds_listeners: list[typing.Callable[[Pedestrians], None]] = [self._on_arena_peds]
+        self._body_cache: BodyCache = {}
         self._incident_callback: typing.Callable[[str], None] | None = None
         self._ped_orientations: dict[str, QuaternionMsg] = {}
         self._ped_clips: dict[str, frozenset[str]] = {}
@@ -245,12 +277,6 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         self._joystick = JoystickDriver()
         self._gestures = GestureLayer(self._gait, self._logger)
         self._gait.gesture_hook = self._gestures
-        self.node.create_subscription(
-            Pedestrians,
-            self._namespace("arena_peds"),
-            self._on_arena_peds,
-            10,
-        )
 
         self._possession: PossessionTable[Pedestrian] = PossessionTable(phase=self._gait.phase)
         self._stream_gate = False
@@ -284,7 +310,11 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         await register_channels(self.node, channels, env=str(self._namespace))
 
     def publish_arena_peds(self, msg: Pedestrians) -> None:
-        """Stamp the header, substitute possessed peds, fill the joint angles of peds missing them, compile them into body poses, then publish."""
+        """Stamp the header, substitute possessed peds, fill the joint angles of peds missing them, compile them into body poses, then publish.
+
+        Without the skeleton (`human.skeleton:=false`) the animation runs and places resting and tilted peds all the same,
+        and the roster goes out without joint states or body poses, no animation_states beside it.
+        """
         now = self.node.sim_time
         now_sec = now.to_seconds()
         stamp = now.to_msg()
@@ -306,11 +336,15 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             self._rests.pop(stale, None)
             self._free_poses.pop(stale, None)
             del self._gait_prev_stamp[stale]
+        for stale in self._body_cache.keys() - current_ids:
+            del self._body_cache[stale]
         for stale in sorted(self._driven.known() - current_ids):
             self._driven.forget(stale)
 
-        animation = AnimationStates()
-        animation.header = out.header
+        # nobody listening (the recorder excludes it, no Gazebo plugin under flatsim): not built, not sent
+        animation = AnimationStates() if self._skeleton and self._animation_states_publisher.get_subscription_count() > 0 else None
+        if animation is not None:
+            animation.header = out.header
         tilts: dict[int, tuple[float, float, float, float]] = {}
         generated: set[int] = set()
         for ped in out.pedestrians:
@@ -334,25 +368,31 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             )
             phase = float(ped.gait_phase) if ped.gait_phase != 0.0 else None
             profile = self._pose_profile_for(ped.agent_type).while_in(self._interaction(ped))
-            angles = self._gait.compute(ped.id, ped.animation_state, speed, dt, gesture=gesture, phase=phase, profile=profile)
-            state = self._gait.joint_state(angles, stamp=stamp)
-            if state is not None:
-                hands = self._hands(ped.id, now_sec, profile.hold)
-                if (fade := self._gait.profile_fade(ped.id)) is not None and fade[0].hold != profile.hold:
-                    before = self._hands(ped.id, now_sec, fade[0].hold)
-                    hands = {name: before.get(name, 0.0) * (1.0 - fade[1]) + hands.get(name, 0.0) * fade[1] for name in {*before, *hands}}
-                state.name = [*state.name, *hands]
-                state.position = [*state.position, *hands.values()]
-            ped.joint_state = state
+            # without the skeleton the angles only serve to place a resting or tilted ped (a tilt comes with angles) and to pose a held device
+            needs_angles = self._skeleton or support is not None or ped.id in self._rests or self._device_for(ped.agent_type) is not None
+            angles = self._gait.compute(ped.id, ped.animation_state, speed, dt, gesture=gesture, phase=phase, profile=profile, angles=needs_angles)
             generated.add(ped.id)
             ped.gait_phase = self._gait.phase(ped.id)
             if (tilt := self._gait.root_tilt(ped.id)) is not None:
                 tilts[ped.id] = tilt
-            animation.peds.append(self._animation_state(ped))  # pyright: ignore[reportAttributeAccessIssue]
+            if needs_angles or tilt is not None:
+                state = self._gait.joint_state(angles, stamp=stamp)
+                if state is not None:
+                    hands = self._hands(ped.id, now_sec, profile.hold)
+                    if (fade := self._gait.profile_fade(ped.id)) is not None and fade[0].hold != profile.hold:
+                        before = self._hands(ped.id, now_sec, fade[0].hold)
+                        hands = {name: before.get(name, 0.0) * (1.0 - fade[1]) + hands.get(name, 0.0) * fade[1] for name in {*before, *hands}}
+                    state.name = [*state.name, *hands]
+                    state.position = [*state.position, *hands.values()]
+                ped.joint_state = state
+            if animation is not None:
+                animation.peds.append(self._animation_state(ped))  # pyright: ignore[reportAttributeAccessIssue]
 
         pose_sec = out.header.stamp.sec + out.header.stamp.nanosec * 1e-9
         for ped in out.pedestrians:
             ped.pose.position.z = self.footing(ped.pose.position.x, ped.pose.position.y)
+            if not self._skeleton:
+                continue
             drivers = self._drivers_for(ped.model_uri)
             if not drivers.rollers and not drivers.joystick:
                 continue
@@ -365,6 +405,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             ped.joint_state.name, ped.joint_state.position = with_driven(ped.joint_state.name, ped.joint_state.position, angles)
 
         possessed = self._possession.possessed(now_sec)
+        self._tilted = bool(tilts)
         for ped in out.pedestrians:
             if ped.name in possessed:
                 self._rests.pop(ped.id, None)
@@ -380,15 +421,40 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                     robots = [(t.pose.position.x, t.pose.position.y, t.radius + DEVICE_RANGE) for t in self.tracked_robots()]
                 self._hold_device(ped, device, robots)
 
-        fill_bodies(
-            out.pedestrians,
-            [self._stance_for(ped.model_uri) for ped in out.pedestrians],
-            [self._gait.body_layers(ped.id) if ped.id in generated else () for ped in out.pedestrians],
-        )
+        if self._skeleton:
+            fill_bodies(
+                out.pedestrians,
+                [self._stance_for(ped.model_uri) for ped in out.pedestrians],
+                [self._gait.body_layers(ped.id) if ped.id in generated else () for ped in out.pedestrians],
+                self._body_cache,
+            )
+        else:
+            for ped in out.pedestrians:
+                if ped.joint_state.name:
+                    ped.joint_state = JointState()
+                if ped.body.joints:
+                    ped.body = BodyPose()
 
         self._arena_peds_publisher.publish(out)
-        self._sim_peds_publisher.publish(placed_peds(out, self._realizer.placement()))
-        self._animation_states_publisher.publish(animation)
+        for listener in self._arena_peds_listeners:
+            listener(out)
+        if self._sim_peds_publisher.get_subscription_count() > 0:
+            self._sim_peds_publisher.publish(placed_peds(out, self._realizer.placement()))
+        if animation is not None:
+            self._animation_states_publisher.publish(animation)
+
+    def on_arena_peds(self, callback: typing.Callable[[Pedestrians], None]) -> typing.Callable[[], None]:
+        """Call back in-process with every roster published on arena_peds, the message itself, read-only (no DDS round trip, no copy); returns the unsubscribe.
+
+        The wire carries `Pedestrian.radius` as float32, read it through `wire_radius` to see what a subscriber sees.
+        """
+        self._arena_peds_listeners.append(callback)
+
+        def unsubscribe() -> None:
+            if callback in self._arena_peds_listeners:
+                self._arena_peds_listeners.remove(callback)
+
+        return unsubscribe
 
     def _animation_state(self, ped: Pedestrian) -> AnimationState:
         state = AnimationState(id=ped.id, name=ped.name, base_phase=float(ped.gait_phase))
@@ -645,11 +711,12 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     def _on_arena_peds(self, msg: Pedestrians) -> None:
         self._ped_positions_xy = {p.name: (p.pose.position.x, p.pose.position.y) for p in msg.pedestrians}
+        self._ped_radii = {p.name: ped_radius(wire_radius(p.radius)) for p in msg.pedestrians}
         self._ped_orientations = {p.name: p.pose.orientation for p in msg.pedestrians}
         self._ped_clips = {p.name: frozenset(g.clip for g in p.gestures) for p in msg.pedestrians}
 
     def pedestrian_discs(self) -> Iterable[tuple[str, tuple[float, float], float]]:
-        return [(name, xy, PED_RADIUS) for name, xy in self._ped_positions_xy.items()]
+        return [(name, xy, self._ped_radii.get(name, PED_RADIUS)) for name, xy in self._ped_positions_xy.items()]
 
     def pedestrian_clips(self) -> Mapping[str, frozenset[str]]:
         """Gesture clips each tracked pedestrian is playing, under the name it is published with."""
@@ -679,8 +746,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     def authored_name(self, realized: str) -> str:
         """Strip the env prefix and a trailing `/<level_id>` from a realized entity name."""
-        prefix = self._realizer.prefix()
-        name = realized[len(prefix) + 1 :] if prefix and realized.startswith(f"{prefix}/") else realized
+        name = self._realizer.unprefix(realized)
         head, sep, tail = name.rpartition("/")
         if sep and head and tail in self._realizer._level_origins:
             return head
@@ -845,6 +911,8 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 )
             if not known.spawned:
                 to_register.append(known)
+        # a target-only object (empty model) lives in the human simulator alone
+        to_move = [obstacle for obstacle in to_move if not obstacle.target_only]
         if to_move:
             futures.append(self._simulator.move_objects(to_move))
 
@@ -859,7 +927,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             known.obstacle = obstacle
             known.spawned = True
 
-            if known.layer == ObstacleLayer.UNUSED:
+            if known.layer == ObstacleLayer.UNUSED and not known.obstacle.target_only:
                 to_spawn.append(known.obstacle)
             known.layer = layer
 
@@ -1033,6 +1101,19 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         if not elevators and not self._known_elevators and not self._known_stairs:
             return True
         self._known_elevators = tuple(elevators)
+        return await self._set_elevators_impl(self._known_elevators)
+
+    async def setup_teleport_zones(self, zones: Sequence[TeleportZone]) -> bool:
+        """Hand the scenario's realized teleport zones to the human simulator, replacing the scenario's before, sent along with
+        the world's elevators and stairs. False, and nothing sent, when one is named like a zone of the world (the human
+        simulator would refuse the whole set)."""
+        if not zones and not self._scenario_zones:
+            return True
+        clash = sorted({z.name for z in zones} & ({e.name for e in self._known_elevators} | {s.name for s in self._known_stairs}))
+        if clash:
+            self._logger.error(f"scenario teleport zones {clash} are named like zones of the world")
+            return False
+        self._scenario_zones = tuple(zones)
         return await self._set_elevators_impl(self._known_elevators)
 
     def spawn_stairs(self, stairs: Sequence[Stairs]) -> None:
@@ -1210,10 +1291,15 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
         Args:
             regions: Already-resolved Region objects with concrete polygons.
+
+        Raises:
+            RegionSetupError: the human simulator did not add every region (its impl returned False or raised it naming them).
         """
         for region in regions:
             self._known_regions[region.name] = region
-        return await self._add_regions_impl(regions)
+        if not await self._add_regions_impl(regions):
+            raise RegionSetupError(f"the human simulator did not add every one of the {len(regions)} regions")
+        return True
 
     async def configure(self, params: Sequence[ParameterMsg]) -> list[ParameterMsg]:
         """Hand the params under this backend's namespace to it at the episode boundary and return the accepted ones."""
@@ -1228,10 +1314,16 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         return set()
 
     async def remove_all_regions(self) -> bool:
-        """Remove all tracked regions."""
+        """Remove all tracked regions.
+
+        Raises:
+            RegionSetupError: the human simulator did not remove every region (its impl returned False or raised it naming them).
+        """
         regions = tuple(self._known_regions.values())
         self._known_regions.clear()
-        return await self._remove_regions_impl(regions)
+        if not await self._remove_regions_impl(regions):
+            raise RegionSetupError(f"the human simulator did not remove every one of the {len(regions)} regions")
+        return True
 
     async def remove_obstacles(self, purge: ObstacleLayer = ObstacleLayer.UNUSED):
         """Removes obstacles from simulator.
@@ -1251,9 +1343,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             await self._clear_mechanism_walls()
             self._semantic_values.clear()
             futures.append(self._simulator.remove_world())
-            if self._known_elevators or self._known_stairs:
+            if self._known_elevators or self._known_stairs or self._scenario_zones:
                 self._known_elevators = ()
                 self._known_stairs = ()
+                self._scenario_zones = ()
                 self._stair_running = {}
                 futures.append(self._set_elevators_impl(()))
 
@@ -1284,7 +1377,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
         if static:
             futures.append(self._remove_obstacles_impl(static))
-        futures.append(self._simulator.delete_objects(static))
+        futures.append(self._simulator.delete_objects([obstacle for obstacle in static if not obstacle.target_only]))
         futures.append(self._simulator.pedestrian_delete(dynamic))
         await asyncio.gather(*futures)
 
@@ -1404,6 +1497,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         """True when the engine took the stimulus for `agent`, an engine agent id or a spawned agent's name or ``sim_path``."""
         return False
 
+    async def start_clock(self, epoch: Time) -> None:
+        """The episode starts at `epoch` (sim time, the reset still holding the sim): a backend whose crowd runs on its own tick
+        clock starts it there, so the same world and seed give the same crowd at the same times after the start. No-op by default."""
+
     def stimuli_taken(self, obstacle: DynamicObstacle) -> tuple[str, frozenset[str]] | None:
         """The agent type of `obstacle` and the stimulus names it acts on, None when the backend cannot tell."""
         del obstacle
@@ -1420,6 +1517,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 taken = self.stimuli_taken(by_name[agent])
                 if taken is not None and stimulus.need not in taken[1]:
                     raise ValueError(f"scenario {scenario!r}: stimulus {stimulus.need!r} for {agent!r} is neither a need nor a step `until` event of its agent type {taken[0]!r}, which acts on {sorted(taken[1])}")
+
+    async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
+        """Raise ScenarioCheckError naming every point of `scenario` in `world` this backend's crowd cannot reach. No-op by default."""
+        del view, world, scenario, scenario_dir, origins
 
     async def _set_elevators_impl(self, elevators: Sequence[Elevator]) -> bool:
         return True

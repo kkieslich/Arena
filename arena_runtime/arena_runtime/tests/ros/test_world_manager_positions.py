@@ -322,6 +322,14 @@ class TestStaticFootprints:
         assert (r1 - r0, c1 - c0) == (40, 40)
         assert (c0, c1) == (30, 70)
 
+    def test_a_floor_marking_takes_no_floor(self):
+        wm = self.make_wm()
+        wm.update_world(wm._map, self.world_with(self.make_obstacle(2.5, 2.5), self.make_obstacle(1.0, 1.0)), static_footprints=[shapely.Polygon(), None])
+        grid = wm._map.occupancy.grid
+        # the marking at (2.5, 2.5) leaves its cells free; the unknown object at (1, 1) keeps the unit-radius square
+        assert WorldOccupancy.not_full(grid)[100 - 50, 50]
+        assert not WorldOccupancy.not_full(grid)[100 - 20, 20]
+
     def test_rect_footprint_keeps_aspect(self):
         wm = self.make_wm()
         poly = shapely.box(1.0, 2.0, 3.0, 2.5)

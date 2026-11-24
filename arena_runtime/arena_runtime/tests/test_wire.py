@@ -97,3 +97,26 @@ def test_a_batch_fills_each_ped_as_it_would_alone() -> None:
         fill_body(alone, stance, layers)
         assert ped.body == alone.body
         assert ped.joint_state == alone.joint_state
+
+
+def _quats(ped: Pedestrian) -> list[tuple[float, float, float, float]]:
+    return [(q.x, q.y, q.z, q.w) for q in ped.body.rotations]
+
+
+def test_the_cache_hands_back_the_last_body_while_stance_and_angles_repeat() -> None:
+    angles = dict.fromkeys(JOINT_NAMES, 0.0) | {"l_knee": -0.7, "waist": 0.1}
+    cache: dict = {}
+    first, again, moved, other_stance = _ped(angles), _ped(angles), _ped(angles | {"l_knee": -0.6}), _ped(angles)
+    for ped in (first, again, moved, other_stance):
+        ped.id = 7
+    fill_bodies([first], [DEFAULT_COMPILED_STANCE], [[]], cache)
+    fill_bodies([again], [DEFAULT_COMPILED_STANCE], [[]], cache)
+    assert again.body is first.body
+    assert list(again.joint_state.name) == []
+    fill_bodies([moved], [DEFAULT_COMPILED_STANCE], [[]], cache)
+    assert moved.body is not first.body and _quats(moved) != _quats(first)
+    stance = compile_stance({**DEFAULT_STANCE, "left_knee": quat_to_matrix((0.0, math.sin(0.1), 0.0, math.cos(0.1)))})
+    fill_bodies([other_stance], [stance], [[]], cache)
+    fresh = _ped(angles)
+    fill_body(fresh, stance)
+    assert _quats(other_stance) == _quats(fresh)

@@ -358,7 +358,10 @@ Components self-register their data channels via
 `std_msgs/Header header` is refused). Re-registering under
 a `caller` replaces its set, an empty `channels[]` clears it, per-env
 registrations drop when their env despawns, and registrations merge into a
-running lockstep live. The arena_humansim adapter self-registers `engine`
+running lockstep live. A gate needs only each message's `header.stamp`: the scheduler
+subscribes raw and reads the stamp off the CDR of a leading `std_msgs/Header`
+(`stamp_reader`), decoding the message only for a type without one, so gating
+on a large roster such as `arena_peds` costs no decode. The arena_humansim adapter self-registers `engine`
 and `peds` (both hard). Its roster never trails the engine: every `arena_peds`
 is stamped no earlier than the last engine frame, and removing all agents
 publishes an empty roster at that stamp, so `peds` is covered whenever
@@ -544,8 +547,11 @@ are what Arena sends it.
   mechanism moves every door on every tick.
 - Geometry: wall segments and obstacle footprints are static outlines, sent in
   one call per spawn. Doors are boxes behind the four mechanism primitives,
-  pedestrians are discs fed by `pedestrian_update`. Stairs steps and treads are
-  boxes like any other, so a planar robot cannot climb them.
+  pedestrians are discs fed by `pedestrian_update`, each of the pedestrian's own
+  `radius` (`PED_RADIUS` while unknown, kept by updates without one); the server
+  sizes a disc when it first sees it, so a resized disc is removed and added
+  again. Stairs steps and treads are boxes like any other, so a planar robot
+  cannot climb them.
 - Levels: floors define level slabs. A robot collides and casts rays only
   against the level containing its z. The shipped multi-level worlds lay their
   levels side by side in xy at one z, so an elevator ride there is an xy

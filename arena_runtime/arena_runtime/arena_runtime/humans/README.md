@@ -31,12 +31,14 @@ human-sim `_*_impl` methods:
 | `elevator_doors_changed(doors)` | cabin name to door open, called by the mechanism shim when a cabin door turns open or stops being open, forwarded to `_set_elevator_doors_impl` |
 | `spawn_stairs(stairs)` | sync, remember the realized stair halves of the world with every belt running. The environment manager calls it before `spawn_elevators`, which sends them along, and `remove_obstacles(purge >= WORLD)` clears them |
 | `stairs_changed(running)` | realized stair half name to belt running, called by the runtime when an escalator's `running` semantic changes. Kept per half and sent again with every zone through `_set_elevators_impl` |
+| `setup_teleport_zones(zones)` | the scenario's own teleport zones (`teleport_zones`: stair and escalator halves joining floor of one level, realized into the env frame), replacing the scenario's before and sent with the world's cabins and stair halves through `_set_elevators_impl`. Returns False, sending nothing, when one is named like a zone of the world; the scenario task fails the episode when this or the human simulator refuses them. `remove_obstacles(purge >= WORLD)` clears them |
 | `unuse_obstacles()` | call `_remove_obstacles_impl`, then flip all `INUSE` layers to `UNUSED` |
 | `remove_obstacles(purge)` | remove all obstacles at or below `purge` layer from both layers. `WORLD` survives unless `purge >= WORLD` |
 | `spawn_robot(robots)` | spawn in physics sim, start tracking the robot, then call `_spawn_robot_impl` |
 | `remove_robot(robots)` | remove from physics sim, stop tracking, then call `_remove_robot_impl` |
 | `move_robot(robots)` | move in physics sim, set the tracked pose at rest, then call `_move_robot_impl` |
 | `tracked_robots()` | every spawned robot as a `TrackedRobot`: map-frame pose from the `map` to base-frame TF and the velocity between its last two TF stamps |
+| `start_clock(epoch)` | async, called by the episode node at the episode start while the reset's hold still stops the sim; the episode record starts at the same `epoch`. No-op by default. arena: the engine holds its tick clock after the reset's remove-all (`start_on_request`, set at setup) and starts it here (`start_clock`), so its first tick is the episode start and the same world and seed give the same crowd at the same times after it; an engine without them keeps starting at its first clock after the remove-all, with a warning |
 | `notify_stimulus(agent, stimulus, intensity)` | stimulus seam, returns False by default, fed edge-triggered by the acoustics backend's `PedestrianHearing` (arena: `continuous_heard_sounds` for `agent:<id>` listeners) and by scenario timeline `stimulus` actions. `agent` is an engine id or a spawned agent's name or `sim_path` |
 | `check_stimuli(scenario, humans, timeline)` | raise `ValueError` at scenario load for any timeline stimulus on a backend whose `TAKES_STIMULI` is False (only arena sets it), and for one whose target's agent type does not act on it, judged by `stimuli_taken(obstacle)` (None by default, arena: the type's needs and autonomous step `until` events) |
 | `notify_semantic_change(entity, field, value)` | sync, called by the node for every discrete/predicate `SemanticChange` (authored entity name). Delivered in order, in the background, as the broadcast stimuli `<entity>.<field>==<old>` at 0 and `<entity>.<field>==<new>` at 1, so it is inert on backends without stimuli |
@@ -51,7 +53,7 @@ specialized teleport semantics (e.g. resetting an internal agent list).
 
 | Method | Signature |
 | --- | --- |
-| `pedestrian_discs()` | `() -> Iterable[tuple[str, tuple[float, float], float]]` (sync, reads `_ped_positions_xy`, radius is `PED_RADIUS`) |
+| `pedestrian_discs()` | `() -> Iterable[tuple[str, tuple[float, float], float]]` (sync, the latest `arena_peds` positions, each disc the pedestrian's own `radius`, `PED_RADIUS` where that is 0) |
 | `pedestrian_clips()` | `() -> Mapping[str, frozenset[str]]` (sync, the gesture clips each ped is playing, from the same `arena_peds` message) |
 | `pedestrian_teleport(destinations)` | `(Mapping[str, tuple[float, float]]) -> bool` (async, dispatches via `relay_pedestrian_update`, `ArenaHumanSimulator` teleports in the engine instead, then sends each moved ped its next itinerary leg and the `teleported` stimulus) |
 | `elevator_doors_changed(doors)` | `(Mapping[str, bool]) -> None` (async) |
@@ -92,7 +94,7 @@ wheelchair (`PUSH_WHEELCHAIR`) walks with `walk_pushwheelchair`, stands with `st
 the `wheelchair_manual` rider she pushes keeps his hands on his thighs (`seated_wheelchair_lap`). A ped whose profile changes blends from the
 old one over `AnimationManager.PROFILE_CROSSFADE_S` (0.6 s), its finger curls with it.
 
-Last, [`wire.py`](wire.py) compiles the 42 into `ped.body` over the model's stance ([BODY.md](BODY.md)), leaving only driven joints in `joint_state`. `fill_bodies` poses the whole roster in one `semantic_to_bodies` batch per publish, each ped over its model's `CompiledStance`, compiled once per model. `ped.body` feeds the ROS4HRI skeleton in rviz through `hri_producer` and the Isaac, MuJoCo and Gazebo pedestrian rigs.
+Last, [`wire.py`](wire.py) compiles the 42 into `ped.body` over the model's stance ([BODY.md](BODY.md)), leaving only driven joints in `joint_state`. `fill_bodies` poses the whole roster in one `semantic_to_bodies` batch per publish, each ped over its model's `CompiledStance`, compiled once per model. `ped.body` feeds the ROS4HRI skeleton in rviz through `hri_producer` and the Isaac, MuJoCo and Gazebo pedestrian rigs. With the env's body cache, `fill_bodies` hands a ped the body pose it built for it last while its stance and semantic angles repeat and no clip body group plays on it.
 
 A model whose bundle ships a `.rig` with drivers (wheelchair bundles: `l_wheel`, `r_wheel`) gets those joints
 set on top, whoever filled the field: [`drivers.py`](drivers.py) rolls each wheel over the distance its contact
@@ -101,6 +103,24 @@ joints section of [`JOINTS.md`](JOINTS.md).
 
 The same message goes out again on `<namespace>/sim_peds`, which the Gazebo pedestrian plugin reads: unchanged in a spread
 world, every ped moved into the simulator frame by `Realizer.placement()` when the levels are stacked (`world.levels`).
+`sim_peds` and `animation_states` are built and sent only while something subscribes to them (under flatsim nothing reads
+`sim_peds`, and a recording that excludes `animation_states` has no reader for it).
+
+With `human.skeleton:=false` the roster goes out without its skeleton: `AnimationManager.compute` still runs for every ped
+(its clip and gesture state advance, resting and tilted peds are placed from the angles as above), then `joint_state` and
+`body` are emptied instead of compiled and `animation_states` is not sent. Poses, names, radii, gestures and the rest of
+each `Pedestrian` are those of the full roster, so the simulator, the robots, the collision trackers and the task layer
+see the same crowd; renderers, rviz skeletons and recordings get none. The arena backend's 50 Hz loop re-renders the
+engine's latest frame between frames only to advance the animation, so without the skeleton it skips a render whose
+inputs (`_render_inputs`: the frame, gestures, names, types, sources, seats, held seats, model paths, stairs, env offset)
+are those of the last one, unless a ped rests, tilts or is possessed; the next frame's render carries the animation clock
+on as before.
+
+Consumers inside the env node take the roster in-process instead of subscribing to `arena_peds`: `on_arena_peds(callback)`
+hands each published message to the callback right after the publish (the base class's own `pedestrian_discs` and
+`pedestrian_clips` state, and every robot's collision tracker through `EnvironmentManager.on_arena_peds`). The callback
+sees the message as published, read-only; `wire_radius` rounds `radius` to the float32 the wire carries, so a listener
+reads what a subscriber would.
 
 ## Resting on furniture
 
@@ -348,6 +368,21 @@ keys below go in the entry's `humansim:` block (`Obstacle.humansim`):
 
 The pose theta the engine receives is the object's yaw turned to the model's annotated `face`, and queues form at
 that front. An object without an annotated `face` keeps its yaw, so queues form behind it (at yaw + 180 degrees).
+
+At every episode start of a scenario task, `ArenaHumanSimulator.check_scenario` runs
+[`use_points.check`](../../../../arena_simulation_setup/src/arena_simulation_setup/metrics/use_points.py) on the world
+and the loaded scenario and fails the episode (`ScenarioCheckError`) naming every finding: a model that does not
+resolve, or a point the crowd cannot reach (a sought object's use point and first queue slots, a seat's standing point,
+a source, a sink, a human's start, waypoints and go_to stops, a room people are sent to). The error groups the models
+that do not resolve by model, with each bucket's answer (it does not hold the model, or why the fetch failed), and
+lists the points. A point only HumanSim's narrowest routes reach (a detour, see the check) is logged as a warning and
+does not fail the episode. `human.check:=false` skips the check, `human.check.models:=warn` lets models that do not
+resolve pass with one warning per model. Any other error inside the check fails the reset too.
+
+HumanSim lets its walkers walk wherever the walls leave room, outside the building too, where they cut along the outer
+walls from one exterior door to the next. The runtime hands it, and no other simulator, a wall across every exterior
+door of a level (`Level.outside_walls`: a door with one side in no zone) where that shuts the level's outside; an
+outdoor scene, whose outside stays open other than at its doors, keeps its doors open. Sources and sinks lie inside.
 
 ```yaml
 objects:
@@ -603,6 +638,27 @@ pair on the whole body its bottom half spawns), the one lookup for
 pedestrians, robots and objects. `publish_arena_peds` sets each pedestrian's z to it:
 the tread top, belt or ramp under it, a landing plate flush with the floor, 0 off every stair. A ramp sends no
 teleport zone, so the engine treats it as plain floor.
+
+### Seeding
+
+The same episode seed gives the same pedestrians, whatever the env index, the spawn order or the launch, as the
+engine itself guarantees (HumanSim keys every agent's streams on (seed, id) or (seed, source, release index)). The
+adapter draws only from `EpisodeRng` streams keyed on stable names ([`rng_keys.py`](arena_humansim/rng_keys.py)),
+never on the env prefix, which the runtime counts up on every spawn, nor on an engine agent id that depends on release
+order:
+
+| Draw | Key |
+|---|---|
+| a scenario pedestrian's agent type sample (speed, radius, perception, local planner, handedness) | `humansim, walker, <name in its env>` |
+| an object's seat poses from its sit slots | `humansim, seats, <name in its env>` |
+| a source-released agent's human model | `humansim, flow-model, source, <source_name>, <source_seq>` |
+| the engine's own seed, handed over before each crowd | `humansim, engine` |
+
+`<name in its env>` is the sim path without the env prefix (`Realizer.unprefix`: `env_1/flow_3` is `flow_3`, a
+level suffix stays). Each stream depends only on the seed and its key, so adding or removing one person changes no
+other person's draws. The episode seed itself comes from the episode request (`RunEpisode`, `reset_episode`) when it
+names one, else from `run_seed|world|episode_id` (see [env/README.md](../env/README.md)): runs that must pair, such as
+a world and its edit, pass the same explicit seed.
 
 ## HuNavSim default agent template
 

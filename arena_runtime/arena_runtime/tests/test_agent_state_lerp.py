@@ -36,6 +36,7 @@ def _adapter(prev: AgentFrame | None = None, curr: AgentFrame | None = None, ori
     adapter._curr_agent_states = curr
     adapter._engine_stamp_ns = engine_stamp_ns
     adapter._engine_dt_ns = 50_000_000
+    adapter._removed_at_ns = None
     adapter._agent_gestures = {}
     adapter._agent_names = {}
     adapter._agent_types = {}
@@ -291,6 +292,12 @@ def test_pedestrians_default_gait_fields_when_the_frame_has_none() -> None:
     assert [(p.gait_phase, p.gait_cadence, p.agent_type) for p in peds] == [(0.0, 0.0, ""), (0.0, 0.0, "")]
 
 
+def test_pedestrians_carry_their_agents_radius_and_zero_without_one() -> None:
+    columns = {"agent_id": [1, 2], "x": [0.0, 0.0], "y": [0.0, 0.0], "theta": [0.0, 0.0], "vx": [0.0, 0.0], "vy": [0.0, 0.0], "animation_state": [1, 1]}
+    assert [p.radius for p in _adapter()._agent_states_to_pedestrians(_frame(1, radius=[0.325, 0.3], **columns)).pedestrians] == pytest.approx([0.325, 0.3])
+    assert [p.radius for p in _adapter()._agent_states_to_pedestrians(_frame(1, **columns)).pedestrians] == [0.0, 0.0]
+
+
 def test_agents_parked_on_their_held_seat_rest_on_it() -> None:
     adapter = _adapter()
     adapter._seats = {"env_0/bed": [Seat(x=2.0, y=0.0, height=0.6)], "env_0/stool": [Seat(x=-2.0, y=0.0, height=math.nan)]}
@@ -335,3 +342,50 @@ def test_a_repeated_frame_republishes_without_shifting_the_interpolation_pair() 
     assert adapter._prev_agent_states is curr
     assert adapter._curr_agent_states is newer
     assert adapter._engine_stamp_ns == 3_000_000_000
+
+
+RENDER_NS = int(1e9)
+
+
+def _render_adapter() -> ArenaHumanSimulator:
+    from arena_runtime.humans.possession import PossessionTable
+
+    adapter = _adapter(_frame(0, agent_id=[1], x=[0.0], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0]), _frame(1, agent_id=[1], x=[0.1], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0]), engine_stamp_ns=int(1e9))
+    adapter._agent_sources = {}
+    adapter._ped_model_uris = {}
+    adapter._known_stairs = ()
+    adapter._rests = {}
+    adapter._tilted = False
+    adapter._possession = PossessionTable()
+    return adapter
+
+
+def _same(a: tuple | None, b: tuple | None) -> bool:
+    return a is not None and b is not None and all(x is y for x, y in zip(a[0], b[0], strict=True)) and a[1] == b[1]
+
+
+def test_render_inputs_repeat_until_something_a_render_reads_changes() -> None:
+    adapter = _render_adapter()
+    first = adapter._render_inputs(RENDER_NS)
+    assert _same(adapter._render_inputs(RENDER_NS), first)
+    adapter._agent_names[1] = "arena/env_0/flow_1"
+    named = adapter._render_inputs(RENDER_NS)
+    assert not _same(named, first)
+    adapter._agent_gestures = {}
+    assert not _same(adapter._render_inputs(RENDER_NS), named)
+    gestured = adapter._render_inputs(RENDER_NS)
+    adapter._prev_agent_states, adapter._curr_agent_states = adapter._curr_agent_states, _frame(2, agent_id=[1], x=[0.2], y=[0.0], theta=[0.0], vx=[0.0], vy=[0.0])
+    adapter._engine_stamp_ns = int(2e9)
+    assert not _same(adapter._render_inputs(RENDER_NS), gestured)
+    framed = adapter._render_inputs(RENDER_NS)
+    assert not _same(adapter._render_inputs(RENDER_NS + 1), framed)
+
+
+def test_no_render_inputs_while_a_ped_rests_tilts_or_is_possessed() -> None:
+    adapter = _render_adapter()
+    adapter._rests = {1: object()}
+    assert adapter._render_inputs(RENDER_NS) is None
+    adapter._rests, adapter._tilted = {}, True
+    assert adapter._render_inputs(RENDER_NS) is None
+    adapter._tilted = False
+    assert adapter._render_inputs(RENDER_NS) is not None

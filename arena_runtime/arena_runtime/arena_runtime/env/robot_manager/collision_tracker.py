@@ -108,12 +108,8 @@ class CollisionTrackerNode(TimeNode):
         self._pub_markers: LazyPublisher[viz.MarkerArray] = LazyPublisher(self.create_publisher(viz.MarkerArray, 'collision_markers', 10))
         self._marker_ids: dict[tuple[str, str], int] = {}
         env_ns = Namespace(robot_manager.node.get_namespace())
-        self._sub_peds = self.create_subscription(
-            arena_people_msgs.msg.Pedestrians,
-            str(env_ns('arena_peds')),
-            self._on_peds,
-            10,
-        )
+        # the env's own roster, handed over in-process: a subscription would decode every arena_peds again per robot
+        self._unsubscribe_peds = self._env.on_arena_peds(self._on_peds)
         self._sub_reset_start = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_start')), self._on_reset_start, 1)
         self._sub_reset_end = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_end')), self._on_reset_end, 1)
         self._timer = self.create_timer(1.0 / rate_hz, self._tick)
@@ -266,4 +262,5 @@ class CollisionTrackerNode(TimeNode):
         return any((body is not None and poly.intersects(body)) or (device is not None and poly.intersects(device)) for _, body, device in self._pedestrian_shapes())
 
     def shutdown(self):
+        self._unsubscribe_peds()
         self.destroy_node()

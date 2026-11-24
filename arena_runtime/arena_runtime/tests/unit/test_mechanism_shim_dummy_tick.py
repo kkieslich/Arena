@@ -357,6 +357,22 @@ def test_pedestrian_rides_to_the_same_offset_in_the_destination_cabin(shim, on_d
     on_dummy_sim(body, jackal=True)
 
 
+def test_pedestrian_discs_carry_each_pedestrians_own_radius(on_dummy_sim):
+    from arena_people_msgs.msg import Pedestrian, Pedestrians
+    from arena_runtime.acoustics import AcousticsSimulatorRegistry
+    from arena_runtime.env.constants import Constants
+    from arena_runtime.humans import PED_RADIUS
+    from arena_runtime.humans.noop import NoopHumanSimulator
+
+    async def body(sim):
+        acoustics = await AcousticsSimulatorRegistry.get(Constants.AcousticsSimulator.NONE, node=sim.node, namespace=sim._namespace)
+        human = NoopHumanSimulator(node=sim.node, namespace=sim._namespace, simulator=sim, realizer=sim._realizer, acoustics=acoustics)
+        human._on_arena_peds(Pedestrians(pedestrians=[Pedestrian(name="wheelchair", radius=0.325), Pedestrian(name="unknown")]))
+        assert {name: radius for name, _, radius in human.pedestrian_discs()} == {"wheelchair": pytest.approx(0.325), "unknown": PED_RADIUS}
+
+    on_dummy_sim(body)
+
+
 def test_cabin_door_reports_to_the_human_simulator_only_when_it_turns_open_or_stops_being_open(shim, on_dummy_sim):
     from arena_people_msgs.msg import Pedestrian, Pedestrians
     from arena_runtime.env.constants import Constants

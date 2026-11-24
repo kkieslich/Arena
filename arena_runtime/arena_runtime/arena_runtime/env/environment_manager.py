@@ -1,17 +1,19 @@
 import asyncio
 import json
 import typing
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import attrs
 import rclpy.qos
 import shapely
-from arena_simulation_setup.shared import Ceiling, Light, Placement, Stairs
+from arena_people_msgs.msg import Pedestrians
+from arena_simulation_setup.shared import Ceiling, Light, Placement, Stairs, stair_height
 from arena_simulation_setup.shared.navmesh import NavLevel, nav_floors, nav_walls
-from arena_simulation_setup.tree.World import Level, World, entity_lights
+from arena_simulation_setup.tree.World import Level, World, WorldView, entity_lights
 from arena_simulation_setup.tree.World.model import render_door_polygons, render_elevator_polygons
-from arena_simulation_setup.tree.World.Scenario import TimelineEntry
+from arena_simulation_setup.tree.World.Scenario import Scenario, TeleportZone, TimelineEntry
 from arena_simulation_setup.utils.affordance import AffordanceSlot
 from rcl_interfaces.msg import Parameter as ParameterMsg
 from std_msgs.msg import String
@@ -156,6 +158,7 @@ class EnvironmentManager(NodeInterface):
         self._simulator = simulator
         self._human_simulator = human_simulator
         self._realizer = realizer
+        self._ramps: tuple[Stairs, ...] = ()
 
         self._collision_grid = None
         self._nav_levels = ()
@@ -261,6 +264,10 @@ class EnvironmentManager(NodeInterface):
     def nav_levels(self) -> tuple[NavLevel, ...]:
         """Floors, blocking walls, stair halves and doors under their authored names of every level of the spawned world, in the simulator frame."""
         return self._nav_levels
+
+    def on_arena_peds(self, callback: Callable[[Pedestrians], None]) -> Callable[[], None]:
+        """Call back in-process with every roster the env's human simulator publishes on arena_peds (`BaseHumanSimulator.on_arena_peds`); returns the unsubscribe."""
+        return self._human_simulator.on_arena_peds(callback)
 
     @property
     def collision_grid(self) -> CollisionGrid | None:
@@ -370,6 +377,8 @@ class EnvironmentManager(NodeInterface):
             lintels.extend(self._realizer.realize(w, fid) for w in await level.door_lintels())
             if detected_walls and detected_walls.get(fid):
                 collision_walls.extend(self._realizer.realize(w, fid) for w in detected_walls[fid])
+            # the crowd only: its exterior doors shut, so walkers do not cut along the outer walls outside the building
+            collision_walls.extend(self._realizer.realize(w, fid) for w in level.outside_walls())
         walls = tuple(walls_list)
         doors_list: list[Door] = []
         for fid, level in _world.levels.items():
@@ -450,6 +459,7 @@ class EnvironmentManager(NodeInterface):
                 stairs_list.append(realized_f)
                 level_stairs[fid].append(realized_f)
         stairs = tuple(stairs_list)
+        self._ramps = tuple(stair for stair in stairs if stair.kind == 'ramp')
         self._nav_levels = tuple(
             NavLevel(
                 level=str(fid),
@@ -611,6 +621,10 @@ class EnvironmentManager(NodeInterface):
     def check_stimuli(self, scenario: str, humans: Sequence[DynamicObstacle], timeline: Sequence[TimelineEntry]) -> None:
         self._human_simulator.check_stimuli(scenario, humans, timeline)
 
+    async def check_scenario(self, view: WorldView, world: World, scenario: Scenario, scenario_dir: Path, origins: Mapping[str, tuple[float, float]]) -> None:
+        """Have the human simulator refuse a scenario its crowd cannot carry out (`BaseHumanSimulator.check_scenario`)."""
+        await self._human_simulator.check_scenario(view, world, scenario, scenario_dir, origins)
+
     async def spawn_robot(self, robots: Sequence[Robot]) -> Sequence[Robot]:
         """
         Loads given robot into the simulator
@@ -666,6 +680,16 @@ class EnvironmentManager(NodeInterface):
         """
         realized = [attrs.evolve(region, polygon=[self._realizer.realize(vertex) for vertex in region.polygon]) for region in regions]
         return await self._human_simulator.setup_regions(realized)
+
+    async def setup_teleport_zones(self, zones: Sequence[TeleportZone]) -> bool:
+        """Hand the scenario's teleport zones (stair and escalator halves the world joins on one level) to the human simulator, realized."""
+
+        def at(x: float, y: float) -> tuple[float, float]:
+            p = self._realizer.realize(Position(x, y, 0.0))
+            return (p.x, p.y)
+
+        realized = [attrs.evolve(z, entry=(*at(z.entry[0], z.entry[1]), z.entry[2]), wait=(*at(z.wait[0], z.wait[1]), z.wait[2]), hold=(*at(z.hold[0], z.hold[1]), z.hold[2]), footprint=tuple(at(x, y) for x, y in z.footprint)) for z in zones]
+        return await self._human_simulator.setup_teleport_zones(realized)
 
     async def configure_contact(self, mode: str, standing_distance: float) -> None:
         """Contact mode of the human simulator for the episode about to spawn."""

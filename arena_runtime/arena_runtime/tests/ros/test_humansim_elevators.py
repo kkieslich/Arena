@@ -17,7 +17,7 @@ from arena_simulation_setup.shared import Elevator, Stairs
 from arena_simulation_setup.shared.world import STAIRS_SEAM_INSET
 from arena_simulation_setup.tree.World.model import Level, World
 from arena_simulation_setup.tree.World.view import _ring_free_cabins
-from arena_simulation_setup.utils.geometry import Position
+from arena_simulation_setup.utils.geometry import Pose, Position
 from arena_runtime.env.realizer import Realizer
 from arena_runtime.humans import stair_height, stair_running
 from arena_runtime.humans.arena_humansim.arena_humansim import ArenaHumanSimulator
