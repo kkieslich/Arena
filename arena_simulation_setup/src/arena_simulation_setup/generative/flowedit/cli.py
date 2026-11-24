@@ -226,6 +226,7 @@ def _cmd_suite(args: argparse.Namespace) -> int:
         return 0
     header = [f"split {args.split.name}, partitions {', '.join(parts)}, crowd {args.crowd}, settings {S.digest(crowd)}", f"{stages} stages, each one episode at the seed its name ends in; an edit stage pairs with its base world's stage at that seed"]
     out = Path(args.out or SU.default_out(args.split, args.crowd))
+    contest = None
     try:
         if contestants:
             contest = SU.write(SU.contest_doc(out.stem, contestants), SU.contest_out(out), [f"split {args.split.name}: the planners of suite {out.stem}"], force=args.force)

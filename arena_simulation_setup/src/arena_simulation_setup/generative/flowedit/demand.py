@@ -348,6 +348,10 @@ class _Channel:
         return _Channel(*(a + b for a, b in zip(attrs.astuple(self, recurse=False), attrs.astuple(other, recurse=False), strict=True)))
 
 
+def _as_dict(weights: Mapping[str, float]) -> dict[str, float]:
+    return dict(weights)
+
+
 @attrs.frozen
 class Cost:
     """The predicted pedestrian cost a layout is ranked by (A5, A6), per walker group: `exposure[g]` times the group's
@@ -356,8 +360,8 @@ class Cost:
     walk to the locker (m, as the group walks). The ranking value is the largest group's cost: the worst-off group. A
     group named nowhere is not scored."""
 
-    exposure: Mapping[str, float] = attrs.field(factory=dict, converter=dict)
-    walk: Mapping[str, float] = attrs.field(factory=dict, converter=dict)
+    exposure: Mapping[str, float] = attrs.field(factory=dict, converter=_as_dict)
+    walk: Mapping[str, float] = attrs.field(factory=dict, converter=_as_dict)
     band_m: float = CONFLICT_BAND_M
     element: Mapping[str, float] | None = attrs.field(default=None, converter=lambda v: None if v is None else dict(v))
 
@@ -461,9 +465,9 @@ def _ascending(values: Sequence[np.ndarray]) -> Iterator[tuple[float, tuple[int,
     at its positions, ties by position: (sum, positions)."""
     if any(len(v) == 0 for v in values):
         return
-    start = (0,) * len(values)
-    heap = [(float(sum(v[0] for v in values)), start)]
-    seen = {start}
+    start: tuple[int, ...] = (0,) * len(values)
+    heap: list[tuple[float, tuple[int, ...]]] = [(float(sum(v[0] for v in values)), start)]
+    seen: set[tuple[int, ...]] = {start}
     while heap:
         total, at = heapq.heappop(heap)
         yield total, at
@@ -622,12 +626,13 @@ class EntranceSearch:
 
     def _screen_pairs(self) -> None:
         """Leave out the near pairs of spots that fail the full check together (`screen_pairs`)."""
+        import numpy as np
         import shapely
 
         s = self.search
         spots = {CHARGERS: s.spots[CHARGERS], BAYS: s.spots[BAYS], LOCKER: self.lockers}
         boxes = {name: [_reach(x) for x in found] for name, found in spots.items()}
-        live = {CHARGERS: self._cb.any(axis=1), BAYS: self._cb.any(axis=0)}
+        live = {CHARGERS: np.asarray(self._cb.any(axis=1)), BAYS: np.asarray(self._cb.any(axis=0))}
         for first, second, matrix in ((CHARGERS, BAYS, self._cb), (CHARGERS, LOCKER, self._ck), (BAYS, LOCKER, self._bk)):
             checked = dropped = 0
             if spots[first] and spots[second]:
@@ -1044,7 +1049,9 @@ class EntranceSearch:
                     if any(len(a) == 0 for a in at):
                         return False
                     least = [float(table[h][j][at[j]].min()) for j in range(count)]
-                    limit = limits[h] if h < ncap else (found or best_key)[0]
+                    # the objective rows are narrowed only once a key is known (the loop above)
+                    current = found or best_key
+                    limit = limits[h] if h < ncap or current is None else current[0]
                     for j in range(count):
                         at[j] = at[j][pair[h] + table[h][j][at[j]] + (sum(least) - least[j]) <= limit + _EPS * max(1.0, abs(limit))]
                 if sum(len(a) for a in at) == before:
@@ -1056,7 +1063,7 @@ class EntranceSearch:
             keep = np.ones(len(positions[0]), dtype=bool)
             for (i, j), allowed in pair_ok.items():
                 keep &= allowed[at[i][positions[i]], at[j][positions[j]]]
-            totals = [pair[h] + sum(table[h][j][at[j][positions[j]]] for j in range(count)) for h in range(len(table))]
+            totals = [np.asarray(pair[h] + sum(table[h][j][at[j][positions[j]]] for j in range(count))) for h in range(len(table))]
             for h in range(ncap):
                 keep &= totals[h] <= limits[h]
             value = np.max(np.stack([totals[h] for h in objective]), axis=0)
