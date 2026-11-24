@@ -629,6 +629,7 @@ def test_a_roster_is_indexed_once_for_every_tracker_of_the_env(on_stage, monkeyp
 
     on_stage(body)
 
+
 CROWD = 1500
 ROBOTS = 4
 PING_TIMEOUT = 2.0
