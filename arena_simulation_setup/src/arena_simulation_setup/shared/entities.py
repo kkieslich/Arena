@@ -212,12 +212,46 @@ def _joints(value: object) -> Joints:
     return joints
 
 
+Dock = list[Position] | None
+
+
+def _dock(value: object) -> Dock:
+    if value is None:
+        return None
+    if not isinstance(value, list | tuple):
+        raise ValueError(f'dock is a polygon in the object frame, a list of at least 3 points, got {value!r}')
+    points = [point if isinstance(point, Position) else Position.parse(point) for point in value]
+    if len(points) < 3:
+        raise ValueError(f'dock is a polygon in the object frame with at least 3 points, got {len(points)}')
+    return points
+
+
+def _charges_in_the_dock(obstacle: Obstacle, _attribute: attrs.Attribute, value: float | None) -> None:
+    if value is None:
+        return
+    if value <= 0.0:
+        raise ValueError(f'charge_power_w is the power in W a robot in the dock charges with, above 0, got {value!r}')
+    if obstacle.dock is None:
+        raise ValueError(f'charge_power_w charges a robot standing in the dock, but {obstacle.name!r} has no dock')
+
+
 @attrs.define
 class Obstacle(Entity):
     scale: Scale | None = None
     light: ObjectLightSettings | None = None
     humansim: dict = attrs.field(factory=dict, converter=_humansim_object)
     joints: Joints = attrs.field(default=None, converter=_joints)
+    dock: Dock = attrs.field(default=None, converter=_dock)
+    charge_power_w: float | None = attrs.field(default=None, validator=_charges_in_the_dock)
+
+    def dock_polygon(self) -> list[Position] | None:
+        """The dock in the frame of the object's pose, None without one."""
+        return None if self.dock is None else [self.pose * corner for corner in self.dock]
+
+    @property
+    def target_only(self) -> bool:
+        """An object with an empty `model` is only a HumanSim target with its `humansim:` demand: no simulator body, no obstacle."""
+        return not self.model.name
 
     async def _corners(self) -> list[Position] | None:
         try:
@@ -227,6 +261,18 @@ class Obstacle(Entity):
         if view.extent is None:
             return None
         return [self.pose * Position(x, y, z) for x in view.extent[0] for y in view.extent[1] for z in view.extent[2]]
+
+    async def floor_marking(self) -> bool:
+        """Whether nothing of the object stands on the floor: a HumanSim target without a model (`target_only`), or an
+        asset whose annotation has no box, such as a waiting bay's taped outline. Spawns, the nav map, the simulators
+        and humansim ignore it; an asset that does not resolve or has no annotation is not one."""
+        if self.target_only:
+            return True
+        try:
+            view = await self.model.resolve()
+        except FileNotFoundError:
+            return False
+        return getattr(view, "annotation", None) is not None and getattr(view, "extent", None) is None
 
     async def footprint(self) -> shapely.Polygon | None:
         """Map-frame 2D footprint of the asset's annotated box through the full pose, None when unannotated."""
@@ -258,6 +304,7 @@ class Obstacle(Entity):
 
 converter.register_structure_hook_func(lambda t: t == dict | str | None, lambda v, _t: v)
 converter.register_structure_hook_func(lambda t: t == Joints, lambda v, _t: _joints(v))
+converter.register_structure_hook_func(lambda t: t == Dock, lambda v, _t: _dock(v))
 
 
 def _waypoints_converter(value: object) -> list[Waypoint]:

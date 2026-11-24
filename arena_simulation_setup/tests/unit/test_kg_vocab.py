@@ -5,8 +5,8 @@ import pytest
 from arena_simulation_setup.kg import ANY, LITERAL, PACKAGES_DIR, Vocabulary, load_package
 
 
-def test_shipped_packages_are_the_six_known_versions():
-    assert sorted(p.stem for p in PACKAGES_DIR.glob("*.toml")) == ["access@1", "core@1", "core@2", "robot@1", "social@1", "space@1"]
+def test_shipped_packages_are_the_seven_known_versions():
+    assert sorted(p.stem for p in PACKAGES_DIR.glob("*.toml")) == ["access@1", "core@1", "core@2", "flow@1", "robot@1", "social@1", "space@1"]
 
 
 def test_space_states_a_room_purpose():

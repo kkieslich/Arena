@@ -1,6 +1,6 @@
 from .check import GEOMETRY_PROPS, RESOLVED_KINDS, check_against_world
 from .graph import lift_graph, parse_direction
-from .io import FORMAT, dump, load, write
+from .io import FORMAT, dump, dumps, load, write
 from .scene import DERIVED, GENERATED, Constraint, Entity, Fact, Scene, Value
 from .schema import schema_for
 from .vocab import ANY, LITERAL, PACKAGES_DIR, Package, Vocabulary, load_package, resolve
@@ -23,6 +23,7 @@ __all__ = [
     "Vocabulary",
     "check_against_world",
     "dump",
+    "dumps",
     "lift_graph",
     "load",
     "load_package",

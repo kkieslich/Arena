@@ -23,6 +23,56 @@ def preview_resolution(size_m: float) -> float:
     return max(PREVIEW_MIN_RESOLUTION, size_m / PREVIEW_PIXEL_BUDGET)
 
 
+class PixelFrame(typing.NamedTuple):
+    """How `Map` maps level-frame meters to image pixels: the affine `to_pixels` (y flipped), the image `size` (width,
+    height) in pixels, the `padding` in pixels and the level-frame `origin` of the image's bottom-left corner."""
+
+    to_pixels: list[float]
+    size: tuple[int, int]
+    padding: int
+    origin: tuple[float, float]
+
+    def polygon_pixels(self, polygon: shapely.Geometry) -> list[tuple[int, int]] | None:
+        """The integer pixel ring `Map` fills for a level-frame polygon, None when it has under 3 points left."""
+        poly = _clean(shapely.affinity.affine_transform(polygon, self.to_pixels))
+        assert isinstance(poly, shapely.Polygon)
+        if len(poly.exterior.coords) < 3:
+            return None
+        return _as_int(poly.exterior.coords, self.padding)
+
+    def polygon_mask(self, polygon: shapely.Geometry) -> tuple[int, int, np.ndarray] | None:
+        """The pixels `Map` fills for a level-frame static-object polygon, as the (row, col) of the top-left corner and a
+        bool mask, clipped to the image; None when nothing of it lands on the image. Pixel for pixel what drawing the
+        polygon into the whole image fills, at the cost of its bounding box."""
+        ring = self.polygon_pixels(polygon)
+        if ring is None:
+            return None
+        xs, ys = [x for x, _ in ring], [y for _, y in ring]
+        c0, r0 = min(xs), min(ys)
+        local = PIL.Image.new('1', (max(xs) - c0 + 1, max(ys) - r0 + 1), 0)
+        PIL.ImageDraw.Draw(local).polygon([(x - c0, y - r0) for x, y in ring], fill=1)
+        mask = np.asarray(local, dtype=bool)
+        width, height = self.size
+        rows, cols = slice(max(0, -r0), max(0, min(mask.shape[0], height - r0))), slice(max(0, -c0), max(0, min(mask.shape[1], width - c0)))
+        mask = mask[rows, cols]
+        if not mask.any():
+            return None
+        return r0 + rows.start, c0 + cols.start, mask
+
+
+def _clean(shape: shapely.Geometry) -> shapely.Geometry:
+    """Cleanup stays per part: snapping a whole collection at once lets neighbouring
+    zones merge back into one ring, and a filled exterior would swallow the island."""
+    shape = shapely.set_precision(shape, 0.01)
+    shape = shapely.make_valid(shape)
+    shape = shapely.remove_repeated_points(shape)
+    return shape
+
+
+def _as_int(coords: Iterable[Sequence[float]], padding: int) -> list[tuple[int, int]]:
+    return [(int(math.trunc(x) + padding), int(math.trunc(y) + padding)) for (x, y, *_) in coords]
+
+
 class Map(PathView):
     @property
     def map_yaml(self) -> Path:
@@ -46,55 +96,18 @@ class Map(PathView):
         asset_name_color: str | None = "blue",
         cabins: shapely.MultiPolygon | None = None,
     ) -> tuple[PIL.Image.Image, tuple[float, float]]:
+        frame = cls.pixel_frame(rooms, doors, resolution=resolution, padding=padding, cabins=cabins)
         cabins = cabins if cabins is not None else shapely.MultiPolygon()
-        min_x, min_y, max_x, max_y = rooms.bounds
-        for openings in (doors, cabins):
-            if not openings.is_empty:
-                dmin_x, dmin_y, dmax_x, dmax_y = openings.bounds
-                min_x = min(min_x, dmin_x)
-                min_y = min(min_y, dmin_y)
-                max_x = max(max_x, dmax_x)
-                max_y = max(max_y, dmax_y)
-
-        width = max_x - min_x
-        height = max_y - min_y
-
-        img = PIL.Image.new(
-            'RGB',
-            (
-                math.ceil(width / resolution) + 2 * padding,
-                math.ceil(height / resolution) + 2 * padding,
-            ),
-            color='black',
-        )
-
-        scaling_factor = 1 / resolution
-
-        # World metres to pixels, y flipped: the three steps compose into one matrix. A whole
-        # collection goes through in one crossing into shapely, where per part the crossing costs
-        # far more than the arithmetic.
-        to_pixels = [
-            scaling_factor,
-            0.0,
-            0.0,
-            -scaling_factor,
-            -scaling_factor * min_x,
-            scaling_factor * (min_y + height),
-        ]
+        img = PIL.Image.new('RGB', frame.size, color='black')
+        to_pixels = frame.to_pixels
 
         def to_pixel_parts(shape: shapely.Geometry) -> np.ndarray:
             return shapely.get_parts(shapely.affinity.affine_transform(shape, to_pixels))
 
-        def tf(shape: shapely.Geometry) -> shapely.Geometry:
-            """Cleanup stays per part: snapping a whole collection at once lets neighbouring
-            zones merge back into one ring, and a filled exterior would swallow the island."""
-            shape = shapely.set_precision(shape, 0.01)
-            shape = shapely.make_valid(shape)
-            shape = shapely.remove_repeated_points(shape)
-            return shape
+        tf = _clean
 
         def as_int(coords: Iterable[Sequence[float]]) -> list[tuple[int, int]]:
-            return [(int(math.trunc(x) + padding), int(math.trunc(y) + padding)) for (x, y, *_) in coords]
+            return _as_int(coords, padding)
 
         draw = PIL.ImageDraw.Draw(img)
         for cutout in to_pixel_parts(rooms):
@@ -120,18 +133,58 @@ class Map(PathView):
         if asset_color is not None:
             for name, obj in static_objects:
                 logging.debug(f"Drawing asset '{name}' with geometry: {obj} in color {asset_color}")
-                poly = tf(shapely.affinity.affine_transform(obj, to_pixels))
-                assert isinstance(poly, shapely.Polygon)
-                if len(poly.exterior.coords) < 3:
-                    logging.warning(f"Skipping asset '{name}' because it has insufficient geometry to draw ({len(poly.exterior.coords)} coordinates).")
+                ring = frame.polygon_pixels(obj)
+                if ring is None:
+                    logging.warning(f"Skipping asset '{name}' because it has insufficient geometry to draw (under 3 coordinates).")
                     continue
-                draw.polygon(as_int(poly.exterior.coords), fill=asset_color)
+                draw.polygon(ring, fill=asset_color)
                 if asset_name_color is not None:
-                    _min_x, _min_y, _max_x, _max_y = poly.bounds
-                    logging.debug(f"Drawing name for asset '{name}' at ({int(_max_x)}, {int(_max_y)}) color {asset_name_color}")
-                    draw.text((int(_max_x), int(_max_y)), name, fill=asset_name_color)
+                    _max_x, _max_y = max(x for x, _ in ring) - padding, max(y for _, y in ring) - padding
+                    logging.debug(f"Drawing name for asset '{name}' at ({_max_x}, {_max_y}) color {asset_name_color}")
+                    draw.text((_max_x, _max_y), name, fill=asset_name_color)
 
-        return img, (min_x - padding * resolution, min_y - padding * resolution)
+        return img, frame.origin
+
+    @classmethod
+    def pixel_frame(
+        cls,
+        rooms: shapely.MultiPolygon,
+        doors: shapely.MultiPolygon,
+        walls: shapely.MultiLineString | None = None,
+        resolution: float = 0.01,
+        padding: int = 5,
+        *,
+        cabins: shapely.MultiPolygon | None = None,
+        **_drawn: object,
+    ) -> PixelFrame:
+        """The pixel frame `rasterize` and `generate_png` draw in: the rooms', doors' and cabins' bounds plus `padding`
+        pixels. Takes the same keyword arguments, so a level's `_rasterize_kwargs` fit."""
+        cabins = cabins if cabins is not None else shapely.MultiPolygon()
+        min_x, min_y, max_x, max_y = rooms.bounds
+        for openings in (doors, cabins):
+            if not openings.is_empty:
+                dmin_x, dmin_y, dmax_x, dmax_y = openings.bounds
+                min_x = min(min_x, dmin_x)
+                min_y = min(min_y, dmin_y)
+                max_x = max(max_x, dmax_x)
+                max_y = max(max_y, dmax_y)
+
+        width = max_x - min_x
+        height = max_y - min_y
+        scaling_factor = 1 / resolution
+        # World metres to pixels, y flipped: the three steps compose into one matrix. A whole
+        # collection goes through in one crossing into shapely, where per part the crossing costs
+        # far more than the arithmetic.
+        to_pixels = [
+            scaling_factor,
+            0.0,
+            0.0,
+            -scaling_factor,
+            -scaling_factor * min_x,
+            scaling_factor * (min_y + height),
+        ]
+        size = (math.ceil(width / resolution) + 2 * padding, math.ceil(height / resolution) + 2 * padding)
+        return PixelFrame(to_pixels, size, padding, (min_x - padding * resolution, min_y - padding * resolution))
 
     @classmethod
     def generate_png(

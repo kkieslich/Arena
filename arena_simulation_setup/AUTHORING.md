@@ -711,6 +711,10 @@ facts:
   `params: {by: llm, ...}` marks a model's proposal that a human has not
   reviewed, see
   [generative/scenario](src/arena_simulation_setup/generative/scenario/README.md#zone-roles).
+- What each object is for (its demand: service, needs, formation, dwell)
+  is package `flow@1`, kept in a separate FLOWEDIT `flowgraph.yaml`, never in
+  `kg.yaml`. It copies each object's `model` and pose from `world.yaml`, see
+  [generative/flowedit](src/arena_simulation_setup/generative/flowedit/README.md).
 - Nothing in the KG drives the runtime. Mechanism semantics (presets,
   `light_on`, `recall_on`, zone states) stay in `world.yaml`.
 
@@ -1056,7 +1060,7 @@ robots:
 
 An empty scenario (robot start and phases only) is valid, and `robots:` is
 optional: a robot without an entry stays parked, an episode with only parked
-robots runs until `task.episode.timeout`. Phases run in order and are `{goto: <pose or zone/door/elevator/pedestrian name>}`, `{gesture: <name>}`,
+robots runs until `task.episode.timeout`. Phases run in order and are `{goto: <pose or zone/door/elevator/docked object/pedestrian name>}`, `{gesture: <name>}`,
 `{reach: <named target | random | pose>}`, or a hold phase with neither (the robot
 stays where it is), or `{loop: [<phases>], until: "<...>"}` (the phases repeated
 in order until the `until` holds, which drops the running phase and continues
@@ -1103,6 +1107,59 @@ stands on, multi-level worlds). An object's `humansim:` block (`type`,
 `capacity`, `satisfies`, `interaction_radius`, `formation`, `seats`) is
 forwarded to humansim as its WorldObject, so a `go_to` step or an interaction
 `target:` can name the entry by `type`.
+
+A world object (a level's `objects:` in `world.yaml`) can carry `dock:`, the
+polygon in the object's frame where a robot stands to use it, such as the bay
+in front of a charger or the door side of a parcel locker. Its name then works
+as a goto target like a zone: the robot is sent to a free cell with its spawn
+clearance near the dock's deepest point (within half the dock's inner radius,
+so the planner's goal tolerance cannot stop it outside), facing the object,
+or its annotated front (`face`, else behind its yaw) where the dock covers the
+object's own origin, as a waiting bay's slot does, and the phase is met once
+`robot in <object>` holds, an atom `until:` and `conditions:` can use too. The
+dock moves and turns with the object's `pose`.
+Size it so its middle lies at least the robot's radius plus
+`task.episode.spawn.robot_clearance` off the object's footprint, and its
+inner radius is at least twice the planner's goal tolerance (1.2 x 1.0 m
+for a jackal under nav2). A scenario object with `dock:` is refused: goto
+targets resolve on the world's levels.
+
+A docked object with `charge_power_w` is a charger. Once a robot has stood
+still in its dock for a second (within the judge's park drift and turn,
+`PARK_DRIFT_M` and `PARK_TURN_RAD` in
+[`shared/judge.py`](src/arena_simulation_setup/shared/judge.py)), the runtime
+sends that power to the robot's power publisher
+(`<robot_ns>/power_publisher/charge_power`, latched), which charges the
+battery with it less the robot's own draw, up to `battery_capacity_wh`. A
+charger charges one robot at a time, the first one parked in its dock, until
+it moves or leaves; another robot in the same dock gets 0 W meanwhile, and so
+does a robot driving through. The energy the robot consumes, and so its cost
+of transport, counts the same with or without charging. Each robot starts
+every episode with a charge drawn per episode seed and robot name between
+`task.episode.battery.soc.min` and `task.episode.battery.soc.max` (40 to
+100 %; each within 0 to 100, min at most max), sent to
+`<robot_ns>/power_publisher/soc_percent`. `task.episode.battery.capacity_wh`
+(default 0, the robot's own `telemetry/power.yaml`, 270 Wh for a jackal)
+gives every robot a battery of that many Wh instead, sent to
+`<robot_ns>/power_publisher/battery_capacity_wh` at each reset before the start
+charge; the power publisher keeps the charge in percent when the capacity
+changes, so the start charge is a percentage of the new capacity whichever
+arrives first. A small battery lets a robot run low within an episode: flatsim
+publishes no joint effort, so a jackal draws only its 35 W standby power, about
+4 % of 270 Wh in 20 min, while 15 Wh last about 26 min and a 125 W charger
+refills them in about 10. The runtime reads the charge back from
+`<robot_ns>/power_publisher/energy` (`battery_soc_percent`); a task mode gets it
+as `RobotManager.soc`, in percent: the start charge from the reset until the
+power publisher reports, None before the first reset.
+
+```yaml
+objects:
+- name: charger_1
+  model: equipment_robot_charger_a01
+  pose: [12.0, 3.0, 3.1416]
+  dock: [[0.4, -0.5], [1.4, -0.5], [1.4, 0.5], [0.4, 0.5]]   # 1 m square off the +x face
+  charge_power_w: 1620.0   # a 270 Wh jackal battery in about 10 min
+```
 
 For HumanSim (arena_humansim) pedestrians include an `agent:` block. The
 `agent_type` is either a built-in type (`adult`, `elder`) or a path-relative
@@ -1458,6 +1515,113 @@ view, levels = resolve_world('my_world')
 for level_id, result in nav_at_r(view, radius=0.267, levels=levels).items():
     print(level_id, result.value, result.components, result.cut_off_zones)
 ```
+
+An edited world or level is measured in memory, without writing a copy:
+`nav_at_r(view, world=edited)` takes a loaded and changed `World`, and
+`level_nav_at_r(level, radius=..., static_objects=[(name, polygon), ...])` one
+`Level` with extra level-frame footprints as occupancy (wrap it in
+`world_assets(view, world)` for world-local assets). `missing` lists the
+entities whose model does not resolve at all, e.g. bucket models with
+`ARENA_ASSETS_NET=off`; they are counted in `no bbox` and not rasterized.
+
+#### Placement filter
+
+`metrics/navr_filter.py` checks placement layouts against one base level
+(INFRA, Kolja's rule of 9 Nov 2026). A layout is rejected when more than
+0.5 m2 of floor beyond the elements' footprints and clearance leaves the
+dominant component at r = 0.325 m (the wheelchair), or when a dock goto point
+is outside the dominant component at r = 0.267 m (the Jackal):
+
+```python
+from arena_simulation_setup.metrics.navr_filter import NavrBase, PlacedElement, navr_check
+
+base = NavrBase(level, view=view, world=world)  # once: raster, distance transform, components
+bay = PlacedElement('bay_1', slot_polygon, (x, y), blocks_floor=False)
+verdict = navr_check(base, [charger_1, charger_2, bay, locker_1])
+verdict.ok, verdict.floor_loss_m2, verdict.unreachable_docks, verdict.new_cutoff_zones, verdict.nav_at_r
+```
+
+`PlacedElement(name, footprint, dock_point, blocks_floor)` is one placed
+object: its level-frame footprint polygon from the resolved asset, the point
+a robot is sent to (or None) and whether the footprint is an obstacle. A
+waiting-bay slot (the loading point too) is a floor marking
+(`blocks_floor=False`); the filter parks a Jackal on its dock point, a blocking
+disc of 0.267 m (`park_radius`). That Jackal blocks in every check except its
+own slot's goto check (the robot sent there is the one that parks). A blocking
+footprint over a dock point makes the dock unreachable. An element without a
+footprint, or a base object whose model does not resolve, raises
+`UnresolvedFootprintError` instead of counting as free floor. The placement
+module's `placed_elements(layout)` gives these elements.
+
+The floor loss counts cells that were in the base's dominant component, are
+still traversable with the elements placed (so neither under a footprint nor
+within r of one), and are outside the new dominant component. A layout changes
+the raster only within r of its footprints. Each check updates the clearance
+in disjoint windows around them. A piece of a window that does not touch its
+ring is a pocket, a component of its own. When every component that loses
+cells keeps at most one piece on each window's ring, any path through a window
+can be rerouted through that piece, so the rest stays connected: the check
+keeps the base's components, less the removed cells, plus the pockets.
+Otherwise it relabels the whole level. `navr_check(..., relabel=True)` always
+relabels, the reference the tests compare the incremental result against.
+
+### Pedestrian reach
+
+`metrics/use_points.py` checks what HumanSim's crowd gets from a world and a
+scenario, as the runtime hands it over. The runtime runs it at every episode
+start of a scenario task and fails the episode naming each finding
+(`human.check:=false` skips it); the FLOWEDIT generator refuses edits by it.
+
+```python
+from arena_simulation_setup.metrics.use_points import check_scenario
+from arena_simulation_setup.tree.World import WorldIdentifier
+
+for finding in check_scenario(WorldIdentifier('my_world').resolve_sync(), 'default'):
+    print(finding)
+```
+
+- Every model resolves, else HumanSim never gets the object and walkers walk
+  through it; the finding names what each asset bucket answered. A model that
+  resolves without an annotation.yaml (a marker) is a target without an
+  obstacle, as at runtime, and passes.
+- A walker stops within arrival distance (HumanSim's 0.5 m) of every point
+  people are walked to: the use point and first three queue slots of a sought
+  object's `line` formation, from its pose turned to its annotated `face` (no
+  wall between two slots), a seat's standing point, the object itself within
+  its interaction radius when it has neither, a sink, each human's start,
+  waypoints and agent-type `go_to` poses, and a source holds floor its walkers
+  reach. Sought objects are those with `satisfies` or named, or typed, by a step
+  `target`. Near walls and boxes a walker stops where HumanSim's route for it
+  ends, its radius plus `global_planner.clearance_margin` from them, rounded up
+  to 0.05 m and at most HumanSim's 0.6 m cap (0.5 m for a walker the scenario
+  gives a 0.25 m radius, 0.6 m for a wheelchair; the widest walker of the
+  scenario counts for the crowd's points): a use point must lie clear of its own
+  object's box. A walker without a `radius` gets one drawn by HumanSim from its
+  agent type; where it stops, the check takes it one standard deviation above
+  the type's mean (`RADIUS_SD`): an adult, drawn 0.25 +- 0.02 m, counts as
+  0.27 m and stops 0.55 m off, as does the crowd of a scenario without people.
+  A seat's standing point, on its furniture's box edge by design, is measured to
+  the floor's edge.
+- Floor is the rooms, door spans and cabins less the walls HumanSim gets
+  (`all_walls`: a door is open only where they leave a gap for it), doors locked
+  to everyone and the bounding box of every object, kept HumanSim's narrowest
+  route clearance (`global_planner.inflation_radius`, 0.38 m) from them,
+  decided by the shapes themselves near that clearance: a passage under 0.76 m
+  is shut. A walker reaches the connected part it starts in and the parts
+  elevators, stair halves and the scenario's teleport zones join to it.
+- A point that only those narrowest routes reach, past walls or objects closer
+  than a walker's own route clearance at its type's mean radius (a room behind
+  a 0.9 m door), is a detour:
+  HumanSim takes any route that keeps that clearance first, outside the building
+  too where its outside is open. The runtime and `flowedit suite` only report
+  detours; the FLOWEDIT generator refuses an edit that makes one.
+- No room people are sent to (every room of a scenario with demand and no crowd
+  of its own, as FLOWEDIT's) has more than 2 m^2 of floor cut off from the
+  parts the crowd starts in by objects or locked doors; a pocket
+  the walls close off by themselves does not count.
+
+Turn an object so its annotated front faces into the room, or move it along
+the wall, until its findings are gone.
 
 ### Navigation mesh
 

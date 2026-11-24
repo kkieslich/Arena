@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +13,20 @@ def pytest_configure(config: pytest.Config) -> None:
         from arena_simulation_setup.testing import install_fake_assets
 
         install_fake_assets()
+
+
+@pytest.fixture
+def local_root(tmp_path: Path) -> Iterator[Path]:
+    """ARENA_ASSETS_DIR_LOCAL pointed at tmp_path for one test, restored after."""
+    previous = os.environ.get("ARENA_ASSETS_DIR_LOCAL")
+    os.environ["ARENA_ASSETS_DIR_LOCAL"] = str(tmp_path)
+    try:
+        yield tmp_path
+    finally:
+        if previous is None:
+            del os.environ["ARENA_ASSETS_DIR_LOCAL"]
+        else:
+            os.environ["ARENA_ASSETS_DIR_LOCAL"] = previous
 
 
 @pytest.fixture

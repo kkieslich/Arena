@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import attrs
 from arena_simulation_setup.generative.core.profiles import KINEMATICS, MODELS
 
 from .zones import Role, zones_by_role
@@ -260,6 +261,70 @@ def build(
 
     doc["humans"] = agents
     return doc
+
+
+@attrs.frozen
+class Person:
+    """One walker of a `crowd`: its start zone, agent kind, speed, the zones it walks through from `home` on, and model."""
+
+    home: str
+    kind: str
+    speed: float
+    rooms: tuple[str, ...]
+    model: str
+
+
+@attrs.frozen
+class Crowd:
+    """The walkers `crowd` places and the zones anyone may head for."""
+
+    people: tuple[Person, ...]
+    destinations: tuple[str, ...]
+
+
+def crowd(
+    zones: Sequence[Mapping[str, Any]],
+    *,
+    overrides: Mapping[str, str] | None = None,
+    homes: frozenset[str] = frozenset(),
+    forbidden: frozenset[str] = frozenset(),
+    seed: int = 0,
+    world: str = "",
+    count: int | None = None,
+    scale: float = 1.0,
+    tag: str = "crowd",
+) -> Crowd:
+    """The `normal` profile's walkers by zone role, deterministic in its inputs: `count` of them, else the nominal count times the
+    world's crowd draw and `scale` (at least `MIN_CAST`). Draws are keyed by `world`, `seed` and `tag`, nothing else."""
+    by_role = zones_by_role(zones, overrides)
+    targets, _basis = _targets("normal", by_role)
+    centroids = zone_centroids(zones)
+    pool = _pool(by_role, centroids)
+    destinations = tuple(for_people(pool) or pool)
+    starts = _starts(targets, by_role, homes, centroids, forbidden, widen=True) if targets else []
+    world_rng = random.Random(f"{world}:{seed}")
+    tempo = world_rng.uniform(*TEMPO_RANGE)
+    crowd_draw = world_rng.uniform(*CROWD_RANGE)
+    models = list(MODELS)
+    world_rng.shuffle(models)
+    if count is not None:
+        n = int(count)
+    else:
+        n = round(nominal_count(targets) * crowd_draw * scale)
+        n = max(MIN_CAST, n) if n > 0 else 0
+    if not starts:
+        return Crowd((), destinations)
+    weights = mix_for("normal", world_kind(zones, overrides))
+    kinds, kind_weights = list(weights), list(weights.values())
+    rng = random.Random(f"{tag}:{world}:{seed}")
+    people = []
+    for i in range(n):
+        stops = rng.choices([s for s, _ in ROUTE_STOPS], weights=[w for _, w in ROUTE_STOPS])[0]
+        home = starts[i % len(starts)]
+        kind = rng.choices(kinds, weights=kind_weights)[0]
+        speed = speed_for(kind, rng, tempo)
+        people.append(Person(home, kind, speed, (home, *_route(home, destinations, i, stops, centroids)), models[i % len(models)]))
+    return Crowd(tuple(people), destinations)
 
 
 def bt_type_source() -> Path:

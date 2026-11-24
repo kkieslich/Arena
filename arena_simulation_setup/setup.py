@@ -99,6 +99,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
+            f'flowedit = {package_name}.generative.flowedit.cli:main',
             f'generate_scenario = {package_name}.generative.scenario.cli:main',
             f'generate_egobench = {package_name}.generative.egobench.cli:main',
             f'generate_usar = {package_name}.generative.usar.cli:main',

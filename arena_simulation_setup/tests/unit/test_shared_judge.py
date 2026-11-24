@@ -207,6 +207,16 @@ def test_arrived_zone_target_uses_membership_not_dispatch_pose():
     assert arrived(phase, sample(robot=(5.0, 1.0, 0.0)), ZONES, "robot_0") is False
 
 
+def test_arrived_docked_object_target_uses_membership_of_its_dock():
+    from arena_simulation_setup.shared import Obstacle
+
+    charger = Obstacle(name="charger_1", model="charger", pose=Pose(Position(5.0, 5.0), Orientation.from_yaw(math.pi)), dock=[[0.5, -0.5], [1.5, -0.5], [1.5, 0.5], [0.5, 0.5]])
+    zones = zone_polygons(Level(id="0", objects=[charger]))
+    phase = GoToPhase(target="charger_1")
+    assert arrived(phase, sample(robot=(4.0, 5.0, 0.0)), zones, "robot_0") is True
+    assert arrived(phase, sample(robot=(6.0, 5.0, 0.0)), zones, "robot_0") is False
+
+
 def test_arrived_ped_target_uses_tolerance_radius():
     phase = GoToPhase(target="alice", tolerance_radius=1.0)
     assert arrived(phase, sample(robot=(0.0, 0.0, 0.0), peds={"alice": (0.5, 0.5)}), ZONES, "robot_0") is True

@@ -112,7 +112,7 @@ class Sample:
 
 
 def zone_polygons(level: Level) -> dict[str, shapely.Polygon | shapely.MultiPolygon]:
-    """Zone, door, elevator and stair polygons of a compacted level, keyed by name."""
+    """Zone, door, elevator, stair and dock polygons of a compacted level, keyed by name."""
     import shapely
 
     polygons: dict[str, shapely.Polygon | shapely.MultiPolygon] = {}
