@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 import typing
 import uuid
 
@@ -41,14 +42,14 @@ class Stage:
         self.armed_ns = 0
         self.listened: dict[int, tuple] = {}
 
-    def robot_manager(self):
+    def robot_manager(self, name: str = "jackal"):
         from arena_rclpy_mixins.shared import Namespace
         from arena_robots.Robot import RobotIdentifier
 
         from arena_runtime.env.robot_manager.robot_manager import RobotManager
         from arena_runtime.shared import Pose, Robot
 
-        robot = Robot(name="jackal", pose=Pose(), model=RobotIdentifier.parse("jackal"), adapters={"mobile": "none"}, extra={})
+        robot = Robot(name=name, pose=Pose(), model=RobotIdentifier.parse("jackal"), adapters={"mobile": "none"}, extra={})
         rm = RobotManager(node=self.node, namespace=Namespace(self.node.get_namespace())(self.node.get_name()), environment_manager=self.env, robot=robot)
         self.trackers.append(rm._adapter._collision)
         return rm, rm._adapter._collision
@@ -597,3 +598,105 @@ def test_collision_fails_the_episode_only_under_fail_on_collision(on_stage, fake
         assert stage.node._abort_reason == "collision"
 
     on_stage(body, host=EpisodeNode)
+
+
+def test_a_roster_is_indexed_once_for_every_tracker_of_the_env(on_stage, monkeypatch):
+    import arena_robots_msgs.msg
+
+    from arena_runtime.env.robot_manager import collision_tracker
+
+    built: list[int] = []
+    index = collision_tracker.PedestrianIndex
+
+    class Counted(index):
+        def __init__(self, peds, default_radius):
+            built.append(len(peds))
+            super().__init__(peds, default_radius)
+
+    monkeypatch.setattr(collision_tracker, "PedestrianIndex", Counted)
+
+    async def body(stage: Stage):
+        robots = [stage.robot_manager(f"jackal_{i}") for i in range(3)]
+        received = [await stage.listen(tracker) for _, tracker in robots]
+        await stage.arm(robots[0][1])
+        await stage.peds(robots[0][1], ("walker", *BY_PED), ("far", 6.0, 6.0))
+        for rm, _ in robots:
+            stage.place(rm, *BY_PED)
+        built.clear()
+        for (_, tracker), seen in zip(robots, received, strict=True):
+            assert [_event(e) for e in await stage.tick(tracker, seen)] == [(arena_robots_msgs.msg.CollisionEvent.KIND_PEDESTRIAN, "walker", 0.0, BY_PED)]
+        assert built == [2]
+
+    on_stage(body)
+
+CROWD = 1500
+ROBOTS = 4
+PING_TIMEOUT = 2.0
+PING_BUDGET = 1.0
+
+
+def _crowd(seed: int) -> list[tuple[str, float, float]]:
+    rng = np.random.default_rng(seed)
+    return [(f"walker_{i}", float(x), float(y)) for i, (x, y) in enumerate(rng.uniform((20.0, 0.0), (170.0, 60.0), (CROWD, 2)))]
+
+
+def test_trackers_keep_answering_beside_a_large_crowd(on_stage):
+    """Four robots' trackers ticking on the sim clock beside a large roster renewed at 10 Hz, the env's main thread busy:
+    each tracker answers its parameter service on the env's executor within a second, the ping the env's node watch sends."""
+    from rcl_interfaces.srv import GetParameters
+    from rosgraph_msgs.msg import Clock
+
+    from arena_rclpy_mixins.Time import Time
+
+    async def body(stage: Stage):
+        robots = [stage.robot_manager(f"jackal_{i}") for i in range(ROBOTS)]
+        await stage.arm(robots[0][1])
+        for i, (rm, _) in enumerate(robots):
+            stage.place(rm, *CLEAR, yaw=0.1 * i)
+        published = [await stage.listen(tracker) for _, tracker in robots]
+        clock = stage.probe.create_publisher(Clock, "/clock", 10)
+        clients = [stage.node.create_client_wrapper(GetParameters, f"{tracker.get_fully_qualified_name()}/get_parameters", timeout=PING_TIMEOUT) for _, tracker in robots]
+        for client in clients:
+            assert await client.ensure(5.0)
+        stop = asyncio.Event()
+
+        async def sim() -> None:
+            now = 2.0
+            while not stop.is_set():
+                now += 1.0 / 30.0
+                clock.publish(Clock(clock=Time.from_float(now).to_msg()))
+                await asyncio.sleep(1.0 / 30.0)
+
+        async def crowd() -> None:
+            seed = 0
+            while not stop.is_set():
+                seed += 1
+                await stage.peds(robots[0][1], *_crowd(seed))
+                await asyncio.sleep(0.1)
+
+        async def main_thread_load() -> None:
+            while not stop.is_set():
+                end = time.perf_counter() + 0.004
+                while time.perf_counter() < end:
+                    pass
+                await asyncio.sleep(0.004)
+
+        async def ping(client) -> float:
+            start = time.monotonic()
+            answer = await client.call_timeout(GetParameters.Request(names=["use_sim_time"]))
+            return time.monotonic() - start if answer is not None else math.inf
+
+        tasks = [asyncio.create_task(job()) for job in (sim, crowd, main_thread_load)]
+        try:
+            await _until(lambda: all(len(seen) > 0 for seen in published), "the first ticks")
+            latencies: list[float] = []
+            for _ in range(12):
+                latencies.extend(await asyncio.gather(*(ping(client) for client in clients)))
+                await asyncio.sleep(0.5)
+        finally:
+            stop.set()
+            await asyncio.gather(*tasks)
+        assert all(len(seen) >= 10 for seen in published), f"the trackers ticked {[len(seen) for seen in published]} times"
+        assert max(latencies) < PING_BUDGET, f"slowest parameter ping {max(latencies):.2f}s, median {sorted(latencies)[len(latencies) // 2]:.2f}s"
+
+    on_stage(body)

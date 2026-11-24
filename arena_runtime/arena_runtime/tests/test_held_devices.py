@@ -74,6 +74,21 @@ def test_a_lost_pedestrian_has_no_shapes() -> None:
     assert shapes(ped, 0.3) == (None, None)
 
 
+def test_a_rosters_body_discs_are_the_discs_of_its_pedestrians() -> None:
+    from arena_runtime.humans.devices import body_discs, device_outline
+
+    peds = [_ped(0.0, 0.0, radius=0.45), _ped(3.0, -1.0), _ped(math.nan, 0.0), _ped(-2.0, 5.0, radius=0.2)]
+    place(peds[1], "rollator", np.array([(0.2, -0.3), (0.9, -0.3), (0.9, 0.3), (0.2, 0.3)]), 0.0)
+    discs = body_discs(peds, 0.3)
+    for ped, disc in zip(peds, discs, strict=True):
+        body, device = shapes(ped, 0.3)
+        assert (disc is None) == (body is None)
+        assert disc is None or disc.equals_exact(body, 0.0)
+        assert (device is None) == (device_outline(ped) is None)
+        assert device is None or device.equals_exact(device_outline(ped), 0.0)
+    assert len(body_discs([], 0.3)) == 0
+
+
 def test_the_device_block_comes_whole_from_the_nearest_type_along_extends(tmp_path: Path) -> None:
     import yaml
 
