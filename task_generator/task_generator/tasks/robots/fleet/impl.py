@@ -301,7 +301,8 @@ class TM_Fleet(TM_Robots):
         # the robots' parking spots (each robot's home and every charger, docked objects) are no floor for the crowd
         docked = {entity.name for entity in world.objects if entity.dock is not None}
         parked = [spot for spot in dict.fromkeys((*self._home.values(), *self._chargers)) if spot in docked] if self._keep_crowd_off.value and robots else []
-        await self._ctx.environment_manager.keep_crowd_off(CROWD_OFF_KEY, [world.lookup_zone_polygon(spot) for spot in parked])
+        # every parked spot is a home or a charger, whose polygon the loop above asserted
+        await self._ctx.environment_manager.keep_crowd_off(CROWD_OFF_KEY, [corners for spot in parked if (corners := world.lookup_zone_polygon(spot)) is not None])
         if parked:
             self._logger.info(f"the crowd keeps off {len(parked)} parking spots: {', '.join(parked)}")
         self._spot = dict(self._home)
