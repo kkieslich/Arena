@@ -79,8 +79,9 @@ GROUPS = ("adult", "wheelchair", "long_cane")
 #: The joint ranking's conflict band: a walker within this distance of a driving robot counts as exposed to it, a band
 #: about the robots' routes, since nav2 does not drive the exact shortest line [m]
 CONFLICT_BAND_M = 2.0
-#: The robots' speed while they drive a route, for the time they spend on it (the jackal's planner limit) [m/s]
-ROBOT_SPEED_MPS = 0.5
+#: The robots' speed while they drive a route, for the time they spend on it [m/s]
+#: (the jackals' measured mean over all moving time, crowds included, in twin recordings on the synced stack)
+ROBOT_SPEED_MPS = 1.14
 #: The joint top 10 are distinct layouts: one enters only if, against every better-ranked layout, at least one of its
 #: elements sits at least this far from that element's spot there [m]
 DISTINCT_M = 5.0

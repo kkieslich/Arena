@@ -546,7 +546,7 @@ def test_fleet_gives_a_job_to_a_robot_charged_to_charge_until_whatever_the_estim
 def test_the_energy_per_metre_follows_the_power_profile_when_wh_per_m_is_0(monkeypatch: pytest.MonkeyPatch) -> None:
     from task_generator.tasks.robots.fleet.impl import wh_per_m
 
-    assert wh_per_m(JACKAL) == pytest.approx((42.2 + 50.0 * 1.1 + 17.0 * 0.4) / 1.1 / 3600.0)
+    assert wh_per_m(JACKAL) == pytest.approx((42.2 + 50.0 * 1.14 + 17.0 * 0.39) / 1.14 / 3600.0)
     # the default wh_per_m 0.026 is the jackal's power profile at the measured driving speed and turn rate
     assert round(wh_per_m(JACKAL), 3) == 0.026
     assert wh_per_m(None) == 0.0

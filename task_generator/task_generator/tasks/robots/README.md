@@ -274,7 +274,7 @@ words a goto as walking directions through the world's doors and openings.
   (the power profile's `static_power_w`) over `load_s + unload_s`. When that would leave less than `reserve` percent
   of the robot's battery capacity (`task.episode.battery.capacity_wh`, else its power.yaml), the robot joins the
   charger queue instead, unless it is at `charge_until` already. The default 0.026 Wh/m is the jackal's 42.2 W
-  standby plus 50 W per m/s and 17 W per rad/s at 1.1 m/s and 0.4 rad/s, the jackals' mean speed and turn rate while
+  standby plus 50 W per m/s and 17 W per rad/s at 1.14 m/s and 0.39 rad/s, the jackals' mean speed and turn rate while
   driving in twin recordings with the crowd (`DRIVE_SPEED_MPS`, `DRIVE_TURN_RADPS`); `wh_per_m: 0` computes the same from each
   robot's power profile. The default `detour` 1.2 is about the 90th percentile of geodesic over straight-line distance
   on the `smu_link_full` map (mean 1.09, 0.25 m grid, 0.3 m clearance).

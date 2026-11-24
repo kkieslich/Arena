@@ -23,7 +23,7 @@ class FleetParams(ParamGroup):
     CHARGE_BELOW = Param[float]("charge_below", 30.0, "Battery percent under which a free robot goes to a charger instead of taking a job.", constraint=Range(0.0, 100.0))
     CHARGE_UNTIL = Param[float]("charge_until", 100.0, "Battery percent at which a charging robot is free again, at least charge_below; with top_up, a free robot under it takes a charger whose holder is away.", constraint=Range(0.0, 100.0))
     RESERVE = Param[float]("reserve", 10.0, "Battery percent a job must leave by its energy estimate, else the robot charges first.", constraint=Range(0.0, 100.0))
-    WH_PER_M = Param[float]("wh_per_m", 0.026, "Wh a robot uses per metre driven, standby while driving included, for the job energy estimate; 0 derives it from the robot's power profile at 1.1 m/s and 0.4 rad/s (the jackal's measured mean while driving).", constraint=Range(0.0, 10.0))
+    WH_PER_M = Param[float]("wh_per_m", 0.026, "Wh a robot uses per metre driven, standby while driving included, for the job energy estimate; 0 derives it from the robot's power profile at 1.14 m/s and 0.39 rad/s (the jackal's measured mean while driving).", constraint=Range(0.0, 10.0))
     DETOUR = Param[float]("detour", 1.2, "Route length over straight-line distance assumed for the job energy estimate.", constraint=Range(1.0, 10.0))
     JOB_TIMEOUT = Param[float](
         "job_timeout",

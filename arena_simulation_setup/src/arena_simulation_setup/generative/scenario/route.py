@@ -13,7 +13,8 @@ MIN_EPISODE_S = 30.0
 MAX_EPISODE_S = 60.0
 CASE_RESERVE_S = 20.0
 
-ROBOT_SPEED_MPS = 0.5
+#: the robot's speed along its route, for how long it drives it [m/s]: the jackals' measured mean over all moving time in twin recordings on the synced stack
+ROBOT_SPEED_MPS = 1.14
 
 
 ROUTE_MARGIN = 1.2
