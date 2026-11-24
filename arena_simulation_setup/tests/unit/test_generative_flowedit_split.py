@@ -294,7 +294,8 @@ def test_a_sweep_runs_every_job_and_counts_how_each_ended(doc: dict[str, Any], t
     assert len(logs) == 7 and {line for f in logs for line in f.read_text().splitlines() if line.startswith("domain")} == {"domain 170", "domain 171"}
 
 
-def test_cli_lists_a_split(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_lists_a_split(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARENA_DATA_DIR", str(tmp_path))
     assert main(["sweep", str(SPLITS / "peds_pilot.yaml"), "--partition", "held_out_worlds", "--dry-run"]) == 0
     rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
     assert rows and {(r[0], r[1]) for r in rows} == {(SP.BASE_CROWD, "held_out_worlds")} and rows[0][2] == "office_1"

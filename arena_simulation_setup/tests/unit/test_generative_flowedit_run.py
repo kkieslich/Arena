@@ -258,7 +258,7 @@ def test_cli_skips_a_finished_run(worlds: Path, tmp_path: Path, fake_bin: Path, 
     _fake_arena(fake_bin, "echo launched >> $(dirname $d)/count; exit 9")
     args = ["run", "hospital_1", "queue", "--worlds", str(worlds), "--count", "2", "--out", str(tmp_path), "--duration", "1"]
     assert main(args) == 1
-    run_dir = next((tmp_path).iterdir())
+    run_dir = next(p for p in tmp_path.iterdir() if p.name.startswith("hospital_1__flowedit_"))
     (run_dir / R.RUN_FILE).write_text("format: flowedit-run/1\n")
     (run_dir / R.TRACKS).write_text("")
     capsys.readouterr()
