@@ -56,6 +56,7 @@ arena_humansim = [
     "cattrs",
     "gymnasium",
     "matplotlib",
+    "numba",
     "numpy",
     "pandas",
     "py-trees>=2.4.0",
@@ -196,6 +197,7 @@ reportPrivateImportUsage = "none"
 executionEnvironments = [
     { root = "arena_isaac/arena_isaac", reportMissingImports = "none" },
     { root = "arena_assets/src/arena_assets/utils/ModelConverter", reportMissingImports = "none" },
+    { root = "arena_assets/src/arena_assets/impl/collider_gen", reportMissingImports = "none" },
     { root = "arena_assets/blender/arena_assets_blender", reportMissingImports = "none" },
     { root = "arena_training/deps/rosnav_rl/tools", reportMissingImports = "none" },
     { root = "_meta" },

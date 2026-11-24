@@ -82,6 +82,12 @@ def plot(argv: list[str]) -> None:
     common._exec("ros2", "run", "arena_evaluation", "evaluation", "plot", *argv)
 
 
+def groups(argv: list[str]) -> None:
+    """print each pedestrian measure per group (mean over seeds) and write ped_groups.parquet"""
+    common._reg_require(NAME)
+    common._exec("ros2", "run", "arena_evaluation", "evaluation", "groups", *argv)
+
+
 def kill(argv: list[str]) -> None:
     """stop arena processes by PID, --kind KIND or --all, SIGINT first (bare kill stops nothing and lists them)"""
     common._exec("ros2", "run", "arena_evaluation", "evaluation_cli", "kill", *argv)
@@ -103,6 +109,7 @@ COMMANDS: dict[str, Verb] = {
         make_verb("process", process, passthrough=True),
         make_verb("report", report, passthrough=True),
         make_verb("plot", plot, passthrough=True),
+        make_verb("groups", groups, passthrough=True),
         make_verb("acoustic", acoustic, passthrough=True),
     ]
 }
