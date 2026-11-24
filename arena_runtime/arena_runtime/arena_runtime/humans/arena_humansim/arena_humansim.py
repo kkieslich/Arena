@@ -131,6 +131,7 @@ from arena_runtime.humans.support import Support, seat_stand
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall
 
 from .agent import ArenaHumanDynamicObstacle, agent_type_def, agent_type_stimuli, flow_agent_template, path_agent_type_name
+from .blank import blank_factory
 from .rng_keys import AgentSource, flow_model_key, seats_key, walker_key
 
 try:
@@ -227,6 +228,15 @@ class SeatHold:
     kind: InteractionType
     object_id: str
     seat: int
+
+
+#: a default Pedestrian, copied (`blank_factory`): the roster builds one per walker and render
+_blank_pedestrian = blank_factory(Pedestrian)
+
+
+def _items(mapping: Mapping[typing.Any, object]) -> tuple[list[object], list[object]]:
+    """A mapping's keys and values in order: equal to another's exactly when `tuple(mapping.items())` would be, without a tuple per item."""
+    return list(mapping), list(mapping.values())
 
 
 @attrs.frozen
@@ -723,11 +733,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         in_place = (
             render_ns,
             self._engine_stamp_ns,
-            tuple(self._teleport_stamps.items()),
-            tuple(self._agent_names.items()),
-            tuple(self._agent_type_paths.items()),
-            tuple(self._ped_model_uris.items()),
-            tuple(self._seats.items()),
+            _items(self._teleport_stamps),
+            _items(self._agent_names),
+            _items(self._agent_type_paths),
+            _items(self._ped_model_uris),
+            _items(self._seats),
             (cfg.x, cfg.y, cfg.prefix),
         )
         return replaced, in_place
@@ -1187,49 +1197,67 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._world_state_pub.publish(msg)
 
     def _agent_states_to_pedestrians(self, msg: AgentFrameMsg) -> Pedestrians:
+        """One Pedestrian per engine agent, in the frame's order.
+
+        Runs for every render (50 Hz and on every engine frame) over the whole crowd: the per-ped body holds only what differs
+        per ped, the lookups and the env offset are bound once, and each message starts as a copy of a default one
+        (`_blank_pedestrian`), not through the generated constructor.
+        """
         peds = Pedestrians()
         peds.header.stamp = msg.header.stamp
         peds.header.frame_id = "map"
         gestures_by_id = self._agent_gestures
-        self._supports = {}
+        supports: dict[int, Support] = {}
+        self._supports = supports
         n = len(msg.agent_id)
         gait_phase = msg.gait_phase if len(msg.gait_phase) == n else [0.0] * n
         gait_cadence = msg.gait_cadence if len(msg.gait_cadence) == n else [0.0] * n
         interaction_ids = msg.interaction_id if len(msg.interaction_id) == n else [-1] * n
         interaction_types = msg.interaction_type if len(msg.interaction_type) == n else [0] * n
         radii = msg.radius if len(msg.radius) == n else [0.0] * n
+        cfg = self._realizer.get_config()
+        ox, oy = cfg.x, cfg.y
+        names, types, type_paths, seat_holds = self._agent_names, self._agent_types, self._agent_type_paths, self._seat_holds
+        sin, cos, blank = math.sin, math.cos, _blank_pedestrian
+        out: list[Pedestrian] = []
         for agent_id, ex, ey, yaw, vx, vy, animation_state, phase, cadence, interaction_id, interaction_type, radius in zip(msg.agent_id, msg.x, msg.y, msg.theta, msg.vx, msg.vy, msg.animation_state, gait_phase, gait_cadence, interaction_ids, interaction_types, radii, strict=True):
-            ped = Pedestrian()
+            ped = blank()
             ped.id = agent_id
-            ped.name = self._agent_names.get(agent_id, str(agent_id))
+            ped.name = names.get(agent_id, str(agent_id))
             ped.gait_phase = float(phase)
             ped.gait_cadence = float(cadence)
             ped.radius = float(radius)
-            ped.agent_type = self._agent_type_of(agent_id)
+            agent_type = types.get(agent_id, "")
+            ped.agent_type = type_paths.get(agent_type, agent_type)
 
-            x, y = self._from_engine(ex, ey)
+            # `_from_engine`, the env offset read once per render
+            x, y = float(ex + ox), float(ey + oy)
 
-            gestures = [GestureMsg(slot=g.slot, at=Point(x=gx, y=gy, z=g.at.z), clip=g.clip, hand=g.hand, render_pose_override=g.render_pose_override) for g in gestures_by_id.get(agent_id, ()) for gx, gy in (self._from_engine(g.at.x, g.at.y),)]
-
-            # contact kinds (hug, handshake) draw on the formation slot, physics stays put
-            override = next((g for g in gestures if g.slot == "body" and g.render_pose_override), None)
-            if override is not None:
-                x, y = override.at.x, override.at.y
+            gestures: list[GestureMsg] = []
+            owned = gestures_by_id.get(agent_id)
+            if owned:
+                gestures = [GestureMsg(slot=g.slot, at=Point(x=float(g.at.x + ox), y=float(g.at.y + oy), z=g.at.z), clip=g.clip, hand=g.hand, render_pose_override=g.render_pose_override) for g in owned]
+                # contact kinds (hug, handshake) draw on the formation slot, physics stays put
+                override = next((g for g in gestures if g.slot == "body" and g.render_pose_override), None)
+                if override is not None:
+                    x, y = override.at.x, override.at.y
 
             # into the message's own (default) pose and twist: the same values, five fewer messages per ped and render
-            position, orientation, linear = ped.pose.position, ped.pose.orientation, ped.twist.linear
+            pose = ped.pose
+            position, orientation, linear = pose.position, pose.orientation, ped.twist.linear
             position.x, position.y = x, y
-            orientation.z, orientation.w = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+            orientation.z, orientation.w = sin(yaw / 2.0), cos(yaw / 2.0)
             linear.x, linear.y = vx, vy
 
             ped.animation_state = animation_state
             ped.gestures = gestures
             ped.interaction_id = int(interaction_id)
             ped.interaction_type = int(interaction_type)
-            if (support := self._parked_support(agent_id, ex, ey)) is not None:
-                self._supports[agent_id] = support
+            if agent_id in seat_holds and (support := self._parked_support(agent_id, ex, ey)) is not None:
+                supports[agent_id] = support
 
-            peds.pedestrians.append(ped)  # pyright: ignore[reportAttributeAccessIssue]
+            out.append(ped)
+        peds.pedestrians = out
         return peds
 
     def _polygon_to_shape_msg(self, polygon: Sequence[Position], centroid: tuple[float, float] | None = None) -> ShapeMsg:
