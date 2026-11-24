@@ -24,6 +24,8 @@ WAIT_HOLD_S = 3600.0
 #: mean speed and turn rate assumed while a robot drives, for the energy per metre derived from its power profile (Nav2 caps the jackal at 0.5 m/s and 1.5 rad/s)
 DRIVE_SPEED_MPS = 0.4
 DRIVE_TURN_RADPS = 0.2
+#: the crowd-only wall set round the robots' parking spots (`keep_crowd_off`)
+CROWD_OFF_KEY = "fleet_parking"
 #: when a robot goes to charge (`charge_rule`), and what a jam on a charging trip does (`charge_jam`)
 CHARGE_RULES = ("threshold", "need")
 CHARGE_JAMS = ("home", "retry")
@@ -169,6 +171,7 @@ class TM_Fleet(TM_Robots):
     _stop_empty: ParamHandle[bool]
     _no_power_s: ParamHandle[float]
     _no_power_rise: ParamHandle[float]
+    _keep_crowd_off: ParamHandle[bool]
 
     def __init__(self, **kwargs: typing.Unpack[TaskModeKwargs]) -> None:
         super().__init__(**kwargs)
@@ -209,6 +212,7 @@ class TM_Fleet(TM_Robots):
         self._stop_empty = self._params.STOP_EMPTY
         self._no_power_s = self._params.NO_POWER_S
         self._no_power_rise = self._params.NO_POWER_RISE
+        self._keep_crowd_off = self._params.KEEP_CROWD_OFF
 
         self._chargers: list[str] = []
         self._xy: dict[str, tuple[float, float]] = {}
@@ -292,6 +296,12 @@ class TM_Fleet(TM_Robots):
                 self._dock_area[spot] = polygon
         self._no_power_at, self._stopped, self._in_dock_logged, self._docked_watch = {}, {}, set(), {}
         self._home = {robot.name: home for robot, home in zip(robots, homes, strict=False)}
+        # the robots' parking spots (each robot's home and every charger, docked objects) are no floor for the crowd
+        docked = {entity.name for entity in world.objects if entity.dock is not None}
+        parked = [spot for spot in dict.fromkeys((*self._home.values(), *self._chargers)) if spot in docked] if self._keep_crowd_off.value and robots else []
+        await self._ctx.environment_manager.keep_crowd_off(CROWD_OFF_KEY, [world.lookup_zone_polygon(spot) for spot in parked])
+        if parked:
+            self._logger.info(f"the crowd keeps off {len(parked)} parking spots: {', '.join(parked)}")
         self._spot = dict(self._home)
         self._arrived = set(self._home)
         self._state = dict.fromkeys(self._home, _State.PARKED)
@@ -384,6 +394,7 @@ class TM_Fleet(TM_Robots):
     async def teardown(self) -> None:
         self._log = {}
         self._ctx.episode.publish_task_entity(LOG_KIND, {})
+        await self._ctx.environment_manager.keep_crowd_off(CROWD_OFF_KEY, [])
         await super().teardown()
 
     # JOBS

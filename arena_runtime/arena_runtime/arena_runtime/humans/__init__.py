@@ -755,6 +755,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
     def set_mechanism_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
         """Replace the named wall set seen by pedestrian navigation; None removes it. Map frame."""
 
+    async def set_crowd_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
+        """`set_mechanism_walls`, in place once it returns: walls only the walkers see, set before they spawn. Map frame."""
+        self.set_mechanism_walls(key, segments)
+
     async def _clear_mechanism_walls(self) -> None:
         """Drop every mechanism wall set (world teardown)."""
 

@@ -84,6 +84,7 @@ class FleetParams(ParamGroup):
     LEG_TIMEOUT_CAP = Param[float](
         "leg_timeout_cap", 2.0, "With leg_timeout_moving false: a leg that has driven this many times its timeout ends (abandoned, reason timeout) whatever the robot does, so a robot that keeps moving and never arrives cannot hold its dock for good; 0 for no cap.", constraint=Range(0.0, 100.0)
     )
+    KEEP_CROWD_OFF = Param[bool]("keep_crowd_off", True, "Walkers route round the robots' parking spots: the dock of each robot's home and of every charger is walled off for the crowd simulator alone (the robots' map and planners stay as they are), so a walker never walks into a parking spot or stops at a robot parked there. false: the crowd treats them as free floor.")
     JOB_TIMEOUT_PER_M = Param[float]("job_timeout_per_m", 5.0, "Seconds the timeout grows by per metre of the route estimate (straight line times detour): from where a job leg starts to its dock, to the charger for a charging trip.", constraint=Range(0.0, 3600.0))
 
 
