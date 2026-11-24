@@ -64,3 +64,23 @@ def test_a_cache_without_old_sources_is_done(tmp_path):
     done = _run(tmp_path / "data")
     assert done.returncode == 0
     assert done.stdout == ""
+
+
+def test_a_missing_tmpdir_falls_back_to_tmp(tmp_path: Path) -> None:
+    root = tmp_path / "data" / "assets"
+    _file(root / "default/Common/Object/a/a.usdz")
+    env = {**os.environ, "ARENA_DATA_DIR": str(tmp_path / "data"), "TMPDIR": str(tmp_path / "shared")}
+    done = subprocess.run([str(PATCH)], env=env, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert _tree(root) == ["arena-public/Common/Object/a/a.usdz"]
+    assert not (tmp_path / "shared").exists()
+
+
+def test_the_container_source_drops_a_missing_tmpdir(tmp_path: Path) -> None:
+    source = Path(__file__).parents[2] / "docker" / "features" / "docker" / "source.container"
+    lines = source.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith('if [ -n "${TMPDIR:-}" ]'))
+    block = "\n".join(lines[start : start + 3])
+    for given, kept in ((str(tmp_path / "shared"), "/tmp"), (str(tmp_path), str(tmp_path)), ("", "")):
+        out = subprocess.run(["bash", "-c", f'{block}\nprintf %s "${{TMPDIR:-}}"'], env={**os.environ, "TMPDIR": given}, capture_output=True, text=True, check=True)
+        assert out.stdout == kept
