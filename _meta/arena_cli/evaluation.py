@@ -84,7 +84,6 @@ def plot(argv: list[str]) -> None:
 
 def groups(argv: list[str]) -> None:
     """print each pedestrian measure per group (mean over seeds) and write ped_groups.parquet"""
-    common._reg_require(NAME)
     common._exec("ros2", "run", "arena_evaluation", "evaluation", "groups", *argv)
 
 

@@ -51,7 +51,7 @@ import attrs
 
 from . import place
 from .place import Entrance, Layout, Spot
-from .search import CONFLICT_BAND_M, GROUPS, PATH_SNAP_M, ROBOT_SPEED_MPS, SEARCHED, Checked, Occupancy, RobotPaths, Search, _num, _reach, approach_area
+from .search import CONFLICT_BAND_M, GROUPS, PATH_SNAP_M, ROBOT_SPEED_MPS, SEARCHED, Checked, Occupancy, RobotPaths, Search, _num, _reach
 
 if TYPE_CHECKING:
     import numpy as np
@@ -178,6 +178,7 @@ class _Link:
         at the walker's speed capped at `STAIR_SPEED_MPS` (`teleport_zones._climb`). Without holds, a link with steps
         takes its length at `LINK_SPEED_MPS`, another its `delay` (else its length at the walker's speed)."""
         if self.board_m is not None and self.land_m is not None and self.kind in STEP_KINDS:
+
             def on(belt: float) -> float:
                 return abs(belt) if belt else min(speed_mps, STAIR_SPEED_MPS)
 
@@ -906,15 +907,20 @@ class EntranceSearch:
             out["worst_group"] = max(values, key=lambda g: values[g])
         if placed.step_free_set is not None:
             out["step_free_set"] = placed.step_free_set
-        out["spots"] = [
-            {"element": s.element.name, "spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "objects": [{"name": o.name, "model": o.model, "x": o.x, "y": o.y, "yaw": o.yaw, "goto": list(o.goto)} for o in s.objects]}
-            for s in placed.layout.spots
-        ]
+        out["spots"] = [{"element": s.element.name, "spot": s.id, "zone": s.zone, "piece": s.piece, "step": s.step, "objects": [{"name": o.name, "model": o.model, "x": o.x, "y": o.y, "yaw": o.yaw, "goto": list(o.goto)} for o in s.objects]} for s in placed.layout.spots]
         return out
 
     def counts(self) -> dict[str, Any]:
         s = self.search
-        return {"entrances": [e.name for e in self.entrances], "spots": {CHARGERS: len(s.spots[CHARGERS]), BAYS: len(s.spots[BAYS]), LOCKER: len(self.lockers)}, "locker_spots_of_the_site": len(s.spots[LOCKER]), "invalid_alone": dict(self.alone_invalid), "pairs_screened": dict(self.pairs_screened), "walk_neighbourhood": self.walk_neighbourhood, "reach_max_m": self.reach_max_m}
+        return {
+            "entrances": [e.name for e in self.entrances],
+            "spots": {CHARGERS: len(s.spots[CHARGERS]), BAYS: len(s.spots[BAYS]), LOCKER: len(self.lockers)},
+            "locker_spots_of_the_site": len(s.spots[LOCKER]),
+            "invalid_alone": dict(self.alone_invalid),
+            "pairs_screened": dict(self.pairs_screened),
+            "walk_neighbourhood": self.walk_neighbourhood,
+            "reach_max_m": self.reach_max_m,
+        }
 
     # --- the exact search --------------------------------------------------------------------------------------------
 

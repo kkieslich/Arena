@@ -519,4 +519,30 @@ def sweep(
     return counts
 
 
-__all__ = ["ALL_CROWDS", "BASE_CROWD", "CONTEST", "PARTITIONS", "ROBOT_TASK", "SEED_KINDS", "SPLIT_FORMAT", "Job", "base_of", "baseline_seeds_of", "check", "contest_of", "crowd", "crowd_names", "duration_of", "generate_argv", "is_base", "jobs", "load", "partitions_of", "regenerate_worlds", "robot_task_of", "seeds_of", "sweep", "verify"]
+__all__ = [
+    "ALL_CROWDS",
+    "BASE_CROWD",
+    "CONTEST",
+    "PARTITIONS",
+    "ROBOT_TASK",
+    "SEED_KINDS",
+    "SPLIT_FORMAT",
+    "Job",
+    "base_of",
+    "baseline_seeds_of",
+    "check",
+    "contest_of",
+    "crowd",
+    "crowd_names",
+    "duration_of",
+    "generate_argv",
+    "is_base",
+    "jobs",
+    "load",
+    "partitions_of",
+    "regenerate_worlds",
+    "robot_task_of",
+    "seeds_of",
+    "sweep",
+    "verify",
+]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import math
+import unittest.mock
 from collections.abc import Awaitable, Callable, Iterator
 from types import SimpleNamespace
 
@@ -286,8 +287,20 @@ def _fleet(monkeypatch: pytest.MonkeyPatch | None = None, jobs: str | None = Non
         conf=SimpleNamespace(RNG=rng),
         episode=SimpleNamespace(publish_task_entity=publish),
     )
-    node = SimpleNamespace(ROSParam={str: param, float: param, bool: param, list[str]: param}, sim_time=Time(sec=FLEET_T0), get_logger=lambda: SimpleNamespace(get_child=lambda name: logger))
-    return impl.TM_Fleet(ctx=ctx, namespace=Namespace("task.fleet").ParamNamespace(), node=node), managers, node, record
+    node = SimpleNamespace(sim_time=Time(sec=FLEET_T0), get_logger=lambda: SimpleNamespace(get_child=lambda name: logger))
+
+    declared_params = impl.FleetParams.params()
+
+    class _Params:
+        """FleetParams with the values above, each param its own handle."""
+
+        def __init__(self, _node: object, *, namespace: str | None = None) -> None:
+            for declared in declared_params:
+                setattr(self, declared.attr, param(declared.name, declared.default))
+
+    with unittest.mock.patch.object(impl, "FleetParams", _Params):
+        mode = impl.TM_Fleet(ctx=ctx, namespace=Namespace("task.fleet").ParamNamespace(), node=node)
+    return mode, managers, node, record
 
 
 def _at(node: SimpleNamespace, release_s: float) -> None:
@@ -1650,7 +1663,6 @@ def test_fleet_logs_the_robots_charge_and_homes_to_a_file(tmp_path: object) -> N
     mode, *_ = _fleet()
     asyncio.run(mode.reset())
     assert list(tmp_path.iterdir()) == [tmp_path / "logs"]
-
 
 
 # --- charging by need with a floor, one charge per waiting job, a charge at the start, a robot at 0 % stops ----------

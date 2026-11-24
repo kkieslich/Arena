@@ -642,8 +642,6 @@ def test_chargers_and_lockers_stand_within_cable_run_of_an_outlet_once_the_site_
     assert {s.verdict[Rule.OUTLET_CABLE] for s in candidate_spots(hospital, "charger_pair", facts=place.SiteFacts())} == {Verdict.UNKNOWN}
 
 
-
-
 def test_an_entrance_off_the_walking_floor_gets_a_warning(hospital: Site) -> None:
     far = place.Entrance("typo", "building", ((-40.0, -40.0),), recipients=True)
     with pytest.warns(UserWarning, match="entrance 'typo'.*from the walking floor"):
@@ -664,4 +662,3 @@ def test_the_walking_grid_keeps_a_one_metre_door(tmp_path: Path) -> None:
     walk = place.walking_paths(site, site.world.levels[next(iter(site.world.levels))].id)
     d = walk.lengths([(3.0, 3.0)], [(9.0, 3.0)])[0, 0]
     assert np.isfinite(d) and d == pytest.approx(6.0, abs=0.6)
-

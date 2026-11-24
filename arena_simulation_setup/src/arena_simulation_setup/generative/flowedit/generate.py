@@ -211,11 +211,7 @@ def resolve_footprints(site: Site, models: Sequence[str], strict: bool = False) 
         return
     docked = _docked_models(site)
     refused = [
-        f"model {m!r} of a docked object does not resolve ({_UNRESOLVED[(site.root, m)]}): the fallback box faces pi and can turn its dock to the wall"
-        if m in docked
-        else f"model {m!r} does not resolve ({_UNRESOLVED[(site.root, m)]}): its footprint and front are unknown"
-        for m in unresolved
-        if strict or m in docked
+        f"model {m!r} of a docked object does not resolve ({_UNRESOLVED[(site.root, m)]}): the fallback box faces pi and can turn its dock to the wall" if m in docked else f"model {m!r} does not resolve ({_UNRESOLVED[(site.root, m)]}): its footprint and front are unknown" for m in unresolved if strict or m in docked
     ]
     if refused:
         raise ValueError("; ".join(refused))

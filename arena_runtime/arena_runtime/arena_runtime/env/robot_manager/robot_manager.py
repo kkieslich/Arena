@@ -639,6 +639,7 @@ class RobotManager(NodeInterface):
         for adapter, result in zip(self._adapter_instances, results, strict=True):
             if isinstance(result, BaseException):
                 self._logger.error(f"adapter {adapter.kind!r} on_navigation_reset failed: {result!r}")
+
     async def _cancel_ended(self, ended: PhaseState) -> None:
         """Cancel the action of a phase that ended before its server finished, a goto that arrived keeps its planner goal."""
         from arena_runtime.env.request import TaskKind, kind_of

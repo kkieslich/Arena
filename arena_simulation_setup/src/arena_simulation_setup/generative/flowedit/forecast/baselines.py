@@ -71,10 +71,8 @@ class Tracks:
 
     @classmethod
     def load(cls, benchmarks: Path | Sequence[Path], planner: str | None = None) -> Tracks:
-        import polars as pl
 
         from ..suite import parse_stage_name
-
         from .evaluate import check_commits
 
         dirs = [Path(benchmarks)] if isinstance(benchmarks, (str, Path)) else [Path(b) for b in benchmarks]
@@ -212,9 +210,9 @@ class OnlineCliff:
 
     def pre_edit(self, world: str, fold: Fold) -> Any:  # noqa: ANN401
         """The base world's CLiFF-map from its runs at every seed outside the fold's truth, built once per seed set."""
-        from .cliff import from_tracks
-
         import attrs
+
+        from .cliff import from_tracks
 
         base = SP.base_of(world)
         seeds = tuple(outside(self.runs, base, fold.rest))
@@ -330,7 +328,7 @@ def map_score(runs: Runs, worlds: Sequence[str], seeds: Sequence[int], predict: 
     return mean(vals)
 
 
-def tune_cliff(worlds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, make: Callable[[Any], Online], start: Any, grid: Mapping[str, Sequence[Any]] = CLIFF_GRID, log: Callable[[str], None] = print) -> tuple[Any, list[dict[str, Any]]]:
+def tune_cliff(worlds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[[str, int], pl.DataFrame | None], runs: Runs, make: Callable[[Any], Online], start: Any, grid: Mapping[str, Sequence[Any]] = CLIFF_GRID, log: Callable[[str], None] = print) -> tuple[Any, list[dict[str, Any]]]:  # noqa: ANN401
     """CliffParams by one coordinate pass over `grid` from `start`: per field in order, the value with the lowest mean curve
     over `worlds` (validation worlds and their seeds) at TUNE_COUNTS, the others at their values so far; ties keep the first."""
     import attrs
@@ -464,7 +462,7 @@ def geometry_walks(site: Site, grid: FlowGrid, settings: Mapping[str, Any], dura
     reach = np.zeros(grid.ny * grid.nx, bool)
     seen = np.unique(paths.cell[np.concatenate([np.flatnonzero(np.isfinite(trees[n][0])) for _, n in nodes])]) if nodes else np.zeros(0, np.int64)
     reach[seen[seen >= 0]] = True
-    cat = (lambda xs, dtype: np.concatenate(xs) if xs else np.zeros(0, dtype))
+    cat = lambda xs, dtype: np.concatenate(xs) if xs else np.zeros(0, dtype)
     info = {"entrances": [n for n, _ in found], "kind": kind, "walks": walked, "unreachable": unreachable}
     return Walks(grid, cat(flats, np.int64), cat(heads, np.int64), cat(secs, float), reach.reshape(grid.ny, grid.nx) & grid.room_cells(), info)
 

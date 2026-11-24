@@ -173,7 +173,7 @@ def strip_world_yaml(text: str, walls: Iterable[tuple[int, int]]) -> str:
         items = sequence.value
         start = text.rfind("\n", 0, items[wi].start_mark.index) + 1
         end = text.rfind("\n", 0, items[wi + 1].start_mark.index) + 1 if wi + 1 < len(items) else _line_end(text, items[wi].end_mark.index)
-        if text[start:items[wi].start_mark.index].strip() != "-":
+        if text[start : items[wi].start_mark.index].strip() != "-":
             raise ValueError(f"wall {li}/{wi} does not start its own line (- path: ...)")
         cuts.append((start, end))
     out = text
@@ -311,7 +311,7 @@ def append_world_yaml(text: str, level: int, walls: Sequence[Mapping[str, typing
     if at > 0 and text[at - 1] != "\n":
         text, at = text + "\n", at + 1
     dash = text.rfind("\n", 0, last.start_mark.index) + 1
-    indent = " " * (last.start_mark.column - 2) if text[dash:last.start_mark.index].strip() == "-" else None
+    indent = " " * (last.start_mark.column - 2) if text[dash : last.start_mark.index].strip() == "-" else None
     if indent is None:
         raise ValueError("the last wall does not start its own line (- path: ...)")
     block = "".join(f"{indent}- path: [{', '.join(f'[{_num(p[0])}, {_num(p[1])}]' for p in wall['path'])}]\n{indent}  closed: {'true' if wall['closed'] else 'false'}\n{indent}  kind: {wall['kind']}\n" for wall in walls)

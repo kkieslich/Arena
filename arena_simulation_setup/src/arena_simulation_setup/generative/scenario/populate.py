@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import attrs
+
 from arena_simulation_setup.generative.core.profiles import KINEMATICS, MODELS
 
 from .zones import Role, zones_by_role

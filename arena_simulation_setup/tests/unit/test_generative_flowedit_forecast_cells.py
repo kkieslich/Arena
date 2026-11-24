@@ -52,7 +52,11 @@ def _cells(world: str, seed: int, scale: float = 1.0, cell: float = 0.5, heading
 
 def _commits(arena: str = "a" * 40, humansim: str = "b" * 40, dirty: bool = False) -> dict:
     """The `commits` of arena_evaluation's run manifest."""
-    return {"arena": {"path": "/opt/arena_ws/src/Arena", "commit": arena, "dirty": dirty}, "humansim": {"path": "/opt/arena_ws/src/Arena/humansim", "commit": humansim, "dirty": False, "pinned": humansim}, "arena_evaluation": {"path": "/opt/arena_ws/src/Arena/arena_evaluation", "commit": "c" * 40, "dirty": False, "pinned": "c" * 40}}
+    return {
+        "arena": {"path": "/opt/arena_ws/src/Arena", "commit": arena, "dirty": dirty},
+        "humansim": {"path": "/opt/arena_ws/src/Arena/humansim", "commit": humansim, "dirty": False, "pinned": humansim},
+        "arena_evaluation": {"path": "/opt/arena_ws/src/Arena/arena_evaluation", "commit": "c" * 40, "dirty": False, "pinned": "c" * 40},
+    }
 
 
 def _run_dir(root: Path, name: str, frames: list[pl.DataFrame], crowd: str | None = None, commits: dict | None = None) -> Path:
