@@ -119,14 +119,10 @@ def test_human_identifier_tagged_lists_bundles_carrying_every_tag(tmp_path: Path
     _human_bundle(tmp_path, "amy_chair", ["probe::mobility::chair"])
     _human_bundle(tmp_path, "walker", ["probe::age::old"])
     _human_bundle(tmp_path, "bare", None)
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path
-    try:
+    with DynamicPaths.ARENA.pinned(tmp_path):
         chairs = asyncio.run(HumanIdentifier.tagged(["probe::mobility::chair"]))
         old_chairs = asyncio.run(HumanIdentifier.tagged(["probe::mobility::chair", "probe::age::old"]))
         nobody = asyncio.run(HumanIdentifier.tagged(["probe::mobility::scooter"]))
-    finally:
-        DynamicPaths.ARENA.path = previous
     assert [ident.name for ident in chairs] == ["amy_chair", "zed_chair"]
     assert [ident.name for ident in old_chairs] == ["zed_chair"]
     assert nobody == []

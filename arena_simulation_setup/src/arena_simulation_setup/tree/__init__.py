@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import contextlib
 import enum
 import itertools
 import logging
@@ -106,6 +107,17 @@ class RootPath(DynamicPath):
     @path.setter
     def path(self, value: Path) -> None:
         self._assigned = value
+
+    @contextlib.contextmanager
+    def pinned(self, path: Path) -> Iterator[Path]:
+        """`path` as this root inside the block, then the root as before: the path assigned to it, or root() looked up again.
+        Reading `path` and assigning it back would pin the root to its value at that time."""
+        previous = self._assigned
+        self._assigned = path
+        try:
+            yield path
+        finally:
+            self._assigned = previous
 
 
 class LocalRootPath(RootPath):
@@ -344,10 +356,19 @@ class DynamicPathResolver(PathResolverBase[IdentifierT], typing.Generic[Identifi
             fn = _identity_fn
         self._dynamic_path = path
         self._fn = fn
+        self._cache_root: Path | None = None
 
     @property
     def path(self) -> Path:
         return self._fn(self._dynamic_path.path)
+
+    async def resolve(self, identifier: IdentifierT) -> Path | None:
+        # the cache holds paths under the root of its last lookup: a moved root (another world, another local root) starts it anew
+        root = self.path
+        if root != self._cache_root:
+            self._cache.clear()
+            self._cache_root = root
+        return await super().resolve(identifier)
 
 
 class LocalResolver(PathResolverBase[IdentifierT], typing.Generic[IdentifierT]):

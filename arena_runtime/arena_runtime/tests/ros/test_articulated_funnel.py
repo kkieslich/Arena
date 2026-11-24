@@ -33,10 +33,8 @@ def lid_box(tmp_path):
         "states": {"closed": {"lid": 0.0}, "open": {"lid": 1.5}},
     }
     (bundle / "annotation.yaml").write_text(yaml.safe_dump({"bounding_box": [[-0.3, 0.3], [-0.2, 0.2], [0.0, 0.42]], "articulation": articulation}))
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path
-    yield f"Storage/{name}"
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path):
+        yield f"Storage/{name}"
 
 
 def test_the_human_simulator_spawns_replaces_and_removes_an_articulated_obstacle_by_its_links(rclpy_context, lid_box):

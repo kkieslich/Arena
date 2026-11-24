@@ -38,10 +38,8 @@ def assets(tmp_path: Path):
         (cabinet / "links" / link).mkdir(parents=True)
         (cabinet / "links" / link / "annotation.yaml").write_text(yaml.safe_dump({"bounding_box": box}))
     (cabinet / "annotation.yaml").write_text(yaml.safe_dump({"bounding_box": CABINET_LINKS["body"], "articulation": CABINET}))
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path
-    yield {"cabinet": f"Kitchen/{cabinet.name}"}
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path):
+        yield {"cabinet": f"Kitchen/{cabinet.name}"}
 
 
 def _realizer():

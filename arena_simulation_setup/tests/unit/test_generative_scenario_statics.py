@@ -39,10 +39,8 @@ def world(tmp_path: Path) -> Path:
     kiosk = root / "assets" / "Hospital" / "Object" / "WorldKiosk"
     kiosk.mkdir(parents=True)
     (kiosk / "annotation.yaml").write_text(yaml.safe_dump({"bounding_box": [[-0.5, 0.5], [-0.5, 0.5], [0.0, 1.0]]}))
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path / "assets"
-    yield root
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path / "assets"):
+        yield root
 
 
 def test_an_annotated_object_is_its_rotated_bounds(world: Path) -> None:
