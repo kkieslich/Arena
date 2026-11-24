@@ -49,8 +49,10 @@ PASSAGE_M = 0.65
 #: A passage an element narrows below this is a pinch (`pinches`): the corridor rule fails for its spot (against the
 #: site's walls, pillars and objects) or `check_layout` refuses its layout (against other elements). `PASSAGE_M`: only
 #: the passages an element closes into a pocket. `CORRIDOR_MIN_M` would apply the corridor rule to every gap beside an
-#: element (it refuses most of the twin's study layouts and empties hospital_1's search space)
-PINCH_MIN_M = PASSAGE_M
+#: element (it refuses most of the twin's study layouts and empties hospital_1's search space). 0.9 m: the minimum
+#: clear width of a wheelchair route (ADA 403.5.1: 36 in = 0.915 m), so a gap beside an element stays usable, not
+#: only passable
+PINCH_MIN_M = 0.9
 #: Corridor widths are measured up to this width; a wider corridor reports it
 CORRIDOR_CAP_M = 5.0
 #: The wheelchair turning circle's diameter that stays free in front of each element (§3)
