@@ -42,6 +42,15 @@ STEP_M = 1.0
 PAIR_SPACING_M = 1.0
 #: The remaining clear corridor width beyond an element, its docks and its clear zone (§3, placeholder)
 CORRIDOR_MIN_M = 1.8
+#: Obstacles this close merge into one for the pinch check (`pinches`): an element at the wall gap joins its wall
+JOIN_M = 0.05
+#: A gap narrower than a wheelchair (twice NAV@r's 0.325 m radius) is no passage: an element that leaves less closes it
+PASSAGE_M = 0.65
+#: A passage an element narrows below this is a pinch (`pinches`): the corridor rule fails for its spot (against the
+#: site's walls, pillars and objects) or `check_layout` refuses its layout (against other elements). `PASSAGE_M`: only
+#: the passages an element closes into a pocket. `CORRIDOR_MIN_M` would apply the corridor rule to every gap beside an
+#: element (it refuses most of the twin's study layouts and empties hospital_1's search space)
+PINCH_MIN_M = PASSAGE_M
 #: Corridor widths are measured up to this width; a wider corridor reports it
 CORRIDOR_CAP_M = 5.0
 #: The wheelchair turning circle's diameter that stays free in front of each element (§3)
@@ -686,7 +695,7 @@ def _window(frame: _Frame, along: tuple[float, float], front: float) -> shapely.
     return frame.rect(along[0] - CORRIDOR_CAP_M / 2.0 - res, along[1] + CORRIDOR_CAP_M / 2.0 + res, front - CORRIDOR_CAP_M / 2.0, front + 1.5 * CORRIDOR_CAP_M + res)
 
 
-def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], against: bool, clear: shapely.Polygon, turning: shapely.Polygon | None, corridor: float, corridor_min_m: float, peds: Sequence[shapely.Polygon] | None) -> tuple[tuple[Rule, Verdict], ...]:
+def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], against: bool, clear: shapely.Polygon, turning: shapely.Polygon | None, corridor: float, corridor_min_m: float, peds: Sequence[shapely.Polygon] | None, pinched: bool = False) -> tuple[tuple[Rule, Verdict], ...]:
     import shapely
 
     from . import generate as gen
@@ -704,7 +713,7 @@ def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], 
     out[Rule.NO_OVERLAP] = ok(all(ctx.floor_inner.covers(f) and not ctx.walls.intersects(f) and not ctx.doors.intersects(f) and not ctx.obstacle_union.intersects(f.buffer(gen.MARGIN_M)) for f in footprints) and not any(_overlaps(a, b) for i, a in enumerate(footprints) for b in footprints[i + 1 :]))
     out[Rule.CLEAR_ZONE] = ok(clear.is_empty or (free_floor(clear) and not ctx.doors.intersects(clear)))
     out[Rule.TURNING_CIRCLE] = ok(turning is None or free_floor(turning))
-    out[Rule.CORRIDOR_WIDTH] = ok(corridor >= corridor_min_m)
+    out[Rule.CORRIDOR_WIDTH] = ok(corridor >= corridor_min_m and not pinched)
     grid, (ox, oy) = ctx.grid
 
     def on_free_cell(point: Point) -> bool:
@@ -798,8 +807,10 @@ def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float,
         turning = shapely.Point(frame.at((fp_lo + fp_hi) / 2.0, max(fp_front, dock_front) + radius)).buffer(radius, quad_segs=16)
     blocked = shapely.union_all([footprints, docks, clear])
     corridor = _corridor_width(ctx, frame, blocked, (lo, hi), max(far, dock_front, fp_front), zone=ctx.shapes.get(zone))
-    verdicts = _verdicts(ctx, element, objects, against, clear, turning, corridor, corridor_min_m, peds)
-    return Spot(element, ctx.level_id, zone, index, step, round(centre, 3), round(piece.line.length, 3), frame, tuple(objects), clear, turning, corridor, verdicts)
+    spot = Spot(element, ctx.level_id, zone, index, step, round(centre, 3), round(piece.line.length, 3), frame, tuple(objects), clear, turning, corridor, ())
+    # the corridor rule along the wall too: no pinch or pocket between the spot and the site's walls, pillars, objects
+    pinched = bool(pinches(ctx, spot, None, min(PINCH_MIN_M, corridor_min_m)))
+    return attrs.evolve(spot, verdicts=_verdicts(ctx, element, objects, against, clear, turning, corridor, corridor_min_m, peds, pinched))
 
 
 def candidate_spots(
@@ -872,12 +883,70 @@ def _turned(points: Sequence[Sequence[float]], angle: float) -> shapely.Polygon:
 # --- layouts -----------------------------------------------------------------------------------------------------------
 
 
-def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR_MIN_M) -> list[str]:
+_SITE = "a wall, pillar or object"
+
+
+def pinches(ctx: _Context, spot: Spot, others: Mapping[str, shapely.Geometry] | None = None, pinch_min_m: float = CORRIDOR_MIN_M) -> list[tuple[float, float, str]]:
+    """The passages `spot` narrows below `pinch_min_m` or closes: (gap left, passage width before, what), narrowest
+    first. A gap is the free floor between the floor the spot's elements and robots occupy (`Spot.taken`: footprints
+    and docks, a docked or parked robot counted as standing there) and an obstacle near it that it does not stand
+    against, in any direction, beside it along the wall too. Obstacles are the level's walls, pillars and objects, and
+    `others` (other elements' floor, by name); those within `JOIN_M` of each other are one, so an element at the wall
+    gap is one with its wall, and the obstacle its back stands against is no gap. The passage before is the free run
+    from the obstacle across the gap and on through the spot's floor to the next obstacle: under `PASSAGE_M` nobody
+    walked there before, and the gap is none. A gap under `PASSAGE_M` closes the passage into a pocket."""
+    import shapely
+    from shapely.ops import nearest_points, substring
+
+    taken = spot.taken
+    x0, y0, x1, y1 = taken.buffer(max(pinch_min_m, CORRIDOR_CAP_M) + JOIN_M).bounds
+    named = {name: shapely.clip_by_rect(g, x0, y0, x1, y1) for name, g in (others or {}).items()}
+    parts = [shapely.clip_by_rect(ctx.walls, x0, y0, x1, y1), shapely.clip_by_rect(ctx.obstacle_union, x0, y0, x1, y1), *named.values()]
+    merged = shapely.union_all([p for p in parts if not p.is_empty]).buffer(JOIN_M / 2.0).buffer(-JOIN_M / 2.0)
+    components = [g for g in getattr(merged, "geoms", [merged]) if not g.is_empty and g.area > 0]
+    lo, hi, back, _ = spot.frame.extent(taken)
+    behind = spot.frame.rect(lo, hi, back - 2.0 * JOIN_M, back + JOIN_M)
+    out = []
+    for i, component in enumerate(components):
+        if component.intersects(behind):
+            continue  # the wall the element stands against, and whatever joins it
+        gap = float(taken.distance(component))
+        if gap >= pinch_min_m:
+            continue
+        rest = [c for j, c in enumerate(components) if j != i]
+        others_there = shapely.union_all(rest) if rest else shapely.Polygon()
+        a, b = nearest_points(taken, component)
+        if gap > JOIN_M:
+            # a gap across free floor, on the floor, with no other obstacle in it
+            line = shapely.LineString([a, b])
+            if others_there.intersects(substring(line, JOIN_M, line.length - JOIN_M)) or not ctx.floor.covers(line.interpolate(0.5, normalized=True)):
+                continue
+            ux, uy = (a.x - b.x) / gap, (a.y - b.y) / gap
+        else:
+            c = taken.representative_point()
+            norm = math.hypot(c.x - b.x, c.y - b.y) or 1.0
+            ux, uy = (c.x - b.x) / norm, (c.y - b.y) / norm
+        # the passage before: from the obstacle across the gap and through the spot's floor to the next obstacle
+        ray = shapely.LineString([(b.x + ux * JOIN_M, b.y + uy * JOIN_M), (b.x + ux * CORRIDOR_CAP_M, b.y + uy * CORRIDOR_CAP_M)])
+        hit = ray.intersection(others_there)
+        before = CORRIDOR_CAP_M if hit.is_empty else JOIN_M + float(shapely.Point(ray.coords[0]).distance(hit))
+        if before < PASSAGE_M:
+            continue  # no passage before: the spot fills a gap nobody walked through
+        what = sorted(name for name, g in named.items() if g.intersects(component.buffer(JOIN_M)))
+        out.append((round(gap, 2), round(before, 2), ", ".join(what) if what else _SITE))
+    return sorted(out)
+
+
+def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR_MIN_M, pinch_min_m: float | None = None) -> list[str]:
     """Why `layout` is no valid layout on `site`, empty when it is: a spot with a failing rule, two elements whose
     floor overlaps (`Spot.taken` of one in `Spot.keep_clear` of another, or a footprint within the generator's margin
-    of the other's footprints and docks, as `no_overlap` keeps it from objects), an object name taken twice, or a
-    corridor that the other elements narrow below `corridor_min_m`. Objects of the layout's elements that `site`
-    already has are no obstacles here: the layout places them anew."""
+    of the other's footprints and docks, as `no_overlap` keeps it from objects), an object name taken twice, a
+    corridor that the other elements narrow below `corridor_min_m`, or a pinch (`pinches`): a passage narrowed below
+    `pinch_min_m` (default `PINCH_MIN_M`) or closed into a pocket between an element's occupied floor (docks
+    included) and another element, beside it along the wall too (a pinch against the site alone fails the spot's
+    corridor rule; with a `pinch_min_m` above `PINCH_MIN_M` those are reported here too).
+    Objects of the layout's elements that `site` already has are no obstacles here: the layout places them anew."""
+    pinch_min_m = PINCH_MIN_M if pinch_min_m is None else pinch_min_m
     import shapely
 
     from . import generate as gen
@@ -895,6 +964,14 @@ def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR
     placed = frozenset(f"obj:{o.name}" for o in layout.objects)
     for s in layout.spots:
         others = [o for o in layout.spots if o is not s and o.level == s.level]
+        ctx = _context(site, s.level, placed)
+        for gap, before, what in pinches(ctx, s, {o.element.name: o.taken for o in others}, pinch_min_m):
+            if what == _SITE and pinch_min_m <= PINCH_MIN_M:
+                continue  # a gap to the site alone fails the spot's corridor rule (`_spot`)
+            if gap < PASSAGE_M:
+                problems.append(f"{s.element.name}: pinch, closes a {before:.2f} m passage to {what} into a pocket ({gap:.2f} m left)")
+            else:
+                problems.append(f"{s.element.name}: pinch, leaves {gap:.2f} m of a {before:.2f} m passage to {what}, under {pinch_min_m} m")
         if not others:
             continue
         blocked = shapely.union_all([s.taken, s.clear])
@@ -1011,6 +1088,8 @@ __all__ = [
     "Element",
     "Entrance",
     "Layout",
+    "PASSAGE_M",
+    "PINCH_MIN_M",
     "PlacedElement",
     "PlacedObject",
     "Rule",
@@ -1024,6 +1103,7 @@ __all__ = [
     "check_layout",
     "clear_cache",
     "insert_params",
+    "pinches",
     "layout_name",
     "layout_prefix",
     "placed_elements",
