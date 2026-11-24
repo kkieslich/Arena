@@ -260,7 +260,8 @@ class TM_Fleet(TM_Robots):
         listed_jobs = listed(entries)
         if lockers or entries:
             # several lockers: every one a dock, with the mode's one locker where it is named too
-            lockers = list(dict.fromkeys([*([self._locker.value] if self._locker.value else []), *lockers]))
+            named: list[str] = [self._locker.value] if self._locker.value else []
+            lockers = list(dict.fromkeys([*named, *lockers]))
             strays = sorted({job.locker for job in listed_jobs} - set(lockers))
             if strays:
                 raise ValueError(f"task.fleet.jobs sends jobs to {strays}, which task.fleet.lockers does not name")
