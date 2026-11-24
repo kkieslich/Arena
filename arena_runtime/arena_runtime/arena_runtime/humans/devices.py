@@ -142,12 +142,32 @@ def shift(device: HeldDevice, dx: float, dy: float) -> None:
         point.x, point.y = point.x + dx, point.y + dy
 
 
+_DISC_SEGMENTS = 16  # Point.buffer's default, the vectorized shapely.buffer defaults to 8
+
+
 def shapes(ped: Pedestrian, default_radius: float) -> tuple[shapely.Geometry | None, shapely.Polygon | None]:
     """(body disc, device outline) of a pedestrian on the ground, None for a part it lacks or whose pose is not finite."""
     x, y = ped.pose.position.x, ped.pose.position.y
-    body = shapely.Point(x, y).buffer(ped.radius if ped.radius > 0.0 else default_radius) if math.isfinite(x) and math.isfinite(y) else None
+    body = shapely.Point(x, y).buffer(ped.radius if ped.radius > 0.0 else default_radius, quad_segs=_DISC_SEGMENTS) if math.isfinite(x) and math.isfinite(y) else None
+    return body, device_outline(ped)
+
+
+def device_outline(ped: Pedestrian) -> shapely.Polygon | None:
+    """The outline of the device a pedestrian holds on the ground, None without a device or with a footprint that is not finite."""
+    if not ped.device.kind:
+        return None
     outline = [(p.x, p.y) for p in ped.device.footprint]
-    device = None
-    if ped.device.kind and len(outline) >= 3 and all(math.isfinite(v) for xy in outline for v in xy):
-        device = shapely.Polygon(outline)
-    return body, device
+    if len(outline) < 3 or not all(math.isfinite(v) for xy in outline for v in xy):
+        return None
+    return shapely.Polygon(outline)
+
+
+def body_discs(peds: Sequence[Pedestrian], default_radius: float) -> np.ndarray:
+    """The body discs of `shapes` for a whole roster in one vectorized call, None where the pose is not finite."""
+    xy = np.array([(p.pose.position.x, p.pose.position.y) for p in peds], dtype=float).reshape(len(peds), 2)
+    radius = np.array([p.radius for p in peds], dtype=float)
+    radius = np.where(radius > 0.0, radius, default_radius)
+    discs = np.full(len(peds), None, dtype=object)
+    finite = np.isfinite(xy).all(axis=1)
+    discs[finite] = shapely.buffer(shapely.points(xy[finite]), radius[finite], quad_segs=_DISC_SEGMENTS)
+    return discs
