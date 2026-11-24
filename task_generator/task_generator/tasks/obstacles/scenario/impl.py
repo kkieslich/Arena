@@ -8,13 +8,24 @@ from arena_runtime.shared import WORLD_ENTITY_PREFIX, DynamicObstacle, Position,
 from arena_simulation_setup.shared.lane import shift_lane_points
 from arena_simulation_setup.tree.assets.Animation import AnimationIdentifier
 from arena_simulation_setup.tree.World import WorldIdentifier, anchor_light, point_scenario_assets
-from arena_simulation_setup.tree.World.Scenario import Scenario, ScenarioView, articulation_problems
+from arena_simulation_setup.tree.World.Scenario import Scenario, ScenarioView, TeleportZone, articulation_problems
 
 from task_generator.tasks.mode import TaskModeKwargs
 from task_generator.tasks.obstacles import Obstacles, TM_Obstacles
 from task_generator.tasks.obstacles._itinerary import attach_itinerary
 from task_generator.tasks.obstacles._validation import make_is_valid
 from task_generator.tasks.obstacles.scenario import ScenarioParams
+
+
+class _ZoneHost(typing.Protocol):
+    async def setup_teleport_zones(self, zones: typing.Sequence[TeleportZone]) -> bool: ...
+
+
+async def hand_over_teleport_zones(environment_manager: _ZoneHost, scenario_name: str, zones: typing.Sequence[TeleportZone]) -> None:
+    """Hand the scenario's teleport zones to the human simulator; an episode whose zones it refuses fails rather than
+    run without them."""
+    if not await environment_manager.setup_teleport_zones(zones):
+        raise RuntimeError(f"scenario {scenario_name!r}: the human simulator refused its teleport zones (see its log)")
 
 
 class TM_Scenario(TM_Obstacles):
@@ -34,13 +45,15 @@ class TM_Scenario(TM_Obstacles):
             is_valid=is_valid,
         )
 
-        scenario_view = WorldIdentifier(self._ctx.world_manager.loaded_world).resolve_sync().scenario(scenario_name).resolve_sync()
+        world_view = WorldIdentifier(self._ctx.world_manager.loaded_world).resolve_sync()
+        scenario_view = world_view.scenario(scenario_name).resolve_sync()
         point_scenario_assets(scenario_view.path)
         scenario = scenario_view.load(converter=zone_conv)
         self.scenario = scenario
         self.lights = [anchor_light(light, scenario.objects) for light in scenario.lights]
         await self._check_clips(scenario_view, scenario)
         self._ctx.environment_manager.check_stimuli(scenario_view.path.name, scenario.humans, scenario.timeline)
+        await self._ctx.environment_manager.check_scenario(world_view, self._ctx.world_manager.world, scenario, scenario_view.path, self._ctx.world_manager.map.level_origins)
         await self._check_articulations(scenario_view, scenario)
 
         regions = [
@@ -54,6 +67,7 @@ class TM_Scenario(TM_Obstacles):
             for name, r in scenario.regions.items()
         ]
         await self._ctx.environment_manager.setup_regions(regions)
+        await hand_over_teleport_zones(self._ctx.environment_manager, scenario_view.path.name, scenario.teleport_zones)
 
         self._ctx.episode.register_timeline(scenario.timeline, seed)
         self._ctx.episode.register_conditions(scenario.conditions)

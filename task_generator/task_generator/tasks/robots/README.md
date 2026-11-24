@@ -105,6 +105,7 @@ and an async `done` flag. Shipped modes:
 | `scenario` | [`scenario/`](scenario/) | reads `start`/`goal` pairs from the world's scenario YAML. A robot past the `robots:` entries, or on an entry without `phases`, stays parked, and an episode with only parked robots runs until `task.episode.timeout` |
 | `search` | [`search/`](search/) | `scenario` for a hidden human: each robot gets one goto judged on the human (`task.search.target`, default the scenario's only human) within `task.search.radius` (1.5 m), with `task.search.line_of_sight` also without a wall between them and with `task.search.dwell_s` for that long without a break, judge-only (`dispatch: false`), so neither the human's pose nor any other goal reaches the planner and a search driver owns the robot's navigation. Reads `task.scenario.file`, runs with `task.obstacles:=scenario`, refuses scenario robot phases. Example: [`hospital_1/scenarios/search_caller`](../../../../arena_simulation_setup/worlds/hospital_1/scenarios/search_caller/scenario.yaml) |
 | `characterization` | [`characterization/`](characterization/) | open-loop maneuver sweep: publishes exact `cmd_vel` profiles through the robot's rated envelope (no nav goals), tags each maneuver with `characterization_phase` markers, odom stall watchdog |
+| `fleet` | [`fleet/`](fleet/) | deliveries and pickups released at a fixed rate, handed to free robots, with charging trips below a battery level and top-ups at chargers whose holders are away, see [Fleet task stream](#fleet-task-stream) |
 | `null` | [`composite.py`](composite.py) | idle sink for robots unallocated by the fleet manager |
 | `composite` | [`composite.py`](composite.py) | fan-out: each sub-TM sees a scoped `TaskContext` covering only its allocated robots |
 
@@ -162,15 +163,22 @@ share one definition. [`request.py`](../../../../arena_runtime/arena_runtime/are
   judged on every tick and, once it holds, drops the running phase and
   continues with the phase after the loop.
 - `GoToPhase(pose | target, tolerance_radius?, tolerance_angle?, hold_time?, signal?, dispatch?)`:
-  navigate to a pose, or to a zone, door, elevator or pedestrian by name. A
-  zone target dispatches to a free map cell inside the zone with the robot's
-  spawn clearance, a door or elevator to a point inside its polygon, and a
+  navigate to a pose, or to a zone, door, elevator, docked object or pedestrian
+  by name. A zone target dispatches to a free map cell inside the zone with the
+  robot's spawn clearance, at least `ZONE_GOAL_MARGIN_M` (0.3 m) inside its
+  edge when the zone has such a cell, so nav2's 0.25 m goal tolerance cannot
+  stop the robot outside the zone, a docked object (a world object with a `dock:`
+  polygon) to such a cell within half the dock's inner radius of its deepest
+  point (a planner's goal tolerance then cannot stop the robot outside the
+  dock), facing the object, or its annotated front where the dock covers the
+  object's own origin, a door or
+  elevator to a point inside its polygon, and a
   `pose` authored next to the name (`{goto: pharmacy, pose: [4.0, 27.5, 0.0]}`)
   is kept as the dispatch pose.
   A pedestrian target dispatches to a standoff pose 0.8 m short of the
   pedestrian on the robot's side, facing them, taken from the judge's sample
   when the phase starts (`standoff_pose` in the task runner).
-  Arrival on a named zone is `robot in <zone>`, on a pedestrian
+  Arrival on a named zone or docked object is `robot in <name>`, on a pedestrian
   `robot within tolerance_radius of <ped>`. `hold_time` is the park time
   (stationary within 5 cm and 5 degrees) before the phase counts as met. With
   a `signal` such as `arrived` the robot itself ends the phase by sending that
@@ -227,6 +235,157 @@ active), and the resolved phases in `EpisodeRecord.phases` together with
 renders any phase list to one instruction sentence per phase, and
 [`shared/route.py`](../../../../arena_simulation_setup/src/arena_simulation_setup/shared/route.py)
 words a goto as walking directions through the world's doors and openings.
+
+## Fleet task stream
+
+`fleet` ([`fleet/impl.py`](fleet/impl.py)) hands a stream of jobs to a fleet, configured under `task.fleet`:
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `homes` | | zone or docked object each robot starts and parks at, one per robot in robot order, no spot twice |
+| `loading`, `locker` | | zone or docked object where a delivery loads, docked object where it unloads, a pickup the other way round; one robot at a time each |
+| `rate`, `pickup_share` | 12, 0.3 | jobs released per hour of sim time, share of pickups |
+| `load_s`, `unload_s` | 15, 10 | seconds held where a job loads and unloads |
+| `charge_below`, `charge_until` | 30, 100 | battery percent that sends a free robot to a charger, and that frees it again; `charge_below <= charge_until` |
+| `top_up` | true | opportunistic charging: a free robot under `charge_until` tops up at a charger whose holder is away on a job (see **Top-ups** below); `false` turns it off |
+| `reserve` | 10 | battery percent a job must leave by its energy estimate, else the robot charges first |
+| `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
+| `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
+| `jam_window_s`, `jam_progress_m`, `jam_goal_m` | 60, 0.5, 1 | the jam rule (INFRA §8): a robot on a job leg or a charging trip that moves less than `jam_progress_m` within `jam_window_s`, further than `jam_goal_m` from its target, is jammed; `jam_window_s: 0` turns it off |
+| `jam_home` | true | the jam rule also watches a robot on its way home (see **Jams** below); `false` leaves trips home unwatched |
+| `approach_m` | 5 | metres from the loading point or locker within which a robot takes that dock, or holds in place before it while another robot has it |
+| `job_timeout`, `job_timeout_per_m` | 300, 5 | seconds a job leg may drive from its start, its waits before a busy dock apart, and a trip to a charger from its dispatch, before it is abandoned and the robot goes home: `job_timeout` plus `job_timeout_per_m` per metre of its route estimate; `job_timeout: 0` for none |
+| `leg_timeout_moving` | true | a job leg past its timeout is abandoned even while the robot moves; `false`: it drives on while it moves and ends once the robot stands at its dock without docking, stands elsewhere (jam rule) or reaches `leg_timeout_cap` (see **Ends**) |
+| `leg_timeout_cap` | 2 | with `leg_timeout_moving: false`: a leg ends at this many times its timeout whatever the robot does; 0 for no cap |
+
+- Jobs are drawn from `RNG.stream("robots", "fleet")` alone, so a seed releases the same jobs at the same times in
+  every world. Released jobs queue until a robot is free.
+- **Docks.** A job has two legs, one goto per dock, each `on_failure: stop_task`. A robot drives towards its leg's
+  dock without holding it; within `approach_m` of the dock it takes it if no robot has it and none waits for it, and
+  holds it until it has loaded or unloaded there. Otherwise it holds in place where it is and queues for the dock;
+  a freed dock goes to the robot waiting longest. So the loading point and the locker are held only for the final
+  approach and the hold, not for the whole drive, and a robot waiting in the walkway before a busy dock is part of
+  the traffic. A loaded robot drives straight on to its second dock. Queued jobs go to free robots oldest first,
+  whether or not their first dock is busy.
+- **Jobs.** Each tick, queued jobs go to free robots at or above `charge_below`, fullest battery first (a robot whose
+  charge is unknown last). Before a robot takes a job the mode estimates its energy: the straight-line distance from
+  the robot to the first dock, on to the second and on to the charger nearest the second, times `detour`, at
+  `wh_per_m` (so the reserve is what is left once the robot could be at a charger), plus the robot's standby power
+  (the power profile's `static_power_w`) over `load_s + unload_s`. When that would leave less than `reserve` percent
+  of the robot's battery capacity (`task.episode.battery.capacity_wh`, else its power.yaml), the robot joins the
+  charger queue instead, unless it is at `charge_until` already. The default 0.046 Wh/m is the jackal's 42.2 W
+  standby plus 50 W per m/s and 17 W per rad/s at 0.4 m/s and 0.2 rad/s; `wh_per_m: 0` computes the same from each
+  robot's power profile. The default `detour` 1.2 is about the 90th percentile of geodesic over straight-line distance
+  on the `smu_link_full` map (mean 1.09, 0.25 m grid, 0.3 m clearance).
+- **Ends.** A leg that ends failed fails its job; a leg driving longer than its timeout, or a job whose robot is
+  assigned a task from outside, is abandoned. Each leg's timer starts when the leg does and stops while the robot
+  waits before a busy dock, so queueing never abandons a job (the waits stay in the task time `ended - released`,
+  and `job.<i>.wait_s` sums them). A leg's timeout scales with its route: `job_timeout` plus `job_timeout_per_m`
+  times the straight line from where the leg starts to its dock, times `detour` (for a charging trip, to the
+  charger), so a 313 m leg across the twin gets about 300 + 5 x 1.2 x 313 = 2,180 s and a short one about 360 s.
+  The holder's own timeout frees a dock nobody reaches. A leg that cannot be submitted (its dock has no free cell for
+  the robot) is sent again each tick until it goes out, or abandoned once its timer runs out; it never counts as done. A job that did not complete is not queued again: it ends
+  there, its docks are freed and the robot goes home (or runs the outside task, and goes home once that is done).
+  With `leg_timeout_moving: false` a leg past its timeout is not cut off while the robot moves: the time it passed
+  is logged (`job.<i>.overdue_<leg>`), and the leg is abandoned (reason `timeout`) only once the robot has moved less
+  than `jam_progress_m` over `jam_window_s`, counted from then, within `jam_goal_m` of its dock, where the jam rule
+  does not look (docking that does not finish). A robot past its timeout that stands anywhere else is caught by the
+  jam rule (teleported home, navigation reset), but its job ends as the timeout would have ended it: `abandoned`,
+  reason `timeout`, with `jam.<k>.overdue` logged, so `failed`/`jam` keeps meaning a leg that stalled within its time.
+  At `leg_timeout_cap` times its timeout (default 2) a leg ends `abandoned`/`timeout` whatever the robot does, so a
+  robot that keeps moving and never arrives cannot hold its dock for good. A tick without a pose, or while the robot
+  holds before a busy dock, decides nothing. A leg that cannot be submitted and every leg with `jam_window_s: 0` keep
+  the plain timeout; charging trips keep theirs. In a crowd a leg can drive more than twice its
+  straight-line route and still arrive, so the plain timeout cut off robots that were making progress.
+- **Jams.** Each tick the mode keeps the positions of the robots on a job leg or a charging trip. A robot whose
+  positions over the last `jam_window_s` all lie within `jam_progress_m` of the first is jammed: its job fails with
+  reason `jam` (its charge is abandoned with reason `jam`), its docks are freed and it is teleported to its home,
+  where it parks; a robot jammed on its way to a charger goes back to the bay it had before the trip, and the charger
+  to its holder (or, if that holder has taken another charger since, to the robot that has the bay now). Within
+  `jam_goal_m` of its dock or charger it is docking or holding, and its window starts again.
+  Each jam is logged with the distance to the nearest other robot, so robot-robot jams can be told apart.
+  With `jam_home` a robot on its way home is watched the same way (same window, distance and `jam_goal_m` to its
+  home): a robot parked but not yet arrived, sent home after a job ended (completed, failed, jammed or abandoned on
+  its timeout), after a charge, or as a holder leaving its charger to a queued robot. The window starts when the trip
+  home does, not with the leg or trip before it. A jam there ends no job and no charge (`jam.<k>.trip` is `home`, no
+  `jam.<k>.job`): the robot is teleported to its home, its navigation is reset, and its park there goes on. Where its
+  home has no free cell for it, only its navigation is reset where it stands (`jam.<k>.action` `reset`). A robot is
+  jammed at most once per trip home: after its reset it is not watched again until it has moved `jam_progress_m` from
+  where it stood after the reset, or the trip ends (so a home that stays blocked gives one row, not one a minute). Without this
+  a robot whose navigation died on a leg that timed out stood where it was until its next job. Robots parked at their
+  home (arrived), holding before a dock or a charger, running a task from outside, or stopped at 0 % are not watched.
+- **Charging.** Free robots under `charge_below` join the charger queue and wait at their home. Queued robots go to
+  a charger lowest battery first (ties by queue time, then name): a robot parked on its charger home charges there,
+  any other takes, in this order, a charger whose holder is away (on a job, or freed), one whose holder yields, or one
+  a robot is still driving to for a top-up (first the one taken from this robot), and swaps homes with the holder. A
+  holder yields when it is parked on the charger, not queued itself, and charged to `charge_until`, or holds the
+  charger by a top-up (below). A holder that yields stays on the charger until the queued robot holds in place within
+  `approach_m` of it, then leaves for its new home, so the two do not meet head-on along the way. A robot driving to
+  top up gives its top-up up at once and heads for its new home. Chargers are the world's objects with
+  `charge_power_w`. A robot is free again at `charge_until`.
+- **Top-ups** (`top_up`). Once no robot is queued, a free robot (parked or on its way home) whose battery is under
+  `charge_until` and whose home is no charger takes as its home a charger whose holder is away on a job (on a leg, or
+  holding before a dock), lowest battery first, and the holder gets its old home. A charger that is no robot's home is
+  not topped up at. The trip is a charging trip: the trip timeout and the jam rule apply, and only a jam gives the
+  charger back and resets the robot to its old home; after a timeout, a failed trip or a task from outside the robot
+  keeps the charger as its home and parks there. Docked, the robot is free for jobs again and charges while parked
+  there; if it arrives under `charge_below` it queues and charges at once like any robot at its charger home. Until
+  it has charged there to `charge_until`, it holds the charger by its top-up: parked on it, it yields to a queued
+  robot at once, not only at `charge_until`, and a jam that gives the charger back to it gives it back as such.
+  Top-ups are logged in their own table, so `charge` keeps only the charges the charger queue sent.
+- **Battery.** The charge is `RobotManager.soc`; the mode makes no charging decision on a robot whose charge is
+  unknown. A robot whose battery reaches 0 % is logged and counted (it keeps driving: the power publisher clamps at 0).
+- No zone is forbidden at the homes, since a forbidden zone stays in the map for the whole episode. The reset fails
+  when a name is no goto target of the world, a home repeats or is a dock, or `charge_below > charge_until`. `done`
+  is always `False`.
+
+### Fleet task log
+
+The mode publishes its log as a semantic entity `<env>/fleet` of kind `fleet` on the env's `state/semantics`
+snapshot, which the recorder keeps (`semantic_snapshot`, one row per field). Every field is a discrete string,
+written once and never changed, so the episode's last snapshot holds the whole log. Times are seconds since `t0`,
+with 3 decimals; battery charges are percent with 2.
+
+| Field | Value |
+| --- | --- |
+| `t0` | sim time in s the episode's job clock starts at (the reset) |
+| `job.<i>.kind` | `delivery` or `pickup` |
+| `job.<i>.released` | release time from the seed's stream |
+| `job.<i>.robot`, `job.<i>.assigned` | robot that took the job, and when |
+| `job.<i>.energy_wh` | the energy estimate it was taken on |
+| `job.<i>.timeout_0`, `job.<i>.timeout_1` | seconds each leg may drive, waits for its dock apart, before the job is abandoned (0: none) |
+| `job.<i>.overdue_0`, `job.<i>.overdue_1` | with `leg_timeout_moving: false`: when the leg passed its timeout while the robot still moved |
+| `job.<i>.wait_s` | seconds the robot held in place before busy docks over the job, written when it ends (part of `ended - released`) |
+| `job.<i>.loaded` | when the robot finished loading |
+| `job.<i>.ended`, `job.<i>.outcome` | when the job ended, as `completed`, `failed` or `abandoned` |
+| `job.<i>.reason` | for `failed`, the failed phase's reason; for `abandoned`, `timeout` or `assigned from outside` |
+| `charge.<n>.robot`, `charge.<n>.trigger` | robot, and why it joined the charger queue: `charge_below`; `job <i>` for a job its battery would not last; `floor` (at or under `idle_floor`); `start` (`charge_at_start`); `no_power` (its previous charge got no power and ended `no_power`, and it charges again for the same jobs; or it was parked on its charger home under `charge_until` and the dock did not charge it, the battery not rising by `no_power_rise` within `no_power_s`) |
+| `charge.<n>.queued` | when it joined the charger queue |
+| `charge.<n>.soc_queued` | its charge then (written with `idle_floor`, `one_need_charge` or `charge_at_start`) |
+| `charge.<n>.charger`, `charge.<n>.dispatched` | charger it was sent to (or charges at, at home), and when |
+| `charge.<n>.yielded_by` | the holder that gave the charger up to it: parked on it (charged to `charge_until`, or holding it by a top-up), or on its way there to top up |
+| `charge.<n>.holder_left`, `charge.<n>.held_s` | when a holder parked on the charger had cleared it, and how long the robot held in place before the charger for it |
+| `charge.<n>.started`, `charge.<n>.soc_start` | when it arrived at the charger, and its charge then |
+| `charge.<n>.ended`, `charge.<n>.outcome`, `charge.<n>.soc_end` | when the charge ended, as `charged` (reached `charge_until`), `abandoned`, `withdrawn` (queued for a job another robot took; never dispatched) or `no_power` (started, but the battery did not rise by `no_power_rise` within `no_power_s`), and the charge then |
+| `charge.<n>.reason` | for `abandoned`: the failed trip's reason, `timeout`, `jam`, `empty` or `assigned from outside`; for `withdrawn`: `job <i> taken by <robot>`; for `no_power`: `charge rose <x> points in <s> s` |
+| `top_up.<m>.robot`, `top_up.<m>.soc_dispatched` | a top-up: the robot, and its charge when it was sent |
+| `top_up.<m>.charger`, `top_up.<m>.dispatched` | the charger it took as its home, and when it was sent there |
+| `top_up.<m>.started`, `top_up.<m>.soc_start` | when it docked, and its charge then |
+| `top_up.<m>.ended`, `top_up.<m>.outcome`, `top_up.<m>.soc_end` | when the trip ended, as `docked` (at `started`) or `abandoned`, and the charge then |
+| `top_up.<m>.reason` | for `abandoned`: the failed trip's reason, `timeout`, `jam`, `assigned from outside`, or `yielded` (it gave the charger up on its way to a queued robot) |
+| `top_up.<m>.yielded_to` | for `yielded`: the queued robot that took the charger |
+| `empty.<k>.robot`, `empty.<k>.at` | a robot whose battery reached 0 %, and when |
+| `empty.<k>.job`, `empty.<k>.charge` or `empty.<k>.top_up` | with `stop_empty`: the job, charge or top-up abandoned when it stopped |
+| `empty.<k>.in_dock` | with `stop_empty`: the charger (or chargers, comma-joined) in whose dock the stopped robot stands, written once; no robot is sent to that charger while it stands there |
+| `jam.<k>.robot`, `jam.<k>.at`, `jam.<k>.target` | a jammed robot, when, and the dock, charger or home it was headed for |
+| `jam.<k>.job`, `jam.<k>.charge` or `jam.<k>.top_up` | the job that failed, the charge or the top-up abandoned, by the jam |
+| `jam.<k>.overdue` | with `leg_timeout_moving: false`: the leg (0 or 1) of a job leg past its timeout that stalled; the job ends `abandoned`, reason `timeout` |
+| `jam.<k>.trip` | `home` for a robot jammed on its way home (`jam_home`): no job or charge ended |
+| `jam.<k>.action` | `retry` for a charging trip that goes on to its charger (`charge_jam: retry`); `reset` for a trip home whose home had no free cell: the navigation was reset where the robot stood, no teleport |
+| `jam.<k>.robot_m` | the distance to the nearest other robot then (a robot-robot jam is one within a robot's length) |
+
+`<i>` is the job's index in the stream, `<n>`, `<m>` and `<k>` count from 0 per episode. A job without `ended` was still
+queued or running when the episode ended; a job without `robot` was never assigned. For the robot service measures (kkieslich/arena-evaluation `evaluation infra`, its metrics README): task time T is the restricted mean of `ended - released` up to a horizon fixed per study, from the Kaplan-Meier estimate over the jobs released after the warm-up, a job not completed (open at the episode end, failed or abandoned) censored at its elapsed time, so the slow jobs an episode cuts off still count; success rate is completed jobs over ended ones; charger queue time is `dispatched - queued`; tasks per hour count completed jobs per hour of `ended`; the premise check's fleet capacity is the robots times 3600 over the busy time per completed job plus the time out of service per completed job, counting each `charged` charge from `dispatched` to `ended` and each top-up's trip from `dispatched` to `started` (to `ended` for one abandoned on its way). The mode also logs each release, assignment, end, refusal, charge and empty battery at info or warning level.
 
 ## Fleet manager
 

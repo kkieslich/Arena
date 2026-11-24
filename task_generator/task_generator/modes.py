@@ -25,6 +25,7 @@ class Modes:
         DEMO = "demo"
         STATIONARY = "stationary"
         CHARACTERIZATION = "characterization"
+        FLEET = "fleet"
         SEARCH = "search"
 
         @classmethod
