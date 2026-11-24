@@ -201,10 +201,10 @@ levels:
   - {name: nurse_resting_cabinet_4, pose: [15.7, 0.6, 3.14159], model: Hospital/SM_MedicalCabinet_01a}
   - {name: waiting_sofa_3, pose: [20.3, 8.5, 3.14159], model: Hospital/Waiting_Room_Sofa}
   - {name: waiting_sofa_4, pose: [23.4, 8.5, 3.14159], model: Hospital/Waiting_Room_Sofa}
-  - {name: waiting_chair_8, pose: [20.3, 6.0, 3.14159], model: Hospital/SM_Chair_02a}
-  - {name: waiting_chair_9, pose: [20.3, 5.2], model: Hospital/SM_Chair_02a}
-  - {name: waiting_chair_10, pose: [23.2, 6.0, 3.14159], model: Hospital/SM_Chair_02a}
-  - {name: waiting_chair_11, pose: [23.2, 5.2], model: Hospital/SM_Chair_02a}
+  - {name: waiting_chair_8, pose: [20.1, 6.0, 3.14159], model: Hospital/SM_Chair_02a}
+  - {name: waiting_chair_9, pose: [20.1, 5.2], model: Hospital/SM_Chair_02a}
+  - {name: waiting_chair_10, pose: [23.4, 6.0, 3.14159], model: Hospital/SM_Chair_02a}
+  - {name: waiting_chair_11, pose: [23.4, 5.2], model: Hospital/SM_Chair_02a}
   - {name: waiting_bench_3, pose: [20.1, 3.5, 3.14159], model: Hospital/Waiting_Room_Bench}
   - {name: waiting_bench_4, pose: [23.5, 3.5, 3.14159], model: Hospital/Waiting_Room_Bench}
   - {name: waiting_side_table_1, pose: [19.6, 4.2], model: Hospital/SM_SideTable_02a}

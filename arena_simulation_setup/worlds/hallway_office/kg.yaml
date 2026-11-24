@@ -1,0 +1,160 @@
+format: arena-kg/1
+uses: [core@2, space@1]
+entities:
+- {id: 'room:main_hallway', props: {description: hallway from the west to the east entrance}}
+- {id: 'room:reception', props: {description: reception}}
+- {id: 'room:office_a', props: {description: office a}}
+- {id: 'room:office_b', props: {description: office b}}
+- {id: 'room:meeting_room_1', props: {description: meeting room 1}}
+- {id: 'room:kitchen', props: {description: kitchen}}
+- {id: 'room:open_office', props: {description: open office}}
+- {id: 'room:wc_1', props: {description: wc 1}}
+- {id: 'room:office_c', props: {description: office c}}
+- {id: 'room:meeting_room_2', props: {description: meeting room 2}}
+- {id: 'room:lounge', props: {description: lounge}}
+- {id: 'purpose:break'}
+- {id: 'purpose:transit'}
+- {id: 'purpose:work'}
+- {id: 'floor:0'}
+- {id: 'door:reception_door'}
+- {id: 'door:office_a_door'}
+- {id: 'door:office_b_door'}
+- {id: 'door:meeting_room_1_door'}
+- {id: 'door:kitchen_door'}
+- {id: 'door:open_office_door'}
+- {id: 'door:wc_1_door'}
+- {id: 'door:office_c_door'}
+- {id: 'door:meeting_room_2_door'}
+- {id: 'door:lounge_door'}
+- {id: 'door:west_entrance'}
+- {id: 'door:east_entrance'}
+- {id: 'obj:reception_table_1'}
+- {id: 'obj:reception_sofa_1'}
+- {id: 'obj:reception_plant_1'}
+- {id: 'obj:office_a_desk_1'}
+- {id: 'obj:office_a_chair_1'}
+- {id: 'obj:office_a_cabinet_1'}
+- {id: 'obj:office_b_desk_1'}
+- {id: 'obj:office_b_bookcase_1'}
+- {id: 'obj:meeting_1_table_1'}
+- {id: 'obj:meeting_1_chair_1'}
+- {id: 'obj:meeting_1_chair_2'}
+- {id: 'obj:kitchen_table_1'}
+- {id: 'obj:kitchen_drinks_1'}
+- {id: 'obj:open_desk_1'}
+- {id: 'obj:open_desk_2'}
+- {id: 'obj:open_desk_3'}
+- {id: 'obj:open_desk_4'}
+- {id: 'obj:wc_toilet_1'}
+- {id: 'obj:office_c_desk_1'}
+- {id: 'obj:meeting_2_table_1'}
+- {id: 'obj:lounge_sofa_1'}
+- {id: 'obj:lounge_table_1'}
+- {id: 'obj:hallway_plant_1'}
+facts:
+- {subject: 'room:main_hallway', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'room:reception', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:office_a', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:office_b', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:meeting_room_1', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:kitchen', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:open_office', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:wc_1', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:office_c', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:meeting_room_2', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:lounge', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'floor:0', verb: contains, object: 'room:main_hallway', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:reception', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:office_a', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:office_b', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:meeting_room_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:kitchen', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:open_office', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:office_c', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:meeting_room_2', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:lounge', source: derived}
+- {subject: 'room:main_hallway', verb: contains, object: 'door:reception_door', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'door:reception_door', source: derived}
+- subject: room:main_hallway
+  verb: connects
+  object: room:reception
+  params: {door: 'door:reception_door'}
+  source: derived
+- {subject: 'room:main_hallway', verb: contains, object: 'door:office_a_door', source: derived}
+- {subject: 'room:office_a', verb: contains, object: 'door:office_a_door', source: derived}
+- subject: room:main_hallway
+  verb: connects
+  object: room:office_a
+  params: {door: 'door:office_a_door'}
+  source: derived
+- {subject: 'room:main_hallway', verb: contains, object: 'door:office_b_door', source: derived}
+- {subject: 'room:office_b', verb: contains, object: 'door:office_b_door', source: derived}
+- subject: room:main_hallway
+  verb: connects
+  object: room:office_b
+  params: {door: 'door:office_b_door'}
+  source: derived
+- {subject: 'room:main_hallway', verb: contains, object: 'door:meeting_room_1_door', source: derived}
+- {subject: 'room:meeting_room_1', verb: contains, object: 'door:meeting_room_1_door', source: derived}
+- subject: room:main_hallway
+  verb: connects
+  object: room:meeting_room_1
+  params: {door: 'door:meeting_room_1_door'}
+  source: derived
+- {subject: 'room:main_hallway', verb: contains, object: 'door:kitchen_door', source: derived}
+- {subject: 'room:kitchen', verb: contains, object: 'door:kitchen_door', source: derived}
+- {subject: 'room:main_hallway', verb: connects, object: 'room:kitchen', params: {door: 'door:kitchen_door'}, source: derived}
+- {subject: 'room:main_hallway', verb: contains, object: 'door:open_office_door', source: derived}
+- {subject: 'room:open_office', verb: contains, object: 'door:open_office_door', source: derived}
+- subject: room:main_hallway
+  verb: connects
+  object: room:open_office
+  params: {door: 'door:open_office_door'}
+  source: derived
+- {subject: 'room:main_hallway', verb: contains, object: 'door:wc_1_door', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'door:wc_1_door', source: derived}
+- {subject: 'room:main_hallway', verb: connects, object: 'room:wc_1', params: {door: 'door:wc_1_door'}, source: derived}
+- {subject: 'room:main_hallway', verb: contains, object: 'door:office_c_door', source: derived}
+- {subject: 'room:office_c', verb: contains, object: 'door:office_c_door', source: derived}
+- subject: room:main_hallway
+  verb: connects
+  object: room:office_c
+  params: {door: 'door:office_c_door'}
+  source: derived
+- {subject: 'room:main_hallway', verb: contains, object: 'door:meeting_room_2_door', source: derived}
+- {subject: 'room:meeting_room_2', verb: contains, object: 'door:meeting_room_2_door', source: derived}
+- subject: room:main_hallway
+  verb: connects
+  object: room:meeting_room_2
+  params: {door: 'door:meeting_room_2_door'}
+  source: derived
+- {subject: 'room:main_hallway', verb: contains, object: 'door:lounge_door', source: derived}
+- {subject: 'room:lounge', verb: contains, object: 'door:lounge_door', source: derived}
+- {subject: 'room:main_hallway', verb: connects, object: 'room:lounge', params: {door: 'door:lounge_door'}, source: derived}
+- {subject: 'room:main_hallway', verb: contains, object: 'door:west_entrance', source: derived}
+- {subject: 'room:main_hallway', verb: contains, object: 'door:east_entrance', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_table_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_sofa_1', source: derived}
+- {subject: 'room:reception', verb: contains, object: 'obj:reception_plant_1', source: derived}
+- {subject: 'room:office_a', verb: contains, object: 'obj:office_a_desk_1', source: derived}
+- {subject: 'room:office_a', verb: contains, object: 'obj:office_a_chair_1', source: derived}
+- {subject: 'room:office_a', verb: contains, object: 'obj:office_a_cabinet_1', source: derived}
+- {subject: 'room:office_b', verb: contains, object: 'obj:office_b_desk_1', source: derived}
+- {subject: 'room:office_b', verb: contains, object: 'obj:office_b_bookcase_1', source: derived}
+- {subject: 'room:meeting_room_1', verb: contains, object: 'obj:meeting_1_table_1', source: derived}
+- {subject: 'room:meeting_room_1', verb: contains, object: 'obj:meeting_1_chair_1', source: derived}
+- {subject: 'room:meeting_room_1', verb: contains, object: 'obj:meeting_1_chair_2', source: derived}
+- {subject: 'room:kitchen', verb: contains, object: 'obj:kitchen_table_1', source: derived}
+- {subject: 'room:kitchen', verb: contains, object: 'obj:kitchen_drinks_1', source: derived}
+- {subject: 'room:open_office', verb: contains, object: 'obj:open_desk_1', source: derived}
+- {subject: 'room:open_office', verb: contains, object: 'obj:open_desk_2', source: derived}
+- {subject: 'room:open_office', verb: contains, object: 'obj:open_desk_3', source: derived}
+- {subject: 'room:open_office', verb: contains, object: 'obj:open_desk_4', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'obj:wc_toilet_1', source: derived}
+- {subject: 'room:office_c', verb: contains, object: 'obj:office_c_desk_1', source: derived}
+- {subject: 'room:meeting_room_2', verb: contains, object: 'obj:meeting_2_table_1', source: derived}
+- {subject: 'room:lounge', verb: contains, object: 'obj:lounge_sofa_1', source: derived}
+- {subject: 'room:lounge', verb: contains, object: 'obj:lounge_table_1', source: derived}
+- {subject: 'room:main_hallway', verb: contains, object: 'obj:hallway_plant_1', source: derived}
+constraints: []

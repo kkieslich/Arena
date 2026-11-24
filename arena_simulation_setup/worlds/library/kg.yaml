@@ -1,0 +1,138 @@
+format: arena-kg/1
+uses: [core@2, space@1]
+entities:
+- {id: 'room:reading_room', props: {description: open reading room with book stacks}}
+- {id: 'room:entrance_lobby', props: {description: entrance lobby}}
+- {id: 'room:cafe', props: {description: library cafe with a street door}}
+- {id: 'room:study_corridor', props: {description: study corridor}}
+- {id: 'room:group_study_1', props: {description: group study 1}}
+- {id: 'room:group_study_2', props: {description: group study 2}}
+- {id: 'room:library_office', props: {description: library office}}
+- {id: 'room:wc_1', props: {description: wc 1}}
+- {id: 'room:storage', props: {description: storage}}
+- {id: 'purpose:break'}
+- {id: 'purpose:transit'}
+- {id: 'purpose:work'}
+- {id: 'floor:0'}
+- {id: 'door:front_door'}
+- {id: 'door:side_door'}
+- {id: 'door:cafe_street_door'}
+- {id: 'door:lobby_reading'}
+- {id: 'door:lobby_cafe'}
+- {id: 'door:cafe_reading'}
+- {id: 'door:reading_corridor'}
+- {id: 'door:group_study_1_door'}
+- {id: 'door:group_study_2_door'}
+- {id: 'door:office_door'}
+- {id: 'door:wc_door'}
+- {id: 'door:storage_door'}
+- {id: 'obj:stack_1'}
+- {id: 'obj:stack_2'}
+- {id: 'obj:stack_3'}
+- {id: 'obj:stack_4'}
+- {id: 'obj:stack_5'}
+- {id: 'obj:stack_6'}
+- {id: 'obj:reading_table_1'}
+- {id: 'obj:reading_table_2'}
+- {id: 'obj:reading_table_3'}
+- {id: 'obj:reading_table_4'}
+- {id: 'obj:lobby_plant_1'}
+- {id: 'obj:cafe_table_1'}
+- {id: 'obj:cafe_table_2'}
+- {id: 'obj:study_1_table'}
+- {id: 'obj:study_2_table'}
+- {id: 'obj:office_desk_1'}
+- {id: 'obj:wc_toilet_1'}
+- {id: 'obj:storage_rack_1'}
+facts:
+- {subject: 'room:reading_room', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:entrance_lobby', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'room:cafe', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:study_corridor', verb: has_purpose, object: 'purpose:transit'}
+- {subject: 'room:group_study_1', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:group_study_2', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:library_office', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:wc_1', verb: has_purpose, object: 'purpose:break'}
+- {subject: 'room:storage', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'floor:0', verb: contains, object: 'room:reading_room', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:entrance_lobby', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:cafe', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:study_corridor', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:group_study_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:group_study_2', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:library_office', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:wc_1', source: derived}
+- {subject: 'floor:0', verb: contains, object: 'room:storage', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:front_door', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:side_door', source: derived}
+- {subject: 'room:cafe', verb: contains, object: 'door:cafe_street_door', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:lobby_reading', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'door:lobby_reading', source: derived}
+- subject: room:entrance_lobby
+  verb: connects
+  object: room:reading_room
+  params: {door: 'door:lobby_reading'}
+  source: derived
+- {subject: 'room:cafe', verb: contains, object: 'door:lobby_cafe', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'door:lobby_cafe', source: derived}
+- {subject: 'room:cafe', verb: connects, object: 'room:entrance_lobby', params: {door: 'door:lobby_cafe'}, source: derived}
+- {subject: 'room:cafe', verb: contains, object: 'door:cafe_reading', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'door:cafe_reading', source: derived}
+- {subject: 'room:cafe', verb: connects, object: 'room:reading_room', params: {door: 'door:cafe_reading'}, source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'door:reading_corridor', source: derived}
+- {subject: 'room:study_corridor', verb: contains, object: 'door:reading_corridor', source: derived}
+- subject: room:reading_room
+  verb: connects
+  object: room:study_corridor
+  params: {door: 'door:reading_corridor'}
+  source: derived
+- {subject: 'room:group_study_1', verb: contains, object: 'door:group_study_1_door', source: derived}
+- {subject: 'room:study_corridor', verb: contains, object: 'door:group_study_1_door', source: derived}
+- subject: room:group_study_1
+  verb: connects
+  object: room:study_corridor
+  params: {door: 'door:group_study_1_door'}
+  source: derived
+- {subject: 'room:group_study_2', verb: contains, object: 'door:group_study_2_door', source: derived}
+- {subject: 'room:study_corridor', verb: contains, object: 'door:group_study_2_door', source: derived}
+- subject: room:group_study_2
+  verb: connects
+  object: room:study_corridor
+  params: {door: 'door:group_study_2_door'}
+  source: derived
+- {subject: 'room:library_office', verb: contains, object: 'door:office_door', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'door:office_door', source: derived}
+- subject: room:library_office
+  verb: connects
+  object: room:reading_room
+  params: {door: 'door:office_door'}
+  source: derived
+- {subject: 'room:study_corridor', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'door:wc_door', source: derived}
+- {subject: 'room:study_corridor', verb: connects, object: 'room:wc_1', params: {door: 'door:wc_door'}, source: derived}
+- {subject: 'room:library_office', verb: contains, object: 'door:storage_door', source: derived}
+- {subject: 'room:storage', verb: contains, object: 'door:storage_door', source: derived}
+- subject: room:library_office
+  verb: connects
+  object: room:storage
+  params: {door: 'door:storage_door'}
+  source: derived
+- {subject: 'room:reading_room', verb: contains, object: 'obj:stack_1', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:stack_2', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:stack_3', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:stack_4', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:stack_5', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:stack_6', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:reading_table_1', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:reading_table_2', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:reading_table_3', source: derived}
+- {subject: 'room:reading_room', verb: contains, object: 'obj:reading_table_4', source: derived}
+- {subject: 'room:entrance_lobby', verb: contains, object: 'obj:lobby_plant_1', source: derived}
+- {subject: 'room:cafe', verb: contains, object: 'obj:cafe_table_1', source: derived}
+- {subject: 'room:cafe', verb: contains, object: 'obj:cafe_table_2', source: derived}
+- {subject: 'room:group_study_1', verb: contains, object: 'obj:study_1_table', source: derived}
+- {subject: 'room:group_study_2', verb: contains, object: 'obj:study_2_table', source: derived}
+- {subject: 'room:library_office', verb: contains, object: 'obj:office_desk_1', source: derived}
+- {subject: 'room:wc_1', verb: contains, object: 'obj:wc_toilet_1', source: derived}
+- {subject: 'room:storage', verb: contains, object: 'obj:storage_rack_1', source: derived}
+constraints: []

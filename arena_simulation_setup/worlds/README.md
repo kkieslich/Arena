@@ -44,7 +44,7 @@ as format 2, see [AUTHORING.md](../AUTHORING.md#format-1-worlds).
 | level | `elevators` | see [Elevator fields](#elevator-fields) |
 | level | `stairs` | stairs up from this level, see [Stairs fields](#stairs-fields) |
 | level | `escalators` | escalators up from this level, see [Stairs fields](#stairs-fields) |
-| level | `objects` | static obstacles, the scenario `objects:` schema |
+| level | `objects` | static obstacles, the scenario `objects:` schema plus `dock` (a polygon in the object frame that makes the object a robot goto target) and `charge_power_w` (the power in W a robot parked in that dock charges with), see [AUTHORING.md](../AUTHORING.md#4-add-a-scenario) |
 | level | `humans` | pedestrians, the scenario `humans:` schema |
 | level | `lights` | fixtures and ambient lights, see [AUTHORING.md](../AUTHORING.md#lights) |
 | level | `sounds` | standalone sounds, see [AUTHORING.md](../AUTHORING.md#m2-kinds-params-and-timelines) |
@@ -318,7 +318,7 @@ robots:
     goal_level: ""               # optional, level for goto phases
     phases:                      # ordered. each entry is one of:
       - {goto: [x, y, yaw]}      #   navigate to pose (same formats as start)
-      - {goto: kitchen}          #   navigate into a zone, door, elevator or to a pedestrian by name
+      - {goto: kitchen}          #   navigate into a zone, door, elevator or the dock of a world object, or to a pedestrian, by name
       - {gesture: wave}          #   arm gesture, "random" allowed, optional instance: <mount>
       - {reach: stow}            #   arm reach: named target, "random", or a pose (optional frame:)
       - {until: "door_1.open == true"}  # hold where the robot is until the atom holds
@@ -434,6 +434,39 @@ regions:
 ```
 
 An unrecognized `type` is rejected when the region is spawned.
+
+`teleport_zones` is a list of pedestrian teleport zones the scenario adds to
+the human simulator, in HumanSim's zone form and the world frame: stair and
+escalator halves joining floor of one level that the world models as a whole,
+such as the stairs between two floors a digital twin lays out side by side
+(world `stairs` cannot do this: their `to:` names another level). Sent with the
+world's elevators and stair halves each episode and dropped with the world. With
+HumanSim's `zone_route_choice` on, walkers that climb take them where that is
+cheaper than walking.
+
+```yaml
+teleport_zones:
+  - name: tj_stairs_south_top     # unique, and unlike the world's zones
+    kind: stairs                  # stairs | escalator | "" (a cabin)
+    destinations: [tj_stairs_south_bottom]   # halves it lands on; [] for an exit-only half
+    entry: {x: 121.9, y: 40.6, theta: 0}     # middle of the mouth, theta facing in
+    wait: {x: 121.9, y: 40.6, theta: 0}      # where walkers queue, default the entry
+    hold: {x: 122.6, y: 40.6, theta: 0}      # the seam trigger: walkers past it are carried
+    footprint: [{x: 121.9, y: 38.9}, {x: 123.4, y: 38.9}, {x: 123.4, y: 42.3}, {x: 121.9, y: 42.3}]
+    delay: 14.05                  # s from the seam trigger to the landing (the flight the halves leave out), >= 0;
+                                  # a cabin's negative delay leaves its teleport to the caller
+    belt: 0.0                     # m/s along the facing on a running escalator half, < 0 carrying off the seam
+    open: true
+```
+
+Checked on load as HumanSim checks them: a known kind, finite numbers,
+`delay` >= 0 on a stair or escalator half, unique names, destinations among the zones and of the same sort
+(a stair or escalator half lands on stair or escalator halves, a cabin on
+cabins), none landing in itself, and a stair or escalator half's footprint with
+its hold more than 0.25 m inside it. A set the human simulator still refuses (a
+hold within 0.25 m of a wall, a name the world's zones use) fails the episode.
+`flowedit infra crowd` keeps its entrances' sources and sinks off every zone
+and the 1.5 m in front of its mouth.
 
 `conditions` is a list of episode success/failure clauses:
 
@@ -608,8 +641,11 @@ wrapping whichever of the above resolved first. Call `view.load()` to parse
 | `airport` | Airport terminal layout |
 | `hospital_1` | Multi-zone hospital with patient rooms, reception, hallways |
 | `hospital_2` | Hospital variant |
+| `hallway_clinic` | Generated layout (world generator `hallway`, seed 7, see `generated_from.yaml`) authored into a clinic: 8 rooms on a hallway with a front and a back door, furniture, room purposes in `kg.yaml`, and scenario `demand` with authored FLOWEDIT demand (a water dispenser satisfying thirst, a counter, a waiting group, an exam chair, a bed, a workstation). FLOWEDIT data v2's second held-out world |
+| `hallway_office`, `hallway_school`, `hallway_lab` | Generated layouts (world generator `hallway`, seeds 11, 23, 5, see `generated_from.yaml`) authored into an office floor (10 rooms), a school corridor (classrooms, canteen) and a lab wing (12 rooms): room names and purposes in `kg.yaml`, a door in each end wall of the hallway, furniture, and scenario `demand` with authored FLOWEDIT demand (a water dispenser or cooler satisfying thirst, a counter, a group, chairs and workstations). FLOWEDIT data v2 worlds |
+| `waiting_hall_clinic`, `library`, `food_court`, `station_hall`, `office_open_plan` | Hand-drawn plans (rooms and doors in `plan.yaml`): a clinic around a central waiting hall, a library with an open reading room, a food court with kiosks, a station concourse with platform stairs, an open-plan office. Each has 2-4 exterior doors, room purposes, furniture and a `demand` scenario (a dispenser or vending machine satisfying thirst, a counter, a group, a chair or workstation). FLOWEDIT data v2 worlds |
 | `map_empty` | Single open zone |
 | `office_1` | Office floor plan |
-| `reception` | Reception area |
+| `reception` | Reception area; scenario `demand` carries authored FLOWEDIT demand (a water dispenser satisfying thirst, a check-in desk, a bench, a staff desk and chair) and `kg.yaml` gives its rooms purposes (staff area: work, waiting room: break). FLOWEDIT data v2's held-out world |
 | `stairs_demo` | Two levels joined by a stair, an up escalator on a belt and a down escalator on steps |
 | `ramp_demo` | One level with a 24 m ramp up to a level deck, a robot and two walkers shuttling over it |

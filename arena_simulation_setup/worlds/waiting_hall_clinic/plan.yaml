@@ -1,0 +1,108 @@
+plan: hand-drawn rooms and doors
+rooms:
+  entrance_lobby:
+  - 8
+  - 0
+  - 28
+  - 6
+  waiting_hall:
+  - 8
+  - 6
+  - 28
+  - 22
+  reception:
+  - 0
+  - 6
+  - 8
+  - 14
+  pharmacy:
+  - 0
+  - 14
+  - 8
+  - 22
+  exam_room_1:
+  - 8
+  - 22
+  - 14.5
+  - 28
+  exam_room_2:
+  - 14.5
+  - 22
+  - 21.5
+  - 28
+  exam_room_3:
+  - 21.5
+  - 22
+  - 28
+  - 28
+  wc_1:
+  - 28
+  - 6
+  - 34
+  - 12
+  staff_room:
+  - 28
+  - 12
+  - 34
+  - 22
+doors:
+  front_door_west:
+  - - 11.25
+    - 0
+  - - 12.75
+    - 0
+  front_door_east:
+  - - 23.25
+    - 0
+  - - 24.75
+    - 0
+  lobby_hall_1:
+  - - 12.0
+    - 6
+  - - 14.0
+    - 6
+  lobby_hall_2:
+  - - 22.0
+    - 6
+  - - 24.0
+    - 6
+  reception_door:
+  - - 8
+    - 9.25
+  - - 8
+    - 10.75
+  pharmacy_door:
+  - - 8
+    - 17.25
+  - - 8
+    - 18.75
+  exam_room_1_door:
+  - - 10.65
+    - 22
+  - - 11.85
+    - 22
+  exam_room_2_door:
+  - - 17.4
+    - 22
+  - - 18.6
+    - 22
+  exam_room_3_door:
+  - - 24.15
+    - 22
+  - - 25.35
+    - 22
+  wc_door:
+  - - 28
+    - 8.4
+  - - 28
+    - 9.6
+  staff_door:
+  - - 28
+    - 16.4
+  - - 28
+    - 17.6
+  staff_exit:
+  - - 34
+    - 16.4
+  - - 34
+    - 17.6

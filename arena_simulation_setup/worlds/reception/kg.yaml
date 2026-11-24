@@ -1,9 +1,14 @@
 format: arena-kg/1
-uses: [core@2]
+uses: [core@2, space@1]
 entities:
 - {id: 'room:destination', props: {description: Destination zone behind the reception desk}}
 - {id: 'room:entrance', props: {description: Reception Entrance}}
 - {id: 'obj:nurse_station'}
+- {id: 'purpose:work'}
+- {id: 'purpose:break'}
 facts:
 - {subject: 'room:entrance', verb: contains, object: 'obj:nurse_station'}
+# the staff area behind the counter and the waiting room in front of it; the zone names alone read as transit
+- {subject: 'room:destination', verb: has_purpose, object: 'purpose:work'}
+- {subject: 'room:entrance', verb: has_purpose, object: 'purpose:break'}
 constraints: []
