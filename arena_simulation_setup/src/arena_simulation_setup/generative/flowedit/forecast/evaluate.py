@@ -49,7 +49,7 @@ _ROW_ORDER = ("flow_world", "flow_base", "flow_seed", "x", "y", "cell_m", "headi
 #: help of a repeatable --cells or --benchmark (`read_cells`)
 SEVERAL = "repeatable: one split's runs from several run dirs (e.g. its partitions recorded on two machines) are read as one; they must agree on the flow grid, the crowd and the Arena and humansim commits, and a stage two of them hold must have the same rows"
 CELLS_HELP = f"arena_evaluation's flow_cells.parquet of the split's benchmark; {SEVERAL}"
-BENCHMARK_HELP = f"the split's processed benchmark run dir (flow_cells.parquet, combined_metrics.parquet and the track store); {SEVERAL}"
+BENCHMARK_HELP = f"the split's processed benchmark run dir (flow_cells.parquet, flow_runs.parquet and the track store); {SEVERAL}"
 
 
 def listed(paths: Sequence[Path]) -> str | list[str]:

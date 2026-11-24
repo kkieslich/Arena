@@ -467,7 +467,7 @@ def test_cli_lists_the_baselines(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_the_track_reader_takes_the_newest_track_store_version(tmp_path: Path) -> None:
-    pl.DataFrame({"episode": [0], "stage": ["w__e__s6"], "planner": ["peds_only"], "robot": ["env_0_jackal"]}).write_parquet(tmp_path / "combined_metrics.parquet")
+    pl.DataFrame({"episode": [0], "stage": ["w__e__s6"], "planner": ["peds_only"], "env": ["env_0"]}).write_parquet(tmp_path / "flow_runs.parquet")
     derived = tmp_path / "episodes" / "episode_000" / "topics" / ".derived"
     for version, x in ((1, 1.0), (2, 2.0)):
         (derived / f"ped_tracks.v{version}").mkdir(parents=True)
@@ -475,3 +475,17 @@ def test_the_track_reader_takes_the_newest_track_store_version(tmp_path: Path) -
     # arena_evaluation bumped the store (arena-evaluation#17: v2); a cache keeps the version it was written with
     assert B.Tracks.load(tmp_path)("w__e", 6)["x"].to_list() == [2.0]
     assert B.Tracks.load(tmp_path)("w__e", 7) is None
+
+
+def test_the_track_reader_finds_each_run_in_its_env_and_keeps_the_planner_asked_for(tmp_path: Path) -> None:
+    runs = {"episode": [0, 1, 2], "stage": ["w__e__s1", "w__e__s1", "w__e__s2"], "planner": ["peds_only", "dwb", "peds_only"], "env": ["env_1", "env_0", "env_2"]}
+    pl.DataFrame(runs).write_parquet(tmp_path / "flow_runs.parquet")
+    where = B.Tracks.load(tmp_path, planner="peds_only").where
+    assert where[("w__e", 1)].parent.parent.parent.parent.name == "episode_000" and where[("w__e", 1)].name == "env_1.parquet"
+    assert where[("w__e", 2)].name == "env_2.parquet" and set(where) == {("w__e", 1), ("w__e", 2)}
+
+
+def test_the_track_reader_reads_a_benchmark_an_older_arena_evaluation_processed(tmp_path: Path) -> None:
+    pl.DataFrame({"episode": [3], "stage": ["w__e__s4"], "planner": ["peds_only"], "robot": ["env_2_jackal"]}).write_parquet(tmp_path / "combined_metrics.parquet")
+    path = B.Tracks.load(tmp_path).where[("w__e", 4)]
+    assert path.parent.parent.parent.parent.name == "episode_003" and path.name == "env_2.parquet"

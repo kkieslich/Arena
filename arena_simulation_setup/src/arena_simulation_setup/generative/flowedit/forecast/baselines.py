@@ -82,17 +82,12 @@ class Tracks:
             check_commits(dirs)
         where: dict[tuple[str, int], Path] = {}
         for benchmark in dirs:
-            metrics = pl.read_parquet(Path(benchmark) / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
-            if planner is not None:
-                metrics = metrics.filter(pl.col("planner") == planner)
-            for episode, stage, _, robot in metrics.sort("episode").iter_rows():
+            for episode, stage, env_name in _scored_runs(Path(benchmark), planner):
                 try:
-                    key = parse_stage_name(str(stage))
+                    key = parse_stage_name(stage)
                 except ValueError:
                     continue
-                env = str(robot or "env_0").split("_")
-                env_name = "_".join(env[:2]) if len(env) >= 2 and env[0] == "env" else "env_0"
-                where.setdefault(key, Path(benchmark) / "episodes" / f"episode_{int(episode):03d}" / "topics" / ".derived" / "ped_tracks.v1" / f"{env_name}.parquet")
+                where.setdefault(key, Path(benchmark) / "episodes" / f"episode_{episode:03d}" / "topics" / ".derived" / "ped_tracks.v1" / f"{env_name}.parquet")
         return cls(where)
 
     def __call__(self, world: str, seed: int) -> pl.DataFrame | None:
@@ -107,6 +102,23 @@ class Tracks:
         newest = track_file(path.parent.parent, path.name) if path.parent.name.startswith("ped_tracks.v") else None
         path = newest or path
         return pl.read_parquet(path) if path.exists() else None
+
+
+def _scored_runs(benchmark: Path, planner: str | None) -> list[tuple[int, str, str]]:
+    """(episode, stage, env) of every scored run of a processed benchmark dir, by episode: arena_evaluation's
+    `flow_runs.parquet`, or the `combined_metrics.parquet` of a benchmark an older release processed (env from its robot)."""
+    import polars as pl
+
+    runs_file = benchmark / "flow_runs.parquet"
+    if runs_file.is_file() or not (benchmark / "combined_metrics.parquet").is_file():
+        runs = pl.read_parquet(runs_file, columns=["episode", "stage", "planner", "env"])
+    else:
+        runs = pl.read_parquet(benchmark / "combined_metrics.parquet", columns=["episode", "stage", "planner", "robot"])
+        env = pl.col("robot").fill_null("env_0").str.extract(r"^(env_[^_]+)", 1).fill_null("env_0")
+        runs = runs.with_columns(env.alias("env")).drop("robot")
+    if planner is not None:
+        runs = runs.filter(pl.col("planner") == planner)
+    return [(int(episode), str(stage), str(env or "env_0")) for episode, stage, env in runs.sort("episode").select("episode", "stage", "env").iter_rows()]
 
 
 # --- leave one seed out ----------------------------------------------------------------------------------------------
