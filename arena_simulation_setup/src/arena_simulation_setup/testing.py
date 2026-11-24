@@ -60,6 +60,13 @@ FOOTSTEPS = {
     'ceramic_tile': ('ceramic', 48000, 1, 1.0),
     'default': (None, 44100, 2, 1.0),
 }
+#: The study objects' annotations in the public bucket (Common/Object/...), the parts their footprints and fronts come
+#: from: a box per axis in the object frame, the front as a direction. The waiting bay, a floor marking, has no box.
+OBJECTS: dict[str, dict[str, Any]] = {
+    'robot_charger': {'face': '+x', 'bounding_box': [[-0.2033, 0.2033], [-0.3934, 0.3934], [0.0, 1.6072]], 'tags': ['domain::common', 'kind::digital_system']},
+    'parcel_locker': {'face': '+x', 'bounding_box': [[-0.0021, 0.5091], [-0.0013, 1.0381], [0.0, 2.0006]], 'tags': ['domain::common', 'kind::facility_furniture']},
+    'waiting_bay': {'face': '+x', 'tags': ['domain::common', 'kind::sign', 'mount::floor']},
+}
 LOOPS = {
     'alarm_loop': ('alarm', 'Looping alarm for environment alarm sources.', 88.0, -17.5, ['alarm', 'loop', 'environment'], ['alarm']),
     'radio_loop': ('music', 'Looping radio music.', 62.0, -12.5, ['music', 'radio', 'loop', 'environment'], ['radio', 'music']),
@@ -153,10 +160,19 @@ def write_materials(root: Path) -> None:
         (directory / f'{name}.mdl').write_text('mdl 1.6;\n')
 
 
+def write_objects(root: Path) -> None:
+    """The study objects as annotation-only models, so their footprints and fronts resolve without the bucket."""
+    for name, annotation in OBJECTS.items():
+        directory = root / 'Common' / 'Object' / name
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'annotation.yaml').write_text(yaml.safe_dump({'asa': 1, 'desc': '', 'name': name, 'path': f'Object/{name}', **annotation}))
+
+
 def write_fake_assets(root: Path) -> None:
     write_sounds(root)
     write_clips(root)
     write_materials(root)
+    write_objects(root)
 
 
 def install_fake_assets() -> Path:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import typing
 
 import yaml
+from arena_simulation_setup.testing import OBJECTS
 
 if typing.TYPE_CHECKING:
     from pathlib import Path
@@ -17,22 +18,17 @@ class Docked(typing.NamedTuple):
     dock: list[list[float]]
 
 
-#: The bounding boxes of the docked models' annotations in the public bucket, to the cm, by model; the waiting bay, a
-#: floor marking, has none. All three face +x.
-BOXES = {"Common/Object/robot_charger": [[-0.2, 0.2], [-0.39, 0.39], [0.0, 1.61]], "Common/Object/parcel_locker": [[0.0, 0.51], [0.0, 1.04], [0.0, 2.0]]}
-
-
 def write_docked_assets(root: Path) -> dict[str, Path]:
-    """The docked models as annotation-only assets under the asset root `root`, so their footprints and fronts resolve
-    as a docked object's must (`resolve_footprints`); their directories by model."""
+    """The docked models as annotation-only assets under the asset root `root`, with the public bucket's annotations the
+    fake asset root holds (`arena_simulation_setup.testing.OBJECTS`, all three facing +x), so their footprints and fronts
+    resolve as a docked object's must (`resolve_footprints`); their directories by model."""
     from arena_simulation_setup.shared.entities import Obstacle
 
     out: dict[str, Path] = {}
     for docked in DOCKED:
         directory = root / Obstacle.parse({"name": docked.name, "model": docked.model, "pose": [0.0, 0.0, 0.0]}).model.relpath()
         directory.mkdir(parents=True, exist_ok=True)
-        box = BOXES.get(docked.model)
-        (directory / "annotation.yaml").write_text(yaml.safe_dump({"face": "+x", **({"bounding_box": box} if box is not None else {})}))
+        (directory / "annotation.yaml").write_text(yaml.safe_dump(OBJECTS[docked.model.rsplit("/", 1)[-1]]))
         out[docked.model] = directory
     return out
 
