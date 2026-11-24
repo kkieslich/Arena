@@ -523,7 +523,7 @@ def _pillar(local_root: Path) -> str:
     return "Common/Object/test_pillar"
 
 
-def test_the_corridor_is_the_free_run_in_front_so_a_pillar_beside_or_before_one_edge_leaves_it(tmp_path: Path, local_root: Path, hospital: Site) -> None:
+def test_the_corridor_is_the_free_run_in_front_so_a_pillar_beside_or_before_one_edge_leaves_it_but_closes_a_pocket(tmp_path: Path, local_root: Path, hospital: Site) -> None:
     import shapely
 
     hall = [s for s in _facing_the_nurse_room(candidate_spots(hospital, "charger_pair")) if s.valid]
@@ -537,7 +537,9 @@ def test_the_corridor_is_the_free_run_in_front_so_a_pillar_beside_or_before_one_
         world = _world(tmp_path / "worlds" / name, [pillar])
         moved = next(s for s in candidate_spots(world, "charger_pair") if s.id == spot.id)
         assert moved.corridor_m == pytest.approx(spot.corridor_m, abs=RASTER_M), name
-        assert moved.verdict[Rule.CORRIDOR_WIDTH] is Verdict.PASS, name
+        # the front run stays, but 0.2 m beside or before the docks the pillar closes the passage into a pocket: the
+        # corridor rule along the wall (`place.pinches`) fails the spot
+        assert moved.verdict[Rule.CORRIDOR_WIDTH] is Verdict.FAIL, name
     # a bench across the whole front, 0.6 m beyond the clear zone, leaves 0.6 m
     _asset(local_root, "Common/Object/test_bench", {"bounding_box": [[-0.2, 0.2], [-1.6, 1.6], [0.0, 0.5]], "face": "+x"})
     yaw = float(math.atan2(spot.frame.n[1], spot.frame.n[0]))
@@ -545,6 +547,32 @@ def test_the_corridor_is_the_free_run_in_front_so_a_pillar_beside_or_before_one_
     narrowed = next(s for s in candidate_spots(_world(tmp_path / "worlds" / "bench", [bench]), "charger_pair") if s.id == spot.id)
     assert narrowed.corridor_m == pytest.approx(0.6, abs=RASTER_M)
     assert narrowed.verdict[Rule.CORRIDOR_WIDTH] is Verdict.FAIL
+
+
+def test_a_pillar_beside_the_docks_that_closes_the_passage_into_a_pocket_fails_the_corridor_rule(tmp_path: Path, local_root: Path, hospital: Site) -> None:
+    import re
+
+    hall = [s for s in _facing_the_nurse_room(candidate_spots(hospital, "charger_pair")) if s.valid]
+    spot = max(hall, key=lambda s: s.corridor_m)
+    assert not [p for p in place.check_layout(hospital, Layout.of([spot]), pinch_min_m=place.CORRIDOR_MIN_M) if "pinch" in p]
+    # the front corridor misses a pillar beside the pair (`test_the_corridor_is_the_free_run_in_front...`); the pinch
+    # check counts the docks as occupied and looks along the wall too: a 0.3 m pillar 0.2 m beside the docks closes the
+    # passage between them into a pocket (the spot fails the corridor rule), one 1.0 m beside them leaves a 1.0 m
+    # passage (refused only under the full corridor rule, `pinch_min_m`), one 2.0 m beside them is clear
+    _, hi, _, dock_front = spot.frame.extent(spot.taken)
+    model = _pillar(local_root)
+    verdicts, strict = {}, {}
+    for name, gap in (("pocket", 0.2), ("narrow", 1.0), ("clear", 2.0)):
+        pillar = {"name": f"pillar_{name}", "model": model, "pose": [*map(float, spot.frame.at(hi + gap + 0.15, dock_front - 0.5)), 0.0]}
+        world = _world(tmp_path / "worlds" / name, [pillar])
+        moved = next(s for s in candidate_spots(world, "charger_pair") if s.id == spot.id)
+        verdicts[name] = moved.verdict[Rule.CORRIDOR_WIDTH]
+        assert moved.corridor_m == pytest.approx(spot.corridor_m, abs=RASTER_M), name
+        strict[name] = [p for p in place.check_layout(world, Layout.of([moved]), pinch_min_m=place.CORRIDOR_MIN_M) if "pinch" in p]
+    assert verdicts == {"pocket": Verdict.FAIL, "narrow": Verdict.PASS, "clear": Verdict.PASS}
+    assert len(strict["pocket"]) == 1 and re.fullmatch(r"charger_pair: pinch, closes a [\d.]+ m passage to a wall, pillar or object into a pocket \(0\.(1\d|2\d) m left\)", strict["pocket"][0]), strict
+    assert len(strict["narrow"]) == 1 and re.fullmatch(r"charger_pair: pinch, leaves (0\.9\d|1\.0\d) m of a [\d.]+ m passage to a wall, pillar or object, under 1\.8 m", strict["narrow"][0]), strict
+    assert strict["clear"] == []
 
 
 @pytest.mark.parametrize("element", list(CATALOG))

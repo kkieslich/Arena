@@ -273,17 +273,21 @@ def _fleet(monkeypatch: pytest.MonkeyPatch | None = None, jobs: str | None = Non
     rng.reseed(FLEET_SEED)
     managers = {name: _Manager(name, done=False) for name in ("r0", "r1", "r2", "r3")}
     world = _fleet_world()
-    record = SimpleNamespace(log={}, lines=[])
+    record = SimpleNamespace(log={}, lines=[], crowd={})
 
     def publish(kind: str, fields: dict[str, str]) -> None:
         assert kind == "fleet"
         record.log = dict(fields)
 
     logger = SimpleNamespace(**{level: (lambda message, level=level: record.lines.append((level, message))) for level in ("debug", "info", "warning")})
+
+    async def keep_crowd_off(key: str, polygons: list[object]) -> None:
+        record.crowd[key] = list(polygons)
+
     ctx = SimpleNamespace(
         robots=managers,
         world_manager=SimpleNamespace(world_compacted=lambda: world),
-        environment_manager=SimpleNamespace(ezilear=lambda pose: pose),
+        environment_manager=SimpleNamespace(ezilear=lambda pose: pose, keep_crowd_off=keep_crowd_off),
         conf=SimpleNamespace(RNG=rng),
         episode=SimpleNamespace(publish_task_entity=publish),
     )
@@ -337,6 +341,23 @@ def _job_index(manager: _Manager) -> int:
 def _job_wh(start: tuple[float, float], per_m: float = 0.046) -> float:
     """The mode's estimate for a delivery from `start`: 1.2 times the straight line to the loading point, on to the locker and on to the charger nearest it, plus the jackal's 42.2 W over 25 s of loading and unloading."""
     return (math.dist(start, LOADING_XY) + math.dist(LOADING_XY, LOCKER_XY) + math.dist(LOCKER_XY, CHARGER_2_XY)) * 1.2 * per_m + 42.2 * 25.0 / 3600.0
+
+
+def test_fleet_walls_off_the_docks_of_its_homes_and_chargers_for_the_crowd_alone() -> None:
+    def corners(polygons: list[object]) -> list[list[tuple[float, float]]]:
+        return sorted(sorted((round(c.x, 3), round(c.y, 3)) for c in polygon) for polygon in polygons)
+
+    mode, _, _, record = _fleet()
+    asyncio.run(mode.reset())
+    # the homes charger_1 and charger_2 are chargers too, each one dock; the homes bay_1 and bay_2 are zones of the test
+    # world, no docked objects, and the locker's dock is where jobs unload: all three stay floor for the crowd
+    assert corners(record.crowd["fleet_parking"]) == [[(0.5, 2.5), (0.5, 3.5), (1.5, 2.5), (1.5, 3.5)], [(3.5, 2.5), (3.5, 3.5), (4.5, 2.5), (4.5, 3.5)]]
+    assert ("info", "the crowd keeps off 2 parking spots: charger_1, charger_2") in record.lines
+    asyncio.run(mode.teardown())
+    assert record.crowd["fleet_parking"] == []
+    mode, _, _, record = _fleet(keep_crowd_off=False)
+    asyncio.run(mode.reset())
+    assert record.crowd["fleet_parking"] == []
 
 
 def test_fleet_releases_depend_on_the_seed_alone() -> None:

@@ -2012,6 +2012,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._mech_walls_syncing = True
             self._in_background(self._sync_mechanism_walls())
 
+    async def set_crowd_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
+        """`set_mechanism_walls`, applied before it returns."""
+        self._mech_walls_desired.pop(key, None)
+        await self._apply_mechanism_walls(key, None if segments is None else [((float(a[0]), float(a[1])), (float(b[0]), float(b[1]))) for a, b in segments])
+
     async def _sync_mechanism_walls(self) -> None:
         try:
             while self._mech_walls_desired:

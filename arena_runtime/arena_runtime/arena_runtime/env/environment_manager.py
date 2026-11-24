@@ -625,6 +625,16 @@ class EnvironmentManager(NodeInterface):
         """Have the human simulator refuse a scenario its crowd cannot carry out (`BaseHumanSimulator.check_scenario`)."""
         await self._human_simulator.check_scenario(view, world, scenario, scenario_dir, origins)
 
+    async def keep_crowd_off(self, key: str, polygons: Sequence[Sequence[Position]]) -> None:
+        """Walls round each of `polygons` (env frame, as task modes read the world) that only the human simulator's walkers
+        see, as the wall set `key`, replacing the set before (no polygons: removed). The walkers route round that floor;
+        the robots' map, their planners and the physics simulator stay as they were."""
+        segments = []
+        for corners in polygons:
+            ring = [self.realize(Position(c.x, c.y, 0.0)) for c in corners]
+            segments += [((a.x, a.y), (b.x, b.y)) for a, b in zip(ring, ring[1:] + ring[:1], strict=True)]
+        await self._human_simulator.set_crowd_walls(key, segments or None)
+
     async def spawn_robot(self, robots: Sequence[Robot]) -> Sequence[Robot]:
         """
         Loads given robot into the simulator
