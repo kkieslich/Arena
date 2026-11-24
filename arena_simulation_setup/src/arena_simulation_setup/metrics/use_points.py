@@ -29,6 +29,7 @@ import functools
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import attrs
 import numpy as np
@@ -328,8 +329,7 @@ class Floor:
         if cell is None or not parts:
             return math.inf
         if parts not in self._to:
-            to = ndimage.distance_transform_edt(~np.isin(self.labels, list(parts))) * self.resolution
-            assert isinstance(to, np.ndarray)
+            to = cast("np.ndarray", ndimage.distance_transform_edt(~np.isin(self.labels, list(parts)))) * self.resolution
             self._to[parts] = to
         return float(self._to[parts][cell])
 
@@ -408,7 +408,7 @@ def level_floor(level: Level, boxes: Iterable[tuple[str, shapely.Polygon]], *, r
     return Floor(grid, labels, boxes, origin, resolution, near)
 
 
-def _exact(near: np.ndarray, grid: np.ndarray, shapes: Mapping[str, object], origin: tuple[float, float], resolution: float, clearance: float) -> np.ndarray:
+def _exact(near: np.ndarray, grid: np.ndarray, shapes: Mapping[str, Any], origin: tuple[float, float], resolution: float, clearance: float) -> np.ndarray:
     """The cells walkable `clearance` from the walls, the occupied shapes and the edge of the free rooms, doors and cabins
     that `shapes` draws (`Level.grid_shapes`), the raster's clearance `near` of the cells within `EXACT_BAND` of
     `clearance` replaced by their centres' distance to those shapes. A wall drawn as a line of cells, and the frame, put a
@@ -419,11 +419,11 @@ def _exact(near: np.ndarray, grid: np.ndarray, shapes: Mapping[str, object], ori
     band = (grid == 255) & (near >= clearance - EXACT_BAND) & ~walkable
     if not band.any():
         return walkable
-    free = shapely.union_all([shapely.force_2d(shapes[key]) for key in ("rooms", "doors", "cabins") if key in shapes])  # pyright: ignore[reportArgumentType]
+    free = shapely.union_all([shapely.force_2d(shapes[key]) for key in ("rooms", "doors", "cabins") if key in shapes])
     walls = shapes["walls"]
-    if shapely.get_num_geometries(shapes["doors"]) > 0:  # pyright: ignore[reportArgumentType]
-        walls = shapely.difference(walls, shapes["doors"])  # pyright: ignore[reportArgumentType]  # the doors drawn over the walls
-    occupied = [*shapely.get_parts(walls), *(polygon for _, polygon in shapes.get("static_objects") or ())]  # pyright: ignore[reportGeneralTypeIssues, reportAttributeAccessIssue]
+    if shapely.get_num_geometries(shapes["doors"]) > 0:
+        walls = shapely.difference(walls, shapes["doors"])  # the doors drawn over the walls
+    occupied = [*shapely.get_parts(walls), *(polygon for _, polygon in shapes.get("static_objects") or ())]
     rows, cols = np.nonzero(band)
     xs = origin[0] + (cols + 0.5) * resolution
     ys = origin[1] + (grid.shape[0] - 1 - rows + 0.5) * resolution
@@ -591,14 +591,14 @@ def check(
         """The route clearance where a point's walker stops; with `typical` and `crowd_typical`, its route's."""
         return route_clearance(of.get(point.walker, crowd) if point.walker is not None else crowd)
 
-    boxes: dict[str, list[tuple[str, shapely.Geometry]]] = {}
+    boxes: dict[str, list[tuple[str, shapely.Polygon]]] = {}
     # the floor without objects and with every door open: a pocket the walls close off by themselves is no room cut off
     bare: dict[str, Floor] = {}
     walls: dict[str, shapely.Geometry] = {}
     for level_id, level in world.levels.items():
         shut = [door for door in level.doors if locked(door)]
         boxes[level_id] = [(o.name, box) for (lid, o), annotation in zip(placed, annotations, strict=True) if lid == level_id and isinstance(annotation, dict) and (box := object_box(o, annotation)) is not None]
-        boxes[level_id] += [(f"locked door {door.name}", shapely.LineString([(door.start.x, door.start.y), (door.end.x, door.end.y)]).buffer(RESOLUTION)) for door in shut]
+        boxes[level_id] += [(f"locked door {door.name}", cast("shapely.Polygon", shapely.LineString([(door.start.x, door.start.y), (door.end.x, door.end.y)]).buffer(RESOLUTION))) for door in shut]
         bare[level_id] = level_floor(level, [], open_doors=True)
         walls[level_id] = shapely.union_all([shapely.LineString([(w.start.x, w.start.y), (w.end.x, w.end.y)]) for w in level.all_walls] + [shapely.LineString([(d.start.x, d.start.y), (d.end.x, d.end.y)]) for d in shut])
     by_clearance: dict[float, dict[str, Floor]] = {}
@@ -659,6 +659,7 @@ def check(
                 # a start in a pocket smaller than a room reaches nothing a walker is sent to
                 reached_here = parts(level_id, reach.get(point.walker or "", set()))
                 distance = 0.0 if floor.area(reached_here) >= CUT_OFF_AREA else floor.distance(point.x, point.y, floor.largest())
+                floor_distance = distance
             else:
                 own = reach.get(point.walker or "")
                 if own is not None and not own:

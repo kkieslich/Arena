@@ -322,10 +322,8 @@ def test_condition_parse_reads_structured_conditions():
 def object_root(local_root):
     from arena_simulation_setup.tree import DynamicPaths
 
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = local_root
-    yield local_root
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(local_root):
+        yield local_root
 
 
 def _cabinet(root) -> str:

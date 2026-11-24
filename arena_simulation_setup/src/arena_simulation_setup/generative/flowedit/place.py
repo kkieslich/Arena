@@ -30,6 +30,7 @@ from .edit import SEPARATOR, EditType, Site, apply, save, world_object
 if TYPE_CHECKING:
     import numpy as np
     import shapely
+    from shapely.geometry.base import BaseGeometry
 
     from arena_simulation_setup.tree.World.model import Level
 
@@ -266,14 +267,14 @@ class Spot:
         return not self.failed
 
     @property
-    def taken(self) -> shapely.Polygon:
+    def taken(self) -> BaseGeometry:
         """The floor the element and the robots in its docks stand on."""
         import shapely
 
         return shapely.union_all([g for o in self.objects for g in (o.footprint, o.dock)])
 
     @property
-    def keep_clear(self) -> shapely.Polygon:
+    def keep_clear(self) -> BaseGeometry:
         """The floor no other element may take: `taken`, the clear zone and the turning circle."""
         import shapely
 
@@ -320,15 +321,15 @@ class _Context:
     level_id: str
     level: Level
     wall_segments: list[tuple[Point, Point]]
-    walls: shapely.Geometry
-    door_spans: shapely.Geometry
-    doors: shapely.Geometry
-    lifts: shapely.Geometry
+    walls: BaseGeometry
+    door_spans: BaseGeometry
+    doors: BaseGeometry
+    lifts: BaseGeometry
     shapes: dict[str, shapely.Polygon]
-    floor: shapely.Geometry
-    floor_inner: shapely.Geometry
+    floor: BaseGeometry
+    floor_inner: BaseGeometry
     obstacles: dict[str, shapely.Polygon]
-    obstacle_union: shapely.Geometry
+    obstacle_union: BaseGeometry
     _grid: tuple[np.ndarray, Point] | None = attrs.field(default=None, init=False)
 
     @property
@@ -551,7 +552,7 @@ class _Frame:
     def depth(self, x: float, y: float) -> float:
         return (x - self.start[0]) * self.n[0] + (y - self.start[1]) * self.n[1]
 
-    def extent(self, geometry: shapely.Geometry) -> tuple[float, float, float, float]:
+    def extent(self, geometry: BaseGeometry) -> tuple[float, float, float, float]:
         """`geometry`'s along and depth ranges: (along_lo, along_hi, depth_lo, depth_hi)."""
         import shapely
 
@@ -572,7 +573,7 @@ def _placed(polygon: shapely.Polygon, x: float, y: float, yaw: float) -> shapely
     return shapely.affinity.translate(shapely.affinity.rotate(polygon, yaw, origin=(0, 0), use_radians=True), xoff=x, yoff=y)
 
 
-def _overlaps(a: shapely.Geometry, b: shapely.Geometry) -> bool:
+def _overlaps(a: BaseGeometry, b: BaseGeometry) -> bool:
     return bool(a.intersects(b)) and a.intersection(b).area > AREA_EPS
 
 
@@ -625,7 +626,7 @@ def _members(piece: WallPiece, frame: _Frame, local: shapely.Polygon, front: flo
     return out
 
 
-def _corridor_width(ctx: _Context, frame: _Frame, blocked: shapely.Geometry, along: tuple[float, float], front: float, others: shapely.Geometry | None = None, zone: shapely.Geometry | None = None) -> float:
+def _corridor_width(ctx: _Context, frame: _Frame, blocked: BaseGeometry, along: tuple[float, float], front: float, others: BaseGeometry | None = None, zone: BaseGeometry | None = None) -> float:
     """The clear corridor width left in front of `blocked` (and `others`, painted as obstacles too), up to
     `CORRIDOR_CAP_M`, to about a raster cell: the free run in front of it, on rays from `blocked`'s front along the
     normal every 0.25 m across its width, each running to the first obstacle on the floor raster or out of `zone` (the
@@ -693,7 +694,7 @@ def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], 
     def ok(condition: bool) -> Verdict:
         return Verdict.PASS if condition else Verdict.FAIL
 
-    def free_floor(geometry: shapely.Geometry) -> bool:
+    def free_floor(geometry: BaseGeometry) -> bool:
         return bool(ctx.floor.covers(geometry)) and not ctx.walls.intersects(geometry) and not ctx.obstacle_union.intersects(geometry)
 
     footprints = [o.footprint for o in objects]
@@ -860,7 +861,7 @@ def candidate_spots(
     return spots
 
 
-def _turned(points: Sequence[Point], angle: float) -> shapely.Polygon:
+def _turned(points: Sequence[Sequence[float]], angle: float) -> shapely.Polygon:
     """`points` as a polygon turned by `angle` about the origin, so a model's front (at `-angle`) points along +x."""
     import shapely
     import shapely.affinity
@@ -881,7 +882,7 @@ def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR
 
     from . import generate as gen
 
-    def footprints(spot: Spot) -> shapely.Geometry:
+    def footprints(spot: Spot) -> BaseGeometry:
         return shapely.union_all([o.footprint for o in spot.objects]).buffer(gen.MARGIN_M)
 
     problems = [f"{s.element.name} at {s.zone} piece {s.piece} step {s.step}: {', '.join(s.failed)} fails" for s in layout.spots if s.failed]

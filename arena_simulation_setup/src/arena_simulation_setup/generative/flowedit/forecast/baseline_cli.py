@@ -142,14 +142,14 @@ def _plot_curve(png: Path, partition: str, counts: Sequence[int], means: Mapping
     # counts beyond a run's tracks repeat its last point: plot each at the tracks actually seen
     shown = [i for i, k in enumerate(counts) if k <= max(max_tracks, 1) or (i > 0 and counts[i - 1] < max_tracks)]
     for k, (n, m) in enumerate(means.items()):
-        pts = [(max(min(counts[i], max_tracks or counts[i]), 0.5), m[i]) for i in shown if m[i] is not None]
+        pts = [(max(min(counts[i], max_tracks or counts[i]), 0.5), v) for i in shown if (v := m[i]) is not None]
         ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", markersize=6, linewidth=1.6, color=SERIES[k % len(SERIES)], label=n)
-    if floors.get("stale_outside") is not None:
-        ax.axhline(floors["stale_outside"], color="#eb6834", linewidth=1.2, linestyle=":", label="stale (base runs outside the truth: the pre-edit map's runs)")
-    if floors.get("stale_at_seen") is not None:
-        ax.axhline(floors["stale_at_seen"], color="#6b6a64", linewidth=1.2, linestyle=":", label="stale@s (base run at the seen seed)")
-    if floors.get("one_seed_floor") is not None:
-        ax.axhline(floors["one_seed_floor"], color="#2b2a27", linewidth=1.2, linestyle="--", label="one-seed floor (the edit's own run)")
+    if (y := floors.get("stale_outside")) is not None:
+        ax.axhline(y, color="#eb6834", linewidth=1.2, linestyle=":", label="stale (base runs outside the truth: the pre-edit map's runs)")
+    if (y := floors.get("stale_at_seen")) is not None:
+        ax.axhline(y, color="#6b6a64", linewidth=1.2, linestyle=":", label="stale@s (base run at the seen seed)")
+    if (y := floors.get("one_seed_floor")) is not None:
+        ax.axhline(y, color="#2b2a27", linewidth=1.2, linestyle="--", label="one-seed floor (the edit's own run)")
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     ax.set_xscale("log")
@@ -247,6 +247,8 @@ def _score_maps(doc: Mapping[str, Any], runs: Runs, maps: Mapping[str, Any], par
             if not have or world not in maps:
                 continue
             truth = runs.pooled(world, have)
+            if truth is None:
+                continue
             m = maps[world]
             rows.append(
                 {

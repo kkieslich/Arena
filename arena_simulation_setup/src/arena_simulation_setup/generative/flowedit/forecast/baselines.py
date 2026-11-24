@@ -346,7 +346,7 @@ def tune_cliff(worlds: Sequence[tuple[str, Sequence[int]]], tracks_of: Callable[
                 log(f"cliff tuning: {field} {v}: mean JSD {scores[v]:.4f} on {len(worlds)} validation worlds")
         if not scores:
             raise ValueError("no validation world with tracks to tune on")
-        params = attrs.evolve(params, **{field: min(scores, key=scores.get)})
+        params = attrs.evolve(params, **{field: min(scores, key=scores.__getitem__)})
     return params, table
 
 

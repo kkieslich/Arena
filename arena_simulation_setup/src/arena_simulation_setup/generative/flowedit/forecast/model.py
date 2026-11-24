@@ -27,8 +27,8 @@ scaled to the crowd's pedestrian-seconds (people times T), so it compares with a
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 import attrs
 
@@ -140,7 +140,7 @@ class Params:
         return [float(getattr(self, f)) for f in PARAM_FIELDS]
 
     @classmethod
-    def from_vector(cls, values: Sequence[float]) -> Params:
+    def from_vector(cls, values: Iterable[float]) -> Params:
         return cls(**{f: min(max(float(v), PARAM_BOUNDS[f][0]), PARAM_BOUNDS[f][1]) for f, v in zip(PARAM_FIELDS, values, strict=True)})
 
     def dump(self) -> dict[str, float]:
@@ -189,7 +189,7 @@ def _advance(cover: np.ndarray, durs: np.ndarray, first: float, at_first: bool, 
     return (0, 0.0)
 
 
-def schedule(first: float, segments: Sequence[float], trips_s: Sequence[tuple[Need, Sequence[float]]], duration: float, draws: int = NEED_DRAWS) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def schedule(first: float, segments: Sequence[float] | np.ndarray, trips_s: Sequence[tuple[Need, Sequence[float]]], duration: float, draws: int = NEED_DRAWS) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """A person's expected seconds in each segment of its idle timeline, its expected trips per need, and where they start,
     over `draws` draws of the needs' initial values and decay rates.
 
@@ -281,7 +281,7 @@ def _nav_graph(free: np.ndarray, res: float) -> tuple[Any, np.ndarray]:
     import scipy.sparse
 
     ny, nx = free.shape
-    clearance = scipy.ndimage.distance_transform_edt(free) * res
+    clearance = cast("np.ndarray", scipy.ndimage.distance_transform_edt(free)) * res
     cost = 1.0 + np.clip((COMFORT_M - clearance) / COMFORT_M, 0.0, 1.0)
     idx = np.arange(ny * nx).reshape(ny, nx)
     rows, cols, vals = [], [], []
@@ -309,7 +309,7 @@ def _nearest_free(free: np.ndarray) -> np.ndarray:
 
     if free.all():
         return np.arange(free.size)
-    _, (ii, jj) = scipy.ndimage.distance_transform_edt(~free, return_indices=True)
+    _, (ii, jj) = cast("tuple[np.ndarray, np.ndarray]", scipy.ndimage.distance_transform_edt(~free, return_indices=True))
     return (ii * free.shape[1] + jj).ravel()
 
 
@@ -469,7 +469,10 @@ def layers(scene: Scene) -> Layers:
         for p, person in enumerate(people):
             if stuck[p] or not np.isfinite(dist[stop_nodes[p][0]]):
                 continue
-            back = paths.deposit(paths.trace(pred, front, stop_nodes[p][0]), person.speed)
+            route = paths.trace(pred, front, stop_nodes[p][0])
+            if route is None:
+                continue
+            back = paths.deposit(route, person.speed)
             there = [paths.deposit(path[::-1], person.speed) if (path := paths.trace(pred, front, s)) is not None else None for s in stop_nodes[p]]
             parts[(p, o)] = (back, there)
 
@@ -483,7 +486,7 @@ def layers(scene: Scene) -> Layers:
         per_need, kept = [], []
         for n, need in enumerate(needs):
             objs = [o for o, d in enumerate(demands) if d.need == need and (p, o) in parts]
-            secs = [min((parts[(p, o)][1][i][4] + parts[(p, o)][0][4] + demands[o].dwell for o in objs if parts[(p, o)][1][i] is not None), default=math.inf) for i in range(k)]
+            secs = [min((leg[4] + parts[(p, o)][0][4] + demands[o].dwell for o in objs if (leg := parts[(p, o)][1][i]) is not None), default=math.inf) for i in range(k)]
             finite = [x for x in secs if math.isfinite(x)]
             if finite:
                 per_need.append((scene.needs[need], [x if math.isfinite(x) else max(finite) for x in secs]))
@@ -499,21 +502,22 @@ def layers(scene: Scene) -> Layers:
     trip_walk_s = np.zeros((n_people, n_demands))
     for (p, o), (back, there) in parts.items():
         reach = [i for i, x in enumerate(there) if x is not None]
+        legs = [x for x in there if x is not None]
         if not reach:
             continue
         w = origin.get((p, needs.index(demands[o].need)) if demands[o].need in needs else (p, -1))
         ws = np.array([1.0 if w is None else float(w[i]) for i in reach])
         ws = ws / ws.sum() if ws.sum() > 0 else np.full(len(reach), 1.0 / len(reach))
         add(
-            np.concatenate([back[0], *(there[i][0] for i in reach)]),
-            np.concatenate([back[2], *(there[i][2] * wi for i, wi in zip(reach, ws, strict=True))]),
+            np.concatenate([back[0], *(leg[0] for leg in legs)]),
+            np.concatenate([back[2], *(leg[2] * wi for leg, wi in zip(legs, ws, strict=True))]),
             p,
             TRIP_WALK,
             o,
-            h=np.concatenate([back[1], *(there[i][1] for i in reach)]),
+            h=np.concatenate([back[1], *(leg[1] for leg in legs)]),
         )
-        trip_m[p, o] = back[3] + float(sum(there[i][3] * wi for i, wi in zip(reach, ws, strict=True)))
-        trip_walk_s[p, o] = back[4] + float(sum(there[i][4] * wi for i, wi in zip(reach, ws, strict=True)))
+        trip_m[p, o] = back[3] + float(sum(leg[3] * wi for leg, wi in zip(legs, ws, strict=True)))
+        trip_walk_s[p, o] = back[4] + float(sum(leg[4] * wi for leg, wi in zip(legs, ws, strict=True)))
 
     spots = np.array([[paths.stand(n) for n in nodes] for nodes in spot_nodes], np.int64).reshape(n_demands, QUEUE_SPOTS + 1)
     reach_cells = np.zeros(scene.grid.nx * scene.grid.ny, bool)

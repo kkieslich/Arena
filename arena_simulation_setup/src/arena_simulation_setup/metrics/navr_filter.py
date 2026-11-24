@@ -16,6 +16,7 @@ import dataclasses
 import math
 from collections.abc import Collection, Iterable, Sequence
 from contextlib import nullcontext
+from typing import cast
 
 import attrs
 import numpy as np
@@ -387,7 +388,7 @@ def _update(base: NavrBase, layer: _Layer, masks: Sequence[_Mask], force_full: b
                 removed_spawns += np.bincount(base_labels[removed_spawn], minlength=count + 1)  # spawn cells only, no component changes
             continue
         kept = traversable & ~removed
-        local, pieces = ndimage.label(kept, structure=_CONNECTIVITY)
+        local, pieces = cast("tuple[np.ndarray, int]", ndimage.label(kept, structure=_CONNECTIVITY))
         piece_label = np.zeros(pieces + 1, dtype=np.int64)
         piece_label[local[kept]] = base_labels[kept]  # each piece lies in one base component
         ring = np.zeros(kept.shape, dtype=bool)
@@ -490,7 +491,7 @@ def _dock_reachable(base: NavrBase, state: _State, cell: tuple[int, int], lifted
         traversable = (distance * res)[inner] >= radius
     else:  # open floor all around: no obstacle within the radius of the window
         traversable = np.ones(occupied.shape, dtype=bool)[inner]
-    local, _ = ndimage.label(traversable, structure=_CONNECTIVITY)
+    local, _ = cast("tuple[np.ndarray, int]", ndimage.label(traversable, structure=_CONNECTIVITY))
     piece = int(local[cell[0] - rows.start, cell[1] - cols.start])
     if not piece:
         return False

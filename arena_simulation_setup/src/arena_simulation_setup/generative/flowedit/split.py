@@ -484,8 +484,8 @@ def sweep(
         files[name] = settings
         if doc.get("settings") or settings is not None or name != BASE_CROWD:
             # one file holding the merged settings, so every run reads exactly what the skip check below names its run by
-            files[name] = logs / f"settings_{S.digest(settings_doc)}.yaml"
-            files[name].write_text(yaml.safe_dump(settings_doc, sort_keys=True))
+            merged = files[name] = logs / f"settings_{S.digest(settings_doc)}.yaml"
+            merged.write_text(yaml.safe_dump(settings_doc, sort_keys=True))
         for job in jobs(doc, partitions, name):
             # a finished run is skipped here, without a launch slot or a stagger
             if done(out / f"{job.world}__{scenario_name(doc['sources'][base_of(job.world)].get('scenario'), settings_doc, job.seed)}"):

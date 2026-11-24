@@ -241,7 +241,8 @@ def segnet(inputs: int = len(CHANNELS), outputs: int = BINS) -> Any:  # noqa: AN
             for m in self.modules():
                 if isinstance(m, nn.Conv2d):
                     nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
-                    nn.init.zeros_(m.bias)
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             idx, sizes = [], []
@@ -251,7 +252,7 @@ def segnet(inputs: int = len(CHANNELS), outputs: int = BINS) -> Any:  # noqa: AN
                 x, i = nn.functional.max_pool2d(x, 2, 2, return_indices=True)
                 idx.append(i)
             for stage, i, size in zip([*self.dec, self.last], reversed(idx), reversed(sizes), strict=True):
-                x = nn.functional.max_unpool2d(x, i, 2, 2, output_size=size[-2:])
+                x = nn.functional.max_unpool2d(x, i, (2, 2), (2, 2), output_size=size[-2:])
                 x = stage(x)
             return torch.sigmoid(x)
 
@@ -296,8 +297,11 @@ def samples(inputs: Inputs, runs: Runs, worlds: Sequence[str], seeds: Sequence[i
         have = tuple(runs.seeds(w, seeds))
         if not have:
             continue
+        pooled = runs.pooled(w, have)
+        if pooled is None:
+            continue
         c = inputs(w)
-        y, top = target(c, runs.pooled(w, have) * float(np.mean([runs.maps[(w, s)].sum() for s in have])))
+        y, top = target(c, pooled * float(np.mean([runs.maps[(w, s)].sum() for s in have])))
         out.append((w, have, c.x, y, top))
     return out
 

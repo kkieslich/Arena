@@ -216,10 +216,12 @@ def normalized(counts: np.ndarray) -> np.ndarray | None:
     return None if total <= 0 else counts / total
 
 
-def jsd(p: np.ndarray, q: np.ndarray) -> float | None:
-    """Jensen-Shannon divergence (base 2) of two maps of one grid, None when either holds no time."""
+def jsd(p: np.ndarray | None, q: np.ndarray | None) -> float | None:
+    """Jensen-Shannon divergence (base 2) of two maps of one grid, None when either holds no time or is missing (a pooled map of no seeds)."""
     import numpy as np
 
+    if p is None or q is None:
+        return None
     a, b = normalized(p), normalized(q)
     if a is None or b is None:
         return None
@@ -234,6 +236,14 @@ def jsd(p: np.ndarray, q: np.ndarray) -> float | None:
     return max(0.0, (kl(a) + kl(b)) / 2)
 
 
+def scored_jsd(p: np.ndarray | None, q: np.ndarray | None) -> float:
+    """`jsd` of a forecast against a recorded map that must both hold time: ValueError when either does not."""
+    value = jsd(p, q)
+    if value is None:
+        raise ValueError("a forecast or recorded map holds no time: its JSD is undefined")
+    return value
+
+
 def pooled(maps: Sequence[np.ndarray]) -> np.ndarray | None:
     """The mean of the normalized maps (one per seed): the flow the crowd settles to, None when none holds time."""
     import numpy as np
@@ -242,4 +252,4 @@ def pooled(maps: Sequence[np.ndarray]) -> np.ndarray | None:
     return None if not shares else np.mean(shares, axis=0)
 
 
-__all__ = ["BINS", "CELL_M", "HEADINGS", "STANDING", "FlowGrid", "bin_centre", "counts", "heading_bin", "heading_bins", "jsd", "normalized", "occupancy", "pooled", "zone_polygons"]
+__all__ = ["BINS", "CELL_M", "HEADINGS", "STANDING", "FlowGrid", "bin_centre", "counts", "heading_bin", "heading_bins", "jsd", "normalized", "occupancy", "pooled", "scored_jsd", "zone_polygons"]

@@ -246,11 +246,12 @@ def plan_needs(graph: Graph, settings: Mapping[str, Any], floor: str, notes: lis
         key, chosen = next(iter(groups.items()))
         names = tuple(t.name for t, _ in chosen)
         service = key[0]
-        all_of_type = service is not None and {t.name for t in graph.objects.values() if t.service == service and t.floor == floor} == set(names)
-        if len(names) > 1 and not all_of_type:
-            raise ValueError(f"need:{need}: {list(names)} satisfy it, but people seek several objects only by a service type all of them, and nothing else on the floor, have")
-        target = service if len(names) > 1 else names[0]
         t0, a0 = chosen[0]
+        target = t0.name
+        if len(names) > 1:
+            if service is None or {t.name for t in graph.objects.values() if t.service == service and t.floor == floor} != set(names):
+                raise ValueError(f"need:{need}: {list(names)} satisfy it, but people seek several objects only by a service type all of them, and nothing else on the floor, have")
+            target = service
         if t0.dwell is None:
             notes.append(f"obj:{t0.name}: no dwell in the graph, the settings' dwell used")
         plans[need] = NeedPlan(need, target, a0.kind, a0.meet, t0.satisfies.get(need, 100.0), dict(t0.dwell or settings["dwell"]), names, need in synthesized)

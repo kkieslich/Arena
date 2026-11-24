@@ -14,6 +14,8 @@ import attrs
 import pytest
 
 from arena_simulation_setup.tree import (
+    DynamicPath,
+    DynamicPathResolver,
     DynamicPaths,
     FallbackResolver,
     Identifier,
@@ -389,6 +391,32 @@ def test_arena_dynamic_path_reads_the_local_root_at_every_use_until_assigned(tmp
             del os.environ["ARENA_ASSETS_DIR_LOCAL"]
         else:
             os.environ["ARENA_ASSETS_DIR_LOCAL"] = previous_env
+
+
+def test_a_pinned_local_root_returns_to_reading_the_local_root_after_the_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # reading the root and assigning it back after a test would pin it to the root of that moment for every later test
+    previous = DynamicPaths.ARENA._assigned
+    DynamicPaths.ARENA._assigned = None
+    try:
+        monkeypatch.setenv("ARENA_ASSETS_DIR_LOCAL", str(tmp_path / "first"))
+        with DynamicPaths.ARENA.pinned(tmp_path / "pinned") as pinned:
+            assert DynamicPaths.ARENA.path == pinned == tmp_path / "pinned"
+        monkeypatch.setenv("ARENA_ASSETS_DIR_LOCAL", str(tmp_path / "second"))
+        assert DynamicPaths.ARENA.path == tmp_path / "second"
+    finally:
+        DynamicPaths.ARENA._assigned = previous
+
+
+def test_a_dynamic_path_resolver_resolves_again_under_a_moved_root(tmp_path: Path) -> None:
+    cls = _make_identifier_cls()
+    path = DynamicPath(tmp_path / "a")
+    cls.use(DynamicPathResolver(cls, path))
+    for root in ("a", "b"):
+        (tmp_path / root / "thing").mkdir(parents=True)
+    ident = cls(name="thing")
+    assert asyncio.run(ident.resolve_path()) == tmp_path / "a" / "thing"
+    path.path = tmp_path / "b"
+    assert asyncio.run(ident.resolve_path()) == tmp_path / "b" / "thing"
 
 
 @pytest.fixture

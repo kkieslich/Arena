@@ -12,7 +12,7 @@ import yaml
 from .. import settings as S
 from .. import split as SP
 from .evaluate import BENCHMARK_HELP, CELLS_HELP, Forecaster, Runs, fit, listed, targets
-from .maps import jsd
+from .maps import scored_jsd
 from .model import Params, predict
 from .scene import CROWD_SEEDS
 
@@ -79,7 +79,7 @@ def _cmd_fit(args: argparse.Namespace) -> int:
     found = targets(forecaster, runs, doc, args.partition, args.crowd, _log)
     init = load_params(args.init)
     params, value = fit(found, init, max_evals=args.max_evals, log=_log)
-    per_world = {t.world: round(float(jsd(predict(t.layers, params), t.truth)), 5) for t in found}
+    per_world = {t.world: round(scored_jsd(predict(t.layers, params), t.truth), 5) for t in found}
     out = {
         "format": FORMAT,
         "params": params.dump(),
@@ -93,7 +93,7 @@ def _cmd_fit(args: argparse.Namespace) -> int:
             "cells": listed(args.cells),
             "worlds": len(found),
             "mean_jsd": round(value, 5),
-            "init_mean_jsd": round(float(sum(jsd(predict(t.layers, init), t.truth) for t in found) / len(found)), 5),
+            "init_mean_jsd": round(float(sum(scored_jsd(predict(t.layers, init), t.truth) for t in found) / len(found)), 5),
             "per_world": per_world,
         },
     }
@@ -205,7 +205,7 @@ def strength_mismatch(doc: dict[str, Any], model: Any) -> str | None:  # noqa: A
     ours = None if getattr(model, "demand_model", None) is None else model.demand_model.dump()
     if (theirs is None) != (ours is None):
         return f"the file is {'the plain network' if theirs is None else 'the network with the demand model input'}'s, the network is {'plain' if ours is None else 'the one with the demand model input'}"
-    if theirs is not None and (set(theirs) != set(ours) or any(abs(float(theirs[k]) - float(ours[k])) > 1e-9 * max(1.0, abs(float(ours[k]))) for k in ours)):
+    if theirs is not None and ours is not None and (set(theirs) != set(ours) or any(abs(float(theirs[k]) - float(ours[k])) > 1e-9 * max(1.0, abs(float(ours[k]))) for k in ours)):
         return f"its demand model params {theirs} are not the network's {ours}"
     return None
 
@@ -339,7 +339,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
             res = V.curve(world, V.world_seeds(doc, partition, world), tracks, runs, grid, {n: (p(world), strengths[n]) for n, p in priors_of.items()})
             for n, v in res.items():
                 curves[n].append(v)
-        mean = {n: [float(np.mean([c[i] for c in v if c[i] is not None])) if any(c[i] is not None for c in v) else None for i in range(len(V.TRACK_COUNTS))] for n, v in curves.items()}
+        mean = {n: [float(np.mean([x for c in v if (x := c[i]) is not None])) if any(c[i] is not None for c in v) else None for i in range(len(V.TRACK_COUNTS))] for n, v in curves.items()}
         out["partitions"][partition] = {"seeds": seeds, "mean": mean}
         head = "| tracks seen | " + " | ".join(str(k) for k in V.TRACK_COUNTS) + " |"
         lines = [head, "|---|" + "---|" * len(V.TRACK_COUNTS)] + [f"| {n} | " + " | ".join("" if x is None else f"{x:.3f}" for x in m) + " |" for n, m in mean.items()]
@@ -354,7 +354,7 @@ def _cmd_curve(args: argparse.Namespace) -> int:
             shown = [k for i, k in enumerate(V.TRACK_COUNTS) if any(m[i] is not None for n, m in mean.items() if n != V.ONE_SEED_FLOOR)]
             for n, m in mean.items():
                 pts = [(max(k, 0.5), v) for k, v in zip(V.TRACK_COUNTS, m, strict=True) if v is not None and k in shown]
-                style = {"linestyle": "--", "color": "grey"} if n == V.ONE_SEED_FLOOR else {"marker": "o"}
+                style: dict[str, Any] = {"linestyle": "--", "color": "grey"} if n == V.ONE_SEED_FLOOR else {"marker": "o"}
                 ax.plot([x for x, _ in pts], [v for _, v in pts], label=n, **style)
             ax.set_xscale("log")
             ax.set_xticks([max(k, 0.5) for k in shown], [str(k) for k in shown])
@@ -520,7 +520,7 @@ def _cmd_scaling(args: argparse.Namespace) -> int:
             if params is not None:
                 entry["demand_model"] = "given" if fraction >= 1 else "refitted"
             for p in parts:
-                vals = [V.jsd(forecast(model, rasters, t.world), t.map) for t in found[p] if not SP.is_base(t.world)]
+                vals = [scored_jsd(forecast(model, rasters, t.world), t.map) for t in found[p] if not SP.is_base(t.world)]
                 entry[p] = float(np.mean(vals)) if vals else None
             result["runs"].append(entry)
             _log(f"scaling: fraction {fraction:g} repeat {r}: " + ", ".join(f"{p} {entry[p]:.3f}" for p in parts if entry[p] is not None))

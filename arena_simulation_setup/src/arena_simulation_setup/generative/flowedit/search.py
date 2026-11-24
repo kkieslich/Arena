@@ -30,7 +30,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import attrs
 
@@ -40,6 +40,8 @@ from .place import EXCLUDED_ZONES, Layout, Spot
 if TYPE_CHECKING:
     import numpy as np
     import shapely
+    from numpy.typing import ArrayLike
+    from shapely.geometry.base import BaseGeometry
 
     from arena_simulation_setup.metrics.navr_filter import NavrBase, NavrVerdict
 
@@ -198,7 +200,7 @@ class RobotPaths:
         import numpy as np
         import scipy.sparse
         from scipy import ndimage
-        from scipy.spatial import cKDTree
+        from scipy.spatial import cKDTree  # pyright: ignore[reportAttributeAccessIssue]  # star-imported from a compiled module pyright cannot read
 
         from arena_simulation_setup.metrics.navr_filter import JACKAL_RADIUS
 
@@ -210,7 +212,8 @@ class RobotPaths:
         height = fine.shape[0]
         coarse = fine[k // 2 :: k, k // 2 :: k]
         rows, cols = coarse.shape
-        labels, count = ndimage.label(coarse, structure=np.ones((3, 3), dtype=bool))
+        # without `output`, label returns the labels and their count, not the count alone
+        labels, count = cast("tuple[np.ndarray, int]", ndimage.label(coarse, structure=np.ones((3, 3), dtype=bool)))
         if count == 0:
             raise ValueError("the base has no traversable floor at the path radius")
         sizes = np.bincount(labels.ravel())[1:]
@@ -309,7 +312,7 @@ class Occupancy:
     density: np.ndarray
 
     @classmethod
-    def from_cells(cls, x: Sequence[float], y: Sequence[float], ped_seconds: Sequence[float], cell_m: float, seconds: float) -> Occupancy:
+    def from_cells(cls, x: ArrayLike, y: ArrayLike, ped_seconds: ArrayLike, cell_m: float, seconds: float) -> Occupancy:
         """The occupancy of flow-map cells (centres `x`, `y`, `cell_m` wide) holding `ped_seconds` each, over `seconds` of
         recording in all (runs x episode length): the pedestrian-seconds summed per cell, over `seconds` and the cell's area.
         A cell listed twice (per heading bin, per run) adds up."""
@@ -317,12 +320,12 @@ class Occupancy:
 
         if seconds <= 0:
             raise ValueError(f"seconds must be positive, got {seconds}")
-        x, y, w = (np.asarray(v, dtype=float) for v in (x, y, ped_seconds))
-        if not len(x):
+        xs, ys, w = (np.asarray(v, dtype=float) for v in (x, y, ped_seconds))
+        if not len(xs):
             raise ValueError("no flow cells")
-        x0, y0 = float(x.min()) - cell_m / 2.0, float(y.min()) - cell_m / 2.0
-        j = np.floor((x - x0) / cell_m).astype(np.int64)
-        i = np.floor((y - y0) / cell_m).astype(np.int64)
+        x0, y0 = float(xs.min()) - cell_m / 2.0, float(ys.min()) - cell_m / 2.0
+        j = np.floor((xs - x0) / cell_m).astype(np.int64)
+        i = np.floor((ys - y0) / cell_m).astype(np.int64)
         density = np.zeros((int(i.max()) + 1, int(j.max()) + 1))
         np.add.at(density, (i, j), w)
         return cls(x0, y0, float(cell_m), density / (seconds * cell_m * cell_m))
@@ -338,9 +341,9 @@ class Occupancy:
         if path.is_dir():
             path = path / "flow_cells.parquet"
         cells = pd.read_parquet(path)
-        cells = cells[cells["flow_world"] == world]
+        cells = cast("pd.DataFrame", cells[cells["flow_world"] == world])
         if planner is not None:
-            cells = cells[cells["planner"] == planner]
+            cells = cast("pd.DataFrame", cells[cells["planner"] == planner])
         if cells.empty:
             raise ValueError(f"{path} has no flow cells of world {world!r}" + (f" and planner {planner!r}" if planner else ""))
         sizes = sorted(set(cells["cell_m"]))
@@ -364,7 +367,7 @@ class Occupancy:
                 path = path / "infra_occupancy.parquet"
             frames.append(pd.read_parquet(path))
         cells = pd.concat(frames, ignore_index=True)
-        cells = cells[cells["world"] == world]
+        cells = cast("pd.DataFrame", cells[cells["world"] == world])
         if cells.empty:
             raise ValueError(f"{paths}: no group cells of world {world!r}")
         sizes = sorted(set(cells["cell_m"]))
@@ -373,7 +376,7 @@ class Occupancy:
         runs = len(cells[["planner", "stage"]].drop_duplicates())
         out = {}
         for group, rows in cells.groupby("group", sort=True):
-            if float(rows["ped_seconds"].sum()) > 0:
+            if float(cast("float", rows["ped_seconds"].sum())) > 0:
                 out[str(group)] = cls.from_cells(rows["x"], rows["y"], rows["ped_seconds"], sizes[0], runs * episode_s)
         return out
 
@@ -413,7 +416,7 @@ class Occupancy:
         out[inside] = field[i[inside], j[inside]]
         return out
 
-    def people(self, geometry: shapely.Geometry) -> float:
+    def people(self, geometry: BaseGeometry) -> float:
         """The mean number of pedestrians on `geometry` at a time: the density integrated over it, cell by cell."""
         import numpy as np
         import shapely
@@ -432,7 +435,7 @@ class Occupancy:
         return float(np.sum(shapely.area(shapely.intersection(boxes, geometry)) * self.density[ii, jj]))
 
 
-def approach_area(spot: Spot) -> shapely.Geometry:
+def approach_area(spot: Spot) -> BaseGeometry:
     """The floor of `spot` the fallback ranking reads occupancy under: the footprints, the docks and the clear zone."""
     import shapely
 
@@ -495,7 +498,7 @@ def _num(value: float) -> float | None:
     return None if not math.isfinite(value) else round(float(value), 3)
 
 
-def _overlaps(a: shapely.Geometry, b: shapely.Geometry) -> bool:
+def _overlaps(a: BaseGeometry, b: BaseGeometry) -> bool:
     return bool(a.intersects(b)) and a.intersection(b).area > place.AREA_EPS
 
 
@@ -534,7 +537,7 @@ class Search:
         zones: Sequence[str] | None = None,
         exclude: Sequence[str] = EXCLUDED_ZONES,
         placements: Mapping[str, Placement] | None = None,
-        keep_out: Iterable[shapely.Geometry] = (),
+        keep_out: Iterable[BaseGeometry] = (),
         mix: TaskMix | None = None,
         path_resolution: float = PATH_RESOLUTION_M,
         base: NavrBase | None = None,
@@ -784,18 +787,20 @@ class Search:
     def bay_charger(self) -> np.ndarray:
         """Mean path length (m) between each charger spot's goto points (rows) and each bay spot's (columns): a top-up's
         drive (`TaskMix.top_ups_per_job`)."""
-        if self._bay_charger is None:
+        table = self._bay_charger
+        if table is None:
             import numpy as np
 
             chargers = [o.goto for s in self.spots[SEARCHED[0]] for o in s.objects]
             bays = [o.goto for s in self.spots[SEARCHED[1]] for o in s.objects]
             width_c, width_b = len(place.CATALOG[SEARCHED[0]].members), len(place.CATALOG[SEARCHED[1]].members)
             if not chargers or not bays:
-                self._bay_charger = np.zeros((len(self.spots[SEARCHED[0]]), len(self.spots[SEARCHED[1]])))
+                table = np.zeros((len(self.spots[SEARCHED[0]]), len(self.spots[SEARCHED[1]])))
             else:
                 d = self.paths.lengths(chargers, bays)
-                self._bay_charger = d.reshape(len(self.spots[SEARCHED[0]]), width_c, len(self.spots[SEARCHED[1]]), width_b).mean(axis=(1, 3))
-        return self._bay_charger
+                table = d.reshape(len(self.spots[SEARCHED[0]]), width_c, len(self.spots[SEARCHED[1]]), width_b).mean(axis=(1, 3))
+            self._bay_charger = table
+        return table
 
     # --- conflict exposure (the joint ranking) -----------------------------------------------------------------------
 

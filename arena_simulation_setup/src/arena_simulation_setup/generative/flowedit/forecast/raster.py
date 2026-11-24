@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import attrs
 
@@ -209,7 +209,7 @@ def raster(site: Site, scene: Scene, settings: Mapping[str, Any], *, demand: boo
     xs, ys = grid.centres()
 
     layers: dict[str, np.ndarray] = {"rooms": rooms_mask.astype(float), "free": _pool(free.astype(float), scene.sub)}
-    clearance = scipy.ndimage.distance_transform_edt(free) * scene.nav_res
+    clearance = cast("np.ndarray", scipy.ndimage.distance_transform_edt(free)) * scene.nav_res
     layers["clearance"] = np.minimum(_pool(clearance, scene.sub), CLEARANCE_M) / CLEARANCE_M
 
     doors = _doors(site, floor, graph)
@@ -226,9 +226,9 @@ def raster(site: Site, scene: Scene, settings: Mapping[str, Any], *, demand: boo
             layers["entrance"] += band * rate
 
     # rooms: the zones of the people's level, by cell centre
-    zone_shapes = {z["name"]: floor.shape(z["name"]) for z in floor.zones}
+    zone_shapes = {z["name"]: zone_shape for z in floor.zones if (zone_shape := floor.shape(z["name"])) is not None and not zone_shape.is_empty}
     ox, oy = floor.origin
-    room_names = sorted(n for n, s in zone_shapes.items() if s is not None and not s.is_empty)
+    room_names = sorted(zone_shapes)
     room_cells: list[np.ndarray] = []
     for p in PURPOSES:
         layers[f"purpose_{p}"] = np.zeros((grid.ny, grid.nx))

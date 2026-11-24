@@ -99,7 +99,7 @@ class Nav2Adapter(MobileAdapter):
     def launch_description(self, ctx: AdapterCtx):  # noqa: ANN201 - GroupAction, as the base
         namespace = str(ctx.namespace).rstrip("/")
         for spec in ctx.sensors:
-            kind = spec.type.value if hasattr(spec.type, "value") else str(spec.type)
+            kind = str(getattr(spec.type, "value", spec.type))  # an enum member or its string
             if kind in _SCAN_TYPES:
                 topic = spec.topic.replace("${namespace}", namespace)
                 self._scan_topics[topic if topic.startswith("/") else f"{namespace}/{topic}"] = _SCAN_TYPES[kind]

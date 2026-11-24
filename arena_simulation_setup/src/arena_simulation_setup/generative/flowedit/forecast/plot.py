@@ -35,11 +35,12 @@ def plot_world(path: Path, grid: FlowGrid, truth: np.ndarray | None, forecast: n
     vmax = max(float(p.max()) for _, p in panels) or 1.0
     fig, axes = plt.subplots(1, len(panels) + extra, figsize=(4.2 * (len(panels) + extra), 4.2 * grid.ny / max(grid.nx, 1) + 1.2), squeeze=False)
     rooms = grid.room_cells()
+    shares = []
     for ax, (name, m) in zip(axes[0], panels, strict=False):
         shown = np.ma.masked_where(~rooms, m)
-        im = ax.imshow(shown, origin="lower", extent=extent, cmap="magma", norm=PowerNorm(0.5, vmin=0.0, vmax=vmax))
+        shares.append(ax.imshow(shown, origin="lower", extent=extent, cmap="magma", norm=PowerNorm(0.5, vmin=0.0, vmax=vmax)))
         ax.set_title(name, fontsize=10)
-    fig.colorbar(im, ax=axes[0][: len(panels)].tolist(), shrink=0.8, label="share of pedestrian-seconds per cell")
+    fig.colorbar(shares[-1], ax=axes[0][: len(panels)].tolist(), shrink=0.8, label="share of pedestrian-seconds per cell")
     if truth is not None:
         diff = share(forecast) - share(truth)
         lim = float(np.abs(diff).max()) or 1e-9

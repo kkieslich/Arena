@@ -31,7 +31,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from arena_simulation_setup.tree.World.write import to_yaml
 
@@ -264,13 +264,13 @@ def extract(bag: Path, duration: float | None = None) -> Extracted:
     with AnyReader([bag]) as reader:
         wanted = [c for c in reader.connections if c.msgtype in (AGENT_META_TYPE, INTERACTION_TOPIC_TYPE)]
         for connection, stamp, raw in reader.messages(connections=wanted):
-            msg = reader.deserialize(raw, connection.msgtype)
+            msg: Any = reader.deserialize(raw, connection.msgtype)
             if connection.msgtype == AGENT_META_TYPE:
                 names.append((stamp * 1e-9, {int(i): str(n) for i, n in zip(msg.agent_id, msg.name, strict=False)}))
             else:
                 frames.append((stamp * 1e-9, msg))
     states = extract_agent_states(bag)
-    t0 = float(states["time"].min()) if not states.empty else 0.0
+    t0 = float(cast("float", states["time"].min())) if not states.empty else 0.0
     df = keyed(states, names, duration)
     return Extracted(df, interaction_rows(frames, t0, df, duration))
 
@@ -349,7 +349,7 @@ def _keys_at(time: Any, agent_id: Any, tracks: Any) -> list[str]:  # noqa: ANN40
     table = tracks[["time", "agent_id", "key"]].astype({"time": float, "agent_id": np.int64}).sort_values("time", kind="stable")
     keys = pd.merge_asof(probe, table, on="time", by="agent_id", direction="backward")
     missing = keys["key"].isna()
-    if missing.any():
+    if bool(missing.any()):
         later = pd.merge_asof(probe[missing.to_numpy()], table, on="time", by="agent_id", direction="forward")
         keys.loc[missing.to_numpy(), "key"] = later["key"].to_numpy()
     found = dict(zip(keys["row"], keys["key"], strict=True))

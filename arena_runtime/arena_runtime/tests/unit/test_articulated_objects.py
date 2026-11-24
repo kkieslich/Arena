@@ -76,10 +76,8 @@ def assets(tmp_path: Path):
     crate = tmp_path / "Kitchen" / "Object" / f"Crate{suffix}"
     crate.mkdir(parents=True)
     (crate / "annotation.yaml").write_text(yaml.safe_dump({"bounding_box": [[-0.2, 0.2], [-0.2, 0.2], [0.0, 0.4]]}))
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path
-    yield {"cabinet": f"Kitchen/Cabinet{suffix}", "console": f"Kitchen/Console{suffix}", "door": f"Kitchen/Door{suffix}", "crate": f"Kitchen/Crate{suffix}"}
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path):
+        yield {"cabinet": f"Kitchen/Cabinet{suffix}", "console": f"Kitchen/Console{suffix}", "door": f"Kitchen/Door{suffix}", "crate": f"Kitchen/Crate{suffix}"}
 
 
 def _realizer():

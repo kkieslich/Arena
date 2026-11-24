@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 
 from .. import split as SP
-from .maps import HEADINGS, STANDING, FlowGrid, heading_bins, jsd, normalized, pooled
+from .maps import HEADINGS, STANDING, FlowGrid, heading_bins, normalized, pooled, scored_jsd
 from .model import Layers, Params, layers, predict
 from .scene import CROWD_SEEDS, base_people, scene_of
 
@@ -136,7 +136,8 @@ def check_commits(run_dirs: Sequence[Path]) -> None:
             _warn(f"{run_dir}: " + (f"no {MANIFEST}" if doc is None else f"its {MANIFEST} records no commits (written before arena_evaluation recorded them)") + ", so its Arena and humansim commits are not compared")
             continue
         for name in SAME_COMMITS:
-            entry = commits.get(name) if isinstance(commits.get(name), Mapping) else {}
+            recorded = commits.get(name)
+            entry: Mapping[str, Any] = recorded if isinstance(recorded, Mapping) else {}
             if not entry.get("commit"):
                 _warn(f"{run_dir}: no {name} commit recorded ({entry.get('reason') or 'not in the manifest'}), so it is not compared")
                 continue
@@ -308,7 +309,7 @@ def _copied(base: Site, site: Site, obj: str) -> str | None:
     """The base object an inserted `obj` copies: `<name>` of `<name>_inert`, else a base object of its model, one with a need first."""
     if obj.endswith("_inert") and obj[: -len("_inert")] in base.graph.entities:
         return obj[: -len("_inert")]
-    model = (site.graph.entities.get(obj).props if obj in site.graph.entities else {}).get("model")
+    model = (site.graph.entities[obj].props if obj in site.graph.entities else {}).get("model")
     same = sorted(e for e, ent in base.graph.entities.items() if e.startswith("obj:") and ent.props.get("model") == model)
     needy = {f.subject for f in base.graph.facts if f.verb == "satisfies"}
     return next((e for e in same if e in needy), next(iter(same), None))
@@ -392,7 +393,7 @@ def objective(params: Params, found: Sequence[Target]) -> float:
     """Mean JSD of the forecasts against the pooled maps."""
     import numpy as np
 
-    return float(np.mean([jsd(predict(t.layers, params), t.truth) for t in found]))
+    return float(np.mean([scored_jsd(predict(t.layers, params), t.truth) for t in found]))
 
 
 def fit(found: Sequence[Target], init: Params | None = None, max_evals: int = 400, log: Callable[[str], None] = print) -> tuple[Params, float]:

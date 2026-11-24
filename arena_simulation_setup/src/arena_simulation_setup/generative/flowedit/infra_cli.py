@@ -95,7 +95,7 @@ def _out(args: argparse.Namespace, name: str) -> Path:
     return args.out or IN.default_out(name)
 
 
-def _summary(doc: dict[str, Any]) -> str:
+def _summary(doc: Mapping[str, Any]) -> str:
     return f"{len(doc['stages'])} stages, {IN.episodes(doc)} episodes, {IN.sim_hours(doc):g} sim-hours"
 
 
@@ -173,15 +173,18 @@ class _Space:
             return float(args.rate), pick()
         rate = self.mix.rate_per_h
         self.search.mix = attrs.evolve(self.mix, rate_per_h=rate)
-        for _ in range(8):
+        tries = 0
+        while True:
             _, wide = SE.premise_pair(self.search)
             estimate = IN.fleet_rate(wide.travel_m, speed_mps=args.speed, load_s=IN.LOAD_S, unload_s=IN.UNLOAD_S)
             if estimate == rate:
                 break
             rate = estimate
             self.search.mix = attrs.evolve(self.mix, rate_per_h=rate)
-        else:
-            _log(f"the rate estimate did not settle, last {rate:g} jobs/h")
+            tries += 1
+            if tries == 8:
+                _log(f"the rate estimate did not settle, last {rate:g} jobs/h")
+                break
         self.rate_from = {"estimate": "wide premise layout", "layout_id": wide.layout_id, "travel_m": round(wide.travel_m, 3), "speed_mps": args.speed, "utilisation": IN.UTILISATION}
         _log(f"rate {rate:g} jobs/h: {IN.UTILISATION:.0%} of the fleet's capacity in the wide premise layout {wide.layout_id} ({wide.travel_m:.1f} m per job) at {args.speed:g} m/s, no charging, no crowd (an upper bound; `evaluation infra premise` measures it in the same layout, pass that as --rate)")
         return rate, pick()
@@ -306,7 +309,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
 
 def _cmd_premise(args: argparse.Namespace) -> int:
     space = _Space(args)
-    seeds = args.seeds or list(IN.PREMISE_SEEDS)
+    seeds: list[int] = args.seeds or list(IN.PREMISE_SEEDS)
     rate, (narrow, wide) = space.settle_rate(args, lambda: SE.premise_pair(space.search))
     runs = [("narrow", narrow), ("wide", wide)]
     _print_runs(runs, args.speed)
@@ -350,7 +353,7 @@ def _cmd_layouts(args: argparse.Namespace) -> int:
         raise ValueError("--group-occupancy (the reference runs' group cells, `evaluation infra occupancy`) or --occupancy is needed for the joint ranking; --dry-run searches without them")
     occupancy = None if args.occupancy is None else SE.Occupancy.from_flow_cells(args.occupancy, space.site.key, args.duration)
     groups = _groups(args, space, occupancy)
-    seeds = args.seeds or list(IN.SELECTION_SEEDS)
+    seeds: list[int] = args.seeds or list(IN.SELECTION_SEEDS)
     state: dict[str, Any] = {}
 
     def pick() -> list[Any]:
@@ -953,7 +956,7 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
         "seeds": seeds,
         "episodes": total,
         "sim_hours": round(IN.sim_hours(doc) + IN.sim_hours(site_doc), 2),
-        "runs": [{**(next(r for r in manifest["runs"] if r["layout_id"] == layout_id) if role != "guideline" else {k: v for k, v in guide.items() if k != "world"}), "role": role} for role, layout_id in chosen.items()],
+        "runs": [{**(next(r for r in manifest["runs"] if r["layout_id"] == layout_id) if role != "guideline" else {k: v for k, v in (guide or {}).items() if k != "world"}), "role": role} for role, layout_id in chosen.items()],
         "worlds": {layout_id: worlds[layout_id] for layout_id in chosen.values()},
         **({"parts": parts} if parts else {}),
     }

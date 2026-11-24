@@ -220,10 +220,8 @@ def bench_assets(tmp_path):
     bench = tmp_path / "Hospital" / "Object" / "TestBench"
     bench.mkdir(parents=True)
     (bench / "annotation.yaml").write_text("bounding_box: [[-0.5, 0.5], [0.0, 0.4], [0.0, 0.8]]\naffordances:\n  sit:\n    - {bbox: [[-0.5, 0.5], [0.0, 0.4], [0.0, 0.45]], yaw: -y}\n")
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path
-    yield tmp_path
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path):
+        yield tmp_path
 
 
 def test_obstacle_affordance_slots_read_the_asset_annotation(bench_assets):
@@ -335,10 +333,8 @@ def cabinet_assets(tmp_path):
     cabinet.mkdir(parents=True)
     articulation = "{links: {body: [], door: []}, joints: [{name: door, type: revolute, parent: body, child: door, origin: [0.5, -0.3, 0.0], axis: [0, 0, 1], limit: [0.0, 1.57]}], swept: [[-0.5, 0.5], [-1.3, 0.3], [0.0, 1.0]]}"
     (cabinet / "annotation.yaml").write_text(f"bounding_box: [[-0.5, 0.5], [-0.3, 0.3], [0.0, 1.0]]\narticulation: {articulation}\n")
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path
-    yield tmp_path
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path):
+        yield tmp_path
 
 
 def test_obstacle_footprint_and_span_cover_the_swept_box_through_the_full_pose(cabinet_assets):

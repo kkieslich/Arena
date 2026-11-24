@@ -115,10 +115,8 @@ def test_retarget_of_a_missing_source_is_refused_before_a_job_starts(tmp_path):
 def object_root(tmp_path):
     from arena_simulation_setup.tree import DynamicPaths
 
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path
-    yield tmp_path
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path):
+        yield tmp_path
 
 
 def test_articulation_lists_links_joints_physics_materials_states_detents_families_and_swept_box(object_root):

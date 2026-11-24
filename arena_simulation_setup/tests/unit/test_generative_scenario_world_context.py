@@ -83,10 +83,8 @@ def furnished(tmp_path: Path) -> Path:
     desk.mkdir(parents=True)
     (desk / "annotation.yaml").write_text(yaml.safe_dump({"bounding_box": [[0.0, 2.42], [-2.76, 0.10], [0.0, 1.0]]}))
     (tmp_path / "assets" / "Hospital" / "Object" / "TestPlant").mkdir(parents=True)
-    previous = DynamicPaths.ARENA.path
-    DynamicPaths.ARENA.path = tmp_path / "assets"
-    yield root
-    DynamicPaths.ARENA.path = previous
+    with DynamicPaths.ARENA.pinned(tmp_path / "assets"):
+        yield root
 
 
 def test_statics_are_the_runtime_footprint_of_each_object(furnished: Path) -> None:
