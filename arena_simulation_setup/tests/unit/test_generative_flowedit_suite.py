@@ -168,11 +168,16 @@ def test_a_built_suite_has_one_stage_per_job_and_a_dry_build_writes_no_scenario(
 
 def test_a_suite_flowedit_did_not_write_is_kept(split: tuple[Path, dict[str, Any]], worlds: Path, tmp_path: Path) -> None:
     path, _ = split
-    out = tmp_path / "theirs.yaml"
+    # the bundle a flat `--out theirs.yaml` writes, `theirs/suite.yaml`, holds a suite another writer left
+    flat = tmp_path / "theirs.yaml"
+    out = SU.bundle_file(flat)
+    out.parent.mkdir()
     out.write_text("stages: []\n")
-    assert main(["suite", str(path), "--worlds", str(worlds), "--no-generate", "--out", str(out)]) == 1
-    assert out.read_text() == "stages: []\n"
+    for given in (out, flat):
+        assert main(["suite", str(path), "--worlds", str(worlds), "--no-generate", "--out", str(given)]) == 1
+        assert out.read_text() == "stages: []\n"
     assert main(["suite", str(path), "--worlds", str(worlds), "--no-generate", "--out", str(out), "--force"]) == 0
+    assert out.read_text().startswith(SU.MARKER)
 
 
 def test_a_suite_without_an_edit_s_base_stage_is_refused() -> None:
