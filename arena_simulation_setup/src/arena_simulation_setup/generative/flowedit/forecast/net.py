@@ -18,6 +18,7 @@ The D4 symmetries (quarter turns, mirror) act on the grid input and output toget
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
@@ -25,6 +26,9 @@ from torch.nn import functional as F
 
 from .maps import BINS, HEADINGS, STANDING
 from .raster import CHANNELS, EDGE_KINDS, NEED_CHANNELS, NODE_FEATURES, NODE_KINDS, Raster
+
+if TYPE_CHECKING:
+    from .model import Params
 
 DIM = 16
 ROUNDS = 3
@@ -136,6 +140,8 @@ class Forecaster(nn.Module):
         self.gnn = GNN()
         self.need = nn.Sequential(nn.Conv2d(len(NEED_CHANNELS), 16, 3, padding=1), nn.SiLU(), nn.Conv2d(16, NEED_DIM, 3, padding=1))
         self.unet = UNet(len(CHANNELS) + extra + NEED_DIM + DIM * len(WRITTEN))
+        #: the demand model params whose forecast feeds the extra layers (the `--demand-model-input` variant), set by training and loading
+        self.demand_model: Params | None = None
 
     def inputs(self, r: Tensors) -> torch.Tensor:
         """(C, ny, nx): the raster's channels, the need features and the GNN embeddings on their cells, in the world's frame."""
@@ -206,7 +212,7 @@ class Tensors:
         self.cells = {}
         for k in WRITTEN:
             nodes = r.nodes[k] if k in kinds else None
-            pairs = [(i, int(c)) for i, cells in enumerate(nodes.cells if nodes else ()) for c in cells]
+            pairs = [] if nodes is None else [(i, int(c)) for i, cells in enumerate(nodes.cells) for c in cells]
             self.cells[k] = (t([p[0] for p in pairs], torch.int64), t([p[1] for p in pairs], torch.int64))
         self.mask = t(r.mask.astype(np.float32))
         self.scale = float(r.scale)

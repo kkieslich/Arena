@@ -60,7 +60,7 @@ class Rasters:
         from .scene import base_people, scene_of
 
         key = (world, demand, None if demand_model is None else tuple(demand_model.vector()))
-        if key[2] is not None and key not in self._cache:
+        if demand_model is not None and key not in self._cache:
             plain = self(world, demand)
             forecast = self.sites.predict(world, demand_model, self.scenario_of.get(SP.base_of(world)))
             self._cache[key] = attrs.evolve(plain, extra=(np.moveaxis(forecast, -1, 0) / max(plain.scale, 1e-9)).astype(np.float32))

@@ -92,7 +92,8 @@ class CliffParams:
 
     @classmethod
     def load(cls, doc: dict[str, Any]) -> CliffParams:
-        return cls(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in doc.items() if k in attrs.fields_dict(cls)})
+        fields: dict[str, Any] = {k: (tuple(v) if isinstance(v, list) else v) for k, v in doc.items() if k in attrs.fields_dict(cls)}
+        return cls(**fields)
 
 
 #: The settings `CliffMap.empty` and `from_tracks` default to
@@ -394,7 +395,7 @@ class CliffMap:
         def arr(a: Any) -> Any:  # noqa: ANN401
             return None if a is None else a.copy()
 
-        return CliffMap(self.grid, self.params, *(arr(getattr(self, f)) for f in ("n_all", "n_moving", "n_ind", "m", "mu", "cov", "built")), self.iterations, arr(self._shares), arr(self._dirty))
+        return CliffMap(self.grid, self.params, arr(self.n_all), arr(self.n_moving), arr(self.n_ind), arr(self.m), arr(self.mu), arr(self.cov), arr(self.built), self.iterations, arr(self._shares), arr(self._dirty))
 
     def locations(self, obs: Observations) -> tuple[np.ndarray, np.ndarray]:
         """(observation, location) pairs: each observation and every room cell whose centre lies within radius_m of it."""
