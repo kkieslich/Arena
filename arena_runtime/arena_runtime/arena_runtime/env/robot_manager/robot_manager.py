@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import math
 import os
@@ -9,6 +10,7 @@ import typing
 
 import ament_index_python
 import arena_bringup.extensions.NodeLogLevelExtension as NodeLogLevelExtension
+import arena_robots_msgs.msg
 import attrs
 import geometry_msgs.msg
 import launch
@@ -18,18 +20,22 @@ import rclpy
 import rclpy.logging
 import rclpy.node
 import rclpy.publisher
+import rclpy.qos
 import rclpy.time
 import rclpy.timer
 import shapely
+import std_msgs.msg
 import tf2_ros
 from arena_rclpy_mixins.Async import LaunchHandle
 from arena_rclpy_mixins.params import declare
 from arena_rclpy_mixins.shared import FrameNamespace, Namespace
 from arena_robots.Robot import RobotView
 from arena_simulation_setup.shared.conditions import render_until
+from arena_simulation_setup.utils.face import front_angle
+from shapely.ops import polylabel
 
 from arena_runtime._node import NodeInterface
-from arena_runtime.env.environment_manager import EnvironmentManager
+from arena_runtime.env.environment_manager import EnvironmentManager, authored_statics
 from arena_runtime.env.robot_manager.controller_manager_client import ControllerManagerClient
 from arena_runtime.env.robot_manager.controller_transitions import next_transition
 from arena_runtime.env.robot_manager.task_runner import PhaseState, TaskRunner, Transition, standoff_pose
@@ -41,9 +47,11 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
     from arena_simulation_setup.shared.conditions import EpisodeCondition
+    from arena_simulation_setup.shared.entities import Obstacle
     from arena_simulation_setup.shared.judge import Sample, Zones
 
     from arena_runtime.env.adapters import Adapter, ResetContext
+    from arena_runtime.env.constants.rng import EpisodeRng
     from arena_runtime.env.request import ElevatorRidePhase, GoToPhase, TaskKind, TaskPhase, TaskRequest
 
 
@@ -69,7 +77,9 @@ _CM_CALL_TIMEOUT = 10.0
 _CM_REFUSAL_GRACE_S = 20.0
 _CM_SWITCH_TIMEOUT = 60.0
 _CM_SWITCH_TIMED_OUT = "timed out"
-_ZONE_TARGET_MARGINS = (0.3, 0.15, 0.0)
+#: nav2's 0.25 m xy_goal_tolerance plus a map cell
+ZONE_GOAL_MARGIN_M = 0.3
+_ZONE_TARGET_MARGINS = (ZONE_GOAL_MARGIN_M, 0.15, 0.0)
 
 _TELEPORT_TOLERANCE = 0.3
 _TELEPORT_SETTLE_TIMEOUT = 2.0
@@ -77,6 +87,8 @@ _TELEPORT_POLL = 0.02
 _TELEPORT_ATTEMPTS = 3
 _TELEPORT_TICK_CAP = 5
 _TELEPORT_TICK_WAIT = 0.5
+
+_LATCHED = rclpy.qos.QoSProfile(depth=1, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
 
 
 def log_level_actions(spec: str) -> list[NodeLogLevelExtension.SetGlobalLogLevelAction]:
@@ -87,6 +99,12 @@ def log_level_actions(spec: str) -> list[NodeLogLevelExtension.SetGlobalLogLevel
         NodeLogLevelExtension.SetGlobalLogLevelAction(_MOVEIT_QUIET_RULES, fallback=True),
         NodeLogLevelExtension.SetGlobalLogLevelAction(_COLLISION_MONITOR_RULES, fallback=True),
     ]
+
+
+def _front_yaw(obstacle: Obstacle) -> float:
+    """Yaw of an object's annotated front (`face`), behind its yaw without one, the side HumanSim queues people at."""
+    front = front_angle((obstacle.model.resolve_sync().annotation or {}).get('face'))
+    return obstacle.pose.orientation.to_yaw() + (math.pi if front is None else front)
 
 
 class RobotManager(NodeInterface):
@@ -112,6 +130,9 @@ class RobotManager(NodeInterface):
     _on_collision: Callable[[], None] | None
     _phase_failure: tuple[int, str] | None
     _launch_handle: LaunchHandle | None
+    _soc: float | None
+    _soc_since: float | None
+    _capacity_wh: float
 
     @property
     def robot(self) -> Robot:
@@ -267,6 +288,10 @@ class RobotManager(NodeInterface):
         self._on_collision = None
         self._phase_failure = None
         self._cabin_to_clear = ""
+        self._charge_power_w = 0.0
+        self._soc = None
+        self._soc_since = None
+        self._capacity_wh = 0.0
 
     def bind_abort(self, fn: Callable[[str], None]) -> None:
         self._abort_episode = fn
@@ -302,11 +327,26 @@ class RobotManager(NodeInterface):
 
         self._stop_pub = self.node.create_publisher(geometry_msgs.msg.Twist, str(self.namespace("cmd_vel")), 1)
         self._task_pose_pub = self.node.create_publisher(geometry_msgs.msg.PoseStamped, str(self.namespace("task_pose")), 10)
+        self._set_up_battery()
         self._goal_pub = self.node.create_publisher(
             geometry_msgs.msg.PoseStamped,
             _gen_goal_topic,
             10,
         )
+
+    def _set_up_battery(self) -> None:
+        """The latched inputs of the robot's power publisher, and its energy output, which this subscription also wakes as it publishes only while subscribed."""
+        self._charge_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "charge_power")), _LATCHED)
+        self._soc_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "soc_percent")), _LATCHED)
+        self._capacity_pub = self.node.create_publisher(std_msgs.msg.Float64, str(self.namespace("power_publisher", "battery_capacity_wh")), _LATCHED)
+        self._energy_sub = self.node.create_subscription(arena_robots_msgs.msg.Energy, str(self.namespace("power_publisher", "energy")), self._on_energy, rclpy.qos.QoSProfile(depth=1))
+
+    def _on_energy(self, msg: arena_robots_msgs.msg.Energy) -> None:
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self._soc_since is not None and 0.0 < stamp <= self._soc_since:
+            # computed before this reset's start charge, from the last episode's battery; an unstamped reading has no order and counts
+            return
+        self._soc = float(msg.battery_soc_percent)
 
     async def launch(self, node_names: set[str]):
         """Bring up the robot's navstack. Split from set_up_robot so callers can sequence the
@@ -415,6 +455,56 @@ class RobotManager(NodeInterface):
         msg.header.stamp = self.node.sim_time.to_msg()
         msg.pose = pose.to_msg()
         self._task_pose_pub.publish(msg)
+
+    def publish_charge_power(self, power: float) -> None:
+        """Send the power in W the robot charges with to its power publisher, on change."""
+        if power != self._charge_power_w:
+            self._charge_power_w = power
+            self._charge_pub.publish(std_msgs.msg.Float64(data=power))
+
+    def initial_soc(self, rng: EpisodeRng, low: float, high: float) -> float:
+        """Battery charge in percent the robot starts an episode with, from the episode seed and its bare name, so no env index changes it."""
+        if low > high:
+            raise ValueError(f"task.episode.battery.soc.min ({low}) is above task.episode.battery.soc.max ({high})")
+        return float(rng.stream("robots", "soc", self.name).uniform(low, high))
+
+    def publish_soc(self, soc: float) -> None:
+        """Set the battery charge in percent on the robot's power publisher, and `soc` to it until the power publisher reports a reading stamped after this sim time."""
+        self._soc = soc
+        self._soc_since = self.node.sim_time.to_seconds()
+        self._soc_pub.publish(std_msgs.msg.Float64(data=soc))
+
+    def publish_battery_capacity(self, capacity_wh: float) -> None:
+        """Set the battery capacity in Wh on the robot's power publisher, 0 for its own power.yaml; it keeps the charge in percent."""
+        self._capacity_wh = capacity_wh
+        self._capacity_pub.publish(std_msgs.msg.Float64(data=capacity_wh))
+
+    def reset_battery(self, rng: EpisodeRng, capacity_wh: float, soc_min: float, soc_max: float, start: float | None = None) -> None:
+        """Send the episode's battery capacity, then the start charge: `start` in percent where given (the robot's charge in the episode's charge state), else drawn for this robot from `soc_min` to `soc_max`."""
+        if start is not None and not 0.0 <= start <= 100.0:
+            raise ValueError(f"a start charge is a percentage between 0 and 100, got {start!r}")
+        soc = self.initial_soc(rng, soc_min, soc_max) if start is None else float(start)
+        self.publish_battery_capacity(capacity_wh)
+        self.publish_soc(soc)
+
+    @property
+    def soc(self) -> float | None:
+        """Battery charge in percent, the power publisher's latest `battery_soc_percent` stamped after this reset's start charge, else that start charge, None before either."""
+        return self._soc
+
+    @functools.cached_property
+    def power_profile(self) -> dict[str, float | int] | None:
+        """The parameters the robot's power publisher runs on (static draw with its parts, odometry drive power, power.yaml capacity), None for a robot without one."""
+        return self._config.power_profile(self._robot.resolved_request)
+
+    @property
+    def battery_capacity_wh(self) -> float | None:
+        """Battery capacity in Wh this episode: the capacity sent at the reset, else the power profile's, None when neither is above 0."""
+        if self._capacity_wh > 0.0:
+            return self._capacity_wh
+        profile = self.power_profile
+        capacity = float(profile.get("battery_capacity_wh", 0.0)) if profile is not None else 0.0
+        return capacity if capacity > 0.0 else None
 
     def set_episode_conditions(self, conditions: Sequence[EpisodeCondition]) -> None:
         self._runner.set_episode_conditions(conditions)
@@ -542,6 +632,13 @@ class RobotManager(NodeInterface):
             await self._dispatch(state.index)
         return transition
 
+    async def reset_navigation(self) -> None:
+        """Run the adapters' `on_navigation_reset`: a task mode that teleports the robot within an episode calls it after
+        `move`, so the navigation stack plans from the new pose without what it marked on its way."""
+        results = await asyncio.gather(*(a.on_navigation_reset(self) for a in self._adapter_instances), return_exceptions=True)
+        for adapter, result in zip(self._adapter_instances, results, strict=True):
+            if isinstance(result, BaseException):
+                self._logger.error(f"adapter {adapter.kind!r} on_navigation_reset failed: {result!r}")
     async def _cancel_ended(self, ended: PhaseState) -> None:
         """Cancel the action of a phase that ended before its server finished, a goto that arrived keeps its planner goal."""
         from arena_runtime.env.request import TaskKind, kind_of
@@ -588,30 +685,45 @@ class RobotManager(NodeInterface):
             return attrs.evolve(phase, pose=self._environment_manager.realize(phase.pose))
         return phase
 
-    def _resolve_target(self, phase: GoToPhase) -> GoToPhase:
-        """Give a named zone, door or elevator target its dispatch pose unless it carries one, a ped target keeps following the ped."""
-        world = self.node._world_manager.world_compacted()
-        corners = world.lookup_zone_polygon(phase.target) if phase.target is not None and phase.pose is None else None
+    def resolve_target(self, phase: GoToPhase) -> GoToPhase:
+        """Give a named zone, door, elevator or docked object target its dispatch pose unless it carries one, a ped target keeps following the ped. A zone's pose keeps the first of _ZONE_TARGET_MARGINS off its edge that leaves a free cell clear of the other robots. A docked object's pose lies within half the dock's inner radius of its deepest point, facing the object, or its front where the dock covers the object's origin."""
+        if phase.target is None or phase.pose is not None:
+            return phase
+        world = authored_statics(self.node._world_manager.world_compacted())
+        corners = world.lookup_zone_polygon(phase.target)
         if corners is None:
             return phase
-        if any(zone.name == phase.target for zone in world.zones):
-            others = [PositionRadius(pose.position.x, pose.position.y, radius=manager.radius) for name, manager in self.node._robots_manager.managers.items() if name != self.name and (pose := manager.pose) is not None]
-            zone = shapely.Polygon([(corner.x, corner.y) for corner in corners])
-            position = None
-            for margin in _ZONE_TARGET_MARGINS:
-                inner = zone.buffer(-margin) if margin else zone
-                if inner.is_empty:
-                    continue
+        outline = shapely.Polygon([(corner.x, corner.y) for corner in corners])
+        docked = next((entity for entity in world.objects if entity.name == phase.target and entity.dock is not None), None)
+        if docked is not None or any(zone.name == phase.target for zone in world.zones):
+            if docked is not None:
+                # away from the dock's edges, so a planner's goal tolerance cannot stop the robot outside it
+                deepest = polylabel(outline)
+                areas = [outline.intersection(deepest.buffer(outline.exterior.distance(deepest) / 2))]
+                others: list[PositionRadius] = []
+            else:
+                areas = [inner for margin in _ZONE_TARGET_MARGINS if not (inner := (outline.buffer(-margin) if margin else outline)).is_empty]
+                others = [PositionRadius(pose.position.x, pose.position.y, radius=manager.radius) for name, manager in self.node._robots_manager.managers.items() if name != self.name and (pose := manager.pose) is not None]
+            position, error = None, None
+            for area in areas:
                 try:
-                    position = self.node._world_manager.get_position_on_map(self.safe_distance, others, forbid=False, polygon=inner)
-                except RuntimeError:
-                    continue
-                break
+                    position = self.node._world_manager.get_position_on_map(self.safe_distance, others, forbid=False, polygon=area)
+                    break
+                except RuntimeError as e:
+                    error = e
             if position is None:
-                raise ValueError(f"robot {self.name!r}: goto target {phase.target!r} has no free cell with {self.safe_distance:.2f} m clearance")
+                raise ValueError(f"robot {self.name!r}: goto target {phase.target!r} has no free cell with {self.safe_distance:.2f} m clearance") from error
         else:
             position = world.point_resolver(self.node.conf.General.RNG.stream("robots", "target", self.name)).resolve(phase.target)
-        return attrs.evolve(phase, pose=Pose(position=position, orientation=Orientation.identity()))
+        if docked is None:
+            return attrs.evolve(phase, pose=Pose(position=position, orientation=Orientation.identity()))
+        origin = docked.pose.position
+        if outline.covers(shapely.Point(origin.x, origin.y)):
+            # the robot may stand on the origin itself, where no direction faces the object
+            facing = _front_yaw(docked)
+        else:
+            facing = math.atan2(origin.y - position.y, origin.x - position.x)
+        return attrs.evolve(phase, pose=Pose(position=position, orientation=Orientation.from_yaw(facing)))
 
     async def submit_task(self, request: TaskRequest, start: Pose | None = None, pedestrians: Iterable[str] = ()) -> None:
         """Resolve a typed TaskRequest and append it to this episode's phases, dropping the unfinished ones of the previous request: with `stop_task` the way to reassign the robot. Phase poses are abstract until dispatch. `start` is the abstract pose the robot begins from, its current pose when omitted, `pedestrians` names the episode's declared pedestrians that are not spawned yet."""
@@ -629,7 +741,7 @@ class RobotManager(NodeInterface):
         def resolve(phase: TaskPhase) -> TaskPhase:
             if isinstance(phase, LoopPhase):
                 return attrs.evolve(phase, phases=[resolve(inner) for inner in phase.phases])
-            return self._resolve_target(phase) if isinstance(phase, GoToPhase) else phase
+            return self.resolve_target(phase) if isinstance(phase, GoToPhase) else phase
 
         mobile = self._adapters.get(TaskKind.GOTO_POSE)
         walks = self._climbs if mobile is not None and mobile.routes_levels else frozenset()
@@ -652,9 +764,9 @@ class RobotManager(NodeInterface):
                 if phase.signal not in signals:
                     raise ValueError(f"robot {self.name!r}: goto phase expects signal {phase.signal!r}, its {phase.kind} adapter can send {sorted(signals)}")
             if isinstance(phase, GoToPhase) and phase.target is not None:
-                known = set(world_manager.world_compacted().zone_ref_names()) | set(self.node.ped_names()) | set(pedestrians)
+                known = set(authored_statics(world_manager.world_compacted()).zone_ref_names()) | set(self.node.ped_names()) | set(pedestrians)
                 if phase.target not in known:
-                    raise ValueError(f"robot {self.name!r}: goto target {phase.target!r} is neither a zone, door, elevator nor a pedestrian")
+                    raise ValueError(f"robot {self.name!r}: goto target {phase.target!r} is neither a zone, door, elevator, docked object nor a pedestrian")
             if kind_of(phase) not in self._adapters and kind_of(phase) not in self._unsupported_kinds_logged:
                 self._logger.warning(f"robot {self.name!r} has no adapter for phase kind {phase.kind!r}, the phase will fail as UNSUPPORTED_CAP")
 

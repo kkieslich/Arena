@@ -52,6 +52,18 @@ def _positive_or_inf(v: object) -> float:
     return v if v >= 0 else float('inf')
 
 
+def _percent(v: object) -> float:
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0.0 <= v <= 100.0:
+        raise ValueError(f'expected a percentage between 0 and 100, got {v!r}')
+    return float(v)
+
+
+def _capacity_wh(v: object) -> float:
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0.0 <= v < float('inf'):
+        raise ValueError(f"expected a battery capacity in Wh of at least 0 (0 = the robot's own power.yaml), got {v!r}")
+    return float(v)
+
+
 class ArenaParams(ParamGroup):
     SIM = Param[SimSimulator]('sim', SimSimulator.DUMMY, 'Simulator backend the runtime drives.')
     HUMAN = Param[Constants.HumanSimulator]('human', Constants.HumanSimulator.DUMMY, 'Pedestrian simulator of the env.')
@@ -81,6 +93,10 @@ class RobotParams(ParamGroup):
     GOAL_TOLERANCE_ANGLE = Param[float]('task.episode.goto_pose.tolerance.angle', 30.0 * np.pi / 180.0, 'Goal heading tolerance in radians for goto_pose phases.')
     GOAL_HOLD_TIME = Param[float]('task.episode.goto_pose.hold_time', 0.0, 'Sim seconds a robot must park at a goto_pose goal before the phase counts as met (0 = arrival suffices).')
     GOAL_SIGNAL = Param[str]('task.episode.goto_pose.signal', '', 'Signal the robot must send to end a goto_pose phase, such as arrived (empty = Arena judges arrival).')
+    BATTERY_SOC_MIN = Param[float]('task.episode.battery.soc.min', 40.0, 'Lowest battery charge in percent (0 to 100) a robot starts an episode with, drawn per episode seed and robot name.', parse=_percent)
+    BATTERY_SOC_MAX = Param[float]('task.episode.battery.soc.max', 100.0, 'Highest battery charge in percent (0 to 100, at least soc.min) a robot starts an episode with, drawn per episode seed and robot name.', parse=_percent)
+    BATTERY_SOC_FILE = Param[str]('task.episode.battery.soc.file', '', 'File of charge states (env/charge_states.py) the robots start an episode from: one state drawn per episode seed, each robot the charge at its place in it; empty: each robot draws from soc.min to soc.max.')
+    BATTERY_CAPACITY_WH = Param[float]('task.episode.battery.capacity_wh', 0.0, "Battery capacity in Wh every robot runs with, sent to its power publisher at each reset before its start charge (0 = the robot's own power.yaml).", parse=_capacity_wh)
     NODE_PING_PERIOD = Param[float]('task.episode.node_ping.period', 10.0, 'Wall seconds between pings of the nodes of this env, also the time a node has to answer.')
     NODE_PING_MISSES = Param[int]('task.episode.node_ping.misses', 3, 'Pings in a row a node may miss before it counts as hung, 0 turns the check off.')
     SPAWN_ROBOT_SAFE_DIST = Param[float]('task.episode.spawn.robot_clearance', 0.25, 'Clearance in metres added to the robot radius when placing robot spawns and goals.')
@@ -96,6 +112,9 @@ class RobotParams(ParamGroup):
 
 class HumanParams(ParamGroup):
     ROBOTS_VISIBLE = Param[bool]('human.robots.visible', True, 'false = the human backend leaves the robots out of what it tells its pedestrians.')
+    SKELETON = Param[bool]('human.skeleton', True, 'false = arena_peds carries no joint states or body poses and animation_states is not published: no pedestrian skeleton for renderers, rviz or a recording; poses and motion stay.')
+    CHECK = Param[bool]('human.check', True, "false = the arena human backend lets an episode start whose scenario fails its check (use_points.check): a model that does not resolve, or a use point, queue slot, seat, source, sink, start, waypoint or room the crowd cannot reach.")
+    CHECK_MODELS = Param[str]('human.check.models', 'fail', 'What the check does with models that do not resolve: fail the episode, or warn once per model and let it start (the point checks still fail it).', constraint=Choices('fail', 'warn'))
 
 
 class EpisodeParams(ParamGroup):

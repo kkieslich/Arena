@@ -40,6 +40,7 @@ from arena_runtime.env.environment_manager import EnvironmentManager
 from arena_runtime.env.phase_clock import PhaseClock
 from arena_runtime.env.realizer import Realizer
 from arena_runtime.env.robot_manager import RobotsManager
+from arena_runtime.env.robot_manager.charging import Chargers
 from arena_runtime.env.world_manager.world_manager_ros import WorldManagerROS as WorldManager
 from arena_runtime.flags import flag_enabled
 from arena_runtime.hearing import BaseHearing, HearingRegistry
@@ -123,6 +124,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._sound_levels: dict[str, float] = {}
         self._semantic_names: dict[str, str] = {}
         self._judge_zones: dict = {}
+        self._chargers = Chargers()
         self._judge_walls: WallGrid | None = None
         self._known_subjects: set[str] = set()
         self._sample = Sample(t=0.0)
@@ -412,6 +414,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             realizer=realizer,
             acoustics=self._acoustics_simulator,
             robots_visible=self.conf.Human.ROBOTS_VISIBLE.value,
+            skeleton=self.conf.Human.SKELETON.value,
         )
         self._simulator.set_semantics_callback(self._on_semantics_changed)
         self._human_simulator.set_incident_callback(self._compromise)
@@ -745,10 +748,12 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         if self._robots_manager is None:
             return {}
         managers = list(self._robots_manager.managers.values())
+        charging = self._chargers.step(self._sample, self._judge_zones)
         for manager in managers:
             judged = self._sample.robots.get(manager.name)
             if judged is not None and manager.runner.active is not None:
                 manager.publish_task_pose(Pose(Position(judged[0], judged[1]), Orientation.from_yaw(judged[2])))
+            manager.publish_charge_power(charging.get(manager.name, 0.0))
         transitions = await asyncio.gather(*(manager.tick(self._sample, self._judge_zones) for manager in managers))
         if any(manager.runner.changed for manager in managers):
             for manager in managers:

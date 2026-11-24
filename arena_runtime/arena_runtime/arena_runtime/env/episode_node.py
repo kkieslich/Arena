@@ -45,10 +45,12 @@ from rclpy.lifecycle import TransitionCallbackReturn
 from rclpy.parameter import Parameter
 from std_msgs.msg import Bool, Empty, Int16, String
 
+from arena_runtime.env import charge_states
 from arena_runtime.env.adapters import ResetContext
 from arena_runtime.env.catalogs import LISTERS
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.runtime import RUN_EPISODE_BUSY, RUN_EPISODE_SHUTTING_DOWN, EpisodeParams
+from arena_runtime.env.environment_manager import authored_statics
 from arena_runtime.env.goal_progress import GoalProgressTracker
 from arena_runtime.env.interactive import MarkerHub
 from arena_runtime.env.interactive.entities import EntityHandles
@@ -56,6 +58,7 @@ from arena_runtime.env.node import _LATCHED, EnvNode
 from arena_runtime.env.node_watch import NodePinger
 from arena_runtime.env.phase_clock import PhaseClock
 from arena_runtime.env.placement import random_obstacle_pose, random_robot_pose
+from arena_runtime.env.robot_manager.charging import Chargers
 from arena_runtime.env.run_task import RunningTask
 from arena_runtime.env.task_layer import (
     EpisodeContext,
@@ -179,6 +182,8 @@ class EpisodeNode(EnvNode):
         self._stimulus_tasks: set[asyncio.Task] = set()
         self._stimuli_fired: dict[str, float] = {}
         self._episode_conditions: list[EpisodeCondition] = []
+        # Entities task modes publish of their own, by kind.
+        self._task_entities: dict[str, dict[str, str]] = {}
 
         self._pub_task_reset = self.create_publisher(
             Int16,
@@ -265,6 +270,7 @@ class EpisodeNode(EnvNode):
                     register_timeline=self.register_timeline,
                     register_conditions=self.register_conditions,
                     register_sound_levels=self.register_sound_levels,
+                    publish_task_entity=self.publish_task_entity,
                 ),
                 interactive=InteractiveContext(markers=self.markers, robot_colors=self.robot_colors, tf_buffer=self.tf_buffer),
             ),
@@ -281,7 +287,7 @@ class EpisodeNode(EnvNode):
             await self._task.tick(ended, assigned)
 
     def _extra_semantic_states(self) -> list[arena_runtime_msgs.msg.SemanticEntityState]:
-        return [self._timeline_semantic_state()]
+        return [self._timeline_semantic_state(), *(self._task_entity_state(kind, fields) for kind, fields in self._task_entities.items())]
 
     def _interaction_displays(self) -> list[AdapterDisplay]:
         return [
@@ -450,6 +456,7 @@ class EpisodeNode(EnvNode):
         self._stimulus_tasks.clear()
         self._stimuli_fired.clear()
         self._episode_conditions = []
+        self._task_entities.clear()
         super().reset_timeline()
 
     def register_conditions(self, conditions: "Sequence[EpisodeCondition]") -> None:
@@ -521,6 +528,22 @@ class EpisodeNode(EnvNode):
         msg.kind = "timeline"
         msg.discrete_names = list(self._stimuli_fired.keys())
         msg.discrete_values = [self._stringify_float(t) for t in self._stimuli_fired.values()]
+        return msg
+
+    def publish_task_entity(self, kind: str, fields: Mapping[str, str]) -> None:
+        """A task mode's own `<kind>` entity, its discrete fields set to `fields` from the next semantics flush on; empty fields drop it. The episode reset drops every one."""
+        if fields:
+            self._task_entities[kind] = dict(fields)
+        else:
+            self._task_entities.pop(kind, None)
+        self._semantics_dirty = True
+
+    def _task_entity_state(self, kind: str, fields: Mapping[str, str]) -> arena_runtime_msgs.msg.SemanticEntityState:
+        msg = arena_runtime_msgs.msg.SemanticEntityState()
+        msg.entity = self._realizer.prefix(kind)
+        msg.kind = kind
+        msg.discrete_names = list(fields.keys())
+        msg.discrete_values = list(fields.values())
         return msg
 
     def _evaluate_timeline(self, now: float) -> None:
@@ -648,10 +671,16 @@ class EpisodeNode(EnvNode):
                 await self._reset_episode(record, clock)
             finally:
                 compacted = self._world_manager.world_compacted()
-                self._judge_zones = zone_polygons(compacted)
+                statics = authored_statics(compacted)
+                self._judge_zones = zone_polygons(statics)
+                self._chargers = Chargers({entity.name: entity.charge_power_w for entity in statics.objects if entity.charge_power_w is not None})
                 self._judge_walls = self._wall_grid(compacted)
                 for manager in self._robots_manager.managers.values():
                     manager.set_episode_conditions(self._episode_conditions)
+                # the episode starts here, while the hold still stops the clock: the crowd's tick clock starts with it, so
+                # the crowd is the same one at the same times after the start however far the reset moved the clock
+                start = self.sim_time
+                await self._human_simulator.start_clock(start)
                 await self.release("reset")
                 clock.lap("release")
                 self.get_logger().info(f"reset took {clock}")
@@ -663,8 +692,9 @@ class EpisodeNode(EnvNode):
             self._pub_state_world.publish(String(data=record.world))
 
             # This is the first instant at which the reset world, robot and
-            # pedestrians are all committed. Dataset export clips audio to it.
-            record.start_time = self.sim_time
+            # pedestrians are all committed, the crowd's first tick. Dataset
+            # export clips audio to it.
+            record.start_time = start
             record.outcome_state = arena_runtime_msgs.action.RunEpisode.Result.RUNNING
             self._publish_episode_state()
             if self._cam_setup.value:
@@ -861,6 +891,12 @@ class EpisodeNode(EnvNode):
                     ),
                     return_exceptions=True,
                 )
+                robot_conf = self.conf.Robot
+                # with a file of charge states: one state for this episode's seed, each robot its place in it
+                state = charge_states.draw(charge_states.load(robot_conf.BATTERY_SOC_FILE.value), self.conf.General.RNG.stream(*charge_states.STREAM)) if robot_conf.BATTERY_SOC_FILE.value else None
+                for index, manager in enumerate(self._robots_manager.managers.values()):
+                    start = {} if state is None else {"start": charge_states.start_charge(state, index)}
+                    manager.reset_battery(self.conf.General.RNG, robot_conf.BATTERY_CAPACITY_WH.value, robot_conf.BATTERY_SOC_MIN.value, robot_conf.BATTERY_SOC_MAX.value, **start)
                 clock.lap("robot_reset")
                 reasons: list[str] = []
                 for name, outcome in zip(self._robots_manager.managers, robot_outcomes, strict=True):

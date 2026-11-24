@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import math
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import yaml
 
 try:
     import shapely
     from arena_rclpy_mixins.Time import Time
+    from arena_simulation_setup.shared import Obstacle
     from arena_simulation_setup.shared.task import GoToPhase
     from arena_simulation_setup.tree.World import Level, World, Zone
     from arena_simulation_setup.utils.geometry import Orientation, Pose, Position
 
     from arena_runtime.env.constants.rng import EpisodeRng
-    from arena_runtime.env.robot_manager.robot_manager import RobotManager
+    from arena_runtime.env.robot_manager.robot_manager import ZONE_GOAL_MARGIN_M, RobotManager
     from arena_runtime.env.world_manager.utils import WorldLayers, WorldMap, WorldOccupancy
     from arena_runtime.env.world_manager.world_manager import WorldManager
+    from arena_runtime.shared import WORLD_ENTITY_PREFIX
 except ImportError:
     pytestmark = pytest.mark.skip(reason="ROS2 not available")
 
@@ -25,7 +30,13 @@ ROOM = [Position(1.0, 1.0), Position(3.0, 1.0), Position(3.0, 3.0), Position(1.0
 SAFE = 0.3
 
 
-def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0, others: tuple[tuple[str, float, float, float], ...] = ()) -> SimpleNamespace:
+CHARGER_DOCK = [[0.5, -0.5], [1.5, -0.5], [1.5, 0.5], [0.5, 0.5]]
+#: A waiting bay's slot, centred on the floor marking's origin.
+BAY_DOCK = [[-0.6, -0.5], [0.6, -0.5], [0.6, 0.5], [-0.6, 0.5]]
+BAY_YAW = math.pi / 2
+
+
+def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0, others: tuple[tuple[str, float, float, float], ...] = (), objects: tuple[Obstacle, ...] = ()) -> SimpleNamespace:
     grid = np.full((100, 100), WorldOccupancy.EMPTY, dtype=np.uint8)
     world_manager = WorldManager.__new__(WorldManager)
     world_manager._map = WorldMap(occupancy=WorldLayers(walls=WorldOccupancy(grid)), origin=Position(0.0, 0.0), resolution=RES, time=Time())
@@ -35,7 +46,8 @@ def _manager(blocked: tuple[float, float, float, float] | None, seed: int = 0, o
     world_manager._multi_map = None
     world_manager._zone_masks = {}
     world_manager._stair_masks = {}
-    world_manager._world = World(levels={"0": Level(id="0", zones=[Zone(name="room", polygon=ROOM)])})
+    charger = Obstacle(name=f"{WORLD_ENTITY_PREFIX}charger_1", model="charger", pose=Pose(position=Position(4.0, 2.0), orientation=Orientation.from_yaw(math.pi)), dock=CHARGER_DOCK)
+    world_manager._world = World(levels={"0": Level(id="0", zones=[Zone(name="room", polygon=ROOM)], objects=[charger, *objects])})
     rng = EpisodeRng()
     rng.reseed(seed)
     robots_manager = SimpleNamespace(managers={name: SimpleNamespace(pose=Pose(position=Position(x, y), orientation=Orientation.identity()), radius=radius) for name, x, y, radius in others})
@@ -52,28 +64,58 @@ def _blocked_distance(position: Position, blocked: tuple[float, float, float, fl
 def test_zone_target_lands_on_a_free_cell_with_clearance() -> None:
     blocked = (1.0, 1.0, 3.0, 2.6)
     for seed in range(20):
-        phase = RobotManager._resolve_target(_manager(blocked, seed), GoToPhase(target="room"))
+        phase = RobotManager.resolve_target(_manager(blocked, seed), GoToPhase(target="room"))
         assert phase.target == "room"
         assert 1.0 <= phase.pose.position.x <= 3.0 and 2.6 <= phase.pose.position.y <= 3.0
         assert _blocked_distance(phase.pose.position, blocked) >= SAFE - RES
 
 
-def test_zone_target_keeps_off_the_zone_edge_when_the_zone_has_room() -> None:
-    edge = shapely.Polygon([(corner.x, corner.y) for corner in ROOM]).exterior
-    for seed in range(20):
-        phase = RobotManager._resolve_target(_manager(None, seed), GoToPhase(target="room"))
-        assert edge.distance(shapely.Point(phase.pose.position.x, phase.pose.position.y)) >= 0.3 - RES
+def test_zone_target_keeps_off_the_zone_edge() -> None:
+    room = shapely.Polygon([(p.x, p.y) for p in ROOM])
+    for seed in range(40):
+        position = RobotManager.resolve_target(_manager(None, seed), GoToPhase(target="room")).pose.position
+        point = shapely.Point(position.x, position.y)
+        assert room.contains(point) and room.exterior.distance(point) >= ZONE_GOAL_MARGIN_M - RES
 
 
 def test_zone_target_without_a_free_cell_names_the_zone() -> None:
     with pytest.raises(ValueError, match="goto target 'room' has no free cell with 0.30 m clearance"):
-        RobotManager._resolve_target(_manager((0.5, 0.5, 3.5, 3.5)), GoToPhase(target="room"))
+        RobotManager.resolve_target(_manager((0.5, 0.5, 3.5, 3.5)), GoToPhase(target="room"))
+
+
+def test_docked_object_target_under_the_runtime_prefix_lands_in_its_dock_facing_the_object() -> None:
+    blocked = (3.5, 1.5, 4.5, 2.5)
+    for seed in range(20):
+        phase = RobotManager.resolve_target(_manager(blocked, seed), GoToPhase(target="charger_1"))
+        position = phase.pose.position
+        assert phase.target == "charger_1"
+        assert math.dist((position.x, position.y), (3.0, 2.0)) <= 0.25 + RES
+        assert _blocked_distance(position, blocked) >= SAFE - RES
+        assert phase.pose.orientation.to_yaw() == pytest.approx(math.atan2(2.0 - position.y, 4.0 - position.x))
+
+
+@pytest.mark.parametrize(("model", "face", "front"), [("waiting_bay", "+x", 0.0), ("side_bay", "-y", -math.pi / 2)])
+def test_docked_object_target_over_the_objects_origin_faces_its_front(model: str, face: str, front: float) -> None:
+    bundle = Path(os.environ["ARENA_ASSETS_DIR_LOCAL"]) / "Common" / "Object" / model
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "annotation.yaml").write_text(yaml.safe_dump({"name": model, "face": face}))
+    bay = Obstacle(name=f"{WORLD_ENTITY_PREFIX}bay_1", model=f"Common/Object/{model}", pose=Pose(position=Position(2.0, 4.0), orientation=Orientation.from_yaw(BAY_YAW)), dock=BAY_DOCK)
+    for seed in range(5):
+        phase = RobotManager.resolve_target(_manager(None, seed, objects=(bay,)), GoToPhase(target="bay_1"))
+        position = phase.pose.position
+        assert math.dist((position.x, position.y), (2.0, 4.0)) <= 0.25 + RES
+        assert math.remainder(phase.pose.orientation.to_yaw() - BAY_YAW - front, math.tau) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_docked_object_target_without_a_free_cell_near_its_middle_names_it() -> None:
+    with pytest.raises(ValueError, match="goto target 'charger_1' has no free cell with 0.30 m clearance"):
+        RobotManager.resolve_target(_manager((2.5, 1.5, 4.5, 2.5)), GoToPhase(target="charger_1"))
 
 
 def test_zone_target_avoids_the_cells_other_robots_occupy() -> None:
     others = (("jackal_1", 2.0, 2.0, 0.5),)
     for seed in range(20):
-        phase = RobotManager._resolve_target(_manager(None, seed, others), GoToPhase(target="room"))
+        phase = RobotManager.resolve_target(_manager(None, seed, others), GoToPhase(target="room"))
         assert math.hypot(phase.pose.position.x - 2.0, phase.pose.position.y - 2.0) >= 0.5 - RES
 
 
@@ -81,15 +123,15 @@ def test_zone_target_reserves_nothing_in_the_task_obstacle_layer() -> None:
     manager = _manager(None)
     before = manager.node._world_manager._map.occupancy.grid.copy()
     for _ in range(5):
-        RobotManager._resolve_target(manager, GoToPhase(target="room"))
+        RobotManager.resolve_target(manager, GoToPhase(target="room"))
     assert np.array_equal(manager.node._world_manager._map.occupancy.grid, before)
 
 
 def test_unknown_target_is_left_for_the_ped_follower() -> None:
     phase = GoToPhase(target="pedestrian_3")
-    assert RobotManager._resolve_target(_manager(None), phase) is phase
+    assert RobotManager.resolve_target(_manager(None), phase) is phase
 
 
 def test_authored_dispatch_pose_of_a_zone_target_is_kept() -> None:
     phase = GoToPhase(target="room", pose=Pose(position=Position(2.5, 1.5), orientation=Orientation.identity()))
-    assert RobotManager._resolve_target(_manager(None), phase) is phase
+    assert RobotManager.resolve_target(_manager(None), phase) is phase
