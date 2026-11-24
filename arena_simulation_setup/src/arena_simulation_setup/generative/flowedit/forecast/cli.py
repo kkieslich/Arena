@@ -1,0 +1,721 @@
+"""`flowedit forecast fit|predict|score`: fit the flow forecaster on a split's recorded maps, forecast a world, score it."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .. import settings as S
+from .. import split as SP
+from .evaluate import BENCHMARK_HELP, CELLS_HELP, Forecaster, Runs, fit, listed, targets
+from .maps import jsd
+from .model import Params, predict
+from .scene import CROWD_SEEDS
+
+FORMAT = "flowedit-forecast/1"
+CROWDS = ("expected", "runs")
+
+
+def _log(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def load_params(path: Path | None) -> Params:
+    """The params of a `fit` output file, the defaults without one."""
+    if path is None:
+        return Params()
+    doc = yaml.safe_load(path.read_text()) or {}
+    if doc.get("format") != FORMAT:
+        raise ValueError(f"{path}: format: expected {FORMAT!r}, got {doc.get('format')!r}")
+    return Params.load(doc.get("params") or {})
+
+
+def checked_params(path: Path, split: Path, verb: str, flag: str = "--demand-model-input") -> tuple[Params, str | None]:
+    """The params of a `fit` output given to `verb` (`flag`) and the partition its file says they were fitted on (None
+    when it records no fit). The file is checked by what it was fitted on, not by its split's path (copies, links and
+    other machines' paths are fine):
+    - its partition must be train (otherwise the forecast would carry what the scores test);
+    - every world it scored (`fit.per_world`) must be in `split`'s train partition, and its seeds (`fit.seeds`) must be
+      that partition's (as a set): params of another split, or of an older version of this one, are refused.
+    A fit record without any of the three is refused as incomplete. A file without a fit record (written by hand) is not
+    checked: the partition comes back None, a line on stderr says so, and the verbs write `params_checked: false`."""
+    doc = yaml.safe_load(Path(path).read_text()) or {}
+    fit_info = doc.get("fit") or {}
+    if not fit_info:
+        _log(f"{verb}: warning: {flag} {path} records no fit, so where its params come from is not checked")
+        return load_params(Path(path)), None
+    missing = [k for k in ("partition", "per_world", "seeds") if fit_info.get(k) is None]
+    if missing:
+        raise SystemExit(f"{verb}: {flag} {path} has an incomplete fit record (no {', '.join(missing)}): fit the params again with `forecast fit`")
+    partition, worlds, seeds = fit_info["partition"], fit_info["per_world"], fit_info["seeds"]
+    if partition != "train":
+        raise SystemExit(f"{verb}: {flag} {path} was fitted on the {partition} partition: the demand model may only see the train partition")
+    split_doc = SP.load(split)
+    train = set(split_doc["partitions"].get("train") or [])
+    stray = sorted(set(worlds) - train)
+    if stray:
+        raise SystemExit(f"{verb}: {flag} {path} was fitted on {len(stray)} world(s) outside the train partition of {split} (e.g. {', '.join(stray[:3])}): params of another split or of another version of it")
+    if {int(x) for x in seeds} != set(SP.seeds_of(split_doc, "train")):
+        raise SystemExit(f"{verb}: {flag} {path} was fitted at seeds {list(seeds)}, the train partition of {split} runs at {SP.seeds_of(split_doc, 'train')}")
+    return load_params(Path(path)), partition
+
+
+def _forecaster(doc: dict[str, Any], args: argparse.Namespace) -> Forecaster:
+    return Forecaster(SP.crowd(doc, args.settings), SP.duration_of(doc), worlds=args.worlds)
+
+
+def _runs(args: argparse.Namespace, forecaster: Forecaster) -> Runs:
+    return Runs.load(args.cells, forecaster.grid, planner=args.planner)
+
+
+def _cmd_fit(args: argparse.Namespace) -> int:
+    doc = SP.load(args.split)
+    forecaster = _forecaster(doc, args)
+    runs = _runs(args, forecaster)
+    found = targets(forecaster, runs, doc, args.partition, args.crowd, _log)
+    init = load_params(args.init)
+    params, value = fit(found, init, max_evals=args.max_evals, log=_log)
+    per_world = {t.world: round(float(jsd(predict(t.layers, params), t.truth)), 5) for t in found}
+    out = {
+        "format": FORMAT,
+        "params": params.dump(),
+        "fit": {
+            "split": str(args.split),
+            "partition": args.partition,
+            "seeds": SP.seeds_of(doc, args.partition),
+            "crowd": args.crowd if args.crowd == "runs" else {"expected": list(CROWD_SEEDS)},
+            "settings": S.digest(forecaster.settings),
+            "duration": forecaster.duration,
+            "cells": listed(args.cells),
+            "worlds": len(found),
+            "mean_jsd": round(value, 5),
+            "init_mean_jsd": round(float(sum(jsd(predict(t.layers, init), t.truth) for t in found) / len(found)), 5),
+            "per_world": per_world,
+        },
+    }
+    text = yaml.safe_dump(out, sort_keys=False)
+    if args.out:
+        args.out.write_text(text)
+        _log(f"wrote {args.out}")
+    print(text, end="")
+    return 0
+
+
+def _named(values: list[str] | None, what: str) -> list[tuple[str | None, Path]]:
+    """`NAME=PATH` or `PATH` arguments as (name or None, path)."""
+    out = []
+    for v in values or []:
+        name, sep, path = v.partition("=")
+        out.append((name, Path(path)) if sep and name and "/" not in name else (None, Path(v)))
+        if not out[-1][1].exists():
+            raise SystemExit(f"{what} {out[-1][1]}: no such file")
+    return out
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    from .learn import Rasters, pick, samples, save, train
+
+    demand_model, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "train")
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    runs = Runs.load(args.cells, rasters.sites.grid, planner=args.planner)
+    worlds = pick(doc, args.partition, args.fraction, args.pick_seed)
+    found = samples(runs, worlds, doc, args.partition)
+    seeds = sorted({s.seed for s in found})
+    _log(f"train: {len(found)} runs of {len(worlds)} worlds at seeds {seeds} ({args.partition}, {'all' if args.fraction >= 1 else format(args.fraction, '.0%')} of its edit chains), demand {'on' if args.demand else 'off (demand ablation)'}")
+    if demand_model is not None:
+        _log(f"train: the demand model's forecast ({args.demand_model_input}) is an input layer of every world")
+    model, summary = train(rasters, found, demand=args.demand, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device, demand_model=demand_model, log=_log)
+    meta = {
+        "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input),
+        "params_checked": None if demand_model is None else fitted_on is not None,
+        "split": str(args.split),
+        "cells": listed(args.cells),
+        "partition": args.partition,
+        "seeds": seeds,
+        "fraction": args.fraction,
+        "pick_seed": args.pick_seed,
+        "worlds": worlds,
+        "runs": len(found),
+        "demand": args.demand,
+        "settings": S.digest(settings),
+        "crowd_seeds": list(CROWD_SEEDS),
+        **summary,
+    }
+    save(args.out, model, meta)
+    print(yaml.safe_dump({"net": str(args.out), **meta}, sort_keys=False), end="")
+    return 0
+
+
+def _chosen(path: Path | None) -> str | None:
+    """The chosen arm of a `forecast select` output, None without one."""
+    if path is None:
+        return None
+    from .selection import SELECT_FORMAT
+
+    doc = yaml.safe_load(path.read_text()) or {}
+    if doc.get("format") != SELECT_FORMAT:
+        raise SystemExit(f"--select {path}: format: expected {SELECT_FORMAT!r}, got {doc.get('format')!r}")
+    return str(doc["chosen"])
+
+
+def _net_methods(nets: list[tuple[str | None, Path]], rasters: Any, device: str | None, chosen: str | None = None) -> dict[str, Any]:  # noqa: ANN401
+    """A method per network; unnamed ones are called by their arm (`selection.arm_label`): with `chosen` the selected arm is
+    "forecaster" and the other arm goes by its own name."""
+    from .learn import forecast, load
+    from .selection import arm_label
+
+    methods: dict[str, Any] = {}
+    for name, path in nets:
+        model, _ = load(path, device)
+        label = name or arm_label(model, chosen)
+        if label in methods:
+            label = f"{label} ({sum(m.startswith(label) for m in methods) + 1})"
+        cache: dict[str, Any] = {}
+
+        def method(world: str, model: Any = model, cache: dict[str, Any] = cache) -> Any:  # noqa: ANN401
+            if world not in cache:
+                cache[world] = forecast(model, rasters, world)
+            return cache[world]
+
+        method.model = model  # type: ignore[attr-defined]
+        methods[label] = method
+    return methods
+
+
+def strength_mismatch(doc: dict[str, Any], model: Any) -> str | None:  # noqa: ANN401 - net.Forecaster
+    """Why a `forecast strength` output does not belong to `model`, None when it does: the demand ablation's weight is
+    not the forecaster's, and the variant's (`--demand-model-input`) not the plain network's. A file written before
+    strength recorded its demand model params counts as a plain network's, unless it names a `demand_model_input` file
+    (#121's variant files): then it is a variant's, with that file's params, and without the file it cannot be checked."""
+    if bool(doc.get("demand", True)) != bool(getattr(model, "demand", True)):
+        return f"the file is the {'demand ablation' if not doc.get('demand', True) else 'network with demand'}'s, the network is {'the demand ablation' if not getattr(model, 'demand', True) else 'a network with demand'}"
+    theirs = doc.get("demand_model")
+    if "demand_model" not in doc and doc.get("demand_model_input"):
+        if getattr(model, "demand_model", None) is None:
+            return "the file is the network with the demand model input's (it names a demand model input file), the network is plain"
+        if not Path(str(doc["demand_model_input"])).is_file():
+            return f"the file names the demand model input {doc['demand_model_input']} but records no params, and that file is gone: run strength again"
+        theirs = load_params(Path(str(doc["demand_model_input"]))).dump()
+    ours = None if getattr(model, "demand_model", None) is None else model.demand_model.dump()
+    if (theirs is None) != (ours is None):
+        return f"the file is {'the plain network' if theirs is None else 'the network with the demand model input'}'s, the network is {'plain' if ours is None else 'the one with the demand model input'}"
+    if theirs is not None and (set(theirs) != set(ours) or any(abs(float(theirs[k]) - float(ours[k])) > 1e-9 * max(1.0, abs(float(ours[k]))) for k in ours)):
+        return f"its demand model params {theirs} are not the network's {ours}"
+    return None
+
+
+def _cmd_score(args: argparse.Namespace) -> int:
+    from . import validity as V
+    from .learn import Rasters
+
+    params, fitted_on = (None, None) if args.params is None else checked_params(args.params, args.split, "score", "--params")
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    sites = rasters.sites
+    runs = Runs.load(args.cells, sites.grid, planner=args.planner)
+    forecasters = _net_methods(_named(args.net, "--net"), rasters, args.device, _chosen(args.select))
+    if params is not None:
+        forecasters["demand model"] = lambda world: sites.predict(world, params, rasters.scenario_of.get(SP.base_of(world)))
+    for name, path in _named(args.predicted, "--predicted"):
+        forecasters[name or path.stem] = V.Predicted.load(path, sites.grid)
+    report: dict[str, Any] = {"format": FORMAT, "cells": listed(args.cells), "nets": [str(p) for _, p in _named(args.net, "--net")], "params": str(args.params) if args.params else None, "params_checked": None if params is None else fitted_on is not None, "partitions": {}}
+    for partition in args.partition or [p for p in SP.PARTITIONS if p != "train"]:
+        seeds = SP.seeds_of(doc, partition)
+        found = V.truths(runs, doc, partition, _log)
+        methods = {**forecasters, "stale": V.stale(runs, seeds), "transplanted": V.transplant(runs, seeds, sites, rasters.scenario_of)}
+        rows = V.score(found, methods, doc, coarse=[n for n in forecasters if n in ("forecaster",)])
+        cols = [c for c in rows[0] if c not in ("world", "what", "seeds")] if rows else []
+        floors = {base: V.floor(runs, base, V.world_seeds(doc, partition, base)) for base in sorted({SP.base_of(t.world) for t in found})}
+        change = V.changes(found, runs, forecasters, doc)
+        others = {base: V.other_seeds(runs, base, seeds) for base in floors}
+        print(f"## {partition} (scored seeds {seeds}; stale and transplanted from base runs at seeds {others})\n\n{V.table(rows, cols)}\n")
+        print(
+            "across-seed floor (the base world's scored seeds against as many of its other seeds, each side pooled: the noise between two finite crowd samples, a scale and not a bound for an expected-flow forecast): "
+            + ", ".join(f"{b} {'n/a (no base run at another seed)' if v is None else f'{v.mean:.3f} +- {v.sd:.3f} ({v.seeds}-seed pools, {v.pairs} pairs)'}" for b, v in floors.items())
+            + "\n"
+        )
+        if change:
+            print(f"### {partition}: change against the base world, recorded (PEDS, same seeds) and predicted\n\n{V.table(change, ['recorded', *forecasters])}\n")
+        if args.plots is not None:
+            from .plot import plot_world
+
+            main = next(iter(forecasters), None)
+            for t in found:
+                base = SP.base_of(t.world)
+                fc = forecasters[main](t.world) if main else None
+                if fc is not None:
+                    plot_world(args.plots / f"{t.world}.png", sites.grid(base), t.map, fc, methods["stale"](t.world), _scene(rasters, t.world), title=f"{t.world} ({partition}, seeds {list(t.seeds)}): {main}")
+        report["partitions"][partition] = {
+            "seeds": seeds,
+            "other_seeds": others,
+            "rows": [{k: (round(v, 5) if isinstance(v, float) else v) for k, v in r.items()} for r in rows],
+            "floor": {b: None if v is None else {"mean": round(v.mean, 5), "sd": round(v.sd, 5), "seeds": v.seeds, "pairs": v.pairs} for b, v in floors.items()},
+            "change": [{k: (round(v, 5) if isinstance(v, float) else v) for k, v in r.items()} for r in change],
+        }
+    if args.out:
+        args.out.write_text(yaml.safe_dump(report, sort_keys=False))
+        _log(f"wrote {args.out}")
+    return 0
+
+
+def _scene(rasters: Any, world: str) -> Any:  # noqa: ANN401
+    """The scene of a world, for the plot's demand markers."""
+    from .scene import scene_of
+
+    s = rasters.sites
+    site = s.site(world, rasters.scenario_of.get(SP.base_of(world)))
+    people = next((v for (b, _), v in s._people.items() if b == site.base), [])
+    return scene_of(site, s.settings, s.duration, grid=s.grid(site.base), people=people)
+
+
+def _recorded(benchmarks: list[Path], grid_of: Any, planner: str | None) -> tuple[Runs, Any]:  # noqa: ANN401
+    """The flow maps and the track store of one or more processed benchmark run dirs (`--benchmark`, repeatable)."""
+    from .baselines import Tracks
+
+    return Runs.load([b / "flow_cells.parquet" for b in benchmarks], grid_of, planner=planner), Tracks.load(benchmarks, planner)
+
+
+def track_file(derived: Path, name: str) -> Path | None:
+    """`name` in the newest `ped_tracks.v<N>` directory under an episode's `topics/.derived` that holds it: arena_evaluation
+    bumps the track store's version (`ped_track_store.TRACKS_VERSION`) when its layout changes, and a cache keeps the
+    version it was written with."""
+    versions = []
+    for d in derived.glob("ped_tracks.v*") if derived.is_dir() else ():
+        tail = d.name.removeprefix("ped_tracks.v")
+        if tail.isdigit() and (d / name).exists():
+            versions.append((int(tail), d / name))
+    return max(versions)[1] if versions else None
+
+
+def _cmd_curve(args: argparse.Namespace) -> int:
+    import numpy as np
+
+    from . import validity as V
+    from .learn import Rasters
+
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    sites = rasters.sites
+    runs, tracks = _recorded(args.benchmark, sites.grid, args.planner)
+    nets = _net_methods(_named(args.net, "--net"), rasters, args.device, _chosen(args.select))
+    train_ws = [(w, V.world_seeds(doc, "train", w)) for w in doc["partitions"].get("train") or []]
+    priors_of: dict[str, Any] = dict(nets)
+    uniform = "uniform (online only)"
+    priors_of[uniform] = lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells())
+    files = {name: yaml.safe_load(path.read_text()) for name, path in _named(args.strength_file, "--strength-file")}
+    strengths: dict[str, float] = {}
+    how: dict[str, str] = {}
+    for name, prior in priors_of.items():
+        if args.strength is not None:
+            strengths[name], how[name] = args.strength, "given"
+        elif name in files:
+            model = getattr(prior, "model", None)
+            if model is not None and (why := strength_mismatch(files[name], model)):
+                raise SystemExit(f"curve: --strength-file {name}=...: not this network's weight: {why}")
+            strengths[name], how[name] = float(files[name]["net"]["chosen"]), "cross-validated"
+        elif name == uniform and files:
+            strengths[name], how[name] = float(next(iter(files.values()))["uniform"]["chosen"]), "cross-validated"
+        elif name == uniform:
+            strengths[name], how[name] = V.fit_strength(train_ws, tracks, runs, sites.grid, prior), "fitted on train (it learns nothing from them)"
+        else:
+            raise SystemExit(f"curve: no strength for {name!r}: a learned prior has seen the train runs, so give --strength-file {name}=<forecast strength output> (or --strength)")
+        _log(f"curve: {name} prior strength {strengths[name]:g} pedestrian-seconds ({how[name]})")
+    out: dict[str, Any] = {"format": FORMAT, "benchmark": listed(args.benchmark), "counts": list(V.TRACK_COUNTS), "strength": strengths, "partitions": {}}
+    for partition in args.partition or ["held_out_edits"]:
+        seeds = SP.seeds_of(doc, partition)
+        curves: dict[str, list[list[float | None]]] = {n: [] for n in [*priors_of, V.ONE_SEED_FLOOR]}
+        for world in doc["partitions"].get(partition) or []:
+            if SP.is_base(world):
+                continue
+            grid = sites.grid(SP.base_of(world))
+            res = V.curve(world, V.world_seeds(doc, partition, world), tracks, runs, grid, {n: (p(world), strengths[n]) for n, p in priors_of.items()})
+            for n, v in res.items():
+                curves[n].append(v)
+        mean = {n: [float(np.mean([c[i] for c in v if c[i] is not None])) if any(c[i] is not None for c in v) else None for i in range(len(V.TRACK_COUNTS))] for n, v in curves.items()}
+        out["partitions"][partition] = {"seeds": seeds, "mean": mean}
+        head = "| tracks seen | " + " | ".join(str(k) for k in V.TRACK_COUNTS) + " |"
+        lines = [head, "|---|" + "---|" * len(V.TRACK_COUNTS)] + [f"| {n} | " + " | ".join("" if x is None else f"{x:.3f}" for x in m) + " |" for n, m in mean.items()]
+        print(f"## {partition}: JSD against the other seeds' pooled map after k tracks of one seed (mean over edits)\n\n" + "\n".join(lines) + "\n")
+        if args.png is not None:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            shown = [k for i, k in enumerate(V.TRACK_COUNTS) if any(m[i] is not None for n, m in mean.items() if n != V.ONE_SEED_FLOOR)]
+            for n, m in mean.items():
+                pts = [(max(k, 0.5), v) for k, v in zip(V.TRACK_COUNTS, m, strict=True) if v is not None and k in shown]
+                style = {"linestyle": "--", "color": "grey"} if n == V.ONE_SEED_FLOOR else {"marker": "o"}
+                ax.plot([x for x, _ in pts], [v for _, v in pts], label=n, **style)
+            ax.set_xscale("log")
+            ax.set_xticks([max(k, 0.5) for k in shown], [str(k) for k in shown])
+            ax.minorticks_off()
+            ax.set_xlabel("post-edit tracks seen, all from one held-out seed's run")
+            ax.set_ylabel("pooled JSD (bits) against the other seeds")
+            ax.set_title(f"{partition}: forecast error vs. tracks seen")
+            ax.legend(fontsize=8)
+            ax.grid(alpha=0.3)
+            png = args.png if len(args.partition or ["x"]) == 1 else args.png.with_name(f"{args.png.stem}_{partition}{args.png.suffix}")
+            fig.savefig(png, dpi=120, bbox_inches="tight")
+            plt.close(fig)
+            _log(f"wrote {png}")
+    if args.out:
+        args.out.write_text(yaml.safe_dump(out, sort_keys=False))
+        _log(f"wrote {args.out}")
+    return 0
+
+
+def _cmd_select(args: argparse.Namespace) -> int:
+    from . import selection as SE
+    from .evaluate import Target
+    from .evaluate import fit as fit_demand_model
+    from .learn import Rasters
+    from .validity import world_seeds
+
+    given, fitted_on = (None, None) if args.params is None else checked_params(args.params, args.split, "select", "--params")
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    sites = rasters.sites
+    runs = SE.train_runs(Runs.load(args.cells, sites.grid, planner=args.planner), doc)
+
+    def fit_params(worlds: Any, fold_runs: Runs) -> Params:  # noqa: ANN401
+        targets = []
+        for w in worlds:
+            seeds = fold_runs.seeds(w, world_seeds(doc, "train", w))
+            if seeds:
+                targets.append(Target(w, sites.layers(w, rasters.scenario_of.get(SP.base_of(w))), fold_runs.pooled(w, seeds), tuple(seeds)))
+        params, value = fit_demand_model(targets, max_evals=args.max_evals, log=_log)
+        _log(f"select: demand model refitted on {len(targets)} worlds, mean JSD {value:.4f}")
+        return params
+
+    result = SE.select(rasters, runs, doc, params=given, fit_params=fit_params, seeds=args.seeds, steps=args.steps, device=args.device, log=_log)
+    result.update({"split": str(args.split), "cells": listed(args.cells), "params": None if args.params is None else str(args.params), "params_checked": None if given is None else fitted_on is not None})
+    arms = SE.ARMS
+    lines = ["| held-out training world | worlds | " + " | ".join(SE.ARM_LABELS[a] for a in arms) + " |", "|---|---|" + "---|" * len(arms)]
+    for f in result["folds"]:
+        lines.append(f"| {f['held_out']} | {f['worlds']} | " + " | ".join("" if f["arms"][a]["mean"] is None else f"{f['arms'][a]['mean']:.3f}" for a in arms) + " |")
+    lines.append("| mean over folds | | " + " | ".join(f"{result['mean'][a]:.3f}" for a in arms) + " |")
+    print("## leave-one-world-out over the training worlds (pooled JSD, held-out world's base and edits at their train seeds)\n\n" + "\n".join(lines) + "\n")
+    print(f"chosen: {SE.ARM_LABELS[result['chosen']]} ({result['chosen']})" + (f"; note: {result['note']}" if "note" in result else ""))
+    args.out.write_text(yaml.safe_dump(result, sort_keys=False))
+    _log(f"wrote {args.out}")
+    return 0
+
+
+def _cmd_strength(args: argparse.Namespace) -> int:
+    from . import validity as V
+    from .learn import Rasters, forecast, samples, train
+    from .selection import ARM_LABELS, DEMAND_MODEL_INPUT
+
+    if args.demand_model_input is not None and not args.demand:
+        raise SystemExit("strength: --demand-model-input gives the network the demand model's forecast, which carries the demand: it cannot combine with --no-demand")
+    demand_model, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "strength")
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    sites = rasters.sites
+    runs, tracks = _recorded(args.benchmark, sites.grid, args.planner)
+    worlds = list(doc["partitions"].get("train") or [])
+    every = samples(runs, worlds, doc)
+    folds = V.seed_folds(sorted({s.seed for s in every}))[: args.folds]
+    label = "demand ablation" if not args.demand else ("forecaster" if demand_model is None else ARM_LABELS[DEMAND_MODEL_INPUT])
+    rows = []
+    for k, fold in enumerate(folds):
+        found = [s for s in every if s.seed not in fold]
+        _log(f"strength: fold {k + 1}/{len(folds)}, seeds {list(fold)} held out, {len(found)} training runs")
+        model, summary = train(rasters, found, demand=args.demand, steps=args.steps, seed=args.seed, device=args.device, demand_model=demand_model, log=_log)
+        cache: dict[str, Any] = {}
+
+        def prior(world: str, model: Any = model, cache: dict[str, Any] = cache) -> Any:  # noqa: ANN401
+            if world not in cache:
+                cache[world] = forecast(model, rasters, world)
+            return cache[world]
+
+        net = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, prior)
+        uni = V.fold_strengths(worlds, fold, tracks, runs, sites.grid, lambda world: V.uniform(sites.grid(SP.base_of(world)).room_cells()))
+        rows.append({"held_out": list(fold), "net": net, "uniform": uni, "train": summary})
+        _log(f"strength: fold {k + 1}: {label} best {min(net, key=net.__getitem__):g}, uniform best {min(uni, key=uni.__getitem__):g}")
+    out: dict[str, Any] = {
+        "format": FORMAT,
+        "split": str(args.split),
+        "benchmark": listed(args.benchmark),
+        "prior": label,
+        "demand": args.demand,
+        "demand_model_input": None if args.demand_model_input is None else str(args.demand_model_input),
+        "demand_model": None if demand_model is None else demand_model.dump(),
+        "steps": args.steps,
+        "counts": list(V.STRENGTH_COUNTS),
+        "folds": rows,
+    }
+    if demand_model is not None:
+        out["note"] = f"one demand model params file for every fold ({args.demand_model_input}): " + ("its six parameters were fitted on the train partition, the fold's held-out seeds included" if fitted_on == "train" else "its file records no fit, so where its six parameters come from is not checked")
+    for key in ("net", "uniform"):
+        chosen, spread = V.choose_strength([r[key] for r in rows])
+        out[key] = {"chosen": chosen, **spread}
+    head = "| strength (ped-s) | " + " | ".join(f"{c:g}" for c in V.STRENGTHS) + " |"
+    lines = [head, "|---|" + "---|" * len(V.STRENGTHS)]
+    for key, name in (("net", label), ("uniform", "uniform (online only)")):
+        for r in rows:
+            lines.append(f"| {name}, seeds {r['held_out']} held out | " + " | ".join(f"{r[key][c]:.3f}" if c in r[key] else "" for c in V.STRENGTHS) + " |")
+    print(f"## prior strength by leave-two-seeds-out over the train partition (mean JSD over tracks seen {list(V.STRENGTH_COUNTS)})\n\n" + "\n".join(lines) + "\n")
+    for key, name in (("net", label), ("uniform", "uniform (online only)")):
+        o = out[key]
+        print(f"{name}: chosen {o['chosen']:g} ped-s (fold bests {', '.join(f'{c:g}' for c in o['fold_best'])}; score at the choice {o['score_at_chosen']['mean']:.3f} +- {o['score_at_chosen']['sd']:.3f})")
+    args.out.write_text(yaml.safe_dump(out, sort_keys=False))
+    _log(f"wrote {args.out}")
+    return 0
+
+
+def _cmd_scaling(args: argparse.Namespace) -> int:
+    import numpy as np
+
+    from . import validity as V
+    from .evaluate import Target
+    from .evaluate import fit as fit_demand_model
+    from .learn import Rasters, forecast, pick, samples, save, train
+    from .selection import DEMAND_MODEL_INPUT, PLAIN
+
+    given, fitted_on = (None, None) if args.demand_model_input is None else checked_params(args.demand_model_input, args.split, "scaling")
+    doc = SP.load(args.split)
+    settings = SP.crowd(doc, args.settings)
+    rasters = Rasters.of(doc, settings, args.worlds)
+    runs = Runs.load(args.cells, rasters.sites.grid, planner=args.planner)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    parts = args.partition or [p for p in SP.PARTITIONS if p != "train"]
+    found = {p: V.truths(runs, doc, p, _log) for p in parts}
+    arm = PLAIN if given is None else DEMAND_MODEL_INPUT
+
+    def params_for(worlds: list[str], fraction: float) -> Params | None:
+        """The demand model of the variant at this share: refitted on the share's training worlds, so a smaller share
+        does not see the left-out chains through its six parameters; the full share takes the given file."""
+        if given is None or fraction >= 1:
+            return given
+        targets = []
+        for w in worlds:
+            have = runs.seeds(w, V.world_seeds(doc, "train", w))
+            if have:
+                targets.append(Target(w, rasters.sites.layers(w, rasters.scenario_of.get(SP.base_of(w))), runs.pooled(w, have), tuple(have)))
+        params, value = fit_demand_model(targets, max_evals=args.max_evals, log=_log)
+        _log(f"scaling: demand model refitted on {len(targets)} worlds of share {fraction:g}, mean JSD {value:.4f}")
+        return params
+
+    result: dict[str, Any] = {"format": FORMAT, "arm": arm, "demand_model_input": None if given is None else str(args.demand_model_input), "params_checked": None if given is None else fitted_on is not None, "fractions": list(args.fractions), "repeats": args.repeats, "runs": [], "mean": {}}
+    for fraction in args.fractions:
+        for r in range(args.repeats):
+            worlds = pick(doc, "train", fraction, r)
+            params = params_for(worlds, fraction)
+            model, summary = train(rasters, samples(runs, worlds, doc), steps=args.steps, seed=r, device=args.device, demand_model=params, log=_log)
+            save(args.out_dir / f"net_f{fraction:g}_r{r}.pt", model, {"fraction": fraction, "pick_seed": r, "worlds": worlds, "demand_model": None if params is None else params.dump(), **summary})
+            entry: dict[str, Any] = {"fraction": fraction, "repeat": r, "edits": sum(not SP.is_base(w) for w in worlds)}
+            if params is not None:
+                entry["demand_model"] = "given" if fraction >= 1 else "refitted"
+            for p in parts:
+                vals = [V.jsd(forecast(model, rasters, t.world), t.map) for t in found[p] if not SP.is_base(t.world)]
+                entry[p] = float(np.mean(vals)) if vals else None
+            result["runs"].append(entry)
+            _log(f"scaling: fraction {fraction:g} repeat {r}: " + ", ".join(f"{p} {entry[p]:.3f}" for p in parts if entry[p] is not None))
+    for p in parts:
+        result["mean"][p] = {f"{f:g}": float(np.mean([e[p] for e in result["runs"] if e["fraction"] == f and e[p] is not None])) for f in args.fractions}
+    lines = ["| training edits | " + " | ".join(parts) + " |", "|---|" + "---|" * len(parts)]
+    for f in args.fractions:
+        lines.append(f"| {f:g} | " + " | ".join(f"{result['mean'][p][f'{f:g}']:.3f}" for p in parts) + " |")
+    print("## data scaling: mean pooled JSD over the held-out edits per share of the training edit chains (mean of repeats)\n\n" + "\n".join(lines) + "\n")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(5.5, 4))
+    for p in parts:
+        xs = [e["fraction"] for e in result["runs"] if e[p] is not None]
+        ax.scatter(xs, [e[p] for e in result["runs"] if e[p] is not None], alpha=0.4)
+        ax.plot(list(args.fractions), [result["mean"][p][f"{f:g}"] for f in args.fractions], marker="o", label=p)
+    ax.set_xlabel("share of the training edit chains")
+    ax.set_ylabel("mean pooled JSD (bits)")
+    ax.set_title("learned forecaster: data scaling" + ("" if given is None else " (network + demand model input)"))
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.savefig(args.out_dir / "scaling.png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    (args.out_dir / "scaling.yaml").write_text(yaml.safe_dump(result, sort_keys=False))
+    _log(f"wrote {args.out_dir / 'scaling.yaml'} and scaling.png")
+    return 0
+
+
+def _cmd_predict(args: argparse.Namespace) -> int:
+    settings: dict[str, Any] = SP.crowd(SP.load(args.split), args.settings) if args.split else S.load(args.settings)
+    duration = args.duration if args.duration is not None else (SP.duration_of(SP.load(args.split)) if args.split else 300.0)
+    forecaster = Forecaster(settings, duration, worlds=args.worlds)
+    if args.net is not None:
+        from .learn import Rasters, load
+        from .learn import forecast as forecast_net
+
+        rasters = Rasters(forecaster, {args.world: args.scenario})
+        model, _ = load(args.net, args.device)
+        forecast = forecast_net(model, rasters, args.world)
+        scene = _scene(rasters, args.world)
+        what = f"learned forecaster {args.net.name}"
+    else:
+        layers = forecaster.layers(args.world, args.scenario)
+        forecast = predict(layers, load_params(args.params))
+        scene = layers.scene
+        what = "demand model"
+    grid = forecaster.grid(SP.base_of(args.world) if not SP.is_base(args.world) else args.world)
+    print(f"{args.world} ({what}): {sum(p.weight for p in scene.people):.1f} people (expected over {len(CROWD_SEEDS)} crowd draws), {duration:g} s, {forecast.sum():.0f} pedestrian-seconds on {grid.nx} x {grid.ny} cells")
+    for d in scene.demands:
+        print(f"  {d.need}: obj:{d.name} at ({d.at[0]:.2f}, {d.at[1]:.2f}), used from ({d.spot(0)[0]:.2f}, {d.spot(0)[1]:.2f}), dwell {d.dwell:g} s, capacity {d.capacity}")
+    for note in scene.notes:
+        print(f"  note: {note}")
+    if args.out:
+        import polars as pl
+
+        rows = grid.rows(forecast)
+        pl.DataFrame({"flow_world": [args.world] * len(rows["x"]), **rows}).write_parquet(args.out)
+        print(f"wrote {args.out}")
+    if args.png:
+        from .plot import plot_world
+
+        plot_world(args.png, grid, None, forecast, None, scene, title=f"{args.world} forecast ({what})")
+        print(f"wrote {args.png}")
+    return 0
+
+
+def register(verbs: argparse._SubParsersAction) -> None:
+    """Add `forecast` and its verbs to the `flowedit` parser."""
+    p = verbs.add_parser("forecast", help="train, run and score the flow forecasters", description="flow forecasters: a world's flow map from its graph and geometry, no PEDS run (see Forecasting flow in the flowedit README)")
+    sub = p.add_subparsers(dest="forecast_verb", required=True, metavar="{train,select,score,curve,strength,scaling,fit,predict,baseline}")
+
+    def common(q: argparse.ArgumentParser) -> None:
+        q.add_argument("--settings", type=Path, default=None, help="crowd settings YAML merged over the split's (see settings.py)")
+        q.add_argument("--worlds", type=Path, default=None, help="worlds root to read (default: the ARENA_WORLD_PATH roots, then $ARENA_DIR/arena_simulation_setup/worlds, then the resolvers)")
+        q.add_argument("--planner", default=None, help="the contestant whose maps to read, when the benchmark holds several")
+
+    def recorded(q: argparse.ArgumentParser) -> None:
+        q.add_argument("split", type=Path, help="the split file (see split.py)")
+        q.add_argument("--cells", type=Path, action="append", required=True, help=CELLS_HELP)
+        common(q)
+
+    def device(q: argparse.ArgumentParser) -> None:
+        q.add_argument("--device", default=None, help="torch device (default: cuda when available, else cpu)")
+
+    q = sub.add_parser("train", help="train the learned forecaster on a partition's single runs", description="train the learned forecaster (GNN over the graph, U-Net on the flow grid) on every single run of the partition, Poisson NLL per cell and bin, D4 augmentation")
+    recorded(q)
+    device(q)
+    q.add_argument("--out", type=Path, required=True, help="the network file to write (.pt)")
+    q.add_argument("--partition", choices=SP.PARTITIONS, default="train", help="the partition to train on (default train)")
+    q.add_argument("--no-demand", dest="demand", action="store_false", help="leave out the need channels and the demand and need nodes: the demand ablation")
+    q.add_argument("--demand-model-input", type=Path, default=None, metavar="PARAMS", help="a params file from `fit`: give the network the demand model's forecast of each world as extra input layers (a variant to compare against the plain forecaster)")
+    q.add_argument("--fraction", type=float, default=1.0, help="share of the partition's edit chains to train on, the base world always kept (default 1)")
+    q.add_argument("--pick-seed", type=int, default=0, help="seed of the chains `--fraction` keeps (default 0)")
+    q.add_argument("--seed", type=int, default=0, help="training seed (default 0)")
+    q.add_argument("--steps", type=int, default=3000, help="optimizer steps (default 3000)")
+    q.add_argument("--batch", type=int, default=8, help="runs per step (default 8)")
+    q.set_defaults(fn=_cmd_train)
+
+    q = sub.add_parser("score", help="score forecasters and the fair baselines on partitions", description="per world: the pooled JSD of each forecaster and baseline against the recorded pooled map, the across-seed floor, and each edit's recorded and predicted change against its base world")
+    recorded(q)
+    device(q)
+    q.add_argument("--net", action="append", default=None, metavar="[NAME=]NET", help="a network from `train`; repeatable (default name: forecaster, or demand ablation for a --no-demand net)")
+    q.add_argument("--params", type=Path, default=None, help="a params file from `fit`: adds the demand model")
+    q.add_argument("--predicted", action="append", default=None, metavar="[NAME=]PARQUET", help="any predicted map on the flow grid (columns flow_world, x, y, heading_rad, ped_seconds; see the README); repeatable")
+    q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to score; repeatable (default: held_out_edits and held_out_worlds)")
+    q.add_argument("--out", type=Path, default=None, help="YAML file of every row")
+    q.add_argument("--plots", type=Path, default=None, help="directory for a PNG per world: recorded, the first forecaster, stale and their difference")
+    q.add_argument("--select", type=Path, default=None, metavar="FILE", help="a `forecast select` output: the chosen arm's networks are the forecaster, the other arm's go by their own name")
+    q.set_defaults(fn=_cmd_score)
+
+    q = sub.add_parser("curve", help="forecast error against post-edit tracks seen", description="the forecast as a Dirichlet prior updated with the tracks of one held-out seed's run, scored against the pooled map of the other seeds, beside the same update from a uniform prior")
+    q.add_argument("split", type=Path, help="the split file (see split.py)")
+    q.add_argument("--benchmark", type=Path, action="append", required=True, help=BENCHMARK_HELP)
+    common(q)
+    device(q)
+    q.add_argument("--net", action="append", required=True, metavar="[NAME=]NET", help="a network from `train`; repeatable")
+    q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition; repeatable (default held_out_edits)")
+    q.add_argument("--strength", type=float, default=None, help="one prior weight in pedestrian-seconds for every prior")
+    q.add_argument("--strength-file", action="append", default=None, metavar="NAME=FILE", help="the cross-validated weight of the prior NAME, a `forecast strength` output; repeatable. The uniform prior takes the file's uniform weight (without a file it is fitted on train, as it learns nothing from the runs)")
+    q.add_argument("--out", type=Path, default=None, help="YAML file of the curves")
+    q.add_argument("--png", type=Path, default=None, help="PNG of the curves")
+    q.add_argument("--select", type=Path, default=None, metavar="FILE", help="a `forecast select` output: the chosen arm's networks are the forecaster, the other arm's go by their own name")
+    q.set_defaults(fn=_cmd_curve)
+
+    q = sub.add_parser(
+        "select",
+        help="choose the forecaster's arm by leave-one-world-out on the training worlds",
+        description="for each training world, train the plain network and the one with the demand model's forecast as input on the other training worlds and score both on the held-out world (pooled JSD); the arm with the lower mean over folds is the forecaster. Reads the train partition only.",
+    )
+    recorded(q)
+    device(q)
+    q.add_argument("--out", type=Path, required=True, help="YAML file of the folds, the means and the chosen arm (`score --select`, `curve --select`)")
+    q.add_argument("--params", type=Path, default=None, help="one demand model params file for every fold (default: refit the demand model on each fold's training worlds, so no fold sees its held-out world)")
+    q.add_argument("--max-evals", type=int, default=400, help="forecasts per world each demand model refit may run (default 400)")
+    q.add_argument("--seeds", type=int, nargs="+", default=[0], help="training seeds per arm and fold, averaged (default 0)")
+    q.add_argument("--steps", type=int, default=3000, help="optimizer steps per network (default 3000)")
+    q.set_defaults(fn=_cmd_select)
+
+    q = sub.add_parser(
+        "strength",
+        help="the tracks-seen prior weight by cross-validation over the train partition",
+        description="leave-two-seeds-out over the train partition: per fold, train the network without the two seeds, then score each prior weight on the curve with tracks from one held-out seed and the truth at the other; the weight with the lowest mean over folds, with the fold spread",
+    )
+    q.add_argument("split", type=Path, help="the split file (see split.py)")
+    q.add_argument("--benchmark", type=Path, action="append", required=True, help=BENCHMARK_HELP)
+    common(q)
+    device(q)
+    q.add_argument("--out", type=Path, required=True, help="YAML file of the folds and the chosen weights (`curve --strength-file NAME=FILE`)")
+    q.add_argument("--no-demand", dest="demand", action="store_false", help="the demand ablation's network")
+    q.add_argument("--demand-model-input", type=Path, default=None, metavar="PARAMS", help="a params file from `fit`: the fold networks take the demand model's forecast as input layers (`train --demand-model-input`), with these params in every fold")
+    q.add_argument("--folds", type=int, default=None, help="the first FOLDS folds only (default every one: as many as training seeds)")
+    q.add_argument("--steps", type=int, default=3000, help="optimizer steps per fold network (default 3000)")
+    q.add_argument("--seed", type=int, default=0, help="training seed (default 0)")
+    q.set_defaults(fn=_cmd_strength)
+
+    q = sub.add_parser("scaling", help="the learned forecaster trained on shares of the training edits", description="train on each share of the train partition's edit chains (repeats draw other chains and seeds) and score the held-out partitions")
+    recorded(q)
+    device(q)
+    q.add_argument("--out-dir", type=Path, required=True, help="directory for the networks, scaling.yaml and scaling.png")
+    q.add_argument("--fractions", type=float, nargs="+", default=[0.25, 0.5, 1.0], help="shares of the edit chains (default 0.25 0.5 1)")
+    q.add_argument("--repeats", type=int, default=3, help="draws per share (default 3)")
+    q.add_argument("--demand-model-input", type=Path, default=None, metavar="PARAMS", help="train the variant with the demand model's forecast as input (`train --demand-model-input`): the full share takes these params, a smaller share refits the demand model on its own training worlds (--max-evals)")
+    q.add_argument("--max-evals", type=int, default=400, help="forecasts per world each demand model refit of a smaller share may run (default 400)")
+    q.add_argument("--steps", type=int, default=3000, help="optimizer steps per network (default 3000)")
+    q.add_argument("--partition", action="append", choices=SP.PARTITIONS, default=None, help="a partition to score; repeatable (default: held_out_edits and held_out_worlds)")
+    q.set_defaults(fn=_cmd_scaling)
+
+    q = sub.add_parser("fit", help="fit the demand model's params on a partition's recorded maps", description="fit the demand model's params by minimising the mean seed-pooled JSD over the partition's worlds, the base world included")
+    recorded(q)
+    q.add_argument("--crowd", choices=CROWDS, default="expected", help="people of the forecast: `expected` (default) draws them at crowd seeds no run uses; `runs` at the seeds of the runs fitted, a diagnostic only")
+    q.add_argument("--partition", choices=SP.PARTITIONS, default="train", help="the partition to fit on (default train)")
+    q.add_argument("--init", type=Path, default=None, help="a params file to start from (default: the built-in defaults)")
+    q.add_argument("--max-evals", type=int, default=400, help="forecasts per world the fit may run (default 400)")
+    q.add_argument("--out", type=Path, default=None, help="params file to write (also printed)")
+    q.set_defaults(fn=_cmd_fit)
+
+    q = sub.add_parser("predict", help="forecast one world", description="forecast a world's flow map from its graph and geometry: the learned forecaster with --net, else the demand model")
+    q.add_argument("world", help="the world, shipped or saved by an edit")
+    q.add_argument("--scenario", default=None, help="the scenario of a base world whose objects join its graph (an edited world names its own)")
+    q.add_argument("--net", type=Path, default=None, help="a network from `train` (default: the demand model)")
+    q.add_argument("--params", type=Path, default=None, help="the demand model's params file from `fit` (default: the built-in defaults)")
+    q.add_argument("--split", type=Path, default=None, help="a split whose crowd settings and duration to use")
+    q.add_argument("--duration", type=float, default=None, help="seconds of the run forecast (default: the split's, else 300)")
+    q.add_argument("--out", type=Path, default=None, help="parquet file of the forecast's cells (the format `score --predicted` reads)")
+    q.add_argument("--png", type=Path, default=None, help="PNG of the forecast")
+    common(q)
+    device(q)
+    q.set_defaults(fn=_cmd_predict)
+
+    from .baseline_cli import register as register_baselines
+
+    register_baselines(sub)
+
+
+__all__ = ["FORMAT", "load_params", "register"]

@@ -1,0 +1,78 @@
+# Package "flow": what each object is for (its demand) and who may pass each door (its access), the FLOWEDIT graph, loaded on demand
+name = "flow"
+version = 1
+requires = ["core"]
+
+[nodes.service]
+props = []
+auto = true
+propless = true
+
+[nodes.need]
+props = []
+auto = true
+propless = true
+
+[nodes.formation]
+props = []
+auto = true
+propless = true
+
+# a HumanSim interaction kind (USE, QUEUE_USE, SIT_ON, LIE_ON, GROUP_CONVERSATION, ...)
+[nodes.interaction]
+props = []
+auto = true
+propless = true
+
+[verbs.at]
+from = ["obj"]
+to = ["floor"]
+
+[verbs.serves]
+from = ["obj"]
+to = ["service"]
+
+[verbs.satisfies]
+from = ["obj"]
+to = ["need"]
+
+[verbs.has_formation]
+from = ["obj"]
+to = ["formation"]
+
+# how a person uses the object: object-bound kinds run at it, `meet: true` kinds run beside it after a go_to
+[verbs.affords]
+from = ["obj"]
+to = ["interaction"]
+
+[verbs.dwells]
+from = ["obj"]
+to = "literal"
+
+[nodes.schedule]
+props = []
+
+[nodes.regime]
+props = []
+auto = true
+propless = true
+
+[verbs.gated]
+from = ["door"]
+to = "literal"
+
+[verbs.authorizes]
+from = ["door"]
+to = "literal"
+
+[verbs.unlocks_on]
+from = ["door"]
+to = ["regime"]
+
+[verbs.asserts]
+from = ["schedule"]
+to = ["regime"]
+
+[verbs.window]
+from = ["schedule"]
+to = "literal"

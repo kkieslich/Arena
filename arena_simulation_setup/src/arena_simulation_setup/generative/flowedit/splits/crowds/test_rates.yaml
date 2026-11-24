@@ -1,0 +1,5 @@
+# Test crowd: needs run down 3x as fast as in the base crowd (decay mean 1.5 /s vs 0.5), so people seek the fountain
+# more often. The clips leave little overlap with the base draws, whose mean +- 3 std ends at 0.95.
+needs:
+  "*":
+    decay_rate: {mean: 1.5, std: 0.4, clip_low: 0.8, clip_high: 3.0}

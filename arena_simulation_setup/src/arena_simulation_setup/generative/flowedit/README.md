@@ -1,0 +1,608 @@
+# FLOWEDIT graph
+
+One graph per site with each object's demand on its node, what each object is for, and each door's access. It is a [KG](../../../../AUTHORING.md#kg) scene (`arena-kg/1`) over `core@2`, `space@1` and [`flow@1`](../../kg/packages/flow@1.toml), kept in its own `flowgraph.yaml`, never in the world's `kg.yaml`. Edits change it, a forecaster reads it, simulators never read it. Persons stay in agent types.
+
+```
+world.yaml (geometry)          --+
+scenario objects (humansim:)   --+-- build --> flowgraph.yaml --+
+kg.yaml (room purposes, read)  --+                              +-- read --> scenarios/<name>/ --> HumanSim
+                                         crowd settings + seed -+
+```
+
+`build` turns a hand-authored scenario into its graph, `edit` changes a site and saves it as a new world, `read` turns a site back into a scenario with no hand-written person.
+
+## CLI
+
+`flowedit build <world> [<scenario>]`, or `python3 -m arena_simulation_setup.generative.flowedit.cli build ...`. A dry run prints the graph, `--write` writes it to `flowgraph.yaml` next to the scenario's `scenario.yaml` (or `--out`). Worlds resolve as in [generative/scenario](../scenario/README.md#cli).
+
+`flowedit read <world> [<scenario>]` [reads](#reading-a-site) the site of a shipped world and scenario, or of a world `flowedit edit` saved, into `<world>/scenarios/flowedit_<scenario>/` (or `--name`). A dry run prints the scenario, `--write` writes it and replaces only a scenario carrying the generated marker unless `--force`. `--settings` names a crowd settings file, `--count`, `--scale` and `--local-planner` override it, `--seed` (default 0) keys every draw. `flowedit run` and `flowedit sweep` [record PEDS runs](#recording-runs).
+
+```bash
+flowedit build hospital_1 queue --write
+flowedit read hospital_1 queue --settings crowd.yaml --seed 3 --write
+flowedit read hospital_1__b6b7b494 --settings crowd.yaml --seed 3 --write
+```
+
+`flowedit edit <world> <type> <target> [-p KEY=VALUE ...] [--scenario <scenario>]` applies one [edit](#edits). A dry run prints the edit record and the world name, `--write` saves the world. `-p` reads VALUE as YAML and nests dotted keys (`-p satisfies.thirst=80`). An edited world is edited again by its name; its scenario and seed come from its `edits.yaml`.
+
+```bash
+flowedit edit hospital_1 move obj:fountain --scenario queue -p x=15 -p y=11.5 --write
+flowedit edit hospital_1__move_fountain__b6b7b494 layout door:or_door -p op=remove --write
+```
+
+`flowedit forecast train|score|curve|scaling|fit|predict` [forecasts](#forecasting-flow) a world's flow map from its graph and geometry: it trains the learned forecaster on a split's recorded runs and scores it against the fair baselines.
+
+`flowedit generate <world> [--scenario <scenario>] [--seed N] [--per-type K] [--steps N] [--types move,...] [--controls]` samples edits with the [generator](#generator). A dry run prints the manifest, `--write` saves every edited world and writes the manifest to `$ARENA_ASSETS_DIR_LOCAL/flowedit/<world>__seed<seed>.yaml` (or `--manifest`).
+
+```bash
+flowedit generate hospital_1 --scenario queue --seed 0 --controls --write
+```
+
+## Graph
+
+| Node | Holds | From |
+|---|---|---|
+| `room:<zone>` | `has_purpose purpose:<role>` | the world KG's `has_purpose`, else the substring rules of [`zones.py`](../scenario/zones.py) as `params: {by: rule}` |
+| `door:<name>` | `connects` between two rooms | derived from geometry |
+| `obj:<name>` | prop `model`, `at floor:<level> {x, y, yaw, pose_ref}` | `world.yaml` objects and the scenario's `objects:` |
+| `obj` demand | `serves service:<type> {capacity, interaction_radius}`, `satisfies need:<need> {amount}`, `has_formation formation:<type> {<params>, anchor_kind, anchor_ref}` | the object's `humansim:` block |
+| `obj` dwell | `dwells <mean s> {std, clip_low, clip_high, from}` | the `duration` of the first agent type step whose `target` is the object's name, else its type, else of the interaction a `go_to` to it leads into |
+| `obj` use | `affords interaction:<KIND> {from, meet, tag, offer, seek}`, `satisfies need:<need> {amount, from}` | [`interactions.py`](interactions.py): the agent type steps that use the object, else its `humansim:` block against HumanSim's interaction registry |
+| `obj:<name>_demand` | no `model`: only `at` and the demand facts `<name>` had | a `move` with `leave_demand` (the `moved_without_demand` control); its `affords` go with it |
+| `door` access | `gated <locked>`, `authorizes <name>` per authorized name, `unlocks_on regime:<regime>` | the door's `gate` preset |
+| `schedule:<name>` | `asserts regime:<regime> {default}`, `window <start s> {end, value}` per window | the world's `schedules:` |
+
+`contains` and `connects` are derived as when a world's KG loads. Unlike `kg.yaml`, the graph carries each object's `model` and pose, a copy of `world.yaml` that `flowedit build` refreshes; rooms and doors carry no geometry. Poses are in the level frame. A scenario object posed at a zone name gets the point the runtime would sample under `--seed`, and keeps the name as `pose_ref`. Dwell is read from the scenario-local agent type files (`./<type>.yaml`) its humans and regions name, and a note names other steps that give the same object another duration. `seats` and formations anchored at a pose are not in `flow@1`.
+
+```yaml
+- {subject: 'obj:fountain', verb: at, object: 'floor:0', params: {x: 11.0, y: 10.0, yaw: 1.57}}
+- {subject: 'obj:fountain', verb: serves, object: 'service:fountain', params: {capacity: 1}}
+- {subject: 'obj:fountain', verb: satisfies, object: 'need:thirst', params: {amount: 100.0}}
+- {subject: 'obj:fountain', verb: has_formation, object: 'formation:line', params: {base_step: 1.0, front_offset: 0.8}}
+- {subject: 'obj:fountain', verb: dwells, object: 5.0, params: {std: 1.5, clip_low: 4.0, clip_high: 6.0, from: 'colleague.yaml#drink.queue_and_drink'}}
+```
+
+Load and save it with `arena_simulation_setup.kg.load` and `write`.
+
+## Interactions
+
+`affords` says how people use an object, one fact per HumanSim `InteractionType`. A step with an object `target` and an object-bound kind (`USE`, `QUEUE_USE`, `SIT_ON`, `LIE_ON`) uses that object. A `go_to` to an object followed by a step whose kind takes no object (`GROUP_CONVERSATION`, `TALK_TO`, `HUG`, ..., or the tag-addressed `SERVICE`) uses it as a meeting point: `meet: true`, the `SERVICE` tag as `tag`, and `offer` / `seek` for the provider and seeker sides it was seen with. A need such a step satisfies becomes a `satisfies` fact with its `from`. An object with a `humansim:` block that no step uses is read by rule against HumanSim's registry: seats, or a posture word ending its type (`bed` prone, `chair`/`seat`/`sofa`/`bench`/`stool`/`couch` seated), pick the object-bound kind of that posture; else its formation picks the kind whose default formation it is, an object-bound one first (`line` is `QUEUE_USE`, `f_formation` the meeting kind `GROUP_CONVERSATION`); else a posture word of its model; else a capacity is `USE`. A block with none of these is a marker and affords nothing. `BLOCK` targets an agent and never an object.
+
+```yaml
+- {subject: 'obj:fountain', verb: affords, object: 'interaction:USE', params: {from: 'colleague.yaml#drink.queue_and_drink'}}
+- {subject: 'obj:gathering_area', verb: affords, object: 'interaction:GROUP_CONVERSATION', params: {from: 'colleague.yaml#chat.hold_conversation', meet: true}}
+- {subject: 'obj:patient_bed_1', verb: affords, object: 'interaction:LIE_ON', params: {from: 'rule:prone'}}
+```
+
+## Edits
+
+[`edit.py`](edit.py) has one operation per edit type. Each changes the graph and the world's geometry together, then recomputes `contains` and `connects`. A **site** is a world without its scenario objects, plus its graph (`open_site`). `apply(site, type, target, params)` returns a new site and leaves the old one unchanged. `save(site)` writes it.
+
+| Type | Target | Params | Graph | `world.yaml` |
+|---|---|---|---|---|
+| `move` | `obj:<name>` | `x`, `y`, `yaw`, `level` (default: unchanged), `leave_demand: true` (the demand stays at the old spot) | `at`; with `leave_demand` the demand facts, `affords` among them, go to a new `obj:<name>_demand` at the old spot, turned so people queue at the model's front | the pose, for a world object, its height, roll and pitch kept and its `dock`, in its own frame, and `charge_power_w` moved with it; with `leave_demand` its `humansim:` block keeps only `seats`, the dock stays with the model |
+| `insert` | `obj:<new name>` | `model`, `x`, `y`, `z` (0), `yaw` (0), `level`, `dock` (where a robot stands to use it, `[[x, y], ...]` in the object frame, see [AUTHORING.md](../../../../AUTHORING.md#4-add-a-scenario)), `charge_power_w` (the power in W a robot in the dock charges with, above 0, only with a `dock`: the object is a charger), and any `function` params | entity, `at`, demand | a new world object with its `humansim:` block, `dock` and `charge_power_w` |
+| `remove` | `obj:<name>` | none | the entity and every fact about it | the object with its `dock` and `charge_power_w`, and its `kg.yaml` entity |
+| `function` | `obj:<name>` | `type`, `capacity`, `interaction_radius`, `satisfies: {<need>: amount or null}`, `dwell: seconds, {mean, std, clip_low, clip_high} or null`, `formation: {type, params} or null` (anchored at the object), `clear: true` (first drop all demand, the formation included) | `serves`, `satisfies`, `dwells` (`from: edit:<id>`), `has_formation` | the `humansim:` block, for a world object |
+| `access` | `door:<name>` | `locked`, `authorized`, `unlock_on`, or `remove: true` | access facts | the door's `gate` preset (new gates start unlocked) |
+| `access` | `schedule:<name>` | `regime`, `windows`, `default`, or `remove: true` | access facts | the `schedules:` entry |
+| `layout` | `door:<name>` | `op: add` (`level`, `span`, door fields), `move` (default: `span` or `offset: [dx, dy]`, door fields), `remove` | the door entity | the door |
+| `layout` | `wall:<level>/<index>`, `wall:<level>` to add | `op: add` (`path`, `closed`, `kind`, `material`), `move` (`path` or `offset`), `remove` | none | the `walls:` path at that index |
+
+- **Scenario objects** (the fountain of `queue`) change only in the graph. The [reader](#reading-a-site) writes them into the scenario.
+- **Demand-only nodes** (`obj:<name>_demand`, an object without `model`) also live only in the graph. The reader writes each as a PEDS target without an obstacle (`model: ""`). The runtime queues an object without an annotated `face` behind its yaw, and a node without a model has none, so the node is turned to put that side where its model's front was: people queue on the same side as before the move. A formation anchored at `<name>` by name is anchored at the new node. They can be moved, removed and given another function like any graph object; the generator never moves or copies them, having no model.
+- **Doors:** a moved or added door must lie on a wall (within 0.05 m). A door moved or removed from a gap left in its wall gets the gap closed with a wall styled like the wall at its start. A moved or added door gets a gap in every `walls:` path it passes through, as the shipped worlds draw their doors: both outlines of a wall drawn per room, up to 0.1 m off the door's line (`DOOR_DEPTH_M`); a path on the door's line is cut at runtime anyway (`all_walls`). The first piece of a cut path keeps its index, the others are appended. A door a wall of `all_walls` still runs across or into (`Level.walled_doors`: a wall meets the strip 0.15 m either side of the door's line more than 0.1 m inside its jambs, such as a partition that ends inside the moved door's span) is refused: the crowd would never get it, or only a part of it.
+- **Walls:** only `walls:` paths count. Walls from a zone's `walls: outline` are not addressable.
+- **Checks** stay basic: unknown target, taken name, door off a wall, then `World.validate` and the graph's vocabulary. Rules about rooms or overlap belong to the edit generator.
+
+`save` writes the world to the writable local root (`$ARENA_ASSETS_DIR_LOCAL/worlds`, see [worlds/README.md](../../../../worlds/README.md#how-worldidentifier-resolves-a-name)) as `<base>__<what>__<id>`, e.g. `hospital_1__move_fountain__9f4189dc`. `<what>` says what the edits did: the last edit's type, layout `op`, target name and switched-on flags, after `<n>_edits` for a chain (`describe`, at most 40 characters). `<id>` is a hash of the last edit's record, with ints read as floats and false flags (`leave_demand`, `clear`, `remove`) left out. The record names its parent by the parent's key `<base>__<id>` (`Site.key`), so the hash also names the whole chain and the readable part never enters it. The save hardlinks the files of the source world's `assets/` (copies them where a link fails, e.g. across filesystems), so a copy of a 1.4 GB twin costs no space; an asset of an edited world is shared with its source and is replaced, never written in place. It writes `world.yaml`, `flowgraph.yaml` and `edits.yaml` as its own files. The scenarios are not copied.
+
+```yaml
+format: flowedit-edits/1
+base: hospital_1
+scenario: queue
+seed: 0
+edits:
+- {id: b6b7b494, parent: hospital_1, type: move, target: 'obj:fountain', params: {x: 15, y: 11.5}}
+- {id: b9f2feba, parent: hospital_1__b6b7b494, type: layout, target: 'door:or_door', params: {op: remove}}
+```
+
+## Generator
+
+[`generate.py`](generate.py) samples edits of every type on a site from a seed. `generate(site, seed, per_type, steps, types)` makes, per type, `per_type` chains of up to `steps` edits (default one), each starting with an edit of that type; later steps draw their type from `types`, and a drawn type with no edit (a function edit once the only object with a need is gone) gives way to the others. Each step draws a proposal, `apply` checks it, and a refused one is drawn again, up to `MAX_TRIES`. A site with nothing to edit, or no valid proposal, gives a note instead, which names the last refusal. A chain whose first edit fails is left out; one whose later step finds no edit of any type ends there.
+
+- **Determinism:** one `random.Random` per step, keyed by the current world's key (`<base>__<id>`, which names the chain so far), the scenario, seed, step, type and index. Candidates are sorted before every draw and spots rounded to cm, so the same site, seed and code give the same edits and a shorter chain is a prefix of a longer one. No two chains reach the same world at the same step: a duplicate is drawn again, and that retry may take any object, not only one with a need. Footprints come from asset bounds where they resolve, else a 0.8 m box with its front behind the yaw, so a machine with other assets at hand can draw other spots; the manifest carries `generator_version`. The model of an object with a `dock` must resolve: its fallback front could turn the dock to the wall, so `resolve_footprints` refuses it with the model's name (a generated move or insert on its level, and a `move` with `leave_demand` of it), and with `strict=True` it refuses any model that does not resolve.
+- **On the floor:** spots are drawn on the floor, so a world object standing higher than 5 cm (on a table, a shelf or a wall) is neither moved nor copied.
+- **Spots** (`move`, `insert`): inside an allowed zone (not a stair, elevator, lift or shaft), the footprint clear of the zone's edge, walls, door spans (0.8 m) and, by 0.3 m, every object's footprint. A moved object's own old footprint counts too, so the inert copy of its control never overlaps the original. Every spot stands against a wall of its zone: it is drawn along the parts of the zone's edges a wall runs along (within 0.3 m of the edge's line and 10° of its direction, parts shorter than 0.6 m skipped, so a door gap only cuts its edge and a wall stub or a wall meeting the edge gives none), as close as those gaps allow, with a wall behind the middle and both ends of the object's back, and the model is turned so its annotated front (`face` in its annotation.yaml, read as the runtime reads it; without one the side behind its yaw, where the runtime queues it) points away from that wall into the room, else along the wall either way (`TURNS`), the first turn at a point whose use points pass (below) taken; only when none passes is the next point drawn. A local move draws only along the walls within reach.
+- **Use points:** every edit, of any type, is refused when the edited site fails the runtime's own check ([`metrics/use_points.py`](../../metrics/use_points.py), `refusal`), detours included, where its parent passed: an object it moves, inserts or gives demand (and a left-behind `<name>_demand` node) with any point finding, or any other object or room with one the parent did not have (a lock or a moved door that shuts a fountain's room, an inert copy in front of the original). The site is checked as the reader hands it to the runtime before any crowd: its world and the graph's other objects, every room. A chain's first function-carrying move or insert passes only with its controls (below) passing too. Unresolved models are `resolve_footprints`' to refuse, not this check's.
+
+| Type | Target | Params drawn |
+|---|---|---|
+| `move` | an object on the floor, one with a need (`satisfies`) first | a spot in its own room 0.5-3 m away (`scope: local`, 30 %), else in another room of its level (`scope: room`) |
+| `insert` | `obj:gen_<model>_<n>`, a copy of an object on the floor, one with a need first | a spot in any room of its level (`scope: room`), the source's demand (service, needs, dwell, formation), `dock` and `charge_power_w` copied |
+| `remove` | an object, one with a need first | none |
+| `function` | an object with a need | `capacity`: a new value in the type's range (`CAPACITY`), objects whose type others share first, none with capacity 0. Or `dwell`: a new mean in the type's range (`DWELL_S`, 3-20 s for dispensers), the authored spread scaled to it, only on the sole object for its need |
+| `access` | a door whose rooms keep another door, a gated door, or a schedule with a regime | lock a door; unlock or ungate a gated one; a schedule window |
+| `layout` | a door | move it 0.5-2 m along its wall; add a 1.5 m door on a wall between two rooms; remove one whose rooms keep another door |
+
+Only objects with a need count as demand: in PEDS only needs send people to an object. `dwell` reaches PEDS through the reader, which writes it as the `duration` of the step at the object. The reader takes one dwell per need, hence the sole-object rule. `satisfies` is not drawn yet. `FIELDS` lists what is drawn and goes into the manifest. Wall paths are not drawn.
+
+**Controls** (`controls(site, chain)`, `--controls`): a function-carrying move or insert gets geometry-only controls, applied to the chain's base, in which only the footprint changes:
+
+| Control | Edit | Result |
+|---|---|---|
+| `inert_object` | `insert obj:<name>_inert` (move or insert) | the same model, `dock` and `charge_power_w` without demand at the edit's spot, the original left in place |
+| `moved_without_demand` | `move obj:<name>` with `leave_demand: true` (move only) | the model at the edit's spot, its demand at the old spot on `obj:<name>_demand` |
+
+Only a chain's first edit has controls. An object without `humansim.type` takes its type from its asset's `annotation.yaml` at runtime, so the inert copy, and the moved model of `moved_without_demand`, may still be a target by that name.
+
+The manifest (`flowedit-generated/1`) names each chain's world, its edits (`type`, `target`, `id`, `function_carrying`, `scope`), its saved path and its controls, each with the `ids` of its own edits (`edits.yaml` keeps the full history):
+
+```yaml
+format: flowedit-generated/1
+generator_version: 7
+base: hospital_1
+scenario: queue
+seed: 0
+per_type: 1
+steps: 1
+fields: [capacity, dwell]
+chains:
+- world: hospital_1__move_fountain__1a2b3c4d
+  edits:
+  - {type: move, target: 'obj:fountain', id: 1a2b3c4d, function_carrying: true, scope: room}
+  path: /…/worlds/hospital_1__move_fountain__1a2b3c4d
+  controls:
+  - {kind: inert_object, world: hospital_1__insert_fountain_inert__5e6f7a8b, ids: [5e6f7a8b], path: /…/worlds/hospital_1__insert_fountain_inert__5e6f7a8b}
+  - {kind: moved_without_demand, world: hospital_1__move_fountain_leave_demand__9c0d1e2f, ids: [9c0d1e2f], path: /…/worlds/hospital_1__move_fountain_leave_demand__9c0d1e2f}
+```
+
+## Reading a site
+
+[`read.py`](read.py) reads a site from `open_site` (a shipped world and scenario, or a world `flowedit edit` saved), crowd settings and a seed into a scenario in the site's world, deterministic in all three. FLOWEDIT compares a run before an edit with a run after it, so the two may differ only by the edit:
+
+- **The people** (count, kind, speed, start room, route, idle points) come from the unedited base world (`site.base`), its graph, the settings and the seed alone, through populate's public `crowd`. Every edit of `hospital_1` gets the people of `hospital_1`. Each start is a point drawn in the base world, not the home room's name, which the runtime would draw again per world. A start or an idle or visitor stop an edit made unfree (an inserted or moved object's footprint, a new wall) moves to the nearest free point of the edited world, with a note; every other person starts and stops where they do in the base. Free means clear of the walls and of every object's footprint, the scenario's objects included, as their assets give it (a 1 m box only for a model that does not resolve).
+- **The binding** (objects, which object serves which need, the dwell, the entrances) comes from the edited site.
+
+| Site | Scenario |
+|---|---|
+| objects the world does not hold (`at`, `serves`, `has_formation`, `satisfies`) | `objects:` with their `humansim:` block at the graph's point, in the map frame. A world object whose graph pose differs from `world.yaml` is refused: a scenario cannot move it, `flowedit edit` moves both |
+| an object without `model` (`obj:<name>_demand`) | an object with `model: ""`: a HumanSim target with its demand, no obstacle in the simulator and none on the sampling grid |
+| `satisfies need:<n>` of an object people can use | every person's type declares `n` and preempts into `seek_<n>` once it falls below `below` |
+| `affords` | the `seek_<n>` step: the kind at the object, or with `meet` a `go_to` to it and the kind beside it. An object without `affords` is used as the objects of its service type are, else by rule. `SERVICE` needs a provider and is not sought |
+| `dwells` | that step's `duration`, its `patience` shifted by the dwell's upper bound so a use never runs out mid-use |
+| `has_purpose` of the base world's rooms | where people start and the rooms they walk between, by populate's rules |
+| a door only one room contains | `<door>_source` behind `<door>_sink` inside it: visitors enter, walk, use, and leave through the sink |
+
+People are HumanSim behavior trees: each gets its own type (`types/flow__<name>.yaml`, extending its populate mix type) whose `idle` sequence walks free points drawn in its rooms of the base world, since a tree does not follow scenario waypoints. One step serves a need (HumanSim holds the dwell on the step), so the objects that satisfy one need must share their kind and dwell, and several of them are sought by a service type that they, and nothing else on the floor, have (HumanSim takes the nearest); anything else is an error until HumanSim holds the dwell on the object. With `synthesize_needs` (off by default), an object that satisfies no need gets `visit_<type>`, so every usable object is used; in HumanSim a crowd seeking a capacity-1 seat waits where it stands, so use it with few people or low rates. There is no robot unless the settings name one (`robot:`). People walk the first level with zones. `provenance.yaml` holds the world, its base and edits, the graph hash, the full settings, the plan of every need and the notes.
+
+```bash
+flowedit edit hospital_1 function obj:fountain --scenario queue -p dwell=20 --write   # saves hospital_1__<id>
+flowedit read hospital_1 queue --write                  # hospital_1/scenarios/flowedit_queue/
+flowedit read hospital_1__<id> --write                  # the same people, the fountain's step 20 s
+```
+
+## Recording runs
+
+`flowedit run <world> [<scenario>] [--edit TYPE TARGET [-p KEY=VALUE ...]]` is the whole chain in one command: apply the edit (or none) and save the world, read the crowd into it under `--settings` and `--seed` as `scenarios/flowedit_<scenario>_<settings digest>_s<seed>/`, launch it headless (`sim:=dummy human:=arena`) with HumanSim recording (`humansim.record:=true`), stop after `--duration` seconds (default 300) and write the run to `$ARENA_DATA_DIR/flowedit_runs/<world>__<scenario>/` (or `--out`). `--launch-arg` passes more `arena launch` arguments, `--dry-run` prints the world and launch without saving or launching. A finished run is skipped unless `--again`. A run is a look at one world, not one side of a pair: `--seed` keys the reader's draws, but the runtime seeds its episode from a `run_seed` drawn at random per launch, so a base and its edit run this way never get the same crowd (`paired: false` in `run.yaml`). Paired runs go through arena_evaluation's benchmark runner, which gives each stage its seed ([`flowedit suite`](#paired-runs)).
+
+```bash
+flowedit run hospital_1 queue --edit function obj:fountain -p dwell=20 --settings crowd.yaml --seed 3
+```
+
+| File | Content |
+|---|---|
+| `run.yaml` | world, base, edits, settings and digest, seed, launch command, the code that ran (`code`, `humansim`, each with a `_dirty` flag for changed tracked files, and `runtime_code` when `$ARENA_DIR` is another checkout), the reader's provenance, a track summary, and `uses` per object (interactions that reached their hold, their users, the longest queue); written last |
+| `tracks.parquet` | HumanSim's agent states (`time` from the first frame, `agent_id`, `x`, `y`, `vx`, `vy`, `radius`, `planner`, `source_name`, `source_seq`) with `name` and `key` |
+| `interactions.parquet` | HumanSim's interactions on the tracks' time base: a `member` row per member of a live interaction per frame (`type`, `outcome`, `object_id`, `arrived`, `holding`, `duration`, `role`, `position`, `seat`), an `event` row per participant of an edge (`activated`, `hold_onset`, `released`, `interrupted`, `canceled`), members keyed like the tracks |
+| `humansim/` | HumanSim's recording: the bag and `recording.yaml` |
+| `launch.log` | the launch's output |
+
+`key` pairs an agent across runs: `<source_name>#<source_seq>` for a person an entrance released, never the agent id (HumanSim keys a released agent's draws on its source and release index), and the person's scenario name for the people the reader places, who are the same in every edit of a world. `name` is the agent's name at that frame: HumanSim hands a left agent's id to the next one. Tracks and interactions are cut to the first `--duration` seconds; `run.yaml` warns when the sim ran too slowly to fill them. Needs are not in the recording (HumanSim records no `viz_state`), so a use of an object is read from `interactions.parquet`, not from a need rising.
+
+The scenario a run reads into a shipped world, `scenarios/flowedit_<scenario>_<settings digest>_s<seed>/`, is ignored by git: a sweep writes it again.
+
+`flowedit sweep <split> [--partition P] [--settings S] [--jobs N]` records every run of a split: it generates the split's edited worlds (and controls) again, checks the generator still makes every name the split lists, then runs each world of the chosen partitions once per seed of its partition, `--jobs` launches at a time, each on its own ROS domain from `--domain-base` (default 150). Runs land in `$ARENA_DATA_DIR/flowedit_runs/<split name>/`, one log per run in `_sweep/`; finished runs are skipped, so a sweep resumes. A split file ([`split.py`](split.py)) names the worlds of `train`, `held_out_edits` (other edits of the train worlds) and `held_out_worlds` (worlds with no run in train), and per base world the `flowedit generate` call that makes its edited worlds again under those names (`controls: true` makes the geometry-only controls too; `generator_version`, optional, the version the names come from, so a newer generator is named instead of the names it no longer makes). `seeds` is one list for every partition or a list per partition. `settings` (optional) holds the crowd settings of every run, a sweep's `--settings` file merged over them; the sweep writes the merged settings to `_sweep/` and hands that file to every run. `control_worlds` links each function-carrying edit to its controls, which sit in the edit's partition. Every edited world is scored against its base world run with the same seed: a partition that lists edits but not their base (held-out edits at test seeds) runs the base world at its seeds as a reference run, never trained on (`reference` in `--dry-run`, `(reference)` in the log). [`splits/peds_pilot.yaml`](splits/peds_pilot.yaml) is the pilot: hospital_1 with 3 chains per edit type and office_1 with 1, their controls, seeds 1-5 for train and 6-8 for test, 155 runs; the study design's split is larger. A sweep launches `flowedit run`, so its runs are not seed-paired either; paired runs of a split come from a benchmark suite with each stage's seed ([`flowedit suite`](#paired-runs)).
+
+```bash
+flowedit sweep splits/peds_pilot.yaml --jobs 2                                # the base crowd
+flowedit sweep splits/peds_pilot.yaml --crowd test_orca --jobs 2              # one test crowd
+flowedit sweep splits/peds_pilot.yaml --partition held_out_edits --settings test_crowd.yaml
+```
+
+### Test crowds
+
+A split's own `settings` are its base crowd, which runs on every partition. `crowds` (optional) adds test crowds: each names a settings file, relative to the split and merged over the split's `settings`, and the partitions it runs on. A test crowd's run of a held-out edit comes with its base world's reference run under the same crowd, so the pair still differs only by the edit. `--crowd NAME` (repeatable, `all` for every crowd) picks the crowds a sweep records, `base` by default. Each crowd's runs carry its settings digest in their scenario name, so the crowds' runs of one world never collide.
+
+[`splits/peds_pilot.yaml`](splits/peds_pilot.yaml)'s test crowds, in [`splits/crowds/`](splits/crowds/), run on the held-out edits at seeds 6-8 (30 runs each, 3 of them reference runs). Each differs from the base crowd in one way, `test_all` in all three:
+
+| Crowd | Need decay mean | People at start | Local planner |
+|---|---|---|---|
+| `base` | 0.5 /s | populate's count | `sfm` (HumanSim's default) |
+| `test_rates` | 1.5 /s (std 0.4, clipped 0.8-3.0) | populate's count | `sfm` |
+| `test_size` | 0.5 /s | twice populate's count | `sfm` |
+| `test_orca` | 0.5 /s | populate's count | `orca` |
+| `test_hsfm` | 0.5 /s | populate's count | `hsfm` |
+| `test_all` | 1.5 /s | twice populate's count | `orca` |
+
+The reader writes the crowd's planner on every person's agent type, so the planner needs no launch argument. Entrance visitors are released by HumanSim's sources with their visitor type, which carries the same planner.
+
+Entrance visitors walk in from the source strip (0.8 to 1.8 m inside the door) past the door's sink strip (0.1 to 0.6 m), and leave by walking into the sink. HumanSim's sink takes a released agent only while it heads for that sink (kkieslich/humansim#2), so a visitor crossing it on the way in stays. The 9 Nov pilot, [`splits/peds_pilot.yaml`](splits/peds_pilot.yaml), ran before that fix without entrances (`settings: {entrances: {rate: 0}}`), so only the reader's placed people walked; [`splits/peds_v2.yaml`](splits/peds_v2.yaml) runs with them.
+
+### Data v2
+
+[`splits/peds_v2.yaml`](splits/peds_v2.yaml) is the Stage 1 dataset (study design §5): train hospital_1 and office_1 (8 of 10 chains per edit type) and six further worlds with authored demand (4 of 5 chains: food_court, hallway_lab, hallway_office, hallway_school, office_open_plan, waiting_hall_clinic), base worlds at seeds 1-5 and edits with their controls at seeds 1-2 (`seeds.train: {bases, edits}`); held-out edits, the other chains per type and train world (20 %) drawn by seed among those the pilot never ran, at seeds 6-8; held-out worlds reception, hallway_clinic, library and station_hall (the last two drawn by seed among the eight further worlds before any edit was generated), each with an authored `demand` scenario, base and chains 1-5 per type at seeds 6-8. More worlds rather than more edits per world: the pilot's forecaster gained nothing from more edits and lost on its unseen world. Each held-out world's base also runs at seeds 1-5 (`baseline_seeds`), only for the stale and transplanted baselines and the across-seed floor: those runs belong to `held_out_worlds`, outside its seeds, so nothing trains or scores on them. The test crowds run on the first held-out chain of every edit type per train world, with their controls, plus baseline runs of their bases at seeds 1-3. Door entrances are on (the defaults of `entrances`).
+
+hallway_clinic is a generated layout (world generator `hallway`, seed 7, recorded in its `generated_from.yaml`) authored into a clinic: room names and purposes, a front and a back door, furniture and the `demand` scenario. reception got its `demand` scenario and two `has_purpose` facts (its zone names read as transit, so nobody would start there); with one door between its two rooms and none outside, it has no entrances and no access edits.
+
+## Paired runs
+
+`flowedit suite <split> [--partition P] [--crowd C] [--settings S] [--out FILE] [--robot R]` writes a split as an arena_evaluation benchmark suite whose runs pair by seed. It generates the split's edited worlds again with the same manifest check as a sweep, reads the crowd into every world at every seed of its partition (the reference runs included), and writes one stage per world and seed. Each stage runs one episode, its `seed` the runtime's episode seed and the reader's seed both, so an edit stage and its base world's stage at that seed run the same people on the same seed. The suite lands in `<imported assets root>/suites/flowedit_<split name>.yaml`, where `--suite flowedit_<split name>` finds it, so a run of it resumes by name. A test crowd (`--crowd C`) is its own suite, `flowedit_<split name>__<crowd>`, of the partitions it runs on: stage names do not say the crowd. `flowedit suite` prints the call:
+
+```bash
+flowedit suite splits/peds_pilot.yaml
+arena evaluation benchmark --suite flowedit_peds_pilot --contest '[{name: peds_only, mobile: none}]' --lanes 2
+flowedit suite splits/peds_pilot.yaml --crowd test_orca
+arena evaluation benchmark --suite flowedit_peds_pilot__test_orca --contest '[{name: peds_only, mobile: none}]' --lanes 2
+```
+
+| Stage field | Value |
+|---|---|
+| `name` | `<world>__s<seed>`; an edit stage pairs with `<base world>__s<seed>` (`suite.pairs`) |
+| `map`, `seed`, `episodes` | the world, the seed, 1 |
+| `config.scenario.file` | the reader's scenario of that world, settings and seed, `flowedit_<scenario>_<settings digest>_s<seed>` |
+| `timeout` | the split's `duration`, sim seconds |
+| `robot`, `modes.robots`, `config.stationary` | the runner needs a robot in every stage: `--robot` (default `jackal`) parked at (1000, 1000) by the `stationary` mode, as the runner parks its `unhindered_peds` reference runs |
+
+The suite's `launch` runs flatsim headless under lockstep with `human.robots.visible: false`, so the people never see the parked robot, and `references: false`, since the split names its own reference runs. flatsim runs on Box2D (`sim.flatsim.physics: box2d`) on every machine: `auto` takes Warp where a CUDA device is visible, and Warp's tracks differ from Box2D's, so seed-paired runs from a machine with a GPU and one without would not pair. Every stage scenario written is checked as the runtime checks it at episode start (`human.check`, `metrics.use_points`): a point the crowd does not reach or a model that does not resolve refuses the suite, every failing stage named. Its `record` block (`exclude: [tf_humans]`, arena_evaluation's suite record block) leaves the pedestrians' skeleton frames out of the recording: nothing FLOWEDIT scores reads them, and in a headless run the recorder is the only subscriber of `<env>/humans/tf`, so `hri_producer` then stays idle instead of computing them (about 40 % of a core per lane, measured on hospital_1); an arena_evaluation without the block ignores it. The contestant needs no planner: `[{name: peds_only, mobile: none}]` brings the parked robot up with the no-op mobile adapter, not the sim's default navstack (Nav2 in flatsim, about 12 % of a core and 0.4 GB per lane for a robot that never moves, measured on hospital_1); the runner then expects no planner beats from it. `--dry-run` prints the suite without writing a scenario or the suite, and a suite file `flowedit suite` did not write is kept unless `--force`.
+
+### Planners through the edit
+
+A split with a `robot_task` (a scenario `robots:` entry: `start` and `phases`) has the robot drive it in every stage. The task is added to the scenario after the crowd is read, so the people are the ones of the robot-free suite at the same seed. The scenario is `flowedit_<scenario>_<settings digest>_r<task digest>_s<seed>`, beside the robot-free one, and the stage runs `modes.robots: scenario` instead of the parking spot, under `human.robots.visible: true`. Every goto of the task must be a pose: a named target (a zone, a door, an object's dock) can resolve differently in an edited world, a pose is the same in all of them. A loop without `until` repeats until the episode's `timeout`, so every stage drives for the split's `duration`. `contest` lists the planners, as arena_evaluation contestants; `flowedit suite` writes them as contest `flowedit_<split name>` into `<imported assets root>/contests/` and prints `--contest flowedit_<split name>`. `flowedit sweep` refuses a split with a robot task, since `flowedit run` records without one.
+
+[`splits/h2_planners.yaml`](splits/h2_planners.yaml) is the Stage 1 test of H2: hospital_1, its first fountain move and the move's two geometry-only controls, at seeds 1-5 on data v2's base crowd (door entrances on, the same people as v2's train runs), with Nav2 DWB (`dwb_blind`), DWB with `arena_social_cost_layer` (`dwb_social`) and DRL-VO (`drlvo`) shuttling between the central hallway and the laboratory past both fountain spots: 60 episodes of 300 s. The H2 test is the contrast edit minus control per seed, for each control and planner (`evaluation edits --split splits/h2_planners.yaml`, paired t-test at n = 5, Holm within the contrasts), with edit minus base and control minus base reported beside it.
+
+```sh
+flowedit suite splits/h2_planners.yaml
+arena evaluation benchmark --suite flowedit_h2_planners --contest flowedit_h2_planners --lanes 2
+```
+
+## Crowd settings
+
+Global, not per site: the same file gives a crowd on any graph. Every key and its default is in [`settings.py`](settings.py); a file sets only what it changes, an unknown key is an error. A distribution (`mean`, `std`, `clip_low`, `clip_high`) given in a file replaces the default one whole, so a raised mean never keeps the default's clips, and a mean outside its own clips is an error. A need's own `initial`, `decay_rate` or `below` replaces the `"*"` entry's.
+
+```yaml
+count: 20                       # people at the start (default: populate's count for the rooms, times scale)
+needs:
+  "*": {decay_rate: {mean: 0.5, std: 0.15, clip_low: 0.1, clip_high: 2.0}, below: 30.0}
+  thirst: {decay_rate: {mean: 2.0, std: 0.5, clip_low: 1.0, clip_high: 4.0}}
+local_planner: orca
+entrances: {rate: 0.1, max_concurrent: 6, max_total: 30}
+```
+
+## Forecasting flow
+
+[`forecast/`](forecast/) forecasts a site's flow map from its edited graph and geometry, without a PEDS run and without any recorded flow of the site. The map is arena_evaluation's (`processing/flow/grid.py`): pedestrian-seconds per 0.5 m cell over the base world's rooms, 8 headings and a standing bin. A world's truth is its seed-pooled map (its runs' normalized maps averaged over the partition's seeds); a score is the JSD in bits against it. [`maps.py`](forecast/maps.py) mirrors arena_evaluation's grid, track binning, `jsd` and `pooled`, and tests check they agree.
+
+Two forecasters read the same inputs:
+- the **learned forecaster** (H1's forecaster): a small GNN over the graph and a U-Net on the flow grid, trained on single runs;
+- the **demand model**: six parameters fitted on the train partition, kept as a baseline.
+
+### Learned forecaster
+
+**Input** ([`raster.py`](forecast/raster.py)), all on the base world's flow grid:
+- **geometry:** the rooms, the free space people walk (HumanSim's 0.38 m inflation, 0.25 m sub-cells), its clearance, open doors, locked doors (`gated true`), entrances (doors in one room only, weighted by the entrance rate);
+- **room purpose:** one layer per purpose (`work`, `break`, `transit`, `private`, `unknown`);
+- **people:** the reader's start points and idle stops of the unedited base world, at the 16 crowd seeds no split uses (1000–1015), each person weighted 1/16;
+- **per need** the graph's objects satisfy:
+  - the objects' fronts, weighted by capacity and by dwell;
+  - their queue spots;
+  - the walking distance to the nearest front, as exp(−d / 10 m);
+  - the need's expected trips per person over the run;
+- **the graph:** nodes for rooms (purpose, area, people, doors), doors (open, locked, exterior, width), demand objects (capacity, dwell, front offset, queue step) and needs (trips, amount, objects). Typed edges join room–door, object–room, object–need, room–need and object–object of one need. Each edge carries the walking distance between the two anchors.
+
+**Network** ([`net.py`](forecast/net.py)):
+1. A typed GNN, 3 rounds of message passing with 16-dimensional embeddings, lets objects that compete for one need, their capacities and the rooms people start in meet.
+2. The room, door and object embeddings are written onto the room's cells, the door's span and the object's front and queue spots.
+3. A per-need encoder (shared convolutions, summed over needs) takes any number of needs.
+4. A U-Net (32–64–96–128 channels) maps everything to 9 non-negative rates per cell. The rates are scaled by the crowd's pedestrian-seconds per room cell and kept to the rooms. Being fully convolutional, it takes any world size.
+
+**Training** ([`learn.py`](forecast/learn.py)):
+- Every single run of the train partition is a sample.
+- Loss: Poisson NLL of the run's pedestrian-seconds per cell and bin (as quasi-likelihood counts), plus half of the same on 2 × 2 blocks (1 m cells). So the network learns the expected flow from noisy single seeds.
+- Augmentation: the eight D4 symmetries (quarter turns, mirror), with the heading bins permuted along.
+- Optimizer: AdamW with a one-cycle schedule, 3000 steps of 8 runs.
+- A forecast is the mean over the eight symmetries.
+- `--no-demand` drops the need channels and the object and need nodes: the **demand ablation**, the same network otherwise.
+- `--demand-model-input PARAMS` is a variant to compare, not the default: the demand model's forecast of each world (with the params from `fit`) becomes 9 more input layers, in units of the crowd's pedestrian-seconds per room cell. The network file keeps the params, so `score`, `curve` and `predict` rebuild the layer. It cannot combine with `--no-demand`.
+
+**Which network is the forecaster** ([`selection.py`](forecast/selection.py), `forecast select`): the plain network or the one with the demand model's forecast as input (`--demand-model-input`), chosen by leave-one-world-out on the training worlds before any test partition is scored.
+- A training world is a base world of the train partition with its edits there.
+- For each training world, both arms train on the other training worlds' runs and are scored on the held-out world's base and edits (pooled JSD at their train seeds, averaged over `--seeds`).
+- The arm with the lower mean over folds is chosen; a tie keeps the plain network.
+- The demand model is refitted on each fold's training worlds (`--max-evals`), so no fold sees its held-out world through its six parameters. `--params` reuses one file for every fold, and the output says so.
+- It reads only the train partition's worlds at their train seeds. It needs at least two training worlds.
+- `score --select select.yaml` and `curve --select select.yaml` call the chosen arm's networks "forecaster" and the other arm's "plain network" or "network + demand model input". Train the final networks of both arms with `train` and `train --demand-model-input params.yaml` and pass both, so the paper reports both arms.
+
+**Validity** ([`validity.py`](forecast/validity.py)):
+- `score`: each forecaster and the fair baselines per world of a partition, against the across-seed floor.
+  - **stale** is the base world's pooled map from its runs at the split's *other* seeds, never the scored crowd draws. **transplanted** is that map with the edited object's surroundings (2 m) moved, copied or dropped with it. A partition whose base world ran at no other seed (the pilot's office_1) has neither.
+  - **floor** is another crowd draw of the unchanged base world: its runs at the n scored seeds, pooled, against n of its runs at other seeds, pooled (n the smaller count), averaged over every such pair of pools. It is the noise between two finite n-seed samples of one flow. A smooth expected-flow forecast is scored against one finite pool only, so it can lie below the floor (on the pilot: 0.301 against ~0.31); read the floor as a scale, not a bound. The main comparison is the forecast against stale at the other seeds.
+  - `forecaster 1m` is the occupancy JSD on 1 m cells: the coarse scale at which the Bayesian Floor Field transferred to unseen worlds.
+  - A second table puts each edit's and control's **recorded change** (against its base at the same seeds) beside each forecaster's **predicted change** (its map of the edit against its map of the base). The inert copy and the object moved without its demand should change little, the function-carrying edit a lot.
+- `curve`: forecast error against post-edit tracks seen.
+  - The forecast is a Dirichlet prior over cells and bins with strength c (pedestrian-seconds). After k tracks the map is (c·p + n) / (c + N), the Bayesian Floor Field's conjugate update.
+  - c comes from `forecast strength`, by leave-two-seeds-out over the train partition: per fold, a network is trained without two of the training seeds. Each c is then scored on the curve with tracks from one held-out seed and the truth at the other. The c with the lowest mean over folds is chosen, and the output reports each fold's best and the spread. A learned prior has seen the train runs, so fitting c on them directly would lean heavy; `curve` asks for `--strength-file NAME=FILE` (or `--strength`) for every network. The uniform prior learns nothing, so without a file it is fitted on train.
+  - `strength --demand-model-input PARAMS` does the same for the network with the demand model's forecast as input: each fold network takes it with these params (from `fit` on the train partition, so the same six parameters in every fold, which the output notes). Pass its file under the name `curve` gives that network: with `--select`, `forecaster` when `select` chose that arm, else `network + demand model input`; without `--select`, `forecaster + demand model`. A strength file records its network's arm and demand model params, and `curve` refuses a file that belongs to another network. Params from `fit` on another partition than train are refused.
+  - Leave-one-seed-out: the tracks come from one scored seed's run, and the score is against the pooled map of the partition's other seeds, averaged over which seed is seen and over 20 random track orders.
+  - Zero tracks is the forecast itself (the flat line). The same update from a uniform prior over the rooms is the online-only reference.
+- `scaling`: the learned forecaster trained on 25/50/100 % of the training edit chains (an edit with its controls; the base world always kept), 3 draws each, scored on the held-out partitions.
+  - `scaling --demand-model-input PARAMS` draws it for the network with the demand model's forecast as input: the full share takes PARAMS, a smaller share refits the demand model on its own training worlds, as `select` does per fold. The refit starts from `fit`'s defaults (not from PARAMS) and runs `--max-evals` evaluations, as `fit` and `select` do, while the 100 % share uses PARAMS as given.
+
+```bash
+S=splits/peds_pilot.yaml; C=<benchmark dir>/flow_cells.parquet
+flowedit forecast train $S --cells $C --out net.pt
+flowedit forecast train $S --cells $C --no-demand --out ablation.pt
+flowedit forecast fit $S --cells $C --out params.yaml
+flowedit forecast select $S --cells $C --out select.yaml                        # before any test partition is scored
+flowedit forecast train $S --cells $C --demand-model-input params.yaml --out net_dm.pt
+flowedit forecast score $S --cells $C --select select.yaml --net net.pt --net net_dm.pt --net ablation.pt --params params.yaml --predicted cliff=cliff.parquet --plots plots/ --out score.yaml
+flowedit forecast strength $S --benchmark <benchmark dir> --out strength.yaml
+flowedit forecast curve $S --benchmark <benchmark dir> --net forecaster=net.pt --strength-file forecaster=strength.yaml --png curve.png --out curve.yaml
+flowedit forecast scaling $S --cells $C --out-dir scaling/
+flowedit forecast predict office_1__move_fountain__2af43765 --net net.pt --split $S --png forecast.png --out forecast.parquet
+```
+
+Training takes a few minutes on a GPU (`--device`, default cuda when available).
+
+**Runs from several run dirs.** Every verb that reads recorded runs takes `--cells` (or `--benchmark`) more than once: one split's runs recorded into several run dirs, e.g. `--partition train --partition held_out_edits` on one machine and `--partition held_out_worlds` on another, each processed there with `arena evaluation process`, are read as one (`evaluate.read_cells`):
+
+```bash
+flowedit forecast fit $S --cells home/flow_cells.parquet --cells institute/flow_cells.parquet --out params.yaml
+flowedit forecast curve $S --benchmark home --benchmark institute --net forecaster=net.pt --strength-file forecaster=strength.yaml --out curve.yaml
+```
+
+- The rows are concatenated. A stage (contestant and `<world>__s<seed>`) that two files hold with the same rows is read once.
+- Reading stops when two files hold one stage with different rows (two runs of it), lay different flow grids (cell size, heading bins), or hold different crowds: the manifest of a file's run dir, where it lies beside the file, names each stage's scenario file, which carries the digests of the crowd settings and the robot task. Read a test crowd's or H2's runs on their own.
+- Reading also stops when the run dirs' manifests name different Arena or humansim commits (`commits`, which arena_evaluation's runner records). A run dir without them (recorded before) or with a commit the runner could not read is not compared, with a warning; a dirty checkout is compared by its commit, with a warning that the commit does not pin the code.
+- With `--benchmark`, a stage's tracks come from the first run dir that holds it.
+- Output files list every input file (`cells`, `benchmark`); with one, they keep its path as before.
+
+### Map files (`score --predicted`)
+
+Any forecaster or baseline joins `score` as a parquet file of cell rows, one map per world, on the world's base grid:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `flow_world` | string | the world (split name), e.g. `hospital_1__move_fountain__6a2c296b` |
+| `x`, `y` | float | the cell centre in the world frame, as arena_evaluation's `flow_cells.parquet` has it (`x0 + (j + 0.5) · 0.5`) |
+| `heading_rad` | float or null | the heading bin's centre, −π + (b + 0.5) · π/4 for b = 0…7; null for standing (under 0.2 m/s) |
+| `ped_seconds` | float | the map's weight in that cell and bin; only its distribution over cells and bins counts, not its total |
+
+- Omit cells without weight.
+- A world missing from the file scores as "no map".
+- `forecast predict --out` and arena_evaluation's `flow_cells.parquet` (its `flow_world` column) are in this format.
+- `validity.write_predicted` writes one from numpy maps (ny, nx, 9).
+- Baselines that read recorded runs must take them from seeds other than the scored ones (`validity.other_seeds`). For held-out edits, those are the base world's train seeds.
+
+### Demand model
+
+[`model.py`](forecast/model.py) mirrors the [reader](#reading-a-site) in expectation:
+- **People** are populate's crowd of the unedited base world, as the reader draws them (start point, idle stops, speed), at the 16 crowd seeds, each person weighted 1/16. A person walks from its start to its first stop, then cycles through its stops, standing `idle.stand` at each (the reader's `idle` sequence).
+- **Needs** send people to the objects the edited graph says satisfy them (the reader's `plan_needs`). A need starts at its initial value, decays at its rate, and starts a trip below `below`; a use adds `amount`. The expected number of trips within the run's duration comes from the settings' distributions. A trip leaves from one of the person's stops, walks to the object's front, waits, uses the object for its `dwells`, and walks back to the first stop, where `idle` starts again. The front lies `front_offset` from the object along its annotated `face`, else behind its yaw, as the runtime queues it.
+- **Choice and queues.** The objects of one need share a person's trips by a softmin of their path lengths with temperature τ (HumanSim takes the nearest). Each object's arrival rate λ gives its utilisation ρ = λ · dwell / capacity (at most 0.9) and a wait q · dwell · ρ^c / (2c(1 − ρ)), an M/D/c-like wait with c = capacity. The wait is stood on the queue's spots, `base_step` apart behind the front, in proportion to ρ^k.
+- **Walks** follow shortest paths on the edited world's free space: 0.25 m cells that keep HumanSim's navmesh inflation (0.38 m) from walls and objects, its comfort radius (0.6 m) as a cost, and locked doors (`gated true`) closed. Walking time goes to each step's heading, averaged over 5 steps and spread by σ_θ over the heading bins. Standing time goes to the standing bin. A person whose start is off the free space or cut off from its stops stands there for the whole run.
+- **Map.** The time is blurred by a Gaussian of width σ, kept to the reachable cells of the rooms, and scaled to people × duration.
+
+Six parameters are fitted on the train partition (`forecast fit`): σ (kernel, m), σ_θ (heading spread, rad), w (walking mass per walked second, relative to standing), g (trips per expected trip of the needs model), τ (softmin temperature, m) and q (queue wait gain). Nelder–Mead in log space minimises the mean pooled JSD over the partition's worlds. `fit --crowd runs` draws the people at the fitted runs' seeds: a diagnostic, not a forecaster.
+
+**Neither forecaster models yet:**
+- entrance visitors (the pilot runs without them; the learned forecaster reads the entrances but has seen none);
+- schedules and regimes;
+- what `meet` and `SERVICE` interactions do beyond walking to the object.
+
+| Verb | What it does |
+|---|---|
+| `select` | the forecaster's arm (plain or with the demand model's forecast as input) by leave-one-world-out on the training worlds |
+| `train` | the learned forecaster on a partition's single runs (`--no-demand`: the demand ablation; `--fraction`: a share of the edit chains) |
+| `score` | per world of each partition (default the held-out ones): JSD of each `--net`, the demand model (`--params`), each `--predicted` map, stale and transplanted at other seeds; the across-seed floor; recorded vs predicted change; a PNG per world with `--plots` |
+| `curve` | forecast error against post-edit tracks seen, leave-one-seed-out, beside the uniform-prior reference |
+| `strength` | the tracks-seen prior weight by leave-two-seeds-out over the train partition, with the fold spread (`--no-demand`: the demand ablation's; `--demand-model-input`: the variant's) |
+| `scaling` | the learned forecaster on 25/50/100 % of the training edits, scored on the held-out partitions (`--demand-model-input`: the variant) |
+| `fit` | the demand model's params on a partition |
+| `predict` | one world's forecast (`--net`, else the demand model), as cell rows in the map file format or a PNG |
+
+## Placement (INFRA)
+
+[`place.py`](place.py) places the INFRA study's elements (study design §3, §4) through these edits. `CATALOG` holds a charger pair (`charger_1`, `charger_2`: `robot_charger`, 1.0 m apart centre to centre, 290 W, 1.2 m approach), a bay pair (`bay_1`, `bay_2`: `waiting_bay` slots, 1.0 m apart), `locker_1` (`parcel_locker`, 1.5 m access zone, its dock from 0.84 m, beyond the door sweep) and the courier handoff point `loading_point` (a `waiting_bay` slot, where couriers hand parcels to the fleet), each object with its jackal dock. The names are the ones the fleet task mode refers to.
+
+The catalog is open: each element carries generic placement rules, and a site only states facts (`SiteFacts`: its entrances with a type and a `recipients` flag, the courier access point, its power outlets); the rules read the facts and the search decides. A locker stands within `RECIPIENT_DISTANCE_M` (30 m, a placeholder) walking distance of a recipient entrance: walked on the site's floor at the wheelchair radius (`walking_paths`, 0.25 m grid) from the entrance's point or polygon centroid to the locker's goto point, not as the crow flies. The courier handoff point stands at the courier access point (its goto point within 0.5 m); with one access point it is pinned by rule, and the site config compiles that into the search's pin. Chargers and lockers stand within `OUTLET_CABLE_M` (10 m) of an outlet, walked on the floor from each footprint's centre. A rule whose fact a site does not give (no recipient entrance, no access point, no outlets, as on the twin today) is unknown and filters nothing.
+
+`candidate_spots(site, element)` lists, deterministically and cached, a spot every 1 m along every wall piece (`wall_pieces`) of the allowed zones, less the zones NAV@r cuts off at the wheelchair radius (`cut_off_zones`, on walls and doors alone; `cut_off=False` keeps them) and any `exclude` patterns (the twin's INFRA site config names its ramp). A pair is one spot on one piece. A spot carries its objects' poses (fronts into the room, backs at the wall gap), footprints, docks and dock goto points, the clear zone in front and the 1.5 m turning circle beyond the docks, the corridor width it leaves (the free run in front of it: rays along the normal every 0.25 m across its width, each to the first obstacle on the floor raster or out of its zone, the run more than half of the rays find, so a pillar beside it or before one edge does not fail it), and a verdict per §3 rule: `pass` or `fail` where the site has the data, `unknown` (filtering nothing) for the fact rules without their fact (`facts=`), tactile paths, exit width, dead ends, and doors or lifts on a level without any. An object whose model resolves without a bounding box (a floor marking, the twin's `link_scan`) is no obstacle; its dock is. An element model must resolve and carry a `face`.
+
+```python
+spots = {name: candidate_spots(site, name) for name in CATALOG}
+layout = Layout.of([charger_spot, bay_spot, locker_spot, loading_spot])  # layout.layout_id: a short hash of its spots
+check_layout(site, layout)          # failing rules, overlapping elements, a corridor the others narrow
+edited = apply_layout(site, layout) # insert (dock, charge power) or move each object, in memory
+path = save_layout(site, layout)    # <site key>__layout_<layout id> (a name must keep that prefix), assets hardlinked
+placed_elements(layout)             # PlacedElement(name, footprint, dock_point, blocks_floor) for the NAV@r filter
+```
+
+[`search.py`](search.py) searches the layouts (§4, §5). `Search(site, loading=(x, y))` pins the loading point (to the nearest valid loading spot) and keeps the valid spots of the other elements, less those over a `keep_out` polygon (PEDS sources and sinks) or clashing with the loading point. Its candidates are the triples of pairwise compatible spots: `check_layout` reads only a corridor window around a spot, so only near pairs are checked. A pick gets the full check, `check_layout` plus `navr_check` against a `NavrBase` of the site. Robot travel runs on the jackal's NAV@r floor at r 0.267 m (`RobotPaths`) and is weighed per job by the §8 job cycle (`TaskMix`).
+
+```python
+space = Search(site, loading=TWIN_LOADING_XY, keep_out=sources_and_sinks, mix=TaskMix(rate_per_h=R, top_ups_per_job=TAU))
+robot_only(space)                   # the valid layout with the shortest expected robot travel per job (top-up trips included)
+groups = Occupancy.from_group_cells(site_run_dir, "smu_link_full_v2", episode_s=1500)  # per walker group, site as is
+joint_exposure(space, groups, rate_per_h=R, max_travel_m=cap)  # top 10 distinct layouts by predicted conflict exposure
+guideline(space)                    # the guideline placement (a practice-based baseline)
+random_valid(space, 5, seed=0)      # the random control
+joint(space, occupancy, n=2000)     # the older fallback: pedestrians under the elements + NAV@r floor loss
+occupancy = Occupancy.from_flow_cells(benchmark_dir, "smu_link_full", episode_s=1500)  # all walkers, from the site-as-is runs
+```
+
+- **Robot travel** (`Search.travel`) weighs the path lengths per job by the §8 job cycle (`TaskMix.weights`) and adds `TaskMix.top_ups_per_job` drives from a bay slot to a charger, one way each (`Search.bay_charger`; a top-up drives to the charger once and the robot keeps it as its home): the charging trips idle robots make on standby drain, which the job cycle's charge at a job's end does not cover. The study takes the count from the task-rate run's fleet log (top-ups dispatched after the warm-up per completed job released after it); `flowedit infra layouts --top-ups`.
+- **Predicted conflict exposure** (`Search.conflict`, the joint ranking): per walker group, the seconds per hour an average member spends within `CONFLICT_BAND_M` (2 m) of a driving robot (the traffic term) or on an element's footprint, dock or approach zone (the element term). The traffic term integrates the group's walkers within the band (`Occupancy.band`, from the site-as-is runs) along the shortest paths of the job-cycle legs (`RobotPaths.integrals`, by pointer jumping over each source's shortest-path tree), weighed as `travel` (top-up drives included), driven at 0.5 m/s, times the task rate; the element term is the group's walkers on the elements (`element_people`) times 3600; both over the group's walkers present (`Search.conflict_parts`). Robots standing at a dock count only through the element term. The ranking score is the largest group's value (the worst-off group, as C_worst); every manifest row carries the per-group total (`exposure`) and traffic term (`exposure_traffic`).
+- **The joint top 10** (`joint_exposure`) are the best valid layouts by that score among those within the travel pre-filter, distinct: one enters only if, against every better-ranked one, at least one of its elements sits at least `DISTINCT_M` (5 m) from that element's spot there (by any smooth score the best layouts are otherwise 1 m shifts of one arrangement). Exact greedy over the whole ranking: every candidate within the cap is scored, and the full check runs in score order on each candidate distinct from those already in.
+- **The guideline placement** (`guideline`), a practice-based baseline (its sources are analogies: courier waiting bays and lockers, cleaning-robot docks), not held to the travel pre-filter: on the same rule-valid spots and pinned loading point, by walking distance (the catalog's distance measure), the waiting bays nearest the loading point (LTA and URA, Last-Mile Delivery Guide for Developments, 2026, p. 10), the locker nearest a recipient entrance (same guide, p. 9), the chargers nearest the bays (Restroom Association Singapore, Designing Future-Ready Restrooms, 2025, §2.4, §4.1); each the best spot by its rule compatible with those before it, then the full check, else the next spots lexicographically.
+
+[`infra.py`](infra.py) and [`infra_cli.py`](infra_cli.py) write the INFRA Stage 1 suites, seed-paired by `flowedit suite`'s stage names `<world>__s<seed>`, all launched in flatsim with `human.robots.visible: true` and `jackal[4]`. In run order:
+
+```bash
+flowedit infra reference                              # infra_h1_site: the site as is without robots, seeds 1-5
+flowedit infra premise                                # infra_h1_premise: narrowest vs widest layout, seeds 1-3, with the fleet and without robots
+flowedit infra layouts --group-occupancy <site run> --occupancy <site run> --rate R --top-ups TAU --guideline  # infra_h1: robot-only pick, joint top 10, 5 random; seeds 1-5, with and without robots
+flowedit infra evaluation --pick <infra_pick.json>    # infra_h1_eval + infra_h1_eval_site: both picks, the guideline layout and the site, seeds 11-20
+```
+
+- One task rate runs in every layout (§8): 75 % of the fleet's capacity in the premise check's wide layout (every element at the widest section). `evaluation infra premise` (kkieslich/arena-evaluation) measures it from the premise runs, busy time plus charging time per completed job, and its rate goes to `flowedit infra layouts --rate`. Without `--rate`, `premise` and `layouts` estimate it in the same layout (`search.premise_pair`) from robot travel at `--speed`, without charging or crowd, an upper bound; the manifest's `rate_from` says which. The narrow layout does not set the rate (on the twin at 0.8 ped/s it completed no job, a rate of about 0): its crowd cost and failed jobs stay in the premise comparison as layout cost, and a layout slower than the wide one may build a backlog, which the restricted mean T shows.
+
+- A site's facts come from its site config [`infra_sites/<site>.yaml`](infra_sites/smu_link_full.yaml) (`--site-config` takes another): `entrances` (name, type, `at` point or `polygon`, `recipients`, `placeholder`), the `courier_access` point, `outlets`, `exclude` and the crowd `scenario`, plus `flow_split`, the share of the inflow per group of entrance types (split evenly within a group at the crowd's total rate) for the crowd built from the entrances. It names no element. `SiteConfig.placements` is what the facts compile to for the search (the courier handoff point pinned at the access point); `Search(facts=...)` filters every element's spots by the rules, so the robot-only, joint and random picks draw from the same rule-valid spots. The twin's facts are placeholders read off the site zone map: MRT Bencoolen and the SCIS1 student and staff entrances as recipient entrances, the two route ends (Bras Basah 2, Escalator 1), the courier access point at the south end beside Bras Basah 2, no outlets, a 50 / 30 / 20 % split for MRT exits / building entrances, shops, escalators and stairs / the rest.
+- `flowedit infra crowd --name <scenario> --out <site>/scenarios` builds the study crowd from the site config (§2, §9): every entrance a PEDS source and sink; the inflow in all set by the site config's `crowd_density` (Little's law: walkers present = inflow x mean time on the site, so inflow = density x area / mean time; the twin: 0.1266 ped/m2 on the 1264 m2 band within 2.5 m of the route (about 160 walkers) over a mean time of 200 s measured at that density, 0.8 ped/s, the highest inflow its crowd sustains (the crowd model's two-way capacity in the twin's narrow passages; the study design's 0.3 ped/m2 would be 1.76 ped/s); `--density` for another density, e.g. a higher one when the premise check shows no layout effect; `--rate` sets the inflow directly; without a `crowd_density`, 1.2 ped/s, `study_mix_v2`'s) split by entrance type (`flow_split`, evenly within a group; the share of a group without an entrance spread over the others); 70/15/15 adult / wheelchair / long cane per entrance; a walker leaves by another entrance picked in proportion to its share; parcel recipients (`--visitor-rate`, 12/h) come in at a recipient entrance, use the locker and leave by it (`locker_visitors.yaml`). A point entrance gets a 4 m square cut to the floor 0.35 m from the walls. The twin runs `study_entrances`, built this way.
+- `links` are stair and escalator halves joining floor that the site's world lays out on one level, in HumanSim's teleport zone form (name, kind, destinations, entry, wait, hold, footprint, open, delay, belt; checked like a scenario's `teleport_zones`). `flowedit infra crowd` writes them into the crowd scenario as `teleport_zones` and refuses a link whose hold lies within 0.25 m of one of the floor's walls (HumanSim would refuse the whole set); every INFRA suite launches HumanSim with `zone_route_choice`, so walkers that climb take a link where that is cheaper than walking. An entrance a link replaces leaves `entrances`. The search keeps every link and an apron of `LINK_APRON_M` (1.5 m) in front of its mouth free of elements, as it keeps the PEDS sources and sinks (`keep_out`), and the crowd's entrance areas stay off them too (a walker spawned on a running belt would ride it whatever its goal). `infra_sites/smu_link_full_v2.yaml` (the corrected twin, a local world) carries the T-junction stairs and escalators this way.
+- `removed_walls` are wall loops the site's world holds for objects that are not part of the site, things the scan caught that do not normally stand there (`site_walls.py`), each by name, level, wall kind and bounding box `[x_min, y_min, x_max, y_max]`, matched within 0.05 m per side, never by index. `flowedit infra site-walls` (also `remove-walls`) takes them out of the site's world and of every layout copy beside it (`<site>__*`, or the worlds `--world` names) in place: the wall entry from `world.yaml` (one block of lines cut, every other byte kept, checked by reading the file back) and its pixels from `map/<level>.png` (occupied pixels within 1.5 pixels of the wall's path and not of another wall, set to the floor's free value; `--dry-run` reports only). The runtime renders the occupancy map, the simulators' walls and HumanSim's walls from `world.yaml`, so the object is gone for Nav2, flatsim and the crowd. The other `flowedit infra` commands refuse a site world that still holds such a wall, so a suite of the site as is and every layout copy written from it are free of it too, and the manifests record the list under `site_config.removed_walls`. `infra_sites/smu_link_full_v2.yaml` removes a temporary wet-floor sign between the robot bays and the loading point (bbox 152.03-152.53 x 16.67-17.25, `walls[8]` of the installed worlds); the pillars beside it stay. The world's scan collider and splat (Isaac only) still show the sign.
+- `added_walls` are the other way round: short walls the site's world lacks, closing a gap the scan left between two outlines where the site has no way through for anyone (name, level, kind, `path`, `closed`). `flowedit infra site-walls` appends each to the level's `walls:` in `world.yaml` (every other byte kept, checked by reading back) and marks it occupied in `map/<level>.png` (pixels within 0.75 pixels of its path, a strip no free path crosses, not even diagonally); each end must lie within 0.02 m of another wall, so the gap is closed. It closes the gap for robots and walkers alike, as every wall of `world.yaml` does; a world that already has the wall is left alone, and the other infra commands refuse a site world that lacks it. `infra_sites/smu_link_full_v2.yaml` closes the 0.32 m slot at the foot of the T-junction stairs between the outer wall (corner 131.45, 48.07) and the deck's outline (corner 131.55, 48.40), which joined the lower concourse to the corridor above the stairs; walkers change level by the stair halves in `links`, not through it.
+- `crowd_side` (right, left, none) is the side the site's crowd keeps to; every INFRA suite passes it to HumanSim as `humansim.global_planner.lane_side`. The twin keeps left, as Singapore's footpaths do (LTA Active Mobility code of conduct); HumanSim's default is right (Helbing et al. 2001; Moussaïd et al. 2009), which FLOWEDIT's generic worlds keep.
+- The joint search ranks only the layouts within 1.05 x the robot-only pick's travel per job (`search.travel_cap`); the selection runs the robot-only pick, the joint top 10 and 5 random valid layouts. Every manifest row carries its ranking score (the predicted worst-group exposure) and its exposure per group, for the score check (`evaluation infra pick`). With `--guideline` the guideline layout is saved as a copy and recorded under `guideline` in the manifest; the evaluation runs it as a third arm (`--no-guideline` leaves it out).
+- Layout copies `<site>__layout_<id>` hardlink the site's assets (the command refuses a local root on another mount) and get the crowd scenario with its `locker_visitors.yaml` merged in, the visitors' target in front of that copy's locker. `keep_out` takes the scenario's and the visitors' sources and sinks; a pinned element there is refused.
+- Layout suites ask only for the runs without robots (`references: [unhindered_peds]`). Every suite carries a `record` block (`infra.RECORD`) that keeps the engine's pedestrian tracks, the robots and the semantics and leaves out `arena_peds`, animation states, the humans' tf topic (so `hri_producer` idles in a headless run) and the pedestrians' skeleton, body, named and numbered frames on /tf: on the twin that is about 7 % of a full recording.
+- The contest scales every battery to 36 Wh and draws the start charge per robot and seed from 60-100 % (`--soc-min`, `--soc-max`); the chargers charge at 290 W (36 Wh over 290 W is about 7.5 min; net of a parked jackal's 42.2 W standby draw, 0 to 90 % takes about 7.8 min). With 36 Wh the longest job of either premise layout on the twin, 28.6 Wh by the fleet's own energy estimate, fits in the 80 % between the fleet's 90 % `charge_until` and its 10 % reserve (28.6 / 0.8 = 35.7 Wh), so a robot charged to `charge_until` can take any job and keep the reserve.
+- Each layout suite writes `<suite>.layouts.json` beside it; `evaluation infra table|premise|pick|compare` (kkieslich/arena-evaluation) reads it with the processed runs.
+- Lanes resolve worlds from the local assets root, the package worlds and the buckets, not from a dev tree's untracked `assets/worlds`: put the site into the local assets root too (`cp -al <site dir> $ARENA_ASSETS_DIR_LOCAL/worlds/`), where the layout copies go, and export the same `ARENA_ASSETS_DIR_LOCAL` in every lane.
+
+### Demand at the recipient entrances
+
+`demand.py` searches layouts for deliveries addressed to recipient entrances (study design Part A). The first study's search (`search.py`, `flowedit infra layouts`) is unchanged beside it.
+
+```
+flowedit infra search --reach 30 --margins 1.05,1.10,1.25 --rate R --charging-trips TAU --group-occupancy <site run> --out report.json
+```
+
+- **Recipient entrances** by rule (`recipient_entrances`): every entrance of type building or lift, each with the same demand.
+- **Two distances** from a recipient entrance to a locker spot (`Walks`): as people walk (the walking floor plus the site config's `links`, a stair or escalator half leading to its destinations) and step-free (the floor alone, for wheelchair users). The walking floor's raster takes moves of up to 3 by 2 cells (`WALK_NEIGHBOURHOOD` 32, each only where its straight line crosses floor), so on open floor a long walk is at most 1.3 % longer than the straight line and one of 16 m at most 2.1 % (the 8-connected grid: 8.2 %; on the twin its walks from the recipient entrances to locker spots within 35 m were 4.2 % longer on the median, 7.9 % at most). Metres are the shortest walk; seconds the quickest at the group's speed, a link in HumanSim's traverse time from the site config's own fields (each half from its entry to its hold at belt speed, or on a still stair at the walker's speed up to 0.7 m/s, plus the boarding half's `delay`).
+- **Lockers.** A locker spot is a candidate when the catalog's rules hold (`locker_element`: the locker's rules without the first study's recipient distance rule; by default also without the outlet cable rule, `--outlet-rule` applies it) and it lies within the reach of at least one recipient entrance as people walk. A layout has the fewest lockers that give every recipient entrance one within the reach (`EntranceSearch.cover`); each entrance is served by the layout's locker nearest to it as people walk. A reach no spot meets for some entrance has no valid layout, and the report says which entrances.
+- **Robot travel per job** (`Demand`): the loading point to locker leg of the entrance the job is addressed to, the drives from and back to the robot's waiting spot (a bay slot for `--bay-share` of the robots, a charger for the others), and `--charging-trips` drives between a bay slot and a charger per job. Robot paths keep the first study's 8-connected 0.05 m raster.
+- **Predicted pedestrian cost per walker group**, kept in parts: the time within the conflict band of a driving robot over those legs, the time on an element's floor (both the first study's exposure terms), and the walk to the locker (mean and longest over the recipient entrances, as the group walks).
+- **The picks.** `travel_optimal`: least robot travel per job over all valid layouts. `pedestrian_aware`: among the valid layouts within a travel margin of it, the least cost of the worst-off group (`Cost`). `--rank step-free` (rule S, the default) puts first the layouts that serve every recipient entrance from within the reach step-free too, where the margin holds one, and ranks them (else all layouts of the margin) by `pooled`: time near robots times `--delay-per-exposure` (the calibration converted to the band), time on element floor times `--delay-per-element` (the calibration itself: that time is the same in every band), the recipients' walk to the locker and back as time. `exposure` and `walk` rank by those parts alone. A margin without a valid layout of finite cost reports no pick and why. `practice_based`: waiting bays nearest the loading point, the lockers with the least mean walk from the entrances they serve, chargers nearest the bays.
+- **Which group is worst off** follows from the inputs, not the code: with the default weights the wheelchair group's calibration factor (2.19 against 1.22 and 1.29) makes it the worst-off group in every layout on the twin.
+- **Exact without listing the layouts.** Every score is a sum over the lockers: a term of the charger and bay spots plus, per locker, terms of its spot with the bay spot, the charger spot and the entrances it serves. The lockers split the entrances into groups, one per locker; for each way to split them, one bay spot and all charger spots at once, the least value per locker group bounds every layout from below. Only charger and bay spots whose bound beats the best layout so far are solved exactly, over the locker spots that can still beat it. Every pick passes the full check (`check_layout` and the NAV@r filter). Spots that fail it alone, and near pairs (floors within each other's reach box) that fail it together, are left out beforehand, so the search is exact over the layouts without them; since NAV@r's floor loss is not monotone, a third element could make such a layout pass, and pairs further apart or triples that fail only together are left to the full check of each candidate.
+- The command prints the layouts per reach and writes them as a report (`--out`); it writes no world and no suite. Each layout record (`EntranceSearch.record`) holds every element's objects with name, model, pose and dock point (`spots`), and which recipient entrances each locker serves (`serves`, `walk_by_entrance`).
+
+### Running the searched layouts
+
+`recipients.py` turns layouts of a search report into world copies with their parcel recipients, and `flowedit infra evaluation --report` writes their suites. Without `--report` the command is the first study's evaluation, unchanged.
+
+```
+flowedit infra evaluation --report report.json --layouts travel_optimal=<id>,practice_based=<id> --seeds 51-70 --without-robots-seeds 51-55 --rate R [--no-outlet-rule] [--seed-part h1=51-55 ...]
+```
+
+- **Layout into world.** A layout record (`EntranceSearch.record`) is read back on the search space the report's search ran on (`layout_of`: each spot by its id, so pass the same site, site config, scenario, loading point and locker rules) and saved as a copy `<site>__layout_<id>` with every locker, the charger pair, the bay pair and the loading point. Chargers and lockers are obstacles for walkers and robots by their models' boxes, as in the first study; bays and the loading point are floor markings. The chargers charge with `--charge-power` (default 109.7 W: 270 Wh in 4 h on top of a parked jackal's standby draw).
+- **Jobs of a seed** (`jobs`): drawn from the seed alone, a Poisson stream at `--rate` jobs per hour, a share `--pickup-share` of pickups, each addressed to a recipient entrance with equal weights. The same in every layout.
+- **Recipients** (`recipients`): each delivery (`--recipient-kinds`) brings one recipient, who comes in at the job's recipient entrance `--recipient-offset` seconds after the job's release, walks to the locker that serves the entrance, stands there (30 s on average, the first study's visitors' time) and walks back. The schedule follows the job list, not what a fleet delivered, so a layout's run with the fleet and its run without robots have the same recipients; the site as is has none. The walker group is drawn with the crowd's mix (`--recipient-mix` overrides it); a wheelchair user's type extends the crowd's wheelchair type and so takes step-free floor only. Recipients exist only in a layout's runs, so what they do to the other walkers (standing and queueing at a locker, walking against the flow) is part of the layout's obstruction effect, the layout without robots against the site as is; it grows with the job rate.
+- **One crowd scenario per seed** in each copy, `<scenario>__s<seed>` (`recipient_crowd`): the site's scenario, a target in front of every locker, and one source per recipient that releases one walker at its time, named `recipient_<job>__<entrance>_locker_<group>`. The recorded tracks carry the source name; the manifest lists the names as `visitor_sources`, with the jobs and recipients per seed.
+- **Suites**: `<name>_site` (the site as is), `<name>_without` (each layout without robots as a crowd-only stage on `--without-robots-seeds`), run with the crowd-only contestant; `--seed-part` also writes the suites of a part of the seeds (one lane of one machine). `--arms site,without,fleet` adds `<name>`: each layout with the fleet. The manifest names the seeds of the crowd-only stages `crowd_only_seeds`; it also names them `without_robots_seeds` only when the fleet suite is written: with that key `evaluation infra` asks every row for a run with the fleet, without it the site as is and the layout without robots give the obstruction effect per layout and seed. `--layouts` takes `<role>=<id>`, one role per layout (the manifest's `picks`).
+- **The fleet** (`entrance_fleet.py`, `--arms fleet`): each stage carries the seed's job list (`task.fleet.jobs`), every job with the locker that serves its recipient entrance in the layout: a delivery from the loading point to that locker, a pickup back the same way, the same jobs at the same release times in every layout. The stage runs the scenario of the seed's recipients, the one its run without robots runs. Rules (`fleet_config`): charging by need (a robot goes to charge only when its next job would leave it under the reserve by the job's energy estimate; no threshold, no top-ups of idle robots), the nearest free charger, and a jammed charging trip goes on to its charger instead of resetting the robot to a far waiting spot. Battery (`contest`): no capacity override, each robot its model's own battery (the jackal's 270 Wh); the start charge is drawn from `--charge-states` (one state per episode seed, each robot its place in it), else `--start-charge` for every robot (100 %). The first study's suites set none of this and run as before.
+- **Fleet-only run and charge states**: `--fleet-only --charge-log DIR` writes the fleet stages on a scenario without walkers (`<scenario>__fleet_only`) and has the fleet log the robots' charge and homes to `DIR/<stage>.csv`; `flowedit infra charge-states --log <csv> ... --from-s S --every-s S --out states.json` cuts the logs after a run-in, thins them and writes the charge states in the order of the robots' start spots. A capacity run of one layout is `--arms fleet` at each job rate, with a `--tag` and an `--out` per rate (the recipients follow the jobs).
+- **Nothing written is replaced**: every suite and the manifest are worked out before anything is written, and one that exists with other content stops the command there; a copy or a scenario that exists is kept when it is what the command would write and refused otherwise (`--tag` names the scenarios of other recipient settings). Each copy's scenario is checked as the runtime checks it at an episode's start; a copy that fails is taken away again.
+
+## Map baselines
+
+`flowedit forecast baseline` builds the forecaster's map baselines on a split's recorded runs. Each one predicts the post-edit map on the base world's flow grid and is scored by the same pooled JSD, beside a floor. Stale and transplanted are in `forecast score`; room-purpose crowds are runs of their own.
+
+**Fair seeds.** A baseline built from recorded runs never reads the crowd draws it is scored on. Held-out edits run only at their partition's seeds, so a baseline that reads runs of the edited world or of a control paired with it uses **leave one seed out**:
+- it reads the runs at one seed s, and its truth is the pooled map of the partition's other seeds;
+- a score is the mean over the folds s;
+- its floor is the **one-seed floor**: the edited world's own run at s against the same truth, what a perfect estimate of the flow behind one run still misses;
+- beside it, **stale@s** is the base world's run at s, the same crowd draw as the baseline's run, and **stale (outside)** the base world's pooled map at every seed outside the truth (for the pilot's held-out edits seeds 1–5 and s), the runs the pre-edit CLiFF-map is built from.
+
+**Tuning.** Every setting a baseline fits is chosen by one rule, on the train partition alone, before any held-out score:
+- **Validation split** (`baselines.validation_split`): the train partition's edit chains (an edit with its geometry-only controls) fall in two groups, function-carrying and other. 20 % of each group, rounded up, validate, drawn with `random.Random(0)`; one chain of a group always stays in training, and so do the base worlds.
+- **Score:** the pooled JSD of the baseline's maps against the validation worlds' pooled runs. For the online CLiFF-maps it is the mean of the tracks-seen curve over 1, 4 and 16 tracks on the validation worlds, leave one seed out over the train seeds, 4 orders.
+- **Grids** (lowest score wins, ties keep the first value):
+
+| Baseline | Grid |
+|---|---|
+| online CLiFF-maps, per variant | λ 0.5 / 0.8 / 0.9 / 0.95 / 0.99, then the location radius 0.354 / 0.5 / 0.75 m, then the mean-shift bandwidth (0.25 rad, 0.15 m/s) / (0.5, 0.3) / (1.0, 0.6), one pass in that order |
+| geometry-only prior | kernel width 0.25 / 0.5 / 1.0 m × heading spread 0.15 / 0.3 / 0.6 rad |
+| Deep Crowd-Flow | Adam learning rate 1e-4 / 3e-4 / 1e-3 × 1k / 2k / 4k / 8k / 16k / 37.5k updates. Trained on the training chains, then retrained on the whole train partition at the chosen pair |
+
+Each command writes the chosen values and the scores of every grid point.
+
+| Baseline | Verb | Prediction | Scored |
+|---|---|---|---|
+| online CLiFF-maps | `cliff` | an online CLiFF-map fed the post-edit tracks one at a time, from an empty map or from the pre-edit map | error against tracks seen, leave one seed out |
+| geometry-only prior | `geometry` | flow along the shortest paths between every ordered pair of entrances of the edited floor, no demand | map file for `forecast score`; with `--cells` its pooled JSD beside the across-seed floor, and leave one seed out |
+| geometry-only simulation | `controls` | a geometry-only control's recorded run at seed s as the map of its function-carrying edit | leave one seed out |
+| Deep Crowd-Flow | `deepflow train`, `deepflow predict` | Sohn et al.'s CAGE input and modified SegNet, retrained on the train partition's worlds (their runs pooled), goals at the demand objects | map file for `forecast score`; with `--cells` as `geometry` |
+
+**Online CLiFF-maps** ([`cliff.py`](forecast/cliff.py), Zhu et al., ICRA 2025). Each 0.5 m cell keeps a semi-wrapped Gaussian mixture over direction and speed, fitted to the observations within 0.5 m of its centre that move (at least 0.2 m/s). A track gives 2 observations per second: the paper's 1 Hz on 1 m cells, scaled to the 0.5 m grid. Each track is one iteration of the paper's Algorithm 1:
+- a cell without a model builds one: mean shift (Gaussian kernel 0.5 rad × 0.3 m/s) for the modes, then EM, both to precision 1e-5 within 100 iterations;
+- a cell with a model takes a stochastic EM step of size γ = N_k / N_ind, where N_ind = λ N_ind + N_k is the decayed count of its observations;
+- a batch whose mean mixture density is under η = 0.1 adds a mixture built from the batch alone: the new components weigh γ and the old ones 1 − γ.
+
+The paper fixes η = 0.1 and the precision and iteration cap. It leaves open the location radius, the mean-shift kernel and λ, so they follow the tuning rule (the defaults above are the grids' middle values).
+
+Responsibilities run over components and winding numbers, so a flow across the wrap point stays one mode. A cell's map is its decayed observation count:
+- 1 − p of it stands, where p is the motion ratio (the moving share of the count);
+- p of it is spread over the 9 bins by integrating the mixture: a heading bin over its 45° sector at speed at least 0.2 m/s, the standing bin over speed under 0.2 m/s.
+
+The curve follows the learned forecaster's tracks-seen protocol: the same folds, track counts and track orders (`random.Random(0)` per world, the sorted track keys shuffled once per order, 20 orders). λ, the location radius and the bandwidth follow the tuning rule per variant, unless `--decay` or `--params` sets them. The **pre-edit** variant starts from the base world's map, built in one iteration from its runs at every seed outside the fold's truth; for the pilot's held-out edits these are seeds 1–5 and s. At zero tracks the empty map has no forecast. A pilot run holds 12 to 14 pedestrians, so every count from 16 up is all of them. On the pilot, a held-out world's curve takes about 3 minutes (both variants, 20 orders, 4 threads).
+
+**Geometry-only prior** ([`baselines.py`](forecast/baselines.py)). The entrances are the floor's exterior doors (doors only one room contains, the reader's entrances). A floor with fewer than two takes every open door as an entrance: hospital_1 and office_1 have one exterior door each. Paths run on the forecaster's free space of the edited world, with locked doors closed. Walking time goes to each step's heading, spread over the bins and blurred: by the tuned spreads with `--cells`, else by the demand model's defaults (0.3 rad, 0.5 m). It is kept to the reachable cells of the rooms, with nothing standing.
+
+**Deep Crowd-Flow** ([`deepflow.py`](forecast/deepflow.py), Sohn et al., ECCV 2020; reimplemented from the paper, because the authors' code has no license). The CAGE channels on the 0.5 m grid (one pedestrian's diameter, as the paper's cell is one agent's) are:
+- E: the cells no one can stand in;
+- A: the density of the base world's expected crowd at the 16 forecaster crowd seeds;
+- G: the normalized path distance to the nearest demand object's front;
+- Cx, Cy: the capacities.
+
+A grid larger than 112 cells per side (office_1 is 120 wide) is compressed by merging whole adjacent rows or columns, identical ones first, a special case of CAGE's region merge.
+
+The network is the paper's modified SegNet with a sigmoid output, trained on the mean absolute error. The paper predicts one channel, the normalized log of how often agents appear in a cell. Here it predicts the same quantity per heading bin and standing (9 channels), so the forecast has headings. Three things differ from the paper, all because a split has a few dozen training worlds where the paper had 12k scenarios:
+- **samples:** a sample is one training world with its runs pooled over the partition's seeds, the aggregate flow of a longer simulation. Every seed of a world has the same input, so on single runs the mean absolute error asks for the per-cell median, which is 0 almost everywhere in a sparse 300 s run, and the network learns to predict nothing;
+- **Adam, not SGD:** with the paper's SGD (0.01, momentum 0.9) the sigmoid saturates near 0 on the mostly empty targets and stays there. The paper reports trying adaptive learning rates; `--optimizer sgd` trains its way;
+- **tuned learning rate and length:** the paper picks its settings on a 10 % validation split. Here the tuning rule picks them: `deepflow tune` scores the validation worlds at each learning rate and length (up to the paper's 37,500 updates), and `deepflow train --tuned` trains on the whole train partition at the best pair.
+
+Train and tune it on a GPU: `arena-gpu claim 16 --for 3h -- <command>`, one claim per learning rate for `tune`.
+
+```bash
+S=splits/peds_pilot.yaml; R=<benchmark dir>
+flowedit forecast baseline cliff $S --benchmark $R --out cliff.yaml --png cliff.png
+flowedit forecast baseline controls $S --cells $R/flow_cells.parquet --out controls.yaml
+flowedit forecast baseline geometry $S --out geometry.parquet --cells $R/flow_cells.parquet --report geometry.yaml --plots geometry/
+flowedit forecast baseline deepflow tune $S --cells $R/flow_cells.parquet --lr 1e-3 --out tune_1e-3.yaml   # one per learning rate, each in a GPU claim
+flowedit forecast baseline deepflow train $S --cells $R/flow_cells.parquet --tuned tune_1e-4.yaml --tuned tune_3e-4.yaml --tuned tune_1e-3.yaml --out deepflow.pt
+flowedit forecast baseline deepflow predict $S --model deepflow.pt --out deepflow.parquet --cells $R/flow_cells.parquet --report deepflow.yaml
+```
+
+`figure` draws curve files of `baseline cliff` and `forecast curve` in one figure per partition: the online CLiFF-maps beside the forecaster's Dirichlet update, with the one-seed floor and the stale lines. The files must share the track counts and the scored seeds, so they are the same leave-one-seed-out folds:
+
+```bash
+flowedit forecast baseline figure curve.yaml cliff.yaml --png tracks_seen.png
+```
+
+A map file (`geometry`, `deepflow predict`) has one map per world in the columns `flow_world`, `x`, `y`, `heading_rad` (null for standing) and `ped_seconds`, on the world's base grid. It holds each edit's base world too, so `forecast score` can put the predicted change beside the recorded one.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `build.py` | world + scenario to the graph |
+| `interactions.py` | how an object is used, from agent type steps and HumanSim's interaction registry |
+| `read.py` | graph + settings + seed to a scenario |
+| `settings.py` | crowd settings and their defaults |
+| `edit.py` | edit operations, sites, saving edited worlds |
+| `generate.py` | sampling edits from a seed, geometry-only controls, the manifest |
+| `place.py` | INFRA elements, their candidate spots and §3 verdicts, layouts |
+| `search.py` | INFRA layout searches: robot-only (with top-up trips), joint (predicted conflict exposure; the older occupancy fallback), guideline, random valid |
+| `demand.py` | INFRA layout searches for demand at the recipient entrances: several lockers by reach, walk to the locker, travel-optimal, pedestrian-aware and practice-based picks |
+| `infra.py`, `infra_cli.py` | the INFRA Stage 1 suites (site as is, premise check, selection, evaluation), the site config, locker visitors |
+| `infra_sites/` | INFRA site configs: a site's facts (entrances, courier access point, outlets) and its crowd |
+| `run.py` | one edit, settings and seed to a recorded run and its tracks |
+| `split.py` | split files and the sweep over them |
+| `suite.py` | a split as a seed-paired benchmark suite |
+| `splits/` | committed splits, and their test crowds' settings in `splits/crowds/` |
+| `forecast/` | the flow forecasters: `maps.py` (grid, track binning, JSD), `scene.py` (a site as the forecasters read it), `raster.py` (graph and geometry on the grid), `net.py` (GNN and U-Net), `learn.py` (training, forecasts), `selection.py` (which network is the forecaster), `model.py` (the demand model), `evaluate.py` (its fit, recorded maps, transplanting), `validity.py` (scores, baselines, floor, change, tracks seen), `plot.py`, `cli.py` (`flowedit forecast`) |
+| `forecast/` (baselines) | `cliff.py` (online CLiFF-maps), `baselines.py` (track store, leave one seed out, tracks-seen curve, geometry-only prior and simulation, map files), `deepflow.py` (Deep Crowd-Flow), `baseline_cli.py` (`flowedit forecast baseline`) |
+| `cli.py` | `flowedit build`, `flowedit edit`, `flowedit generate`, `flowedit read`, `flowedit run`, `flowedit sweep`, `flowedit suite`, `flowedit forecast`, `flowedit infra` |
