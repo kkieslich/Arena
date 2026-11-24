@@ -249,7 +249,7 @@ words a goto as walking directions through the world's doors and openings.
 | `charge_below`, `charge_until` | 30, 100 | battery percent that sends a free robot to a charger, and that frees it again; `charge_below <= charge_until` |
 | `top_up` | true | opportunistic charging: a free robot under `charge_until` tops up at a charger whose holder is away on a job (see **Top-ups** below); `false` turns it off |
 | `reserve` | 10 | battery percent a job must leave by its energy estimate, else the robot charges first |
-| `wh_per_m` | 0.046 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
+| `wh_per_m` | 0.026 | Wh per metre driven, standby while driving included; 0 derives it from the robot's power profile |
 | `detour` | 1.2 | route length over straight-line distance, for the energy estimate |
 | `jam_window_s`, `jam_progress_m`, `jam_goal_m` | 60, 0.5, 1 | the jam rule (INFRA §8): a robot on a job leg or a charging trip that moves less than `jam_progress_m` within `jam_window_s`, further than `jam_goal_m` from its target, is jammed; `jam_window_s: 0` turns it off |
 | `jam_home` | true | the jam rule also watches a robot on its way home (see **Jams** below); `false` leaves trips home unwatched |
@@ -273,8 +273,9 @@ words a goto as walking directions through the world's doors and openings.
   `wh_per_m` (so the reserve is what is left once the robot could be at a charger), plus the robot's standby power
   (the power profile's `static_power_w`) over `load_s + unload_s`. When that would leave less than `reserve` percent
   of the robot's battery capacity (`task.episode.battery.capacity_wh`, else its power.yaml), the robot joins the
-  charger queue instead, unless it is at `charge_until` already. The default 0.046 Wh/m is the jackal's 42.2 W
-  standby plus 50 W per m/s and 17 W per rad/s at 0.4 m/s and 0.2 rad/s; `wh_per_m: 0` computes the same from each
+  charger queue instead, unless it is at `charge_until` already. The default 0.026 Wh/m is the jackal's 42.2 W
+  standby plus 50 W per m/s and 17 W per rad/s at 1.1 m/s and 0.4 rad/s, the jackals' mean speed and turn rate while
+  driving in twin recordings with the crowd (`DRIVE_SPEED_MPS`, `DRIVE_TURN_RADPS`); `wh_per_m: 0` computes the same from each
   robot's power profile. The default `detour` 1.2 is about the 90th percentile of geodesic over straight-line distance
   on the `smu_link_full` map (mean 1.09, 0.25 m grid, 0.3 m clearance).
 - **Ends.** A leg that ends failed fails its job; a leg driving longer than its timeout, or a job whose robot is

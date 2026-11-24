@@ -1027,7 +1027,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     searched.add_argument("--loading", type=_point, default=None, help="x,y of the loading point, snapped to the nearest valid spot (default the site config's pin)")
     searched.add_argument("--pin", type=_pin, action="append", default=None, help="pin a searched element, e.g. locker=150.1,160.2 (over the site config); repeatable")
     searched.add_argument("--rate", type=float, default=None, help="jobs per hour in every layout (the premise check's measured rate, 75 %% of the fleet's capacity in the wide premise layout; default: the same share of that layout's capacity estimated at --speed without charging or crowd, an upper bound)")
-    searched.add_argument("--speed", type=float, default=IN.SPEED_MPS, help=f"robot speed for the rate estimate, m/s (default {IN.SPEED_MPS:g}, the jackal's planner limit)")
+    searched.add_argument("--speed", type=float, default=IN.SPEED_MPS, help=f"robot speed for the rate estimate, m/s (default {IN.SPEED_MPS:g}, the jackal's measured mean speed on open floor)")
     searched.add_argument("--pickup-share", type=float, default=IN.PICKUP_SHARE, help=f"share of pickups (default {IN.PICKUP_SHARE:g})")
     searched.add_argument("--charge-below", type=float, default=IN.CHARGE_BELOW, help=f"battery percent that sends a free robot to charge (default {IN.CHARGE_BELOW:g})")
     searched.add_argument("--charge-until", type=float, default=IN.CHARGE_UNTIL, help=f"battery percent that frees a charging robot (default {IN.CHARGE_UNTIL:g})")

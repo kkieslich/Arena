@@ -23,7 +23,7 @@ class FleetParams(ParamGroup):
     CHARGE_BELOW = Param[float]("charge_below", 30.0, "Battery percent under which a free robot goes to a charger instead of taking a job.", constraint=Range(0.0, 100.0))
     CHARGE_UNTIL = Param[float]("charge_until", 100.0, "Battery percent at which a charging robot is free again, at least charge_below; with top_up, a free robot under it takes a charger whose holder is away.", constraint=Range(0.0, 100.0))
     RESERVE = Param[float]("reserve", 10.0, "Battery percent a job must leave by its energy estimate, else the robot charges first.", constraint=Range(0.0, 100.0))
-    WH_PER_M = Param[float]("wh_per_m", 0.046, "Wh a robot uses per metre driven, standby while driving included, for the job energy estimate; 0 derives it from the robot's power profile at 0.4 m/s and 0.2 rad/s.", constraint=Range(0.0, 10.0))
+    WH_PER_M = Param[float]("wh_per_m", 0.026, "Wh a robot uses per metre driven, standby while driving included, for the job energy estimate; 0 derives it from the robot's power profile at 1.1 m/s and 0.4 rad/s (the jackal's measured mean while driving).", constraint=Range(0.0, 10.0))
     DETOUR = Param[float]("detour", 1.2, "Route length over straight-line distance assumed for the job energy estimate.", constraint=Range(1.0, 10.0))
     JOB_TIMEOUT = Param[float](
         "job_timeout",
@@ -84,7 +84,11 @@ class FleetParams(ParamGroup):
     LEG_TIMEOUT_CAP = Param[float](
         "leg_timeout_cap", 2.0, "With leg_timeout_moving false: a leg that has driven this many times its timeout ends (abandoned, reason timeout) whatever the robot does, so a robot that keeps moving and never arrives cannot hold its dock for good; 0 for no cap.", constraint=Range(0.0, 100.0)
     )
-    KEEP_CROWD_OFF = Param[bool]("keep_crowd_off", True, "Walkers route round the robots' parking spots: the dock of each robot's home and of every charger is walled off for the crowd simulator alone (the robots' map and planners stay as they are), so a walker never walks into a parking spot or stops at a robot parked there. false: the crowd treats them as free floor.")
+    KEEP_CROWD_OFF = Param[bool](
+        "keep_crowd_off",
+        True,
+        "Walkers route round the robots' parking spots: the dock of each robot's home and of every charger is walled off for the crowd simulator alone (the robots' map and planners stay as they are), so a walker never walks into a parking spot or stops at a robot parked there. false: the crowd treats them as free floor.",
+    )
     JOB_TIMEOUT_PER_M = Param[float]("job_timeout_per_m", 5.0, "Seconds the timeout grows by per metre of the route estimate (straight line times detour): from where a job leg starts to its dock, to the charger for a charging trip.", constraint=Range(0.0, 3600.0))
 
 

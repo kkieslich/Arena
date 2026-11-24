@@ -100,9 +100,12 @@ UNLOAD_S = 10.0
 #: left behind can otherwise close a passage for every later goal
 PLANNER = {"driver": "nav2", "local_planner": "dwb", "inter_planner": "navigate_w_replanning_time_clear"}
 FLEET_CONTESTANT = "fleet_dwb"
-#: The jackal's planner speed limit (`velocity_limits` in its caps/mobile.yaml, Nav2 DWB's `max_vel_x`), for the rate
-#: estimate: an upper bound, since the crowd slows the robots
-SPEED_MPS = 0.5
+#: The jackal's mean driving speed on open floor, for the rate estimate: moving time only (over 0.1 m/s), no walker within
+#: 3 m, from the ground-truth poses (tf_gt, 1 s steps) of the four jackals in three twin recordings on the upstream-synced
+#: stack (1.50 m/s over 288 s). The robots cruise at about 1.65 m/s, the speed Nav2 DWB commands, below the 2.0 m/s
+#: velocity limit of caps/mobile.yaml. An upper bound, since the crowd slows the robots: 1.14 m/s over all moving time,
+#: 0.84 m/s with three or more walkers within 3 m
+SPEED_MPS = 1.5
 #: The share of the fleet's capacity in the wide premise layout the rate asks for (§8: near 75 %)
 UTILISATION = 0.75
 #: The files a layout suite's writer leaves in the suite's bundle: the layouts' manifest (`evaluation infra` reads it

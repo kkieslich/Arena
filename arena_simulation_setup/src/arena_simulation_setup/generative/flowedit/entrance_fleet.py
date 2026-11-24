@@ -44,8 +44,9 @@ CHARGE_LOG_S = 60.0
 #: The charging rules of the entrance fleet (FLEET_DECISIONS 1, 1a). Charge by need: a robot charges when its next job
 #: would leave it under RESERVE % by the job's energy estimate, only the fullest of the free robots for a job none can
 #: take. Plus a floor for robots that stand: a free robot at or under IDLE_FLOOR % goes to charge. 17 % = the 10 %
-#: reserve + the longest trip to a charger on the twin: 313 m x 1.2 (detour) x 0.045 Wh/m (the fleet's energy per metre
-#: at 0.4 m/s) = 17 Wh = 6.3 % of 270 Wh. A charge goes to CHARGE_UNTIL % without interruption; a robot that starts on
+#: reserve + the longest trip to a charger on the twin at 0.045 Wh/m: 313 m x 1.2 (detour) x 0.045 Wh/m = 17 Wh = 6.3 % of
+#: 270 Wh; at the fleet's energy per metre at the jackal's measured driving speed (0.026 Wh/m, task_generator
+#: `wh_per_m`) the trip takes 9.8 Wh = 3.6 %, so the floor keeps a margin. A charge goes to CHARGE_UNTIL % without interruption; a robot that starts on
 #: its charger under it charges first; a robot at 0 % stops for the episode
 RESERVE = 10.0
 IDLE_FLOOR = 17.0
