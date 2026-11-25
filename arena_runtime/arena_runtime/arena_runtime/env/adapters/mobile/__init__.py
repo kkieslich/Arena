@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import TYPE_CHECKING, ClassVar
 
 import geometry_msgs.msg
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 _TRAIL_STEP = 0.05
 _TRAIL_POINTS = 2000
 _TRAIL_QOS = rclpy.qos.QoSProfile(depth=1, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
+#: wall seconds between two sends of a grown trail; a viz topic nothing records, a 2000-pose Path costs ~8 ms to send
+_TRAIL_PERIOD_S = 0.5
 
 
 class MobileAdapter(Adapter):
@@ -34,6 +37,9 @@ class MobileAdapter(Adapter):
         self._trail = nav_msgs.msg.Path()
         self._trail.header.frame_id = "map"
         self._trail_start = self.rm.start_pos
+        self._trail_dirty = False
+        self._trail_sent_at = -math.inf
+        self._trail_sent_to = 0
         self._trail_pub = self.rm.node.create_publisher(nav_msgs.msg.Path, str(self.rm.namespace("trail")), _TRAIL_QOS)
         self._trail_sub = self.rm.node.create_subscription(nav_msgs.msg.Odometry, str(self.rm.namespace("odom")), self._extend_trail, best_effort(1))
         self.rm.watch(self._restart_trail)
@@ -95,21 +101,30 @@ class MobileAdapter(Adapter):
         ),
     )
 
-    async def _extend_trail(self, msg: nav_msgs.msg.Odometry) -> None:
+    def _extend_trail(self, msg: nav_msgs.msg.Odometry) -> None:
         del msg
         pose = self.rm.pose
         if pose is None:
             return
         poses = self._trail.poses
         assert isinstance(poses, list)
-        if poses and math.hypot(pose.position.x - poses[-1].pose.position.x, pose.position.y - poses[-1].pose.position.y) < _TRAIL_STEP:
+        if not poses or math.hypot(pose.position.x - poses[-1].pose.position.x, pose.position.y - poses[-1].pose.position.y) >= _TRAIL_STEP:
+            point = geometry_msgs.msg.PoseStamped()
+            point.header.frame_id = "map"
+            point.pose = pose.to_msg()
+            poses.append(point)
+            del poses[:-_TRAIL_POINTS]
+            self._trail_dirty = True
+        self._send_trail()
+
+    def _send_trail(self) -> None:
+        """Send the trail only while someone subscribes: at once to a new subscriber, else a grown trail at most every _TRAIL_PERIOD_S."""
+        subscribers = self._trail_pub.get_subscription_count()
+        if subscribers == 0:
+            self._trail_sent_to = 0
             return
-        point = geometry_msgs.msg.PoseStamped()
-        point.header.frame_id = "map"
-        point.pose = pose.to_msg()
-        poses.append(point)
-        del poses[:-_TRAIL_POINTS]
-        self._publish_trail()
+        if subscribers > self._trail_sent_to or (self._trail_dirty and time.monotonic() - self._trail_sent_at >= _TRAIL_PERIOD_S):
+            self._publish_trail()
 
     def _restart_trail(self, robot: RobotManager) -> None:
         if robot.start_pos is self._trail_start:
@@ -121,6 +136,9 @@ class MobileAdapter(Adapter):
     def _publish_trail(self) -> None:
         self._trail.header.stamp = self.rm.node.sim_time.to_msg()
         self._trail_pub.publish(self._trail)
+        self._trail_dirty = False
+        self._trail_sent_at = time.monotonic()
+        self._trail_sent_to = self._trail_pub.get_subscription_count()
 
     async def teardown(self) -> None:
         self.rm.node.destroy_subscription(self._trail_sub)
