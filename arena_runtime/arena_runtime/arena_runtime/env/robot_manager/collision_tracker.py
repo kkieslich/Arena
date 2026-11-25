@@ -101,7 +101,8 @@ _ROSTER_INDEXES = _RosterIndexes()
 
 
 class CollisionTrackerNode(TimeNode):
-    """Separate Node, same process, same executor as the env node.
+    """Separate Node, same process as the env node, spun by the env's side executor (its own thread, see `SideExecutor`)
+    so a tick does not wait behind the env executor's queue.
 
     Reads RobotManager.pose + EnvironmentManager.collision_grid. The footprint
     defines a collision: it feeds `collision_events` and the robot manager's
@@ -168,6 +169,7 @@ class CollisionTrackerNode(TimeNode):
         self._sub_reset_start = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_start')), self._on_reset_start, 1)
         self._sub_reset_end = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_end')), self._on_reset_end, 1)
         self._timer = self.create_timer(1.0 / rate_hz, self._tick)
+        self._shut_down = False
 
     def _on_peds(self, msg: arena_people_msgs.msg.Pedestrians):
         self._peds_msg = msg
@@ -261,7 +263,7 @@ class CollisionTrackerNode(TimeNode):
         self._pub_events.publish(evmsg)
 
         if events:
-            self._rm.report_collision()
+            self._report_collision()
 
     def _markers(self, footprint: shapely.Polygon, events: list[arena_robots_msgs.msg.CollisionEvent], peds: PedestrianIndex) -> viz.MarkerArray:
         """The robot footprint and the held devices on the ground, red while touched, and a red column at each contact."""
@@ -312,6 +314,17 @@ class CollisionTrackerNode(TimeNode):
         """The index of the latest roster, built once per roster for every tracker of the env."""
         return _ROSTER_INDEXES.of(self._peds_msg, self._default_peds_radius)
 
+    def _report_collision(self) -> None:
+        """Hand the collision to the robot manager on the env's event loop, where the episode it may fail lives."""
+        loop = getattr(self._rm.node, "event_loop", None)
+        if loop is None or loop.is_closed():
+            self._rm.report_collision()
+            return
+        loop.call_soon_threadsafe(self._rm.report_collision)
+
     def shutdown(self):
+        if self._shut_down:
+            return
+        self._shut_down = True
         self._unsubscribe_peds()
         self.destroy_node()

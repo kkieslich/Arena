@@ -7,12 +7,15 @@ import re
 from typing import TYPE_CHECKING
 
 import attrs
+from arena_rclpy_mixins.Async import ClientWrapper
 from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
 from rcl_interfaces.srv import GetParameters
 
 if TYPE_CHECKING:
-    from arena_rclpy_mixins.Async import AsyncNode, ClientWrapper
+    from arena_rclpy_mixins.Async import AsyncNode
+
+    from arena_runtime.env.side_executor import SideExecutor
 
 _PARAM_SERVICE = "/get_parameters"
 _STATE_SERVICE = "/get_state"
@@ -25,6 +28,9 @@ class MissTally:
 
     limit: int
     _misses: dict[str, int] = attrs.field(factory=dict, init=False)
+
+    def tracked(self) -> set[str]:
+        return set(self._misses)
 
     def forget_absent(self, present: set[str]) -> None:
         self._misses = {name: count for name, count in self._misses.items() if name in present}
@@ -44,20 +50,54 @@ class MissTally:
 
 
 class NodePinger:
-    """Pings every node under ``root``: lifecycle nodes must report active, any other node must answer on its parameter service."""
+    """Pings every node under ``root`` in other processes: lifecycle nodes must report active, any other node must answer on its parameter service.
 
-    def __init__(self, node: AsyncNode, root: str, limit: int) -> None:
+    The nodes of this process are not pinged: a ping to a node the pinging node's executor spins needs that executor
+    twice (to serve the request, then to take the reply) and so measures its queue, not a hang, and a wedged one stops
+    the rounds altogether, which the watchdog's own timer starts. With a ``side`` executor the pings' replies are taken on
+    its thread, so a lagging env executor delays no reply, and the nodes the side executor spins (the collision
+    trackers) count as answered while its thread beats. A side thread that missed its beats for a whole timeout is
+    wedged: no reply could be taken on it, so nobody is pinged and only its own nodes miss.
+    """
+
+    def __init__(self, node: AsyncNode, root: str, limit: int, *, side: SideExecutor | None = None) -> None:
         self._node = node
         self._root = root
+        self._side = side
         self._tally = MissTally(limit)
         self._clients: dict[str, ClientWrapper] = {}
 
+    def _executor_nodes(self) -> set[str]:
+        """The pinging node and every node its executor spins."""
+        own = {self._node.get_fully_qualified_name()}
+        executor = self._node.executor
+        if executor is not None:
+            for node in executor.get_nodes():
+                name = getattr(node, "get_fully_qualified_name", None)
+                if name is not None:
+                    own.add(name())
+        return own
+
+    def _side_nodes(self) -> set[str]:
+        """The nodes under the root the side executor spins."""
+        return {name for name in self._side.node_names() if name.startswith(f"{self._root}/")} if self._side is not None else set()
+
     def _targets(self) -> dict[str, str]:
-        """Each node under the root and the service to ping it on."""
+        """Each node under the root outside this process, and the service to ping it on."""
         services = {name for name, _ in self._node.get_service_names_and_types() if name.startswith(f"{self._root}/")}
-        nodes = {name.removesuffix(_PARAM_SERVICE) for name in services if name.endswith(_PARAM_SERVICE)} - {self._node.get_fully_qualified_name()}
+        nodes = {name.removesuffix(_PARAM_SERVICE) for name in services if name.endswith(_PARAM_SERVICE)} - self._executor_nodes() - self._side_nodes()
         nodes = {name for name in nodes if not _HELPER.search(name)}
         return {name: name + _STATE_SERVICE if name + _STATE_SERVICE in services else name + _PARAM_SERVICE for name in nodes}
+
+    def _client(self, service: str, timeout: float) -> ClientWrapper:
+        """A client on the side executor's node when there is one, its replies taken on the side thread, else on the pinging node."""
+        srv_type = GetState if service.endswith(_STATE_SERVICE) else GetParameters
+        if self._side is None:
+            return self._node.create_client_wrapper(srv_type, service, timeout=timeout)
+        return ClientWrapper(self._node, self._side.node.create_client(srv_type, service), timeout=timeout)
+
+    def _destroy(self, client: ClientWrapper) -> None:
+        (self._side.node if self._side is not None else self._node).destroy_client(client.client)
 
     async def _alive(self, service: str, timeout: float) -> bool:
         if service.endswith(_STATE_SERVICE):
@@ -68,12 +108,18 @@ class NodePinger:
     async def round(self, timeout: float, *, new_episode: bool) -> str | None:
         """Ping once and return a node that stopped answering or left its active state, or None."""
         targets = self._targets()
+        side = self._side_nodes()
         if new_episode:
-            self._tally.forget_absent(set(targets))
+            self._tally.forget_absent(set(targets) | side)
+        if self._side is not None and self._side.beat_age() >= timeout:
+            return self._tally.record(self._tally.tracked() - side)
         for service in self._clients.keys() - targets.values():
-            self._node.destroy_client(self._clients.pop(service).client)
+            self._destroy(self._clients.pop(service))
         for service in targets.values() - self._clients.keys():
-            self._clients[service] = self._node.create_client_wrapper(GetState if service.endswith(_STATE_SERVICE) else GetParameters, service, timeout=timeout)
+            self._clients[service] = self._client(service, timeout)
         names = sorted(targets)
         alive = await asyncio.gather(*(self._alive(targets[name], timeout) for name in names))
-        return self._tally.record({name for name, up in zip(names, alive, strict=True) if up})
+        answered = {name for name, up in zip(names, alive, strict=True) if up}
+        if self._side is not None and self._side.beat_age() < timeout:
+            answered |= side
+        return self._tally.record(answered)

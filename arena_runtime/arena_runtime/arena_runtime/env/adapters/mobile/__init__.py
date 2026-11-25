@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import math
+import time
+import typing
 from typing import TYPE_CHECKING, ClassVar
 
 import geometry_msgs.msg
 import nav_msgs.msg
 import rclpy.qos
-from arena_rclpy_mixins.qos import best_effort
 from arena_viz.kinds import DisplayKind
 from arena_viz.style import StyleSpec
 
@@ -21,6 +22,10 @@ if TYPE_CHECKING:
 _TRAIL_STEP = 0.05
 _TRAIL_POINTS = 2000
 _TRAIL_QOS = rclpy.qos.QoSProfile(depth=1, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
+#: sim seconds between two looks at the robot's pose for the trail (0.2 m apart at 2 m/s)
+_TRAIL_SAMPLE_S = 0.1
+#: wall seconds between two sends of a grown trail; a 2000-pose Path costs ~8 ms to send
+_TRAIL_SEND_S = 0.5
 
 
 class MobileAdapter(Adapter):
@@ -34,8 +39,11 @@ class MobileAdapter(Adapter):
         self._trail = nav_msgs.msg.Path()
         self._trail.header.frame_id = "map"
         self._trail_start = self.rm.start_pos
+        self._trail_grown = False
+        self._trail_sent_at = -math.inf
+        self._trail_sent_to = 0
         self._trail_pub = self.rm.node.create_publisher(nav_msgs.msg.Path, str(self.rm.namespace("trail")), _TRAIL_QOS)
-        self._trail_sub = self.rm.node.create_subscription(nav_msgs.msg.Odometry, str(self.rm.namespace("odom")), self._extend_trail, best_effort(1))
+        self._trail_timer = self.rm.node.create_timer(_TRAIL_SAMPLE_S, self._extend_trail)
         self.rm.watch(self._restart_trail)
         self._collision: CollisionTrackerNode | None = None
         mobile = self.rm.robot.model.resolve_sync().caps.mobile
@@ -46,7 +54,12 @@ class MobileAdapter(Adapter):
         if not polys and footprint is None:
             return
         self._collision = CollisionTrackerNode(self.rm, polys or {}, footprint=footprint)
-        self.rm.node.executor.add_node(self._collision)
+        self._collision_executor().add_node(self._collision)
+
+    def _collision_executor(self) -> typing.Any:  # noqa: ANN401
+        """The env's side executor (its own thread, see `SideExecutor`), else the env node's executor (a host without one)."""
+        side = getattr(self.rm.node, "side_executor", None)
+        return side if side is not None else self.rm.node.executor
 
     @property
     def controls_orientation(self) -> bool:
@@ -95,21 +108,32 @@ class MobileAdapter(Adapter):
         ),
     )
 
-    async def _extend_trail(self, msg: nav_msgs.msg.Odometry) -> None:
-        del msg
+    def _extend_trail(self) -> None:
+        """Add the robot's pose to the trail every `_TRAIL_SAMPLE_S` of sim time once it moved `_TRAIL_STEP`, and send it.
+
+        A viz topic nothing records: it was extended and sent on every odometry message the robot moved (30 Hz at 2 m/s),
+        a coroutine per message on the env executor and ~8 ms per send once 100 m were driven."""
         pose = self.rm.pose
-        if pose is None:
+        if pose is not None:
+            poses = self._trail.poses
+            assert isinstance(poses, list)
+            if not poses or math.hypot(pose.position.x - poses[-1].pose.position.x, pose.position.y - poses[-1].pose.position.y) >= _TRAIL_STEP:
+                point = geometry_msgs.msg.PoseStamped()
+                point.header.frame_id = "map"
+                point.pose = pose.to_msg()
+                poses.append(point)
+                del poses[:-_TRAIL_POINTS]
+                self._trail_grown = True
+        self._send_trail()
+
+    def _send_trail(self) -> None:
+        """Send the trail only while the topic has a subscriber: at once to a new one, else a grown trail at most every `_TRAIL_SEND_S` (wall)."""
+        subscribers = self._trail_pub.get_subscription_count()
+        if subscribers == 0:
+            self._trail_sent_to = 0
             return
-        poses = self._trail.poses
-        assert isinstance(poses, list)
-        if poses and math.hypot(pose.position.x - poses[-1].pose.position.x, pose.position.y - poses[-1].pose.position.y) < _TRAIL_STEP:
-            return
-        point = geometry_msgs.msg.PoseStamped()
-        point.header.frame_id = "map"
-        point.pose = pose.to_msg()
-        poses.append(point)
-        del poses[:-_TRAIL_POINTS]
-        self._publish_trail()
+        if subscribers > self._trail_sent_to or (self._trail_grown and time.monotonic() - self._trail_sent_at >= _TRAIL_SEND_S):
+            self._publish_trail()
 
     def _restart_trail(self, robot: RobotManager) -> None:
         if robot.start_pos is self._trail_start:
@@ -121,10 +145,17 @@ class MobileAdapter(Adapter):
     def _publish_trail(self) -> None:
         self._trail.header.stamp = self.rm.node.sim_time.to_msg()
         self._trail_pub.publish(self._trail)
+        self._trail_grown = False
+        self._trail_sent_at = time.monotonic()
+        self._trail_sent_to = self._trail_pub.get_subscription_count()
 
     async def teardown(self) -> None:
-        self.rm.node.destroy_subscription(self._trail_sub)
+        self.rm.node.destroy_timer(self._trail_timer)
         self.rm.node.destroy_publisher(self._trail_pub)
+        if self._collision is not None:
+            self._collision_executor().remove_node(self._collision)
+            self._collision.shutdown()
+            self._collision = None
         await super().teardown()
 
     async def on_reset(self, robot: RobotManager, ctx: ResetContext) -> None:

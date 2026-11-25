@@ -11,6 +11,8 @@ import threading
 import time
 import typing
 
+import pytest
+
 
 NS = "/node_watch_probe"
 TIMEOUT = 1.0
@@ -101,37 +103,142 @@ async def _until_all_answer(pinger: typing.Any, count: int) -> None:
     raise AssertionError(f"only {sorted(pinger._tally._misses)} answered")
 
 
-def _with_pinger(scenario: typing.Callable[[typing.Any, dict[str, subprocess.Popen]], typing.Coroutine[typing.Any, typing.Any, None]]) -> None:
+def _with_pinger(scenario: typing.Callable[[typing.Any, dict[str, subprocess.Popen]], typing.Coroutine[typing.Any, typing.Any, None]], *, side: bool = False) -> None:
+    """Run `scenario` with a pinger on a host node spun by its own executor thread, with or without a side executor."""
     from arena_rclpy_mixins.Async import AsyncNode
     from rclpy.executors import SingleThreadedExecutor
 
     from arena_runtime.env.node_watch import NodePinger
+    from arena_runtime.env.side_executor import SideExecutor
 
     async def run() -> None:
         node = AsyncNode("node_watch_host", namespace=NS)
         executor = SingleThreadedExecutor()
         executor.add_node(node)
         threading.Thread(target=executor.spin, daemon=True).start()
+        side_executor = SideExecutor(NS, "node_watch_host_side") if side else None
         children = _spawn("healthy_a", "healthy_b", "healthy_c", "victim")
         try:
-            await scenario(NodePinger(node, NS, 3), children)
+            await scenario(NodePinger(node, NS, 3, side=side_executor), children)
         finally:
             for child in children.values():
                 child.kill()
                 child.wait()
+            if side_executor is not None:
+                side_executor.shutdown()
             executor.shutdown()
             node.destroy_node()
 
     asyncio.run(run())
 
 
-def test_a_frozen_process_is_named(rclpy_context: object) -> None:
+def _block(node: typing.Any, seconds: float) -> threading.Event:
+    """Hold the executor spinning `node` in one callback for `seconds`, the way a queue running behind holds it; set once it holds."""
+    holding = threading.Event()
+
+    def hold() -> None:
+        node.destroy_timer(timer)
+        holding.set()
+        time.sleep(seconds)
+
+    timer = node.create_timer(0.01, hold)
+    return holding
+
+
+async def _held(holding: threading.Event) -> None:
+    for _ in range(200):
+        if holding.is_set():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the executor never took the holding callback")
+
+
+@pytest.mark.parametrize("side", [False, True], ids=["host_executor", "side_executor"])
+def test_a_frozen_process_is_named(rclpy_context: object, side: bool) -> None:
     async def scenario(pinger: typing.Any, children: dict[str, subprocess.Popen]) -> None:
         await _until_all_answer(pinger, 4)
         os.kill(children["victim"].pid, signal.SIGSTOP)
         assert [await _ping(pinger) for _ in range(3)] == [None, None, f"{NS}/victim"]
 
+    _with_pinger(scenario, side=side)
+
+
+def test_a_lagging_host_executor_fails_every_ping_without_a_side_executor(rclpy_context: object) -> None:
+    """Why the side executor: the replies wait in the host executor's queue, so its lag times out the whole round."""
+
+    async def scenario(pinger: typing.Any, children: dict[str, subprocess.Popen]) -> None:
+        await _until_all_answer(pinger, 4)
+        await _held(_block(pinger._node, 3 * TIMEOUT))
+        assert await _ping(pinger) is None
+        assert pinger._tally._misses == dict.fromkeys(pinger._tally._misses, 0)  # a round most nodes missed counts for nobody
+        answered = await asyncio.gather(*(pinger._alive(service, TIMEOUT) for service in pinger._targets().values()))
+        assert not any(answered)
+
     _with_pinger(scenario)
+
+
+def test_a_lagging_host_executor_costs_no_ping_with_a_side_executor(rclpy_context: object) -> None:
+    async def scenario(pinger: typing.Any, children: dict[str, subprocess.Popen]) -> None:
+        await _until_all_answer(pinger, 4)
+        await _held(_block(pinger._node, 3 * TIMEOUT))
+        answered = await asyncio.gather(*(pinger._alive(service, TIMEOUT) for service in pinger._targets().values()))
+        assert all(answered)
+
+    _with_pinger(scenario, side=True)
+
+
+def test_nodes_of_the_host_executor_are_not_pinged(rclpy_context: object) -> None:
+    import rclpy
+
+    async def scenario(pinger: typing.Any, children: dict[str, subprocess.Popen]) -> None:
+        tracker = rclpy.create_node("collision_tracker", namespace=f"{NS}/jackal_0")
+        pinger._node.executor.add_node(tracker)
+        try:
+            await _in_graph(pinger, f"{NS}/jackal_0/collision_tracker/get_parameters")
+            assert f"{NS}/jackal_0/collision_tracker" not in pinger._targets()
+            await _until_all_answer(pinger, 4)
+            os.kill(children["victim"].pid, signal.SIGSTOP)
+            assert [await _ping(pinger) for _ in range(3)] == [None, None, f"{NS}/victim"]
+        finally:
+            pinger._node.executor.remove_node(tracker)
+            tracker.destroy_node()
+
+    _with_pinger(scenario)
+
+
+async def _in_graph(pinger: typing.Any, service: str) -> None:
+    for _ in range(150):
+        if service in {name for name, _ in pinger._node.get_service_names_and_types()}:
+            return
+        await asyncio.sleep(0.2)
+    raise AssertionError(f"{service} never showed up in the graph")
+
+
+def test_side_executor_nodes_answer_while_its_thread_beats_and_are_named_once_it_is_wedged(rclpy_context: object) -> None:
+    """The collision trackers live on the side executor: not pinged over DDS, alive while the side thread beats."""
+    import rclpy
+
+    from arena_runtime.env.side_executor import BEAT_S
+
+    async def scenario(pinger: typing.Any, children: dict[str, subprocess.Popen]) -> None:
+        tracker = rclpy.create_node("collision_tracker", namespace=f"{NS}/jackal_0")
+        pinger._side.add_node(tracker)
+        name = f"{NS}/jackal_0/collision_tracker"
+        try:
+            await _in_graph(pinger, f"{name}/get_parameters")
+            assert name not in pinger._targets()
+            await _until_all_answer(pinger, 5)
+            assert name in pinger._tally._misses
+            assert all(service.startswith(f"{NS}/healthy_") or service.startswith(f"{NS}/victim") for service in pinger._clients)
+            assert [await _ping(pinger) for _ in range(2)] == [None, None]
+            await _held(_block(tracker, 3 * TIMEOUT + 4 * BEAT_S))
+            await asyncio.sleep(TIMEOUT + BEAT_S)
+            assert [await _ping(pinger) for _ in range(3)] == [None, None, name]
+        finally:
+            pinger._side.remove_node(tracker)
+            tracker.destroy_node()
+
+    _with_pinger(scenario, side=True)
 
 
 def test_a_node_that_dies_mid_episode_is_named(rclpy_context: object) -> None:
@@ -236,7 +343,8 @@ async def _watch_until(stub: typing.Any, done: typing.Callable[[], bool], what: 
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def test_the_watchdog_faults_a_running_episode_on_a_frozen_node(rclpy_context: object) -> None:
+@pytest.mark.parametrize("side", [False, True], ids=["host_executor", "side_executor"])
+def test_the_watchdog_faults_a_running_episode_on_a_frozen_node(rclpy_context: object, side: bool) -> None:
     import arena_runtime_msgs.action
 
     async def scenario(pinger: typing.Any, children: dict[str, subprocess.Popen]) -> None:
@@ -250,7 +358,7 @@ def test_the_watchdog_faults_a_running_episode_on_a_frozen_node(rclpy_context: o
         assert outcome.result() == (arena_runtime_msgs.action.RunEpisode.Result.FATAL, reason)
         assert stub._abort_reason == reason
 
-    _with_pinger(scenario)
+    _with_pinger(scenario, side=side)
 
 
 def test_the_watchdog_only_logs_a_frozen_node_in_standalone_mode(rclpy_context: object) -> None:

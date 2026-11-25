@@ -316,6 +316,15 @@ systemic step failure and retries. A round most nodes miss counts for nobody, so
 stalled box or event loop does not fault one node. With `task.episode.auto_reset`
 on (standalone) a hung node is only logged.
 
+The nodes of the env process are not pinged over DDS. The pings' replies are taken
+on the env's side executor ([`side_executor.py`](side_executor.py)), a second
+executor in its own thread, so a backlog on the env executor (TF, the clocks, the
+crowd frames and the env's timers all wait in its one queue) delays no reply. The
+collision trackers are spun there too: they count as answered while the side
+thread beats, and a side thread that missed its beats for a whole timeout is named
+alone. The 1 s watchdog tick warns `env executor ran <s>s behind` when it came two
+or more seconds late.
+
 ## Map generator
 
 [`map_generator.py`](map_generator.py) is the standalone `generate_map` console

@@ -120,6 +120,7 @@ class Stage:
         seen = len(received)
         tracker._tick()
         await _until(lambda: len(received) > seen, "a published message")
+        await asyncio.sleep(0.01)  # a collision reaches the robot manager through the event loop
         return list(received[-1].events)
 
     async def markers(self, tracker, received: list) -> list:
@@ -643,7 +644,7 @@ def _crowd(seed: int) -> list[tuple[str, float, float]]:
 
 def test_trackers_keep_answering_beside_a_large_crowd(on_stage):
     """Four robots' trackers ticking on the sim clock beside a large roster renewed at 10 Hz, the env's main thread busy:
-    each tracker answers its parameter service on the env's executor within a second, the ping the env's node watch sends."""
+    each tracker answers its parameter service (spun by the env's side executor) within a second."""
     from rcl_interfaces.srv import GetParameters
     from rosgraph_msgs.msg import Clock
 
