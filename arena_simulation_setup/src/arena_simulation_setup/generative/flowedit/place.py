@@ -6,8 +6,14 @@ models' annotated `face`) turned into the room, their backs at the generator's w
 is one spot: its members stand `spacing_m` apart, centre to centre, on the same piece. The catalog holds generic rules;
 a site's facts (`SiteFacts`: entrances, the courier access point, power outlets) are what some of them read. Rules with
 data say pass or fail; rules without site data (outlets while a site names none, tactile paths, exit width, dead ends,
-recipient entrances or a courier access point a site does not name, and doors or lifts on a level without any) say
-unknown and filter nothing. NAV@r is not a rule here: `placed_elements` hands a layout to the NAV@r filter."""
+recipient entrances or a courier access point a site does not name, doors or lifts on a level without any, and the
+walkway widths while a site names no crowd) say unknown and filter nothing. NAV@r is not a rule here: `placed_elements`
+hands a layout to the NAV@r filter.
+
+The walkway rule (`walkway`) measures the crowd's floor, not the robot map: the width an element leaves where the
+site's crowd walks, 1.8 m where walkers pass both ways and 0.9 m where they walk one way, from the crowd's routes between
+its sources and sinks (`SiteFacts.walkers`). A gap under a wheelchair's width that closes a passage into a pocket fails
+on its own (`Rule.NO_POCKET`), crowd or not."""
 
 from __future__ import annotations
 
@@ -35,25 +41,19 @@ if TYPE_CHECKING:
     from arena_simulation_setup.tree.World.model import Level
 
     from .generate import WallPiece
+    from .walkway import Narrowing, Routes, WalkerDemand, WalkerFloor
 
 #: Spots lie this far apart along a wall piece (§4)
 STEP_M = 1.0
 #: The members of a pair stand this far apart, centre to centre, on one wall piece
 PAIR_SPACING_M = 1.0
-#: The remaining clear corridor width beyond an element, its docks and its clear zone (§3, placeholder)
-CORRIDOR_MIN_M = 1.8
-#: Obstacles this close merge into one for the pinch check (`pinches`): an element at the wall gap joins its wall
+#: Obstacles this close merge into one for the pocket check (`pinches`): an element at the wall gap joins its wall
 JOIN_M = 0.05
-#: A gap narrower than a wheelchair (twice NAV@r's 0.325 m radius) is no passage: an element that leaves less closes it
+#: A gap narrower than a wheelchair (twice NAV@r's 0.325 m radius) is no passage: an element that leaves less of a
+#: passage closes it into a pocket a wheelchair wedges in (`Rule.NO_POCKET`)
 PASSAGE_M = 0.65
-#: A passage an element narrows below this is a pinch (`pinches`): the corridor rule fails for its spot (against the
-#: site's walls, pillars and objects) or `check_layout` refuses its layout (against other elements). `PASSAGE_M`: only
-#: the passages an element closes into a pocket. `CORRIDOR_MIN_M` would apply the corridor rule to every gap beside an
-#: element (it refuses most of the twin's study layouts and empties hospital_1's search space). 0.9 m: the minimum
-#: clear width of a wheelchair route (ADA 403.5.1: 36 in = 0.915 m), so a gap beside an element stays usable, not
-#: only passable
-PINCH_MIN_M = 0.9
-#: Corridor widths are measured up to this width; a wider corridor reports it
+#: The corridor in front of an element (`Spot.corridor_m`, the section width the premise check ranks by) is measured up
+#: to this width; a wider corridor reports it
 CORRIDOR_CAP_M = 5.0
 #: The wheelchair turning circle's diameter that stays free in front of each element (§3)
 TURNING_CIRCLE_M = 1.5
@@ -103,7 +103,8 @@ class Rule(enum.StrEnum):
     NO_OVERLAP = "no_overlap"  # footprints on the floor, clear of walls, door spans and objects
     CLEAR_ZONE = "clear_zone"  # the approach or access zone in front is free floor
     TURNING_CIRCLE = "turning_circle"  # a free 1.5 m circle in front
-    CORRIDOR_WIDTH = "corridor_width"  # remaining clear corridor width
+    WALKWAY_WIDTH = "walkway_width"  # 1.8 m two-way, 0.9 m one-way where the crowd walks (`walkway`); unknown without a crowd
+    NO_POCKET = "no_pocket"  # no passage closed into a gap under a wheelchair's width
     DOCKS_ON_FLOOR = "docks_on_floor"  # every dock free floor, its goto point on a free cell
     PEDS_ZONES = "peds_zones"  # outside PEDS source and sink zones; unknown until they are given
     DOOR_DISTANCE = "door_distance"  # >= 2 m from door spans; unknown on a level without doors
@@ -117,7 +118,7 @@ class Rule(enum.StrEnum):
 
 
 #: Rules every element gets a verdict on
-COMMON_RULES = (Rule.AGAINST_WALL, Rule.NO_OVERLAP, Rule.TURNING_CIRCLE, Rule.CORRIDOR_WIDTH, Rule.DOCKS_ON_FLOOR, Rule.PEDS_ZONES, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
+COMMON_RULES = (Rule.AGAINST_WALL, Rule.NO_OVERLAP, Rule.TURNING_CIRCLE, Rule.WALKWAY_WIDTH, Rule.NO_POCKET, Rule.DOCKS_ON_FLOOR, Rule.PEDS_ZONES, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
 #: Rules without site data: always unknown
 NO_DATA_RULES = (Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
 #: Rules that read the site's facts (`SiteFacts`): unknown while the site gives none for them
@@ -204,12 +205,14 @@ class Entrance:
 @attrs.frozen
 class SiteFacts:
     """What a site is, apart from the catalog: its `entrances`, the `courier_access` point where couriers arrive with
-    parcels, and its power `outlets` (world-frame points). The catalog's rules that read them (`FACT_RULES`) are unknown
-    while a site gives none for them; the courier handoff point is pinned at the access point (`SiteFacts.pins`)."""
+    parcels, its power `outlets` (world-frame points) and its crowd (`walkers`: who walks from where to where, from the
+    crowd scenario). The catalog's rules that read them (`FACT_RULES`, `Rule.WALKWAY_WIDTH`) are unknown while a site
+    gives none for them; the courier handoff point is pinned at the access point (`SiteFacts.pins`)."""
 
     entrances: tuple[Entrance, ...] = ()
     courier_access: Point | None = None
     outlets: tuple[Point, ...] = ()
+    walkers: WalkerDemand | None = None
 
     @property
     def recipient_entrances(self) -> tuple[Entrance, ...]:
@@ -242,7 +245,8 @@ class PlacedObject:
 class Spot:
     """A candidate spot of `element`: step `step` along wall piece `piece` (ring order, `piece_m` long) of `zone` on
     `level`, its centre `along_m` from the piece's start, the piece's `frame`, its `objects`, the `clear` (approach or
-    access) zone and the `turning` circle in front, the remaining `corridor_m`, and a verdict per rule of the element."""
+    access) zone and the `turning` circle in front, the corridor in front of it (`corridor_m`), and a verdict per rule
+    of the element. `walkers` is the crowd its walkway rule ran against, `narrowings` what that rule found."""
 
     element: Element
     level: str
@@ -257,6 +261,8 @@ class Spot:
     turning: shapely.Polygon | None
     corridor_m: float
     verdicts: tuple[tuple[Rule, Verdict], ...]
+    walkers: WalkerDemand | None = None
+    narrowings: tuple[Narrowing, ...] = ()
 
     @property
     def id(self) -> str:
@@ -359,6 +365,8 @@ _SPOTS: dict[tuple[Any, ...], tuple[Spot, ...]] = {}
 _CUT_OFF: dict[tuple[Any, ...], tuple[str, ...]] = {}
 _BASES: dict[tuple[Any, ...], Any] = {}
 _WALKS: dict[tuple[Any, ...], Any] = {}
+_FLOORS: dict[tuple[Any, ...], WalkerFloor] = {}
+_ROUTES: dict[tuple[Any, ...], Routes] = {}
 #: Walking distances run on this grid (8-connected, up to 8 % longer than straight off the grid axes)
 WALK_RESOLUTION_M = 0.1
 #: An entrance whose point lies further than this from the walking floor gets a warning (a mistyped position) [m]
@@ -373,6 +381,8 @@ def clear_cache() -> None:
     _CUT_OFF.clear()
     _BASES.clear()
     _WALKS.clear()
+    _FLOORS.clear()
+    _ROUTES.clear()
     _SITES.clear()
 
 
@@ -383,7 +393,7 @@ def _site_key(site: Site) -> tuple[Any, ...]:
     _SITES.move_to_end(key)
     while len(_SITES) > CACHED_SITES:
         old, _ = _SITES.popitem(last=False)
-        for cache in (_CONTEXTS, _SPOTS, _CUT_OFF, _BASES, _WALKS):
+        for cache in (_CONTEXTS, _SPOTS, _CUT_OFF, _BASES, _WALKS, _FLOORS, _ROUTES):
             for stale in [k for k in cache if k[: len(old)] == old]:
                 del cache[stale]
     return key
@@ -527,6 +537,45 @@ def walking_paths(site: Site, level_id: str, radius: float | None = None, neighb
     if key not in _WALKS:
         _WALKS[key] = RobotPaths.from_base(_navr_base(site, level_id, radius), radius, WALK_RESOLUTION_M, int(neighbourhood))
     return _WALKS[key]
+
+
+def _layout_objects(site: Site) -> frozenset[str]:
+    """The graph ids of the catalog's objects the site has (`obj:<name>`, lockers numbered `locker_<n>` too): the floor
+    the crowd walks before a layout has none of them, which a layout places anew."""
+    names = {name for element in CATALOG.values() for name in element.members}
+    return frozenset(obj for obj in site.graph.entities if obj.startswith("obj:") and (obj[4:] in names or fnmatch.fnmatchcase(obj[4:], "locker_*")))
+
+
+def walker_floor(site: Site, level_id: str) -> WalkerFloor:
+    """The floor the site's crowd walks on a level before a layout (`walkway.walker_floor`, without the catalog's
+    objects). Cached per site."""
+    from . import walkway
+
+    key = (*_site_key(site), level_id)
+    if key not in _FLOORS:
+        _FLOORS[key] = walkway.walker_floor(site, level_id, _layout_objects(site))
+    return _FLOORS[key]
+
+
+def crowd_routes(site: Site, level_id: str, walkers: WalkerDemand) -> Routes:
+    """The crowd's routes on a level's walker floor (`walkway.Routes`). Cached per site and crowd."""
+    from .walkway import Routes
+
+    key = (*_site_key(site), level_id, walkers)
+    if key not in _ROUTES:
+        _ROUTES[key] = Routes.build(walker_floor(site, level_id), walkers)
+    return _ROUTES[key]
+
+
+def walkway_narrowings(site: Site, spot: Spot, others: Sequence[Spot] = (), walkers: WalkerDemand | None = None, stretches: list[Any] | None = None) -> list[Narrowing]:
+    """The walkways `spot` narrows on `site` with `others` placed too (`walkway.narrowings`), against the crowd
+    `walkers` (default the spot's). Empty without a crowd."""
+    from . import walkway
+
+    walkers = walkers if walkers is not None else spot.walkers
+    if walkers is None:
+        return []
+    return walkway.narrowings(walker_floor(site, spot.level), crowd_routes(site, spot.level, walkers), walkway.occupied([spot]), walkway.occupied(others), stretches=stretches)
 
 
 def candidate_zones(level: Level, zones: Sequence[str] | None = None, exclude: Sequence[str] = EXCLUDED_ZONES) -> list[str]:
@@ -697,7 +746,7 @@ def _window(frame: _Frame, along: tuple[float, float], front: float) -> shapely.
     return frame.rect(along[0] - CORRIDOR_CAP_M / 2.0 - res, along[1] + CORRIDOR_CAP_M / 2.0 + res, front - CORRIDOR_CAP_M / 2.0, front + 1.5 * CORRIDOR_CAP_M + res)
 
 
-def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], against: bool, clear: shapely.Polygon, turning: shapely.Polygon | None, corridor: float, corridor_min_m: float, peds: Sequence[shapely.Polygon] | None, pinched: bool = False) -> tuple[tuple[Rule, Verdict], ...]:
+def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], against: bool, clear: shapely.Polygon, turning: shapely.Polygon | None, peds: Sequence[shapely.Polygon] | None, pocketed: bool = False) -> tuple[tuple[Rule, Verdict], ...]:
     import shapely
 
     from . import generate as gen
@@ -715,7 +764,8 @@ def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], 
     out[Rule.NO_OVERLAP] = ok(all(ctx.floor_inner.covers(f) and not ctx.walls.intersects(f) and not ctx.doors.intersects(f) and not ctx.obstacle_union.intersects(f.buffer(gen.MARGIN_M)) for f in footprints) and not any(_overlaps(a, b) for i, a in enumerate(footprints) for b in footprints[i + 1 :]))
     out[Rule.CLEAR_ZONE] = ok(clear.is_empty or (free_floor(clear) and not ctx.doors.intersects(clear)))
     out[Rule.TURNING_CIRCLE] = ok(turning is None or free_floor(turning))
-    out[Rule.CORRIDOR_WIDTH] = ok(corridor >= corridor_min_m and not pinched)
+    out[Rule.NO_POCKET] = ok(not pocketed)
+    out[Rule.WALKWAY_WIDTH] = Verdict.UNKNOWN  # against the site's crowd (`_with_walkway`)
     grid, (ox, oy) = ctx.grid
 
     def on_free_cell(point: Point) -> bool:
@@ -780,7 +830,25 @@ def _with_facts(site: Site, level_id: str, element: Element, spots: list[Spot], 
     return [attrs.evolve(s, verdicts=tuple((rule, verdicts[rule][i] if rule in verdicts else v) for rule, v in s.verdicts)) for i, s in enumerate(spots)]
 
 
-def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float, zone: str, index: int, piece: WallPiece, step: int, centre: float, corridor_min_m: float, peds: Sequence[shapely.Polygon] | None) -> Spot:
+def _with_walkway(site: Site, spots: list[Spot], facts: SiteFacts | None) -> list[Spot]:
+    """`spots` with the walkway rule's verdict against the site's crowd (`SiteFacts.walkers`): pass, or fail with the
+    narrowings, for every spot no other rule fails (the rule is the costly one); unknown without a crowd."""
+    walkers = facts.walkers if facts is not None else None
+    if walkers is None or not spots:
+        return spots
+    out = []
+    for s in spots:
+        s = attrs.evolve(s, walkers=walkers)
+        if Rule.WALKWAY_WIDTH not in s.verdict or s.failed:
+            out.append(s)
+            continue
+        found = tuple(walkway_narrowings(site, s))
+        verdict = Verdict.FAIL if found else Verdict.PASS
+        out.append(attrs.evolve(s, narrowings=found, verdicts=tuple((rule, verdict if rule is Rule.WALKWAY_WIDTH else v) for rule, v in s.verdicts)))
+    return out
+
+
+def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float, zone: str, index: int, piece: WallPiece, step: int, centre: float, peds: Sequence[shapely.Polygon] | None) -> Spot:
     import shapely
     from shapely.ops import polylabel
 
@@ -810,9 +878,9 @@ def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float,
     blocked = shapely.union_all([footprints, docks, clear])
     corridor = _corridor_width(ctx, frame, blocked, (lo, hi), max(far, dock_front, fp_front), zone=ctx.shapes.get(zone))
     spot = Spot(element, ctx.level_id, zone, index, step, round(centre, 3), round(piece.line.length, 3), frame, tuple(objects), clear, turning, corridor, ())
-    # the corridor rule along the wall too: no pinch or pocket between the spot and the site's walls, pillars, objects
-    pinched = bool(pinches(ctx, spot, None, min(PINCH_MIN_M, corridor_min_m)))
-    return attrs.evolve(spot, verdicts=_verdicts(ctx, element, objects, against, clear, turning, corridor, corridor_min_m, peds, pinched))
+    # no passage between the spot and the site's walls, pillars and objects closed into a pocket
+    pocketed = bool(pinches(ctx, spot, None, PASSAGE_M))
+    return attrs.evolve(spot, verdicts=_verdicts(ctx, element, objects, against, clear, turning, peds, pocketed))
 
 
 def candidate_spots(
@@ -824,7 +892,6 @@ def candidate_spots(
     cut_off: bool = True,
     peds_zones: Sequence[str] | None = None,
     step_m: float = STEP_M,
-    corridor_min_m: float = CORRIDOR_MIN_M,
     facts: SiteFacts | None = None,
 ) -> tuple[Spot, ...]:
     """Every candidate spot of `element` on `site`, the same ones for the same site and arguments (and cached): on each
@@ -832,12 +899,13 @@ def candidate_spots(
     radius (`cut_off_zones`; `cut_off=False` keeps them), along each wall piece in ring order, every
     `step_m` where the element fits on the piece, the steps centred on it. Spots that fail a rule are kept, with their
     verdicts; `Spot.valid` tells them apart. `peds_zones` names the PEDS source and sink zones; until given, that rule
-    is unknown. `facts` are the site's (`SiteFacts`); the rules that read them are unknown without. The element's own
-    objects, if the site has them, are no obstacles to it (a move)."""
+    is unknown. `facts` are the site's (`SiteFacts`); the rules that read them are unknown without, the walkway rule
+    among them (its crowd, `SiteFacts.walkers`). The element's own objects, if the site has them, are no obstacles to it
+    (a move)."""
     from . import generate as gen
 
     element = element_named(element)
-    key = (*_site_key(site), element, None if zones is None else tuple(zones), tuple(exclude), cut_off, None if peds_zones is None else tuple(peds_zones), step_m, corridor_min_m, facts)
+    key = (*_site_key(site), element, None if zones is None else tuple(zones), tuple(exclude), cut_off, None if peds_zones is None else tuple(peds_zones), step_m, facts)
     if key in _SPOTS:
         return _SPOTS[key]
     local = resolve_element(site, element)
@@ -867,8 +935,8 @@ def candidate_spots(
                     continue
                 count = math.floor((length - span) / step_m + 1e-9) + 1
                 first = span / 2.0 + (length - span - (count - 1) * step_m) / 2.0
-                here += [_spot(ctx, element, local, front, zone, index, piece, k, first + k * step_m, corridor_min_m, peds) for k in range(count)]
-        out += _with_facts(site, level_id, element, here, facts)
+                here += [_spot(ctx, element, local, front, zone, index, piece, k, first + k * step_m, peds) for k in range(count)]
+        out += _with_walkway(site, _with_facts(site, level_id, element, here, facts), facts)
     spots = tuple(out)
     _SPOTS[key] = spots
     return spots
@@ -888,9 +956,10 @@ def _turned(points: Sequence[Sequence[float]], angle: float) -> shapely.Polygon:
 _SITE = "a wall, pillar or object"
 
 
-def pinches(ctx: _Context, spot: Spot, others: Mapping[str, shapely.Geometry] | None = None, pinch_min_m: float = CORRIDOR_MIN_M) -> list[tuple[float, float, str]]:
+def pinches(ctx: _Context, spot: Spot, others: Mapping[str, shapely.Geometry] | None = None, pinch_min_m: float = PASSAGE_M) -> list[tuple[float, float, str]]:
     """The passages `spot` narrows below `pinch_min_m` or closes: (gap left, passage width before, what), narrowest
-    first. A gap is the free floor between the floor the spot's elements and robots occupy (`Spot.taken`: footprints
+    first; at the default, the passages it closes into a pocket (`Rule.NO_POCKET`). How wide a walkway must stay is
+    the walkway rule's (`walkway`), by the crowd's flow. A gap is the free floor between the floor the spot's elements and robots occupy (`Spot.taken`: footprints
     and docks, a docked or parked robot counted as standing there) and an obstacle near it that it does not stand
     against, in any direction, beside it along the wall too. Obstacles are the level's walls, pillars and objects, and
     `others` (other elements' floor, by name); those within `JOIN_M` of each other are one, so an element at the wall
@@ -939,19 +1008,17 @@ def pinches(ctx: _Context, spot: Spot, others: Mapping[str, shapely.Geometry] | 
     return sorted(out)
 
 
-def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR_MIN_M, pinch_min_m: float | None = None) -> list[str]:
+def check_layout(site: Site, layout: Layout) -> list[str]:
     """Why `layout` is no valid layout on `site`, empty when it is: a spot with a failing rule, two elements whose
     floor overlaps (`Spot.taken` of one in `Spot.keep_clear` of another, or a footprint within the generator's margin
-    of the other's footprints and docks, as `no_overlap` keeps it from objects), an object name taken twice, a
-    corridor that the other elements narrow below `corridor_min_m`, or a pinch (`pinches`): a passage narrowed below
-    `pinch_min_m` (default `PINCH_MIN_M`) or closed into a pocket between an element's occupied floor (docks
-    included) and another element, beside it along the wall too (a pinch against the site alone fails the spot's
-    corridor rule; with a `pinch_min_m` above `PINCH_MIN_M` those are reported here too).
+    of the other's footprints and docks, as `no_overlap` keeps it from objects), an object name taken twice, a passage
+    two elements close into a pocket between them (`pinches` under `PASSAGE_M`), or a walkway two elements narrow
+    together (`walkway_narrowings` with the others placed; against the crowd the spots' walkway rule ran against).
     Objects of the layout's elements that `site` already has are no obstacles here: the layout places them anew."""
-    pinch_min_m = PINCH_MIN_M if pinch_min_m is None else pinch_min_m
     import shapely
 
     from . import generate as gen
+    from . import walkway
 
     def footprints(spot: Spot) -> BaseGeometry:
         return shapely.union_all([o.footprint for o in spot.objects]).buffer(gen.MARGIN_M)
@@ -964,27 +1031,23 @@ def check_layout(site: Site, layout: Layout, *, corridor_min_m: float = CORRIDOR
             if a.level == b.level and (_overlaps(a.taken, b.keep_clear) or _overlaps(b.taken, a.keep_clear) or _overlaps(footprints(a), b.taken) or _overlaps(footprints(b), a.taken)):
                 problems.append(f"{a.element.name} and {b.element.name} overlap")
     placed = frozenset(f"obj:{o.name}" for o in layout.objects)
+    walkers = next((s.walkers for s in layout.spots if s.walkers is not None), None)
     for s in layout.spots:
         others = [o for o in layout.spots if o is not s and o.level == s.level]
-        ctx = _context(site, s.level, placed)
-        for gap, before, what in pinches(ctx, s, {o.element.name: o.taken for o in others}, pinch_min_m):
-            if what == _SITE and pinch_min_m <= PINCH_MIN_M:
-                continue  # a gap to the site alone fails the spot's corridor rule (`_spot`)
-            if gap < PASSAGE_M:
-                problems.append(f"{s.element.name}: pinch, closes a {before:.2f} m passage to {what} into a pocket ({gap:.2f} m left)")
-            else:
-                problems.append(f"{s.element.name}: pinch, leaves {gap:.2f} m of a {before:.2f} m passage to {what}, under {pinch_min_m} m")
         if not others:
             continue
-        blocked = shapely.union_all([s.taken, s.clear])
-        lo, hi, _, front = s.frame.extent(blocked)
-        near = shapely.union_all([shapely.union_all([o.taken, o.clear]) for o in others])
-        if not near.intersects(_window(s.frame, (lo, hi), front)):
-            continue
         ctx = _context(site, s.level, placed)
-        width = _corridor_width(ctx, s.frame, blocked, (lo, hi), front, near, zone=ctx.shapes.get(s.zone))
-        if width < corridor_min_m:
-            problems.append(f"{s.element.name}: the other elements leave a {width:.2f} m corridor, under {corridor_min_m} m")
+        for gap, before, what in pinches(ctx, s, {o.element.name: o.taken for o in others}, PASSAGE_M):
+            if what != _SITE:
+                problems.append(f"{s.element.name}: pocket, closes a {before:.2f} m passage to {what} ({gap:.2f} m left)")
+        # a walkway two elements narrow together: the others within a two-way width of this one
+        close = [o for o in others if o.taken.distance(s.taken) < walkway.TWO_WAY_M + gen.MARGIN_M]
+        if walkers is None or not close:
+            continue
+        mine = {f"{s.element.name}:{o.name}" for o in s.objects}
+        for n in walkway_narrowings(site, s, close, walkers):
+            if set(n.by) - mine:
+                problems.append(f"{s.element.name}: with {', '.join(sorted(set(n.by) - mine))}, {n.describe()}")
     return problems
 
 
@@ -1079,7 +1142,6 @@ def save_layout(site: Site, layout: Layout, name: str | None = None, *, check: b
 __all__ = [
     "CATALOG",
     "CHARGE_POWER_W",
-    "CORRIDOR_MIN_M",
     "COURIER_ACCESS_M",
     "ENTRANCE_TYPES",
     "EXCLUDED_ZONES",
@@ -1091,7 +1153,6 @@ __all__ = [
     "Entrance",
     "Layout",
     "PASSAGE_M",
-    "PINCH_MIN_M",
     "PlacedElement",
     "PlacedObject",
     "Rule",
@@ -1104,6 +1165,7 @@ __all__ = [
     "cut_off_zones",
     "check_layout",
     "clear_cache",
+    "crowd_routes",
     "insert_params",
     "pinches",
     "layout_name",
@@ -1112,5 +1174,7 @@ __all__ = [
     "remove_element",
     "resolve_element",
     "save_layout",
+    "walker_floor",
     "walking_paths",
+    "walkway_narrowings",
 ]
