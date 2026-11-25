@@ -1055,7 +1055,10 @@ def _cmd_walkways(args: argparse.Namespace) -> int:
         }
         out.append(row)
         two, one, dock = row["narrowest_two_way"], row["narrowest_one_way"], row["narrowest_docked"]
-        _log(f"{layout_id}: {'valid' if row['valid'] else 'INVALID'}; narrowest two-way {two['width_m'] if two else '-'} m, one-way {one['width_m'] if one else '-'} m, beside a docked robot {dock['width_m'] if dock else '-'} m (needs {dock['required_m'] if dock else '-'} m, {row['dock_share']:.1%} of the time)" + "".join(f"\n    {p}" for p in problems))
+        _log(
+            f"{layout_id}: {'valid' if row['valid'] else 'INVALID'}; narrowest two-way {two['width_m'] if two else '-'} m, one-way {one['width_m'] if one else '-'} m, beside a docked robot {dock['width_m'] if dock else '-'} m (needs {dock['required_m'] if dock else '-'} m, {row['dock_share']:.1%} of the time)"
+            + "".join(f"\n    {p}" for p in problems)
+        )
     if args.out is not None:
         args.out.write_text(json.dumps({"site": site.key, "scenario": str(scenario), "layouts": out}, indent=1) + "\n")
         _log(f"wrote {args.out}")
