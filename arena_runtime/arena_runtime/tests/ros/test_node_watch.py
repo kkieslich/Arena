@@ -302,3 +302,27 @@ def test_the_watchdog_pings_at_most_once_a_period(rclpy_context: object) -> None
         assert stub._node_watch_task is first
 
     _with_pinger(scenario)
+
+
+def test_nodes_on_the_pinging_executor_are_not_pinged(rclpy_context: object) -> None:
+    import rclpy
+
+    async def scenario(pinger: typing.Any, children: dict[str, subprocess.Popen]) -> None:
+        tracker = rclpy.create_node("collision_tracker", namespace=f"{NS}/jackal_0")
+        pinger._node.executor.add_node(tracker)
+        try:
+            for _ in range(150):
+                if f"{NS}/jackal_0/collision_tracker/get_parameters" in {name for name, _ in pinger._node.get_service_names_and_types()}:
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                raise AssertionError("the in-process node never showed up in the graph")
+            assert f"{NS}/jackal_0/collision_tracker" not in pinger._targets()
+            await _until_all_answer(pinger, 4)
+            os.kill(children["victim"].pid, signal.SIGSTOP)
+            assert [await _ping(pinger) for _ in range(3)] == [None, None, f"{NS}/victim"]
+        finally:
+            pinger._node.executor.remove_node(tracker)
+            tracker.destroy_node()
+
+    _with_pinger(scenario)

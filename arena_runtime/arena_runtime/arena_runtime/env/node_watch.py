@@ -52,10 +52,25 @@ class NodePinger:
         self._tally = MissTally(limit)
         self._clients: dict[str, ClientWrapper] = {}
 
+    def _own_executor_nodes(self) -> set[str]:
+        """The pinging node and every node its executor spins (the env's collision trackers).
+
+        They are not pinged: a round only starts while that executor runs the watchdog, and a ping to one of them needs
+        the same busy executor twice (to serve the request, then to take the reply), so it measures the executor's lag,
+        not a hang. A wedged executor stops the rounds altogether."""
+        own = {self._node.get_fully_qualified_name()}
+        executor = self._node.executor
+        if executor is not None:
+            for node in executor.get_nodes():
+                name = getattr(node, "get_fully_qualified_name", None)
+                if name is not None:
+                    own.add(name())
+        return own
+
     def _targets(self) -> dict[str, str]:
-        """Each node under the root and the service to ping it on."""
+        """Each node under the root outside the pinging node's executor, and the service to ping it on."""
         services = {name for name, _ in self._node.get_service_names_and_types() if name.startswith(f"{self._root}/")}
-        nodes = {name.removesuffix(_PARAM_SERVICE) for name in services if name.endswith(_PARAM_SERVICE)} - {self._node.get_fully_qualified_name()}
+        nodes = {name.removesuffix(_PARAM_SERVICE) for name in services if name.endswith(_PARAM_SERVICE)} - self._own_executor_nodes()
         nodes = {name for name in nodes if not _HELPER.search(name)}
         return {name: name + _STATE_SERVICE if name + _STATE_SERVICE in services else name + _PARAM_SERVICE for name in nodes}
 
