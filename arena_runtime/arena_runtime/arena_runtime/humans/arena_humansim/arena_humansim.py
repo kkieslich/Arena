@@ -929,6 +929,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
     async def _lockstep_gates(self, timeout: float = 3.0) -> bool:
         """Whether a lockstep run gates the clock (active, not ungated), from the runtime's latched status. Only then can
         the engine wait for each frame's acknowledgement: a clock that runs on wall time would leave it behind."""
+        if self.node.count_publishers(self._LOCKSTEP_STATUS) == 0:
+            return False  # no runtime lockstep at all: do not wait for a status nobody sends
         loop = asyncio.get_running_loop()
         status: asyncio.Future[LockstepStatus] = loop.create_future()
 
@@ -937,12 +939,15 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
         qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         subscription = self.node.create_subscription(LockstepStatus, self._LOCKSTEP_STATUS, receive, qos)
+        began = time.monotonic()
         try:
             msg = await asyncio.wait_for(status, timeout)
         except TimeoutError:
+            self._logger.warning(f"no lockstep status on {self._LOCKSTEP_STATUS} in {timeout:.0f} s: the engine does not wait for frame acknowledgements")
             return False
         finally:
             self.node.destroy_subscription(subscription)
+        self._logger.info(f"lockstep status after {time.monotonic() - began:.3f} s: active={msg.active} ungated={msg.ungated}")
         return bool(msg.active and not msg.ungated)
 
     _SEMANTICS_WAIT_S = 2.0
