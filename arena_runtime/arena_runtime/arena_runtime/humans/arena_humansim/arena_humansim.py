@@ -125,7 +125,7 @@ from visualization_msgs.msg import MarkerArray
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.rng import stable_int
 from arena_runtime.env.realizer import Realizer
-from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, ScenarioCheckError, Segment
+from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, Disc, HumanSimulatorOptions, MechanismStep, RegionSetupError, ScenarioCheckError, Segment, ped_radius, wire_radius
 from arena_runtime.humans.arena_humansim.engine_inputs import EngineInputs, SequencedClient
 from arena_runtime.humans.arena_humansim.lane_config import lane_msg_from_config
 from arena_runtime.humans.itinerary import STIMULUS_TELEPORTED, ItineraryDriver, Stop, semantic_atom
@@ -452,6 +452,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         # stamp of the newest engine frame acknowledged with a world_state
         self._acked_ns = -1
         self._frame_ready = asyncio.Event()
+        # the world mechanisms' tick, run in each step (see drives_mechanisms), and the sim time of its last run
+        self._mechanism_step: MechanismStep | None = None
+        self._mechanism_last_ns: int | None = None
+        # the episode's first tick: the mechanisms' clock counts from it (see _step_mechanisms)
+        self._episode_epoch_ns: int | None = None
         # engine-changing calls go through here: while the engine ticks under the barrier, a call made outside the step
         # waits for the step after the frame it was decided on, so it lands on the same tick in every run
         self._engine_inputs = EngineInputs(self._clock_ns, self._clock_stopped)
@@ -917,15 +922,18 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         deadline = time.monotonic() + self._SEMANTICS_WAIT_S
         while (getattr(self, "_semantic_draining", False) or getattr(self, "_semantic_backlog", None)) and time.monotonic() < deadline:
             await asyncio.sleep(0.001)
+        self._mechanism_last_ns = None
 
     async def start_clock(self, epoch: Time) -> None:
         """Start the engine's tick clock, held since the reset's remove-all, at the episode start: its first tick is stamped `epoch`."""
         if not self._clock_on_request or self._start_clock_client is None:
             return
         assert StartClock is not None
-        # a walker delayed by d s comes in at epoch + d, however long the reset took after it was spawned
-        epoch_s = epoch.to_seconds()
-        self._deferred_spawns.extend((epoch_s + delay, msg, alias) for delay, msg, alias in self._deferred_unanchored)
+        # a walker delayed by d s comes in at epoch + d, however long the reset took after it was spawned (with the barrier
+        # the step loop counts in episode seconds, see _episode_s)
+        self._episode_epoch_ns = epoch.sec * 1_000_000_000 + epoch.nanosec
+        base_s = 0.0 if self._input_barrier else epoch.to_seconds()
+        self._deferred_spawns.extend((base_s + delay, msg, alias) for delay, msg, alias in self._deferred_unanchored)
         self._deferred_unanchored.clear()
         self._deferred_spawns.sort(key=lambda entry: entry[0])
         await self._semantics_delivered()
@@ -1307,9 +1315,10 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                     continue
                 with self._engine_inputs.step():
                     try:
-                        await self._step_peds(stamp_ns / 1e9, frame)
+                        await self._step_peds(self._episode_s(stamp_ns), frame)
                     except Exception as e:
                         self._logger.error(f"ped mechanics step failed: {e!r}")
+                    await self._step_mechanisms(stamp_ns, frame)
                     # inputs decided on the clock up to this frame's stamp belong to this step (one decided later may
                     # still be on its way while the clock moves on, it waits for the next step)
                     await self._engine_inputs.flush(stamp_ns + 1)
@@ -1318,6 +1327,56 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             pass
         except Exception as e:
             self._logger.error(f"Error in step loop: {e}\n{traceback.format_exc()}")
+
+    def _episode_s(self, stamp_ns: int | None) -> float:
+        """Seconds since the episode's first tick, from whole nanoseconds: the same float on every epoch, so a delay or a
+        dwell that ends on a tick ends on that tick in every run (sums of absolute sim seconds round either way)."""
+        epoch_ns = self._episode_epoch_ns
+        if stamp_ns is None or epoch_ns is None or stamp_ns < epoch_ns:
+            return 0.0
+        return (stamp_ns - epoch_ns) / 1e9
+
+    def drives_mechanisms(self) -> bool:
+        """Under the input barrier the step loop runs the world mechanisms once per engine frame."""
+        return self._input_barrier
+
+    def set_mechanism_step(self, step: MechanismStep | None) -> None:
+        self._mechanism_step = step
+        self._mechanism_last_ns = None
+
+    def _frame_discs(self, frame: AgentFrameMsg) -> list[Disc]:
+        """Every walker of the frame at its position (map frame), as the mechanisms take them. A source's walker whose
+        simulator body is not spawned yet (that waits on its meta, a varying number of frames) goes by the name its body
+        will get, so a door sees it from its first tick in every run."""
+        n = len(frame.agent_id)
+        radii = frame.radius if len(frame.radius) == n else [0.0] * n
+        names = self._agent_names
+        return [(names.get(agent_id) or self._realizer.prefix(f"flow_{agent_id}"), self._from_engine(x, y), ped_radius(wire_radius(radius))) for agent_id, x, y, radius in zip(frame.agent_id, frame.x, frame.y, radii, strict=True)]
+
+    async def _step_mechanisms(self, stamp_ns: int, frame: AgentFrameMsg) -> None:
+        """One mechanism tick at the frame's time on the frame's walkers, then wait until what it changed is with the
+        engine (door walls and semantics go out from background tasks, which started inside this step and so send at once)."""
+        step = self._mechanism_step
+        if step is None:
+            return
+        # in whole nanoseconds since the episode's first tick: a door that closes in 0.95 s then closes on the same tick
+        # whatever the epoch, where the float sums of absolute sim seconds round one tick either way
+        last = self._mechanism_last_ns
+        step_ns = stamp_ns - last if last is not None and 0 < stamp_ns - last <= 1_000_000_000 else self._engine_dt_ns
+        self._mechanism_last_ns = stamp_ns
+        now = self._episode_s(stamp_ns) if self._episode_epoch_ns is not None else stamp_ns / 1e9
+        await step(now, step_ns / 1e9, self._frame_discs(frame))
+        await self._background_delivered(stamp_ns + 1)
+
+    _BACKGROUND_WAIT_S = 2.0
+
+    async def _background_delivered(self, before_ns: int) -> None:
+        """Wait (a bounded while) until the semantic changes and mechanism walls queued so far are with the engine, sending the
+        calls held for this step meanwhile (a drain that started outside a step has its calls held)."""
+        deadline = time.monotonic() + self._BACKGROUND_WAIT_S
+        while time.monotonic() < deadline and (getattr(self, "_semantic_draining", False) or getattr(self, "_semantic_backlog", None) or self._mech_walls_syncing or self._mech_walls_desired):
+            await self._engine_inputs.flush(before_ns)
+            await asyncio.sleep(0.0005)
 
     def _publish_world_state(self, stamp_ns: int | None = None, always: bool = False):
         """Publish robot and possessed pedestrian poses and velocities as AgentStates on world_state topic, each robot also as `robot_<i>` by spawn order, no robots when they are not visible.
@@ -1682,7 +1741,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
         request = SpawnAgents.Request()
         immediate: list[tuple[DynamicObstacle, ItineraryDriver | None, dict[str, str]]] = []
-        now = self._now_s()
+        now = self._episode_s(self._engine_stamp_ns) if self._input_barrier else self._now_s()
         for obstacle in obstacles:
             try:
                 mechanics = PedMechanics.from_dynamic_obstacle(obstacle)

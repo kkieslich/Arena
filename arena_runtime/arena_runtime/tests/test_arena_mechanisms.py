@@ -87,6 +87,7 @@ def _adapter(level_origins: dict[str, tuple[float, float]] | None = None) -> Are
     sim._deferred_unanchored = []
     sim._clock_on_request = False
     sim._clock_started = False
+    sim._input_barrier = False
     sim._itineraries = {}
     sim._semantic_aliases = {}
     sim._semantic_values = {}

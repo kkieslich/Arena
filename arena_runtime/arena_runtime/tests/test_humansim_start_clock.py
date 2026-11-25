@@ -121,14 +121,17 @@ def test_an_engine_without_the_input_barrier_still_holds_its_clock() -> None:
 
 
 def test_a_walker_delayed_before_the_start_comes_in_its_delay_after_the_epoch() -> None:
-    adapter = _adapter(accept=True)
-    _run(adapter._hold_clock_until_start())
-    msg = object()
-    adapter._deferred_unanchored.append((2.5, msg, {}))
-    _run(adapter.start_clock(Time(sec=41, nanosec=500_000_000)))
-    assert adapter._deferred_spawns == [(44.0, msg, {})]
-    assert adapter._deferred_unanchored == []
-    assert adapter._clock_started
+    """With the barrier the step loop counts episode seconds, without it sim seconds."""
+    for barrier, due in ((True, 2.5), (False, 44.0)):
+        adapter = _adapter(accept=True, barrier=barrier)
+        _run(adapter._hold_clock_until_start())
+        msg = object()
+        adapter._deferred_unanchored.append((2.5, msg, {}))
+        _run(adapter.start_clock(Time(sec=41, nanosec=500_000_000)))
+        assert adapter._deferred_spawns == [(due, msg, {})]
+        assert adapter._deferred_unanchored == []
+        assert adapter._clock_started
+        assert adapter._episode_epoch_ns == 41_500_000_000
 
 
 def test_without_a_gating_lockstep_the_engine_does_not_wait_for_acknowledgements() -> None:

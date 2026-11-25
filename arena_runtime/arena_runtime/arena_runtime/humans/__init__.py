@@ -82,6 +82,9 @@ def wire_radius(radius: float) -> float:
 
 
 Segment = tuple[tuple[float, float], tuple[float, float]]
+Disc = tuple[str, tuple[float, float], float]
+#: one tick of the world mechanisms: (sim seconds, seconds since the last tick, pedestrian discs at that time)
+MechanismStep = typing.Callable[[float, float, list[Disc]], typing.Awaitable[None]]
 
 _STREAM_QOS = rclpy.qos.QoSProfile(
     reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
@@ -762,6 +765,14 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     def set_mechanism_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
         """Replace the named wall set seen by pedestrian navigation; None removes it. Map frame."""
+
+    def drives_mechanisms(self) -> bool:
+        """Whether this backend steps the world mechanisms on its own crowd ticks (see `set_mechanism_step`)."""
+        return False
+
+    def set_mechanism_step(self, step: MechanismStep | None) -> None:
+        """Hand over the mechanisms' tick: `step(now, dt, pedestrian_discs)`, run once per crowd tick, None takes it back."""
+        del step
 
     async def set_crowd_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
         """`set_mechanism_walls`, in place once it returns: walls only the walkers see, set before they spawn. Map frame."""
