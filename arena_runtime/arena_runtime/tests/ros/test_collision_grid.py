@@ -73,6 +73,21 @@ def test_static_stamp_and_sync():
     assert grid.hit(_box(2.5, 2.5)) == (Cell.MAP, MAP_ID)
 
 
+def test_a_write_swaps_in_a_new_state_and_leaves_the_one_a_reader_holds():
+    """The trackers read the grid on the side executor's thread while the loop stamps and syncs it."""
+    grid = CollisionGrid.build(_world_map(_ROWS), origin=Position(x=0.0, y=0.0), walls=())
+    held = grid._state
+    held_live = held[0].copy()
+    grid.stamp("crate", _box(0.5, 0.5))
+    assert grid._state is not held
+    assert np.array_equal(held[0], held_live) and held[1] == {}
+    assert grid.hit(_box(0.5, 0.5)) == (Cell.STATIC, "crate")
+    stamped = grid._state
+    grid.sync(())
+    assert stamped[1].keys() == {"crate"} and stamped[0].max() == Cell.STATIC
+    assert grid.hit(_box(0.5, 0.5)) is None
+
+
 def test_sub_half_cell_overlap_misses():
     grid = CollisionGrid.build(_world_map(_ROWS), origin=Position(x=0.0, y=0.0), walls=())
     # covers x in [1.7, 2.3]: only 0.3 of the occupied cell, its centre (2.5) is outside
