@@ -172,7 +172,9 @@ def test_save_layouts_refuses_a_root_it_cannot_hardlink_into(hospital_copy: Path
 def test_cli_reference_writes_the_site_suite(hospital_copy: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     out = tmp_path / "suites" / "infra_h1_site.yaml"
     assert cli.main(["infra", "reference", "--site", str(hospital_copy), "--scenario", "mix", "--seeds", "1-3,5", "--out", str(out)]) == 0
-    doc = yaml.safe_load(out.read_text())
+    # a flat --out writes the bundle arena_evaluation resolves `--suite infra_h1_site` to
+    assert not out.exists()
+    doc = yaml.safe_load((tmp_path / "suites" / "infra_h1_site" / "suite.yaml").read_text())
     assert [s["name"] for s in doc["stages"]] == ["hospital_copy__s1", "hospital_copy__s2", "hospital_copy__s3", "hospital_copy__s5"]
     assert "arena evaluation benchmark --suite infra_h1_site" in capsys.readouterr().out
     assert cli.main(["infra", "reference", "--site", str(hospital_copy), "--scenario", "nope", "--out", str(out)]) == 1
@@ -190,15 +192,15 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     monkeypatch.setattr(search.Search, "base", property(lambda self: base))
     cells = [{"planner": "peds_only", "stage": f"hospital_copy__s{seed}", "flow_world": "hospital_copy", "flow_base": "hospital_copy", "flow_seed": seed, "x": 10.25, "y": 20.25, "cell_m": 0.5, "heading_rad": 0.0, "ped_seconds": 50.0} for seed in (1, 2)]
     pd.DataFrame(cells).to_parquet(tmp_path / "flow_cells.parquet")
-    out = tmp_path / "suites" / "infra_h1.yaml"
+    out = tmp_path / "suites" / "infra_h1" / "suite.yaml"
     x, y = loading.objects[0].goto
     args = ["infra", "layouts", "--site", str(hospital_copy), "--scenario", "mix", "--occupancy", str(tmp_path), "--loading", f"{x},{y}", "--seeds", "1-2", "--random", "2", "--out", str(out), "--parts", "1,2", "--top-ups", "0.5", "--soc-min", "70"]
     assert cli.main([*args, "--dry-run"]) == 0
-    assert not out.exists() and not out.with_name("infra_h1_p1.yaml").exists()
+    assert not out.exists() and not SU.sibling(out, "infra_h1_p1").exists()
     assert cli.main(args) == 0
     assert "&id" not in out.read_text()  # each stage its own fleet block, no YAML aliases
     doc = yaml.safe_load(out.read_text())
-    manifest = json.loads(out.with_name("infra_h1.layouts.json").read_text())
+    manifest = json.loads((out.parent / "layouts.json").read_text())
     roles = [r["role"] for r in manifest["runs"]]
     joint = roles.count("joint")
     assert 1 <= joint <= search.JOINT_TOP and roles == ["robot_only", *["joint"] * joint, "random", "random"]
@@ -245,7 +247,7 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     assert sorted(i for p in parts for i in p["layouts"]) == sorted(ids) and abs(len(parts[1]["layouts"]) - 2 * len(parts[0]["layouts"])) <= 2
     stages = []
     for p in parts:
-        part_doc = yaml.safe_load(out.with_name(f"{p['suite']}.yaml").read_text())
+        part_doc = yaml.safe_load((tmp_path / "suites" / p["suite"] / "suite.yaml").read_text())
         assert {s["name"].split("__s")[0] for s in part_doc["stages"]} == set(p["worlds"]) and part_doc["references"] == doc["references"]
         assert p["episodes"] == infra.episodes(part_doc)
         stages += part_doc["stages"]
@@ -446,7 +448,7 @@ def test_cli_premise_writes_the_two_most_different_layouts_with_the_fleet(hospit
     level = site.world.levels[loading.level]
     base = NavrBase(level, exclude={o.name for o in level.objects})
     monkeypatch.setattr(search.Search, "base", property(lambda self: base))
-    out = tmp_path / "suites" / "infra_h1_premise.yaml"
+    out = tmp_path / "suites" / "infra_h1_premise" / "suite.yaml"
     x, y = loading.objects[0].goto
     args = ["infra", "premise", "--site", str(hospital_copy), "--scenario", "mix", "--loading", f"{x},{y}", "--out", str(out)]
     assert cli.main([*args, "--dry-run"]) == 0 and not out.exists()
@@ -478,11 +480,11 @@ def test_cli_evaluation_writes_the_two_picks_and_the_site_on_fresh_seeds(tmp_pat
     selection.write_text(json.dumps({"site": "site", "site_root": "/x", "scenario": "/x/scenarios/study_mix_v2", "seeds": [1, 2, 3, 4, 5], "episode_s": 1500.0, "warmup_s": 420.0, "rate_per_h": 9.5, "fleet": fleet, "contest": "[{name: fleet_dwb}]", "runs": runs, "worlds": worlds}))
     pick = tmp_path / "pick.json"
     pick.write_text(json.dumps({"joint_pick": "bbbb2222", "robot_only": "aaaa1111"}))
-    out = tmp_path / "suites" / "infra_h1_eval.yaml"
+    out = tmp_path / "suites" / "infra_h1_eval" / "suite.yaml"
     args = ["infra", "evaluation", "--pick", str(pick), "--selection", str(selection), "--out", str(out)]
     assert cli.main(args) == 0
     doc = yaml.safe_load(out.read_text())
-    site = yaml.safe_load(out.with_name("infra_h1_eval_site.yaml").read_text())
+    site = yaml.safe_load((tmp_path / "suites" / "infra_h1_eval_site" / "suite.yaml").read_text())
     assert [s["name"] for s in doc["stages"]] == [f"site__layout_{i}__s{seed}" for i in ("bbbb2222", "aaaa1111") for seed in infra.EVALUATION_SEEDS]
     assert all(s["config"] == {"scenario": {"file": "study_mix_v2"}, "fleet": fleet} for s in doc["stages"])
     assert doc["references"] == ["unhindered_peds"] and site["references"] is False
@@ -497,6 +499,22 @@ def test_cli_evaluation_writes_the_two_picks_and_the_site_on_fresh_seeds(tmp_pat
     assert cli.main([*args, "--seeds", "5-12", "--force"]) == 1
 
 
+def test_cli_evaluation_reads_the_selection_manifest_from_the_bundle_else_from_an_older_flat_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARENA_ASSETS_DIR_IMPORTED", str(tmp_path))
+    suites = tmp_path / "suites"
+    assert infra.default_out("infra_h1") == suites / "infra_h1" / "suite.yaml"
+    assert infra.manifest_path(infra.default_out("infra_h1")) == suites / "infra_h1" / "layouts.json"
+    assert infra.charge_states_path(infra.default_out("infra_rd")) == suites / "infra_rd" / "charge_states.json"
+    # no suite yet: the manifest to write is the bundle's
+    assert infra.find_manifest("infra_h1") == suites / "infra_h1" / "layouts.json"
+    suites.mkdir()
+    (suites / "infra_h1.yaml").write_text("stages: []\n")
+    assert infra.find_manifest("infra_h1") == suites / "infra_h1.layouts.json"
+    (suites / "infra_h1").mkdir()
+    (suites / "infra_h1" / "suite.yaml").write_text("stages: []\n")
+    assert infra.find_manifest("infra_h1") == suites / "infra_h1" / "layouts.json"
+
+
 def test_cli_evaluation_runs_the_guideline_layout_the_selection_recorded(tmp_path: Path) -> None:
     worlds = {"aaaa1111": str(tmp_path / "site__layout_aaaa1111"), "bbbb2222": str(tmp_path / "site__layout_bbbb2222")}
     runs = [{"role": "robot_only", "rank": 1, "layout_id": "aaaa1111", "travel_m": 1.0}, {"role": "joint", "rank": 1, "layout_id": "bbbb2222", "travel_m": 1.0}]
@@ -505,7 +523,7 @@ def test_cli_evaluation_runs_the_guideline_layout_the_selection_recorded(tmp_pat
     selection.write_text(json.dumps({"site": "site", "site_root": "/x", "scenario": "/x/scenarios/study_peak", "seeds": [1, 2, 3, 4, 5], "episode_s": 1500.0, "warmup_s": 420.0, "rate_per_h": 6.46, "fleet": infra.fleet_config(6.46), "contest": "[{name: fleet_dwb}]", "runs": runs, "worlds": worlds, "guideline": guide}))
     pick = tmp_path / "pick.json"
     pick.write_text(json.dumps({"joint_pick": "bbbb2222", "robot_only": "aaaa1111"}))
-    out = tmp_path / "suites" / "infra_h1_eval.yaml"
+    out = tmp_path / "suites" / "infra_h1_eval" / "suite.yaml"
     args = ["infra", "evaluation", "--pick", str(pick), "--selection", str(selection), "--out", str(out)]
     assert cli.main(args) == 0
     doc = yaml.safe_load(out.read_text())
@@ -794,7 +812,7 @@ def _evaluation_inputs(tmp_path: Path, joint: str, robot_only: str) -> tuple[lis
     selection.write_text(json.dumps({"site": "site", "site_root": "/x", "scenario": "/x/scenarios/study_mix_v2", "seeds": [1, 2, 3, 4, 5], "episode_s": 1500.0, "warmup_s": 420.0, "rate_per_h": 9.5, "fleet": infra.fleet_config(9.5), "contest": "[{name: fleet_dwb}]", "runs": runs, "worlds": worlds}))
     pick = tmp_path / "pick.json"
     pick.write_text(json.dumps({"joint_pick": joint, "robot_only": robot_only}))
-    out = tmp_path / "suites" / "infra_h1_eval.yaml"
+    out = tmp_path / "suites" / "infra_h1_eval" / "suite.yaml"
     return ["infra", "evaluation", "--pick", str(pick), "--selection", str(selection), "--out", str(out)], out
 
 
@@ -803,17 +821,19 @@ def test_parts_that_cannot_be_made_stop_the_command_before_it_writes(tmp_path: P
     assert cli.main([*args, "--parts", "1,1", "--dry-run"]) == 1
     assert cli.main([*args, "--parts", "1,1"]) == 1
     assert "the joint pick is the robot-only pick, run it without --parts" in capsys.readouterr().err
-    assert not out.parent.exists()  # nothing written: no main suite without its site suite and manifest
-    assert cli.main(args) == 0 and out.is_file() and infra.manifest_path(out).is_file() and out.with_name("infra_h1_eval_site.yaml").is_file()
+    assert not SU.suites_dir(out).exists()  # nothing written: no main suite without its site suite and manifest
+    assert cli.main(args) == 0 and out.is_file() and (out.parent / "layouts.json").is_file() and SU.sibling(out, "infra_h1_eval_site").is_file()
 
 
 def test_a_rerun_leaves_no_part_suite_its_manifest_does_not_list(tmp_path: Path) -> None:
     args, out = _evaluation_inputs(tmp_path, "bbbb2222", "aaaa1111")
     assert cli.main([*args, "--parts", "1,1"]) == 0
     assert sorted(p["suite"] for p in json.loads(infra.manifest_path(out).read_text())["parts"]) == ["infra_h1_eval_p1", "infra_h1_eval_p2"]
-    assert out.with_name("infra_h1_eval_p1.yaml").is_file() and out.with_name("infra_h1_eval_p2.yaml").is_file()
-    foreign = out.with_name("infra_h1_eval_p3.yaml")
+    assert SU.sibling(out, "infra_h1_eval_p1").is_file() and SU.sibling(out, "infra_h1_eval_p2").is_file()
+    foreign = SU.sibling(out, "infra_h1_eval_p3")
+    foreign.parent.mkdir()
     foreign.write_text("stages: []\n")  # not written by flowedit infra: kept
     assert cli.main(args) == 0
     assert "parts" not in json.loads(infra.manifest_path(out).read_text())
-    assert sorted(p.name for p in out.parent.glob("infra_h1_eval_p*.yaml")) == ["infra_h1_eval_p3.yaml"]
+    # the stale parts' bundles are gone, the foreign one stays
+    assert sorted(p.name for p in SU.suites_dir(out).glob("infra_h1_eval_p*")) == ["infra_h1_eval_p3"]

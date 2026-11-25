@@ -21,9 +21,11 @@ from task_generator.tasks.robots.fleet import FleetParams
 LOG_KIND = "fleet"
 #: how long a robot holds in place before a busy dock at most; the mode sends it on before, once the dock frees
 WAIT_HOLD_S = 3600.0
-#: mean speed and turn rate assumed while a robot drives, for the energy per metre derived from its power profile (Nav2 caps the jackal at 0.5 m/s and 1.5 rad/s)
-DRIVE_SPEED_MPS = 0.4
-DRIVE_TURN_RADPS = 0.2
+#: mean speed and turn rate while a robot drives, for the energy per metre derived from its power profile: the jackals'
+#: moving time (over 0.1 m/s) in three twin recordings with the crowd on the upstream-synced stack, from their ground-truth
+#: poses in 1 s steps (over 2021 s; about 1.65 m/s cruise, the speed Nav2 DWB commands, under the 2.0 m/s velocity limit)
+DRIVE_SPEED_MPS = 1.14
+DRIVE_TURN_RADPS = 0.39
 #: the crowd-only wall set round the robots' parking spots (`keep_crowd_off`)
 CROWD_OFF_KEY = "fleet_parking"
 #: when a robot goes to charge (`charge_rule`), and what a jam on a charging trip does (`charge_jam`)
@@ -299,7 +301,8 @@ class TM_Fleet(TM_Robots):
         # the robots' parking spots (each robot's home and every charger, docked objects) are no floor for the crowd
         docked = {entity.name for entity in world.objects if entity.dock is not None}
         parked = [spot for spot in dict.fromkeys((*self._home.values(), *self._chargers)) if spot in docked] if self._keep_crowd_off.value and robots else []
-        await self._ctx.environment_manager.keep_crowd_off(CROWD_OFF_KEY, [world.lookup_zone_polygon(spot) for spot in parked])
+        # every parked spot is a home or a charger, whose polygon the loop above asserted
+        await self._ctx.environment_manager.keep_crowd_off(CROWD_OFF_KEY, [corners for spot in parked if (corners := world.lookup_zone_polygon(spot)) is not None])
         if parked:
             self._logger.info(f"the crowd keeps off {len(parked)} parking spots: {', '.join(parked)}")
         self._spot = dict(self._home)

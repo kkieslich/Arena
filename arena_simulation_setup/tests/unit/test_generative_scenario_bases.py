@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 from arena_simulation_setup.generative.scenario.populate import build
-from arena_simulation_setup.generative.scenario.route import MAX_LEGS, MIN_EPISODE_S, robot_for, ROBOT_SPEED_MPS, route_seconds
+from arena_simulation_setup.generative.scenario.route import MAX_LEGS, MIN_EPISODE_S, ROUTE_MARGIN, robot_for, ROBOT_SPEED_MPS, route_seconds
 from arena_simulation_setup.generative.scenario.populate import (
     MAX_VELOCITY_DEFAULT,
     MIN_PED_ROUTE_M,
@@ -51,7 +51,9 @@ def test_the_shipped_route_is_kept_and_made_long_enough() -> None:
     spec = robot_for(ROBOT, ZONES)
     assert spec["start"][:2] == [2.0, 16.0] and "phases" in spec and "goal" not in spec
     assert route_seconds(spec, ZONES) >= MIN_EPISODE_S
-    short = {"start": [2.0, 16.0, 0.0], "goal": [6.0, 16.0, 0.0]}
+    # a route the shuttle makes long enough two legs before the leg cap, at the design speed
+    leg = math.ceil(MIN_EPISODE_S * ROBOT_SPEED_MPS * ROUTE_MARGIN / (MAX_LEGS - 2))
+    short = {"start": [2.0, 16.0, 0.0], "goal": [2.0 + leg, 16.0, 0.0]}
     spec = robot_for(short, ZONES)
     assert route_seconds(spec, ZONES) >= MIN_EPISODE_S
     assert len(spec["phases"]) < MAX_LEGS

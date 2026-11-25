@@ -338,7 +338,7 @@ def _job_index(manager: _Manager) -> int:
     return int(_phase_text(manager).split(":")[0].split()[-1])
 
 
-def _job_wh(start: tuple[float, float], per_m: float = 0.046) -> float:
+def _job_wh(start: tuple[float, float], per_m: float = 0.026) -> float:
     """The mode's estimate for a delivery from `start`: 1.2 times the straight line to the loading point, on to the locker and on to the charger nearest it, plus the jackal's 42.2 W over 25 s of loading and unloading."""
     return (math.dist(start, LOADING_XY) + math.dist(LOADING_XY, LOCKER_XY) + math.dist(LOCKER_XY, CHARGER_2_XY)) * 1.2 * per_m + 42.2 * 25.0 / 3600.0
 
@@ -518,8 +518,10 @@ def test_fleet_sends_a_robot_to_charge_before_a_job_that_would_leave_it_under_th
     for manager in managers.values():
         manager.battery_capacity_wh, manager.power_profile = 36.0, {"static_power_w": 42.2}
     far, near = _job_wh((0.5, 0.5)), _job_wh((2.5, 0.5))
-    # r0 on bay_1 is fuller than r1 on bay_2, but the job would leave it just under 10 % of 36 Wh, and r1 just over
-    _socs(managers, r0=10.0 + 100.0 * far / 36.0 - 0.1, r1=10.0 + 100.0 * near / 36.0 + 0.1, r2=4.0, r3=4.0)
+    # r0 on bay_1 is fuller than r1 on bay_2, but the job would leave it just under 10 % of 36 Wh, and r1 just over,
+    # each by a quarter of the gap the 2 m between the bays makes in percent
+    margin = 100.0 * (far - near) / 36.0 / 4.0
+    _socs(managers, r0=10.0 + 100.0 * far / 36.0 - margin, r1=10.0 + 100.0 * near / 36.0 + margin, r2=4.0, r3=4.0)
     assert managers["r0"].soc > managers["r1"].soc
     _at(node, 1.0)
     _tick(mode)
@@ -546,8 +548,9 @@ def test_fleet_gives_a_job_to_a_robot_charged_to_charge_until_whatever_the_estim
 def test_the_energy_per_metre_follows_the_power_profile_when_wh_per_m_is_0(monkeypatch: pytest.MonkeyPatch) -> None:
     from task_generator.tasks.robots.fleet.impl import wh_per_m
 
-    assert wh_per_m(JACKAL) == pytest.approx((42.2 + 50.0 * 0.4 + 17.0 * 0.2) / 0.4 / 3600.0)
-    assert round(wh_per_m(JACKAL), 3) == 0.046
+    assert wh_per_m(JACKAL) == pytest.approx((42.2 + 50.0 * 1.14 + 17.0 * 0.39) / 1.14 / 3600.0)
+    # the default wh_per_m 0.026 is the jackal's power profile at the measured driving speed and turn rate
+    assert round(wh_per_m(JACKAL), 3) == 0.026
     assert wh_per_m(None) == 0.0
     mode, managers, node, record = _fleet(monkeypatch, jobs="d", wh_per_m=0.0)
     asyncio.run(mode.reset())
@@ -753,7 +756,7 @@ def test_fleet_job_energy_counts_the_leg_to_the_charger_nearest_the_second_dock(
     _tick(mode)
     # the delivery unloads at the locker (7, 3), nearest charger_2 (4, 3); the pickup unloads at the loading point (4.5, 0.5), nearest charger_2 too
     assert record.log["job.0.energy_wh"] == f"{_job_wh((0.5, 0.5)):.3f}"
-    pickup = (math.dist((2.5, 0.5), LOCKER_XY) + math.dist(LOCKER_XY, LOADING_XY) + math.dist(LOADING_XY, CHARGER_2_XY)) * 1.2 * 0.046 + 42.2 * 25.0 / 3600.0
+    pickup = (math.dist((2.5, 0.5), LOCKER_XY) + math.dist(LOCKER_XY, LOADING_XY) + math.dist(LOADING_XY, CHARGER_2_XY)) * 1.2 * 0.026 + 42.2 * 25.0 / 3600.0
     assert record.log["job.1.energy_wh"] == f"{pickup:.3f}"
 
 

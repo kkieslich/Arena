@@ -1,6 +1,8 @@
 #!/bin/sh
 root="${ARENA_DATA_DIR:-$ARENA_WS_DIR/data}/assets"
 new="$root/arena-public"
+# a TMPDIR that does not exist (the compose volume /tmp/shared outside compose) falls back to /tmp
+[ -d "${TMPDIR:-/tmp}" ] || export TMPDIR=/tmp
 list="$(mktemp)" || exit 1
 trap 'rm -f "$list"' EXIT
 moved=0

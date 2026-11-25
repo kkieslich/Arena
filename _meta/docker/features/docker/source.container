@@ -4,6 +4,11 @@ export ARENA_WS_DIR="/opt/arena_ws"
 export ARENA_DIR="$ARENA_WS_DIR/src/Arena"
 export ARENA_VENV_DIR="/opt/venv"
 export ARENA_CONTAINER=1
+# TMPDIR=/tmp/shared names the compose stack's shared volume; an image run without that volume (an Apptainer SIF of a
+# committed image) keeps the variable but not the directory, and mktemp fails there
+if [ -n "${TMPDIR:-}" ] && [ ! -d "$TMPDIR" ]; then
+    export TMPDIR=/tmp
+fi
 
 HOST_UID=${HOST_UID:-$(id -u)}
 export HOST_UID

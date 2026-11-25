@@ -143,12 +143,14 @@ def test_decisions_reject_numbers_where_tiers_are_asked() -> None:
 
 def test_world_plans_the_route_and_places_on_it(toy) -> None:
     _worlds, _doc, _base, world = toy
-    assert world.route[0] == (2.0, 4.0) and abs(world.route[-1][0] - 22.0) < 1.0
     from arena_simulation_setup.generative.scenario.promptgen.world import MAX_LEG_M
 
+    # the shipped leg (2, 4) -> (30, 4), cut where it exceeds MAX_LEG_M
+    end = min(30.0, 2.0 + MAX_LEG_M)
+    assert world.route[0] == (2.0, 4.0) and abs(world.route[-1][0] - end) < 1.0
     assert world.route_length <= MAX_LEG_M * 1.2
     pt, heading = world.point_at(0.5)
-    assert pt == pytest.approx((12.0, 4.0), abs=0.3) and heading == pytest.approx((1.0, 0.0), abs=0.05)
+    assert pt == pytest.approx(((2.0 + end) / 2, 4.0), abs=0.3) and heading == pytest.approx((1.0, 0.0), abs=0.05)
     width, _l, _r = world.passage_width(pt, heading)
     assert 1.6 < width < 2.4
     assert world.valid((16.0, 4.0)) is not None and world.valid((16.0, 4.0), on_route=True) is None
@@ -368,12 +370,16 @@ def test_a_break_the_robot_reaches_before_the_formation_forms_is_rejected(toy) -
 
 
 def test_a_break_near_the_start_is_narrowed_until_the_formation_forms_first(toy) -> None:
+    from arena_simulation_setup.generative.scenario.promptgen.step_d import BREAK_AFTER_FORM_S, FORM_AT_S
+
     world = toy[3]
-    result = _formation_break(toy, {"route_fraction": 0.3}, {"robot_within": 3.0})
+    # the formation 2.5 m further along than the robot drives before it forms: a 3 m trigger fires too early, a narrower one in time
+    lead = ROBOT_SPEED_MPS * (FORM_AT_S + BREAK_AFTER_FORM_S)
+    result = _formation_break(toy, {"route_fraction": (lead + 2.5) / world.route_length}, {"robot_within": 3.0})
     assert result.record.status == "ok", result.record.failures
     _form, scatter = result.effects
     reach = math.dist(world.start, tuple(scatter["when"]["of"])) - scatter["when"]["robot_within"]
-    assert scatter["when"]["robot_within"] < 3.0 and reach / ROBOT_SPEED_MPS >= 7.0 - 0.05
+    assert scatter["when"]["robot_within"] < 3.0 and reach / ROBOT_SPEED_MPS >= FORM_AT_S + BREAK_AFTER_FORM_S - 0.05
     assert any("narrowed" in w for w in result.record.warnings)
 
 
@@ -789,13 +795,14 @@ def test_the_after_variants_are_steps_of_the_walk(toy, after: str, extra: dict, 
 
 
 def test_following_walks_the_robots_route_behind_it(toy) -> None:
+    world = toy[3]
     result = _approach(toy, after="follow", duration=6)
     _edge_agent, tree = _edge(result)
     walk = tree["sequences"]["walk"]["steps"]
     follow = [walk[k]["target_pose"]["x"] for k in walk if k.startswith("follow_")]
     encounter = _encounter(result)
     assert follow and follow == sorted(follow) and follow[0] > encounter[0]
-    assert follow[-1] - encounter[0] == pytest.approx(min(6 * 1.1, 22.0 - encounter[0]), abs=0.1)
+    assert follow[-1] - encounter[0] == pytest.approx(min(6 * 1.1, world.route[-1][0] - encounter[0]), abs=0.1)
 
 
 def test_a_blocker_stands_on_the_route_and_steps_on_when_the_robot_is_near(toy) -> None:
@@ -929,11 +936,16 @@ def test_owned_names_number_the_realized_intercepts_in_order(toy) -> None:
     assert result.record.owned["D"] == ["edge_0"] and result.record.owned["C"] == ["edge_1"] and result.injected == ["edge_0", "edge_1"]
 
 
+#: The U-turn's arm length: as far as the robot drives in 16 s, so a walker's release, the robot's distance while the
+#: walker closes in (proportional to the robot's speed), starts on the south arm [m]
+U_ARM_M = 16.0 * ROBOT_SPEED_MPS
+
+
 def _u_turn(tmp_path: Path) -> tuple[Path, dict, Path, WorldContext]:
     """A U-shaped hall: east along the south arm, up the east leg, west along the north arm, the arms 4 m apart."""
     root = tmp_path / "worlds" / "u_turn"
     root.mkdir(parents=True)
-    rooms = {"south_arm": (0, 0, 8, 2), "east_leg": (8, 0, 10, 6), "north_arm": (0, 4, 8, 6)}
+    rooms = {"south_arm": (0, 0, U_ARM_M, 2), "east_leg": (U_ARM_M, 0, U_ARM_M + 2, 6), "north_arm": (0, 4, U_ARM_M, 6)}
     zones = [{"name": n, "polygon": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], "floor": False} for n, (x0, y0, x1, y1) in rooms.items()]
     (root / "world.yaml").write_text(yaml.safe_dump({"format": "arena-world/2", "levels": [{"id": "0", "zones": zones}]}))
     doc = {"robots": [{"start": [1.0, 1.0, 0.0], "phases": [{"goto": [1.0, 5.0, 0.0]}]}], "humans": []}
@@ -947,7 +959,7 @@ def test_a_release_on_a_bent_route_fires_its_designed_arc_before_the_encounter(t
     from arena_simulation_setup.generative.scenario.promptgen.realize import entered_at
 
     _worlds, doc, base, world = _u_turn(tmp_path)
-    assert world.route_length > 15.0 and max(x for x, _y in world.route) > 8.0
+    assert world.route_length > 2 * U_ARM_M - 1.0 and max(x for x, _y in world.route) > U_ARM_M
     prompt = _prompt("An old man shuffles straight at the robot.", ["C:approach"], C={"case": "approach", "profile": "elder", "speed": "low", "angle": 180, "route_fraction": 0.7})
     result = generate(prompt, world=world, base_id="empty", base_doc=doc, base_dir=base, oracle=True)
     assert result.record.status == "ok", result.record.failures

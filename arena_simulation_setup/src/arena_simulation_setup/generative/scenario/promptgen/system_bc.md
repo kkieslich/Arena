@@ -77,7 +77,7 @@ Places on the route (`route_fraction`):
 
 C duration phrases (seconds): "for a moment" 4; "for a few seconds" 6; "for a while" 12; "for a good half minute" 30; "for a long time" 30.
 
-The robot plans at 0.5 m/s: "twenty seconds in" is about 10 m along the route - convert times to route fractions with the route length given in the context.
+The robot plans at 1.14 m/s: "twenty seconds in" is about 22.8 m along the route - convert times to route fractions with the route length given in the context.
 
 ## Rules
 

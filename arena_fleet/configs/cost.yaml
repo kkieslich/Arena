@@ -26,7 +26,8 @@ robot:
   margin_m: 0.08          # added to the largest footprint radius of the fleet's robot models: plans keep that body clear of walls, and it is tested against people
 
 time:
-  speed_fraction: 0.2     # v_nom, the speed that turns plan length into seconds, as this fraction of the slowest robot's top speed
+  speed_fraction: 0.57    # v_nom, the speed that turns plan length into seconds, as this fraction of the slowest robot's top speed
+                          # (1.14 m/s of the jackal's 2.0 m/s: its measured mean over all moving time in twin recordings on the synced stack)
 
 encounter:                # "will this plan meet people?" H = plan length through occupied cells of the people map / one person's diameter
   horizon_s: 60.0         # look this far ahead along the plan

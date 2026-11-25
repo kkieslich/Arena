@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING
 
 import arena_people_msgs.msg
@@ -53,7 +53,7 @@ class PedestrianIndex:
     index for what its polygons touch instead of testing every pedestrian, so its cost stays flat as the crowd grows.
     """
 
-    def __init__(self, peds: Sequence[arena_people_msgs.msg.Pedestrian], default_radius: float):
+    def __init__(self, peds: Iterable[arena_people_msgs.msg.Pedestrian], default_radius: float):
         self.peds = list(peds)
         self.bodies = body_discs(self.peds, default_radius)
         self.devices = [device_outline(p) for p in self.peds]
@@ -248,8 +248,8 @@ class CollisionTrackerNode(TimeNode):
             p = peds.peds[i]
             if i in bodies:
                 events.append(self._event(arena_robots_msgs.msg.CollisionEvent.KIND_PEDESTRIAN, p, p.pose.position.x, p.pose.position.y))
-            if i in devices:
-                touch = footprint.intersection(peds.devices[i]).centroid
+            if i in devices and (device := peds.devices[i]) is not None:
+                touch = footprint.intersection(device).centroid
                 events.append(self._event(arena_robots_msgs.msg.CollisionEvent.KIND_DEVICE, p, touch.x, touch.y, p.device.kind))
 
         self._pub_markers.publish(lambda: self._markers(footprint, events, peds))
