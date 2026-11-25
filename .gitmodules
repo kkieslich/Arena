@@ -62,6 +62,6 @@
 	update = checkout
 [submodule "utils/arena_rclpy_mixins"]
 	path = utils/arena_rclpy_mixins
-	url = https://github.com/voshch/arena-rclpy-mixins.git
+	url = https://github.com/kkieslich/arena-rclpy-mixins.git
 	branch = jazzy
 	update = checkout
