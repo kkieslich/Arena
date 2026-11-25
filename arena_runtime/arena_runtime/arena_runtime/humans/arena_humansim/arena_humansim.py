@@ -3,6 +3,7 @@
 import array
 import asyncio
 import math
+import time
 import traceback
 import typing
 from collections.abc import Mapping, Sequence
@@ -91,7 +92,7 @@ from arena_rclpy_mixins.Async import ClientWrapper
 from arena_rclpy_mixins.lazy import LazySubscription
 from arena_rclpy_mixins.shared import FrameNamespace
 from arena_rclpy_mixins.Time import Time
-from arena_runtime_msgs.msg import LockstepChannel
+from arena_runtime_msgs.msg import LockstepChannel, LockstepStatus
 from arena_simulation_setup.metrics import use_points
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET, CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, Stairs
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
@@ -125,6 +126,7 @@ from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.rng import stable_int
 from arena_runtime.env.realizer import Realizer
 from arena_runtime.humans import PED_RADIUS, BaseHumanSimulator, HumanSimulatorOptions, RegionSetupError, ScenarioCheckError, Segment
+from arena_runtime.humans.arena_humansim.engine_inputs import EngineInputs, SequencedClient
 from arena_runtime.humans.arena_humansim.lane_config import lane_msg_from_config
 from arena_runtime.humans.itinerary import STIMULUS_TELEPORTED, ItineraryDriver, Stop, semantic_atom
 from arena_runtime.humans.support import Support, seat_stand
@@ -443,6 +445,39 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._start_clock_client: ClientWrapper | None = None if StartClock is None else self.node.create_client_wrapper(StartClock, self.node.service_namespace(self.SERVICE_START_CLOCK))
         # whether the engine waits for start_clock after every remove-all, set in setup()
         self._clock_on_request = False
+        # since the last start_clock: the engine ticks (held again by every remove-all)
+        self._clock_started = False
+        # whether the engine waits for this adapter's acknowledgement of each frame (input_barrier), set in setup()
+        self._input_barrier = False
+        # stamp of the newest engine frame acknowledged with a world_state
+        self._acked_ns = -1
+        self._frame_ready = asyncio.Event()
+        # engine-changing calls go through here: while the engine ticks under the barrier, a call made outside the step
+        # waits for the step after the frame it was decided on, so it lands on the same tick in every run
+        self._engine_inputs = EngineInputs(self._clock_ns, self._clock_stopped)
+        self._clock_seen: tuple[int, float] = (-1, 0.0)
+        for attr in (
+            "_spawn_client",
+            "_remove_client",
+            "_set_flow_client",
+            "_add_source_client",
+            "_remove_source_client",
+            "_add_sink_client",
+            "_remove_sink_client",
+            "_add_walls_client",
+            "_remove_walls_client",
+            "_add_obstacles_client",
+            "_remove_obstacles_client",
+            "_add_world_objects_client",
+            "_remove_world_objects_client",
+            "_update_robot_client",
+            "_set_waypoints_client",
+            "_notify_stimulus_client",
+            "_set_teleport_zones_client",
+            "_set_zone_access_client",
+            "_teleport_agents_client",
+        ):
+            setattr(self, attr, typing.cast("ClientWrapper", SequencedClient(getattr(self, attr), self._engine_inputs)))
 
         self._spawns_in_flight: int = 0
         self._contact_config: tuple[str, float] = ("enabled", 1.2)
@@ -480,6 +515,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
         # world mechanisms
         self._deferred_spawns: list[tuple[float, AgentStateMsg, dict[str, str]]] = []
+        # delayed walkers spawned while the engine's clock waits for start_clock: (delay, msg, alias), timed from the epoch
+        self._deferred_unanchored: list[tuple[float, AgentStateMsg, dict[str, str]]] = []
         self._next_deferred_id = _DEFERRED_ID_BASE
         self._itineraries: dict[int, ItineraryDriver] = {}
         self._semantic_aliases: dict[int, dict[str, str]] = {}
@@ -632,6 +669,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._prev_agent_states = curr
             self._curr_agent_states = msg
             self._engine_stamp_ns = stamp_ns
+            if self._input_barrier:
+                self.node.event_loop.call_soon_threadsafe(self._on_new_frame)
         # publish on receipt (the rate loop can race a stepped clock burst), but
         # coalesced: one roster compute per burst, not per engine tick
         if self._publish_pending:
@@ -668,6 +707,33 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         """Agent type of an engine agent, the spawned yaml path when its type came from a file."""
         name = self._agent_types.get(agent_id, "")
         return self._agent_type_paths.get(name, name)
+
+    def _clock_ns(self) -> int:
+        now = self.node.sim_time
+        return now.sec * 1_000_000_000 + now.nanosec
+
+    _CLOCK_STOPPED_S = 0.3
+
+    def _clock_stopped(self) -> bool:
+        """The clock has stood at or before the newest acknowledged frame for _CLOCK_STOPPED_S wall seconds: the engine waits for
+        the clock, not for a step (a reset holds the lockstep clock)."""
+        clock_ns, wall = self._clock_ns(), time.monotonic()
+        if clock_ns != self._clock_seen[0]:
+            self._clock_seen = (clock_ns, wall)
+        return clock_ns <= self._acked_ns and wall - self._clock_seen[1] >= self._CLOCK_STOPPED_S
+
+    def _on_new_frame(self) -> None:
+        """Hand a new engine frame to the step loop, or, while the loops are paused, acknowledge it at once (a held-back
+        engine would stall the lockstep clock the reset may still move)."""
+        if self._feedback_loop_task is not None and not self._feedback_loop_task.done():
+            self._frame_ready.set()
+        elif self._engine_stamp_ns is not None and self._engine_stamp_ns > self._acked_ns:
+            self._acknowledge(self._engine_stamp_ns)
+
+    def _acknowledge(self, stamp_ns: int) -> None:
+        """Tell the engine every input for the frame stamped `stamp_ns` is in: its next tick may run, and takes these poses."""
+        self._acked_ns = stamp_ns
+        self._publish_world_state(stamp_ns, always=True)
 
     async def _publish_on_receipt(self) -> None:
         self._publish_pending = False
@@ -802,8 +868,19 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         if self._start_clock_client is None:
             self._logger.warning("arena_humansim_msgs has no StartClock: the crowd starts at the engine's first clock after a reset, so seed-paired episodes can differ")
             return
-        request = SetParametersAtomically.Request(parameters=[Parameter("start_on_request", value=True).to_parameter_msg()])
-        response = await self._set_params_client.call_timeout(request)
+        held = Parameter("start_on_request", value=True).to_parameter_msg()
+        barrier = Parameter("input_barrier", value=True).to_parameter_msg()
+        gated = await self._lockstep_gates()
+        response = await self._set_params_client.call_timeout(SetParametersAtomically.Request(parameters=[held, barrier])) if gated else None
+        if response is not None and response.result.successful:
+            self._input_barrier = True
+        elif not gated:
+            self._logger.info("no gating lockstep run: the engine does not wait for frame acknowledgements (a wall-clock sim would leave it behind)")
+            response = await self._set_params_client.call_timeout(SetParametersAtomically.Request(parameters=[held]))
+        else:
+            reason = response.result.reason if response is not None else "timeout"
+            self._logger.warning(f"arena_humansim takes no input barrier ({reason}): inputs land a tick early or late as messages race the clock, so seed-paired episodes can differ")
+            response = await self._set_params_client.call_timeout(SetParametersAtomically.Request(parameters=[held]))
         if response is None or not response.result.successful:
             reason = response.result.reason if response is not None else "timeout"
             self._logger.warning(f"arena_humansim does not hold its clock for the episode start ({reason}): the crowd starts at its first clock after a reset, so seed-paired episodes can differ")
@@ -811,12 +888,51 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         await self._start_clock_client.ensure()
         self._clock_on_request = True
 
+    _LOCKSTEP_STATUS = "/arena/state/lockstep"
+
+    async def _lockstep_gates(self, timeout: float = 3.0) -> bool:
+        """Whether a lockstep run gates the clock (active, not ungated), from the runtime's latched status. Only then can
+        the engine wait for each frame's acknowledgement: a clock that runs on wall time would leave it behind."""
+        loop = asyncio.get_running_loop()
+        status: asyncio.Future[LockstepStatus] = loop.create_future()
+
+        def receive(msg: LockstepStatus) -> None:
+            loop.call_soon_threadsafe(lambda: status.done() or status.set_result(msg))
+
+        qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+        subscription = self.node.create_subscription(LockstepStatus, self._LOCKSTEP_STATUS, receive, qos)
+        try:
+            msg = await asyncio.wait_for(status, timeout)
+        except TimeoutError:
+            return False
+        finally:
+            self.node.destroy_subscription(subscription)
+        return bool(msg.active and not msg.ungated)
+
+    _SEMANTICS_WAIT_S = 2.0
+
+    async def _semantics_delivered(self) -> None:
+        """Wait (a bounded while) until the semantic changes the reset made are with the engine: they go out from a background
+        task, which would otherwise land them before tick 0 or a few ticks later, as it races start_clock."""
+        deadline = time.monotonic() + self._SEMANTICS_WAIT_S
+        while (getattr(self, "_semantic_draining", False) or getattr(self, "_semantic_backlog", None)) and time.monotonic() < deadline:
+            await asyncio.sleep(0.001)
+
     async def start_clock(self, epoch: Time) -> None:
         """Start the engine's tick clock, held since the reset's remove-all, at the episode start: its first tick is stamped `epoch`."""
         if not self._clock_on_request or self._start_clock_client is None:
             return
         assert StartClock is not None
+        # a walker delayed by d s comes in at epoch + d, however long the reset took after it was spawned
+        epoch_s = epoch.to_seconds()
+        self._deferred_spawns.extend((epoch_s + delay, msg, alias) for delay, msg, alias in self._deferred_unanchored)
+        self._deferred_unanchored.clear()
+        self._deferred_spawns.sort(key=lambda entry: entry[0])
+        await self._semantics_delivered()
         response = await self._start_clock_client.call_timeout(StartClock.Request(epoch=epoch.to_msg()))
+        self._clock_started = response is not None and response.success
+        # from the first tick on, calls made outside a step wait for the step (a held clock sends no frame to step on)
+        self._engine_inputs.active = self._clock_started and self._input_barrier and self._feedback_loop_task is not None
         if response is None or not response.success:
             # a reset that failed before its remove-all leaves the engine ticking; a held one would stall the lockstep gate
             self._logger.error(f"arena_humansim did not start its clock at {epoch.to_seconds():.3f} s: {'timeout' if response is None else response.message}")
@@ -951,12 +1067,23 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        # paused, nothing steps: held calls go out now and new ones at once, and frames are acknowledged on arrival
+        self._engine_inputs.active = False
+        await self._engine_inputs.flush()
+        if self._input_barrier and self._engine_stamp_ns is not None and self._engine_stamp_ns > self._acked_ns:
+            self._acknowledge(self._engine_stamp_ns)
 
     async def unpause(self):
         await self.pause()
         self._tick_loop_task = asyncio.create_task(self._interpolation_loop())
         self._update_loop_task = asyncio.create_task(self._pedestrian_update_loop())
-        self._feedback_loop_task = asyncio.create_task(self._feedback_loop())
+        if self._input_barrier:
+            # while the engine waits for start_clock calls go out at once: they land before tick 0 (the reset awaits them)
+            self._engine_inputs.active = self._clock_started
+            self._frame_ready.set()
+            self._feedback_loop_task = asyncio.create_task(self._step_loop())
+        else:
+            self._feedback_loop_task = asyncio.create_task(self._feedback_loop())
 
     @property
     def agent_states(self) -> AgentFrameMsg | None:
@@ -1164,14 +1291,48 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         except Exception as e:
             self._logger.error(f"Error in feedback loop: {e}\n{traceback.format_exc()}")
 
-    def _publish_world_state(self):
-        """Publish robot and possessed pedestrian poses and velocities as AgentStates on world_state topic, each robot also as `robot_<i>` by spawn order, no robots when they are not visible."""
-        robots = self.tracked_robots() if self._robots_visible else []
+    async def _step_loop(self):
+        """One step per engine frame, in sim time the frame's stamp: release the delayed walkers due, advance the itineraries
+        on that frame, send the engine inputs held for it, then acknowledge the frame with the robot and possessed poses.
+
+        The engine's next tick waits for the acknowledgement (input_barrier), so all of it lands between the same two ticks
+        in every run, however the messages race the lockstep clock.
+        """
+        try:
+            while True:
+                await self._frame_ready.wait()
+                self._frame_ready.clear()
+                frame, stamp_ns = self._curr_agent_states, self._engine_stamp_ns
+                if frame is None or stamp_ns is None or stamp_ns <= self._acked_ns:
+                    continue
+                with self._engine_inputs.step():
+                    try:
+                        await self._step_peds(stamp_ns / 1e9, frame)
+                    except Exception as e:
+                        self._logger.error(f"ped mechanics step failed: {e!r}")
+                    # inputs decided on the clock up to this frame's stamp belong to this step (one decided later may
+                    # still be on its way while the clock moves on, it waits for the next step)
+                    await self._engine_inputs.flush(stamp_ns + 1)
+                self._acknowledge(stamp_ns)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self._logger.error(f"Error in step loop: {e}\n{traceback.format_exc()}")
+
+    def _publish_world_state(self, stamp_ns: int | None = None, always: bool = False):
+        """Publish robot and possessed pedestrian poses and velocities as AgentStates on world_state topic, each robot also as `robot_<i>` by spawn order, no robots when they are not visible.
+
+        `stamp_ns` (an engine frame's stamp) and `always` make it the acknowledgement of that frame, sent even when empty.
+        """
+        robots = self.tracked_robots(stamp_ns) if self._robots_visible else []
         possessed = self.possessed_peds()
-        if not robots and not possessed:
+        if not robots and not possessed and not always:
             return
         msg = AgentStatesMsg()
-        msg.header.stamp = self.node.sim_time.to_msg()
+        if stamp_ns is None:
+            msg.header.stamp = self.node.sim_time.to_msg()
+        else:
+            msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
         msg.header.frame_id = FrameNamespace(self._realizer.get_config().prefix).tf("map")
         named = [(tracked.robot.name, tracked) for tracked in robots]
         own_names = {name for name, _ in named}
@@ -1583,7 +1744,10 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             if mechanics.spawn_delay > 0.0:
                 if driver is not None:
                     self._itineraries[agent_msg.agent_id] = driver
-                self._deferred_spawns.append((now + mechanics.spawn_delay, agent_msg, mechanics.semantic_alias))
+                if self._clock_on_request and not self._clock_started:
+                    self._deferred_unanchored.append((mechanics.spawn_delay, agent_msg, mechanics.semantic_alias))
+                else:
+                    self._deferred_spawns.append((now + mechanics.spawn_delay, agent_msg, mechanics.semantic_alias))
                 continue
             immediate.append((obstacle, driver, mechanics.semantic_alias))
             request.agents.append(agent_msg)  # pyright: ignore[reportAttributeAccessIssue]
@@ -1858,6 +2022,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             flow = [self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))) for aid in sorted(self._flow_agent_ids)]
             self._next_deferred_id = _DEFERRED_ID_BASE
             self._deferred_spawns.clear()
+            self._deferred_unanchored.clear()
+            self._clock_started = False
+            self._acked_ns = self._removed_at_ns
             self._itineraries.clear()
             self._semantic_aliases.clear()
             self._bridge_agent_ids.clear()
@@ -1960,8 +2127,10 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             return False
 
     async def _spawn_robot_impl(self, robots: Sequence[Robot]) -> Sequence[bool]:
-        """Register robot poses: published to arena_humansim via world_state topic."""
-        self._publish_world_state()
+        """Register robot poses: published to arena_humansim via world_state topic (while the step loop acknowledges frames,
+        its next acknowledgement carries them, a world_state of its own would not be one)."""
+        if not self._engine_inputs.active:
+            self._publish_world_state()
         return (True,) * len(robots)
 
     async def _remove_robot_impl(self, robots: Sequence[Robot]) -> Sequence[bool]:
@@ -1972,8 +2141,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
     # world mechanisms
 
-    async def _step_peds(self, now: float) -> None:
-        """Release delayed scenario peds that are due and advance itineraries on the latest engine states."""
+    async def _step_peds(self, now: float, states: AgentFrameMsg | None = None) -> None:
+        """Release delayed scenario peds that are due and advance itineraries on the engine states `states` (default the latest)."""
         due = [entry for entry in self._deferred_spawns if entry[0] <= now]
         if due:
             self._deferred_spawns = [entry for entry in self._deferred_spawns if entry[0] > now]
@@ -1984,7 +2153,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                 await self._bind_aliases({msg.agent_id: alias for _, msg, alias in due if alias})
             else:
                 self._logger.error(f"delayed SpawnAgents failed: {response.message if response is not None else 'no response'}")
-        states = self._curr_agent_states
+        if states is None:
+            states = self._curr_agent_states
         if not self._itineraries or states is None:
             return
         for aid, x, y in zip(states.agent_id, states.x, states.y, strict=True):

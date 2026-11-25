@@ -130,14 +130,22 @@ class TrackedRobot:
         self.velocity = (0.0, 0.0)
         self.stamp = None
 
-    def refresh(self, tf_buffer: tf2_ros.Buffer) -> None:
-        """Update pose and finite-difference velocity from the map->base TF."""
+    def refresh(self, tf_buffer: tf2_ros.Buffer, at_ns: int | None = None) -> None:
+        """Update pose and finite-difference velocity from the map->base TF, at sim time `at_ns` when TF reaches it (the pose
+        an engine frame stamped `at_ns` should see, whenever the lookup runs), else the latest."""
         if self.tf_frame is None:
             return
-        try:
-            t = tf_buffer.lookup_transform('map', self.tf_frame, rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            return
+        t = None
+        if at_ns is not None:
+            try:
+                t = tf_buffer.lookup_transform('map', self.tf_frame, rclpy.time.Time(nanoseconds=at_ns))
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                t = None
+        if t is None:
+            try:
+                t = tf_buffer.lookup_transform('map', self.tf_frame, rclpy.time.Time())
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                return
         stamp = t.header.stamp.sec + t.header.stamp.nanosec * 1e-9
         if self.stamp is not None and stamp <= self.stamp:
             return
@@ -1483,10 +1491,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 tracked.place(robot.pose)
         return await self._move_robot_impl(robots)
 
-    def tracked_robots(self) -> list[TrackedRobot]:
-        """Spawned robots in spawn order, pose and velocity refreshed from TF."""
+    def tracked_robots(self, at_ns: int | None = None) -> list[TrackedRobot]:
+        """Spawned robots in spawn order, pose and velocity refreshed from TF (at sim time `at_ns` where TF has it)."""
         for tracked in self._robots.values():
-            tracked.refresh(self.node.tf_buffer)
+            tracked.refresh(self.node.tf_buffer, at_ns)
         return list(self._robots.values())
 
     # impl

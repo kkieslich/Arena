@@ -79,7 +79,8 @@ def _adapter(flow: set[int], bridge: set[int], *, removed: bool = True) -> tuple
     adapter._flow_agent_ids = set(flow)
     adapter._bridge_agent_ids = set(bridge)
     adapter._agent_names = {aid: f"flow_{aid}" for aid in flow} | {aid: f"scenario_ped_{aid}" for aid in bridge}
-    for name in ("_deferred_spawns",):
+    adapter._input_barrier = False  # pyright: ignore[reportAttributeAccessIssue]
+    for name in ("_deferred_spawns", "_deferred_unanchored"):
         setattr(adapter, name, [])
     for name in ("_itineraries", "_semantic_aliases", "_flow_meta_wait", "_tagged_models", "_teleport_stamps", "_ped_model_uris"):
         setattr(adapter, name, {})

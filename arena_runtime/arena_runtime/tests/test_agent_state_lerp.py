@@ -36,6 +36,7 @@ def _adapter(prev: AgentFrame | None = None, curr: AgentFrame | None = None, ori
     adapter._curr_agent_states = curr
     adapter._engine_stamp_ns = engine_stamp_ns
     adapter._engine_dt_ns = 50_000_000
+    adapter._input_barrier = False
     adapter._removed_at_ns = None
     adapter._agent_gestures = {}
     adapter._agent_names = {}
