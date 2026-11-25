@@ -10,9 +10,10 @@ recipient entrances or a courier access point a site does not name, doors or lif
 walkway widths while a site names no crowd) say unknown and filter nothing. NAV@r is not a rule here: `placed_elements`
 hands a layout to the NAV@r filter.
 
-The walkway rule (`walkway`) measures the crowd's floor, not the robot map: the width an element leaves where the
-site's crowd walks, 1.8 m where walkers pass both ways and 0.9 m where they walk one way, from the crowd's routes between
-its sources and sinks (`SiteFacts.walkers`). A gap under a wheelchair's width that closes a passage into a pocket fails
+The walkway rule (`walkway`) measures the crowd's floor, not the robot map: the width an element's permanent floor
+leaves where the site's crowd walks, 1.8 m where walkers pass both ways and 0.9 m where they walk one way, from the
+crowd's routes between its sources and sinks (`SiteFacts.walkers`); and the lane a robot in a locker's dock leaves while
+it stands there, 0.9 m or what the flow needs taking turns. A gap under a wheelchair's width that closes a passage into a pocket fails
 on its own (`Rule.NO_POCKET`), crowd or not."""
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ class Rule(enum.StrEnum):
     NO_OVERLAP = "no_overlap"  # footprints on the floor, clear of walls, door spans and objects
     CLEAR_ZONE = "clear_zone"  # the approach or access zone in front is free floor
     TURNING_CIRCLE = "turning_circle"  # a free 1.5 m circle in front
-    WALKWAY_WIDTH = "walkway_width"  # 1.8 m two-way, 0.9 m one-way where the crowd walks (`walkway`); unknown without a crowd
+    WALKWAY_WIDTH = "walkway_width"  # 1.8 m two-way, 0.9 m one-way where the crowd walks, a lane beside a docked robot (`walkway`); unknown without a crowd
     NO_POCKET = "no_pocket"  # no passage closed into a gap under a wheelchair's width
     DOCKS_ON_FLOOR = "docks_on_floor"  # every dock free floor, its goto point on a free cell
     PEDS_ZONES = "peds_zones"  # outside PEDS source and sink zones; unknown until they are given
@@ -569,13 +570,16 @@ def crowd_routes(site: Site, level_id: str, walkers: WalkerDemand) -> Routes:
 
 def walkway_narrowings(site: Site, spot: Spot, others: Sequence[Spot] = (), walkers: WalkerDemand | None = None, stretches: list[Any] | None = None) -> list[Narrowing]:
     """The walkways `spot` narrows on `site` with `others` placed too (`walkway.narrowings`), against the crowd
-    `walkers` (default the spot's). Empty without a crowd."""
+    `walkers` (default the spot's): on the permanent floor, then with a robot in every intermittent dock (a locker's,
+    the loading point's). Empty without a crowd."""
     from . import walkway
 
     walkers = walkers if walkers is not None else spot.walkers
     if walkers is None:
         return []
-    return walkway.narrowings(walker_floor(site, spot.level), crowd_routes(site, spot.level, walkers), walkway.occupied([spot]), walkway.occupied(others), stretches=stretches)
+    floor, routes = walker_floor(site, spot.level), crowd_routes(site, spot.level, walkers)
+    mine, near = walkway.occupied([spot]), walkway.occupied(others)
+    return [*walkway.narrowings(floor, routes, mine, near, stretches=stretches), *walkway.narrowings(floor, routes, mine, near, docked=True, stretches=stretches)]
 
 
 def candidate_zones(level: Level, zones: Sequence[str] | None = None, exclude: Sequence[str] = EXCLUDED_ZONES) -> list[str]:

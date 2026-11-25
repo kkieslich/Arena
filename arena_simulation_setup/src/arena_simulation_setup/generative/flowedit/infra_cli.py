@@ -1003,13 +1003,14 @@ def _report_layout(site: Any, pools: dict[str, Any], record: Mapping[str, Any]) 
     return layout
 
 
-def _narrowest(stretches: Mapping[str, Sequence[Any]], *, two_way: bool) -> dict[str, Any] | None:
-    """The narrowest two-way (or one-way) stretch of `stretches` (`walkway.Stretch` by element name) after the layout."""
-    best = min(((st.after, name, st) for name, found in stretches.items() for st in found if st.after is not None and (st.required >= WK.TWO_WAY_M) == two_way), default=None, key=lambda t: t[0])
+def _narrowest(stretches: Mapping[str, Sequence[Any]], *, two_way: bool = False, docked: bool = False) -> dict[str, Any] | None:
+    """The narrowest stretch of `stretches` (`walkway.Stretch` by element name) after the layout: a two-way or one-way
+    one on the permanent floor, or (`docked`) any with a robot in the intermittent docks."""
+    best = min(((st.after, name, st) for name, found in stretches.items() for st in found if st.after is not None and st.docked == docked and (docked or (st.required >= WK.TWO_WAY_M) == two_way)), default=None, key=lambda t: t[0])
     if best is None:
         return None
     width, name, st = best
-    return {"width_m": width, "before_m": st.before, "element": name, "at": list(st.at), "flow_ped_h": [st.flow_ab, st.flow_ba]}
+    return {"width_m": width, "before_m": st.before, "required_m": round(st.required, 2), "element": name, "at": list(st.at), "flow_ped_h": [st.flow_ab, st.flow_ba]}
 
 
 def _cmd_walkways(args: argparse.Namespace) -> int:
@@ -1040,7 +1041,7 @@ def _cmd_walkways(args: argparse.Namespace) -> int:
             place.walkway_narrowings(site, s, (), walkers, stretches=found)
             stretches[s.element.name] = found
         problems = place.check_layout(site, layout)
-
+        lockers = sum(1 for s in layout.spots if s.element.name.startswith("locker"))
         row = {
             "layout_id": layout_id,
             "valid": not problems,
@@ -1048,10 +1049,13 @@ def _cmd_walkways(args: argparse.Namespace) -> int:
             "narrowings": [{"element": s.element.name, **attrs.asdict(n)} for s in layout.spots for n in s.narrowings],
             "narrowest_two_way": _narrowest(stretches, two_way=True),
             "narrowest_one_way": _narrowest(stretches, two_way=False),
+            "narrowest_docked": _narrowest(stretches, docked=True),
+            # the share of the time a robot stands in each locker's dock: the jobs spread over the layout's lockers
+            "dock_share": round(WK.dock_share(args.rate / max(1, lockers), IN.UNLOAD_S), 4),
         }
         out.append(row)
-        two, one = row["narrowest_two_way"], row["narrowest_one_way"]
-        _log(f"{layout_id}: {'valid' if row['valid'] else 'INVALID'}; narrowest two-way {two['width_m'] if two else '-'} m, one-way {one['width_m'] if one else '-'} m" + "".join(f"\n    {p}" for p in problems))
+        two, one, dock = row["narrowest_two_way"], row["narrowest_one_way"], row["narrowest_docked"]
+        _log(f"{layout_id}: {'valid' if row['valid'] else 'INVALID'}; narrowest two-way {two['width_m'] if two else '-'} m, one-way {one['width_m'] if one else '-'} m, beside a docked robot {dock['width_m'] if dock else '-'} m (needs {dock['required_m'] if dock else '-'} m, {row['dock_share']:.1%} of the time)" + "".join(f"\n    {p}" for p in problems))
     if args.out is not None:
         args.out.write_text(json.dumps({"site": site.key, "scenario": str(scenario), "layouts": out}, indent=1) + "\n")
         _log(f"wrote {args.out}")
@@ -1284,6 +1288,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     q.add_argument("--scenarios-from", type=Path, default=None, help="world directory to read the scenario from (default: the site's)")
     q.add_argument("--report", type=Path, required=True, help="a search report (any JSON that holds its layout records)")
     q.add_argument("--layouts", type=lambda text: [t.strip() for t in text.split(",") if t.strip()], default=None, help="the layout ids to check (default all)")
+    q.add_argument("--rate", type=float, default=SE.TaskMix().rate_per_h, help=f"jobs per hour in all, spread over a layout's lockers, for the share of the time a robot stands in a locker's dock (default {SE.TaskMix().rate_per_h:g})")
     q.add_argument("--out", type=Path, default=None, help="the result file (JSON)")
     q.set_defaults(fn=_cmd_walkways)
     q = infra.add_parser(

@@ -63,7 +63,7 @@ def test_a_neck_between_docks_and_a_plant_fails_a_two_way_hallway_and_passes_a_o
     assert found.after == pytest.approx(gap, abs=CELL_M)
     # before the layout the hallway's narrowest cross-section is between the plants and the south wall
     assert found.before == pytest.approx(12.54 - 10.05, abs=CELL_M)
-    assert found.by == (layout,) and not found.intermittent
+    assert found.by == (layout,) and not found.docked
     assert found.flow_ab == pytest.approx(180.0) and found.flow_ba == pytest.approx(180.0)
     one_way = Routes.build(office, WalkerDemand.from_scenario(_crowd(ENDS, [("west", "east")])))
     stretches: list[walkway.Stretch] = []
@@ -90,10 +90,36 @@ def test_the_requirement_follows_the_lesser_direction_of_the_flow(office: Walker
     assert [n.required for n in walkway.narrowings(office, routes, [Occupied("b5aeadcb", B5AEADCB)])] == [TWO_WAY_M]
 
 
-def test_a_neck_a_robot_occupies_only_while_it_delivers_counts_and_says_so(office: WalkerFloor) -> None:
+def test_a_locker_dock_is_no_obstacle_to_the_walkway_widths_and_keeps_a_lane_while_a_robot_stands_in_it(office: WalkerFloor) -> None:
     routes = Routes.build(office, WalkerDemand.from_scenario(_crowd(ENDS, [("west", "east"), ("east", "west")])))
-    (found,) = walkway.narrowings(office, routes, [Occupied("locker:locker_1", shapely.box(15.25, 10.06, 16.0, 10.85)), Occupied("locker:locker_1#dock", shapely.box(16.0, 10.06, 17.25, 11.71), intermittent=True)])
-    assert found.intermittent and found.by == ("locker:locker_1",)
+    locker = Occupied("locker:locker_1", shapely.box(15.25, 10.06, 16.0, 10.85))
+
+    def dock(top: float) -> Occupied:
+        return Occupied("locker:locker_1#dock", shapely.box(16.0, 10.06, 17.25, top), intermittent=True)
+
+    # the dock leaves 1.06 m to the plant: under the two-way width, but only while a robot delivers, and a lane is left
+    stretches: list[walkway.Stretch] = []
+    assert walkway.narrowings(office, routes, [locker, dock(11.71)], stretches=stretches) == []
+    assert walkway.narrowings(office, routes, [locker, dock(11.71)], docked=True, stretches=stretches) == []
+    assert {s.docked for s in stretches} == {False, True}
+    assert min(s.after for s in stretches if s.docked) == pytest.approx(1.06, abs=CELL_M)
+    # a dock reaching 0.65 m from the plant leaves no lane for a wheelchair while a robot stands in it
+    (found,) = walkway.narrowings(office, routes, [locker, dock(12.3)], docked=True)
+    assert found.docked and found.required == pytest.approx(ONE_WAY_M) and found.after < ONE_WAY_M
+    assert found.by == ("locker:locker_1",)
+
+
+def test_the_lane_beside_a_docked_robot_is_a_wheelchair_or_what_the_flow_needs_taking_turns() -> None:
+    assert walkway.docked_width(180.0, 180.0) == pytest.approx(ONE_WAY_M)
+    # 3600 walkers an hour in all: 1 ped/s over half of 1.22 ped/(m s)
+    assert walkway.docked_width(1800.0, 1800.0) == pytest.approx(1.0 / (0.5 * 1.22))
+    assert walkway.dock_share(6.0, 10.0) == pytest.approx(60.0 / 3600.0)
+
+
+def test_a_site_dock_that_is_intermittent_is_free_floor_until_docked() -> None:
+    floor = WalkerFloor("0", shapely.box(0, 0, 10, 4), (), (Occupied("obj:locker_1#dock", shapely.box(4, 0, 5, 1), intermittent=True),))
+    assert floor.free.area == pytest.approx(40.0)
+    assert floor.free_docked.area == pytest.approx(39.0)
 
 
 # --- the twin's travel-optimal bays: a slot between a bay and a pillar, on the crowd's way or off it ------------------

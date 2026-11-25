@@ -13,10 +13,13 @@ edges):
 - the docks of docked objects, and in a layout the elements' floor (`occupied`): footprints, and docks.
 
 **Occupancy.** The fleet walls the docks of the robots' homes and chargers off for the crowd while a robot parks there
-(`keep_crowd_off`), most of a run: those are permanent. A locker's dock holds a robot only while it delivers and a
-visitor while it fetches a parcel, the loading point's slot a robot while it loads: those are intermittent. Both count:
-HumanSim's counterflow jams at a narrow passage do not clear once formed (PILEUP_FINDING), so a jam that starts while a
-robot delivers outlasts the delivery. `Narrowing.intermittent` says which narrowings come from intermittent floor alone.
+(`keep_crowd_off`), most of a run: those, and every footprint, are permanent floor. A locker's dock holds a robot only
+while it delivers (`infra.UNLOAD_S` at the dock, a few deliveries an hour: about 1 % of the time, `dock_share`), the
+loading point's slot a robot while it loads: those are intermittent, no obstacle to the walkers' routes or to the
+walkway widths. They get their own check (`narrowings(docked=True)`): while a robot stands in the dock, every stretch
+it narrows keeps `ONE_WAY_M`, and enough of it that the walkers of both directions get through taking turns
+(`docked_width`). Walkers meeting at such a short neck wait for each other (HumanSim's turn-taking, with its door
+deadlock fixed); the robot leaves after its hold.
 
 **Routes** (`Routes`) are the crowd's shortest paths on the walker floor at HumanSim's planning clearance
 (`ROUTE_CLEARANCE_M`), between the sources and sinks of the site's crowd scenario (`WalkerDemand`: each source's rate
@@ -45,10 +48,11 @@ checks that the floor stays connected.
 **Why these widths.** Two-way: 1.8 m, "a clear width of 1800mm will allow two wheelchair users to pass each other"
 (Singapore BCA Code on Accessibility in the Built Environment 2019, 4.2.1.2 and Fig. 15; the twin is in Singapore). It
 is also HumanSim's own two-way width for a wheelchair (`wheelchair_manual` passage block: body plus the widest body plus
-0.1 m, 1.7 m, rounded to the code): below it walkers meeting in the stretch take turns, and under sustained counterflow
-they jam for good (1.0-1.2 m doors in PILEUP_FINDING). One-way: 0.9 m, the clear width of an accessible route (2010 ADA
-403.5.1, 36 in = 0.915 m), one wheelchair. HumanSim routes through gaps of twice its planning clearance (0.8 m) and wider,
-so a gap between 0.8 m and 1.8 m on a two-way route is the jam case.
+0.1 m, 1.7 m, rounded to the code): below it walkers meeting in the stretch take turns. A permanent neck on a two-way
+route makes every meeting a wait, all run long; a robot in a dock does so only while it stands there, so the docked
+check asks for a lane, not for passing. One-way: 0.9 m, the clear width of an accessible route (2010 ADA 403.5.1, 36 in =
+0.915 m), one wheelchair. HumanSim routes through gaps of twice its planning clearance (0.8 m) and wider, so a gap between
+0.8 m and 1.8 m on a two-way route is where its walkers take turns.
 """
 
 from __future__ import annotations
@@ -104,6 +108,9 @@ NO_CLIMB_TYPES = ("wheelchair_manual", "wheelchair_electric")
 LINK_SPEED_MPS, LINK_STEP_M = 1.1, 2.0
 #: The elements whose docks the fleet walls off for the crowd while a robot parks there: its homes and chargers
 PARKED = ("charger_pair", "bay_pair")
+#: The most walkers a metre of walkway width passes per second (Weidmann 1993's maximal specific flow, 1.22 ped/(m s)),
+#: and the share of it a neck keeps when its two directions take turns (one direction at a time: half, at best)
+SPECIFIC_FLOW_PED_MS, TURNS_SHARE = 1.22, 0.5
 
 
 # --- the crowd's demand ------------------------------------------------------------------------------------------------
@@ -207,6 +214,7 @@ class WalkerFloor:
     segments: tuple[tuple[Point, Point], ...]
     obstacles: tuple[Occupied, ...]
     _free: Any = attrs.field(default=None, init=False)
+    _free_docked: Any = attrs.field(default=None, init=False)
 
     @property
     def walls(self) -> BaseGeometry:
@@ -217,13 +225,23 @@ class WalkerFloor:
 
     @property
     def free(self) -> BaseGeometry:
-        """The free floor: the zones less walls and obstacles."""
+        """The free floor: the zones less walls and permanent obstacles (the crowd's routes run on it)."""
         if self._free is None:
             import shapely
 
-            blocked = shapely.union_all([self.walls, *(o.geometry for o in self.obstacles)])
+            blocked = shapely.union_all([self.walls, *(o.geometry for o in self.obstacles if not o.intermittent)])
             object.__setattr__(self, "_free", self.floor.difference(blocked))
         return self._free
+
+    @property
+    def free_docked(self) -> BaseGeometry:
+        """The free floor while every intermittent dock is occupied."""
+        if self._free_docked is None:
+            import shapely
+
+            docks = [o.geometry for o in self.obstacles if o.intermittent]
+            object.__setattr__(self, "_free_docked", self.free.difference(shapely.union_all(docks)) if docks else self.free)
+        return self._free_docked
 
     def bare_edges(self, within: float = 0.15) -> BaseGeometry:
         """The floor's edges with no wall within `within`: where HumanSim, which knows walls only, could walk off it."""
@@ -521,8 +539,8 @@ def _merge(routes: list[Route]) -> list[Route]:
 class Narrowing:
     """A stretch a layout narrows: between openings `ports` (window boundary runs or regions), `required` and the
     widths `before` and `after` [m], `at` (where it is narrowest after), the flows both ways [ped/h], whether it is the
-    way's narrowest cell moved into a narrow passage (`moved`), what makes it (`by`: occupied floor names) and whether
-    that floor is intermittent alone; `gap` the narrowest cross-section's two ends."""
+    way's narrowest cell moved into a narrow passage (`moved`), what makes it (`by`: occupied floor names), whether it
+    was measured with a robot in an intermittent dock (`docked`); `gap` the narrowest cross-section's two ends."""
 
     ports: tuple[str, str]
     required: float
@@ -532,7 +550,7 @@ class Narrowing:
     flow_ab: float
     flow_ba: float
     by: tuple[str, ...]
-    intermittent: bool
+    docked: bool = False
     moved: bool = False
     gap: tuple[Point, Point] | None = None
 
@@ -541,14 +559,15 @@ class Narrowing:
         return self.required >= TWO_WAY_M
 
     def describe(self) -> str:
-        what = "two-way" if self.two_way else "one-way"
+        what = "a docked robot's neck in a" if self.docked else ("a two-way" if self.two_way else "a one-way")
         how = "moves the walkers into" if self.moved else "narrows"
-        return f"{how} a {what} walkway ({self.flow_ab:.0f}/{self.flow_ba:.0f} ped/h) to {self.after:.2f} m (before {self.before:.2f} m, needs {self.required:.1f} m) at ({self.at[0]:.1f}, {self.at[1]:.1f}) by {', '.join(self.by) or 'the site'}" + (" (intermittent floor only)" if self.intermittent else "")
+        return f"{how} {what} walkway ({self.flow_ab:.0f}/{self.flow_ba:.0f} ped/h) to {self.after:.2f} m (before {self.before:.2f} m, needs {self.required:.2f} m) at ({self.at[0]:.1f}, {self.at[1]:.1f}) by {', '.join(self.by) or 'the site'}"
 
 
 @attrs.frozen
 class Stretch:
-    """What `narrowings` measured for one opening pair: its requirement, flows and the narrowest width before and after."""
+    """What `narrowings` measured for one opening pair: its requirement, flows and the narrowest width before and after,
+    with a robot in the intermittent docks or not (`docked`)."""
 
     ports: tuple[str, str]
     required: float
@@ -557,6 +576,7 @@ class Stretch:
     flow_ab: float
     flow_ba: float
     at: Point | None
+    docked: bool = False
 
 
 def _ports(grid: _Grid, routable: np.ndarray) -> np.ndarray:
@@ -750,13 +770,34 @@ def window(occupied_floor: BaseGeometry) -> BaseGeometry:
     return shapely.box(*occupied_floor.buffer(WINDOW_M).bounds)
 
 
-def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], others: Sequence[Occupied] = (), *, stretches: list[Stretch] | None = None) -> list[Narrowing]:
+def docked_width(flow_ab: float, flow_ba: float) -> float:
+    """The width a stretch keeps while a robot stands in an intermittent dock [m]: `ONE_WAY_M`, one wheelchair (2010 ADA
+    403.5.1; ADA 403.5.3 allows a route narrower than two-way where passing spaces lie within 61 m: here the walkway either
+    side of a dock), and what its walkers of both directions (ped/h) need taking turns: their flow over
+    `TURNS_SHARE` of `SPECIFIC_FLOW_PED_MS`."""
+    return max(ONE_WAY_M, (flow_ab + flow_ba) / 3600.0 / (TURNS_SHARE * SPECIFIC_FLOW_PED_MS))
+
+
+def dock_share(deliveries_per_h: float, hold_s: float) -> float:
+    """The share of the time a robot stands in a dock: deliveries an hour times its hold there."""
+    return deliveries_per_h * hold_s / 3600.0
+
+
+def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], others: Sequence[Occupied] = (), *, docked: bool = False, stretches: list[Stretch] | None = None) -> list[Narrowing]:
     """The walkway stretches the floor `mine` (one element's) narrows on `floor`, with `others` (other elements' floor)
-    occupied too, against the crowd's `routes` (see the module doc), narrowest first. `stretches`, when given, gets what
-    was measured for every opening pair that carries walkers."""
+    occupied too, against the crowd's `routes` (see the module doc), narrowest first. Without `docked`, on the permanent
+    floor (intermittent docks free) against the stretch's two-way or one-way width; with it, every intermittent dock
+    occupied, against `docked_width`, and only where an intermittent dock makes the neck. `stretches`, when given, gets
+    what was measured for every opening pair that carries walkers."""
     import numpy as np
     import shapely
 
+    if docked:
+        if not any(o.intermittent for o in (*mine, *others)):
+            return []
+    else:
+        mine = [o for o in mine if not o.intermittent]
+        others = [o for o in others if not o.intermittent]
     if not mine:
         return []
     mine_geom = shapely.union_all([o.geometry for o in mine])
@@ -767,8 +808,9 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
     if not near:
         return []
     all_occ = [*mine, *others]
-    after_poly = floor.free.difference(shapely.union_all([o.geometry for o in all_occ]))
-    before_poly = floor.free.difference(shapely.union_all([o.geometry for o in others])) if others else floor.free
+    base = floor.free_docked if docked else floor.free
+    after_poly = base.difference(shapely.union_all([o.geometry for o in all_occ]))
+    before_poly = base.difference(shapely.union_all([o.geometry for o in others])) if others else base
     free_b, free_a = grid.raster(before_poly), grid.raster(after_poly)
     route_b = _clearance(free_b, res) >= ROUTE_CLEARANCE_M - 1e-9
     route_a = _clearance(free_a, res) >= ROUTE_CLEARANCE_M - 1e-9
@@ -809,7 +851,7 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
         q_ab, q_ba = flows.get((a, b), 0.0), flows.get((b, a), 0.0)
         if max(q_ab, q_ba) < FLOW_MIN_PED_H:
             continue
-        required = TWO_WAY_M if min(q_ab, q_ba) >= FLOW_MIN_PED_H else ONE_WAY_M
+        required = docked_width(q_ab, q_ba) if docked else TWO_WAY_M if min(q_ab, q_ba) >= FLOW_MIN_PED_H else ONE_WAY_M
         ways_b = _ways(route_b, grid, free_b, mask_of(a), mask_of(b), focus)
         if not ways_b:
             continue
@@ -818,7 +860,7 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
         ways_a = _ways(route_a, grid, free_a, mask_of(a), mask_of(b), focus)
         if not ways_a:
             if stretches is not None:
-                stretches.append(Stretch((a, b), required, before_min, None, round(q_ab, 1), round(q_ba, 1), None))
+                stretches.append(Stretch((a, b), required, before_min, None, round(q_ab, 1), round(q_ba, 1), None, docked))
             continue
         widths = []
         for w, _, cells in ways_a:
@@ -826,7 +868,7 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
             widths.append((w, same.width if same is not None else w.width))
         after = min(widths, key=lambda t: t[0].width)
         if stretches is not None:
-            stretches.append(Stretch((a, b), required, before_min, after[0].width, round(q_ab, 1), round(q_ba, 1), after[0].middle))
+            stretches.append(Stretch((a, b), required, before_min, after[0].width, round(q_ab, 1), round(q_ba, 1), after[0].middle, docked))
         found = None
         narrowed = [(w, wb) for w, wb in widths if w.width < required - 1e-9 and w.width < wb - WIDTH_TOL_M]
         if narrowed:
@@ -844,8 +886,10 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
             by = [o for o in all_occ if o.geometry.intersects(ways)] or by
         if not any(o.name in mine_names for o in by):
             continue  # another element's narrowing (its own check) or the site's
+        if docked and not any(o.intermittent for o in by):
+            continue  # the permanent floor's (the check without `docked`)
         names_by = tuple(sorted({o.name.split("#")[0] for o in by}))
-        out.append(Narrowing((a, b), required, round(before, 2), w.width, w.middle, round(q_ab, 1), round(q_ba, 1), names_by, all(o.intermittent for o in by), moved, (w.left, w.right)))
+        out.append(Narrowing((a, b), required, round(before, 2), w.width, w.middle, round(q_ab, 1), round(q_ba, 1), names_by, docked, moved, (w.left, w.right)))
     return sorted(out, key=lambda n: (n.after - n.required, n.ports))
 
 
@@ -898,6 +942,8 @@ __all__ = [
     "Stretch",
     "WalkerDemand",
     "WalkerFloor",
+    "dock_share",
+    "docked_width",
     "narrowings",
     "occupied",
     "walker_floor",
