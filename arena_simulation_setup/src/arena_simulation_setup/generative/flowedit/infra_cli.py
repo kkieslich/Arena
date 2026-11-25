@@ -151,10 +151,8 @@ class _Space:
         loading = args.loading if args.loading is not None else (None if SE.LOADING in placements else SE.TWIN_LOADING_XY)
         self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration, top_ups_per_job=getattr(args, "top_ups", 0.0))
         self.rate_from: dict[str, Any] | None = None
-        facts = self.config.facts if self.config is not None else None
-        if facts is not None:
-            # the walkway rule measures against the crowd of the scenario every stage runs
-            facts = attrs.evolve(facts, walkers=WK.WalkerDemand.load(self.scenario))
+        # the walkway rule measures against the crowd of the scenario every stage runs
+        facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=WK.WalkerDemand.load(self.scenario))
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
         if count:

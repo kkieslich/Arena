@@ -42,8 +42,7 @@ count: the others it cannot change. A layout narrows the stretch when, after it,
   into a narrow passage of the site.
 
 A stretch that was narrower than its requirement before and that the layout leaves as it was is the site's, not the
-layout's. A way the layout cuts within the window leaves the window: its detour is the study's walking delay, and NAV@r
-checks that the floor stays connected.
+layout's. A layout that leaves no way at all between two openings closes the walkway: that fails too.
 
 **Why these widths.** Two-way: 1.8 m, "a clear width of 1800mm will allow two wheelchair users to pass each other"
 (Singapore BCA Code on Accessibility in the Built Environment 2019, 4.2.1.2 and Fig. 15; the twin is in Singapore). It
@@ -98,6 +97,8 @@ ALTERNATIVES = 2
 #: Gaps an element narrows lie within this of its floor: a gap under `TWO_WAY_M` with it at one end, and the passage
 #: beside it its walkers may move into [m]
 MEASURE_M = TWO_WAY_M + 1.0
+#: Where routes cross the window's edge, binned this far apart; the walkers' ways start within a bin of it [m]
+PORT_BIN_M = 1.0
 #: A path end in the window runs on to a wall; the wall this near that point lies on both of its sides [m]
 END_M = 1.0
 #: Walls are this thick on the walker floor (`generate.WALL_GAP_M` either side of the line) [m]
@@ -579,19 +580,17 @@ class Stretch:
     docked: bool = False
 
 
-def _ports(grid: _Grid, routable: np.ndarray) -> np.ndarray:
-    """Labels of the window boundary's openings: runs of routable boundary cells along the ring (0 elsewhere)."""
+def _ports(grid: _Grid, routable: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Labels of the window boundary's openings, runs of routable boundary cells along the ring (0 elsewhere), and each
+    ring cell's position along the ring [m] (NaN elsewhere)."""
     import numpy as np
 
     h, w = routable.shape
     ring = [(0, c) for c in range(w)] + [(r, w - 1) for r in range(1, h)] + [(h - 1, c) for c in range(w - 2, -1, -1)] + [(r, 0) for r in range(h - 2, 0, -1)]
     labels = np.zeros(routable.shape, dtype=np.int32)
+    arc = np.full(routable.shape, np.nan)
     on = [bool(routable[r, c]) for r, c in ring]
-    if all(on):
-        for r, c in ring:
-            labels[r, c] = 1
-        return labels
-    start = on.index(False)
+    start = on.index(False) if not all(on) else 0
     n = 0
     prev = False
     for k in range(len(ring)):
@@ -601,8 +600,9 @@ def _ports(grid: _Grid, routable: np.ndarray) -> np.ndarray:
             n += 1
         if cur:
             labels[r, c] = n
+            arc[r, c] = k * grid.res
         prev = cur
-    return labels
+    return labels, arc
 
 
 def _path(graph: scipy.sparse.csr_matrix, index: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, float] | None:
@@ -787,7 +787,8 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
     """The walkway stretches the floor `mine` (one element's) narrows on `floor`, with `others` (other elements' floor)
     occupied too, against the crowd's `routes` (see the module doc), narrowest first. Without `docked`, on the permanent
     floor (intermittent docks free) against the stretch's two-way or one-way width; with it, every intermittent dock
-    occupied, against `docked_width`, and only where an intermittent dock makes the neck. `stretches`, when given, gets
+    occupied, against `docked_width`, and only where an intermittent dock makes the neck. A walkway the floor closes
+    within the window (no way left between two openings) counts as narrowed to nothing. `stretches`, when given, gets
     what was measured for every opening pair that carries walkers."""
     import numpy as np
     import shapely
@@ -814,7 +815,7 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
     free_b, free_a = grid.raster(before_poly), grid.raster(after_poly)
     route_b = _clearance(free_b, res) >= ROUTE_CLEARANCE_M - 1e-9
     route_a = _clearance(free_a, res) >= ROUTE_CLEARANCE_M - 1e-9
-    ports = _ports(grid, route_b)
+    ports, arc = _ports(grid, route_b)
     xx, yy = grid.centres()
     import scipy.ndimage
 
@@ -829,8 +830,8 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
         for piece in getattr(clipped, "geoms", [clipped]):
             if piece.is_empty or piece.length < res:
                 continue
-            a = _port_at(piece.coords[0], grid, ports, box, canonical.get(r.source, r.source))
-            b = _port_at(piece.coords[-1], grid, ports, box, canonical.get(r.sink, r.sink))
+            a = _port_at(piece.coords[0], grid, ports, arc, box, canonical.get(r.source, r.source))
+            b = _port_at(piece.coords[-1], grid, ports, arc, box, canonical.get(r.sink, r.sink))
             if a is None or b is None or a == b:
                 continue
             flows[(a, b)] = flows.get((a, b), 0.0) + r.rate * 3600.0
@@ -842,15 +843,25 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
                 region = _region_polygon(routes, port.removeprefix("region:"))
                 masks[port] = shapely.contains_xy(region.buffer(res), xx, yy) if region is not None else np.zeros(grid.shape, dtype=bool)
             else:
-                masks[port] = ports == int(port.removeprefix("edge:"))
+                _, run, at = port.split(":")
+                masks[port] = (ports == int(run)) & (np.abs(arc - int(at) * PORT_BIN_M) <= PORT_BIN_M)
         return masks[port]
+
+    # the requirement goes by the flow through the whole opening (a corridor's both directions), the ways by where the
+    # walkers cross it (along a wall, or the middle of a concourse)
+    def opening(port: str) -> str:
+        return port.rsplit(":", 1)[0] if port.startswith("edge:") else port
+
+    through: dict[tuple[str, str], float] = {}
+    for (a, b), q in flows.items():
+        through[(opening(a), opening(b))] = through.get((opening(a), opening(b)), 0.0) + q
 
     mine_names = {o.name for o in mine}
     out: list[Narrowing] = []
     for a, b in sorted({tuple(sorted(k)) for k in flows}):
-        q_ab, q_ba = flows.get((a, b), 0.0), flows.get((b, a), 0.0)
-        if max(q_ab, q_ba) < FLOW_MIN_PED_H:
+        if max(flows.get((a, b), 0.0), flows.get((b, a), 0.0)) < FLOW_MIN_PED_H:
             continue
+        q_ab, q_ba = through.get((opening(a), opening(b)), 0.0), through.get((opening(b), opening(a)), 0.0)
         required = docked_width(q_ab, q_ba) if docked else TWO_WAY_M if min(q_ab, q_ba) >= FLOW_MIN_PED_H else ONE_WAY_M
         ways_b = _ways(route_b, grid, free_b, mask_of(a), mask_of(b), focus)
         if not ways_b:
@@ -859,8 +870,13 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
         # a way the elements do not touch keeps its width: only the floor's change narrows (and closes) ways
         ways_a = _ways(route_a, grid, free_a, mask_of(a), mask_of(b), focus)
         if not ways_a:
+            # the elements close the walkway within the window: no lane at all
             if stretches is not None:
-                stretches.append(Stretch((a, b), required, before_min, None, round(q_ab, 1), round(q_ba, 1), None, docked))
+                stretches.append(Stretch((a, b), required, before_min, 0.0, round(q_ab, 1), round(q_ba, 1), None, docked))
+            closing = [o for o in mine if o.intermittent or not docked]
+            if closing:
+                c = shapely.union_all([o.geometry for o in closing]).centroid
+                out.append(Narrowing((a, b), required, round(before_min, 2), 0.0, (round(c.x, 2), round(c.y, 2)), round(q_ab, 1), round(q_ba, 1), tuple(sorted({o.name.split("#")[0] for o in closing})), docked))
             continue
         widths = []
         for w, _, cells in ways_a:
@@ -910,8 +926,9 @@ def _region_polygon(routes: Routes, name: str) -> BaseGeometry | None:
     return shapely.Polygon(points).buffer(0) if points else None
 
 
-def _port_at(end: Sequence[float], grid: _Grid, ports: np.ndarray, box: BaseGeometry, region: str) -> str | None:
-    """The opening a route piece's end lies at: a window boundary run within two cells, else its route's region."""
+def _port_at(end: Sequence[float], grid: _Grid, ports: np.ndarray, arc: np.ndarray, box: BaseGeometry, region: str) -> str | None:
+    """The opening a route piece's end lies at: where it crosses a window boundary run (`PORT_BIN_M` steps along it),
+    else its route's region."""
     import numpy as np
 
     x0, y0, x1, y1 = box.bounds
@@ -919,11 +936,12 @@ def _port_at(end: Sequence[float], grid: _Grid, ports: np.ndarray, box: BaseGeom
     if min(x - x0, x1 - x, y - y0, y1 - y) <= 2.0 * grid.res:
         r, c = grid.cells(np.array([[x, y]]))
         r0, c0 = int(np.clip(r[0], 0, grid.shape[0] - 1)), int(np.clip(c[0], 0, grid.shape[1] - 1))
-        patch = ports[max(0, r0 - 4) : r0 + 5, max(0, c0 - 4) : c0 + 5]
-        labels = patch[patch > 0]
-        if len(labels):
-            return f"edge:{int(np.bincount(labels).argmax())}"
-        return None
+        rows, cols = np.nonzero(ports[max(0, r0 - 4) : r0 + 5, max(0, c0 - 4) : c0 + 5] > 0)
+        if not len(rows):
+            return None
+        rows, cols = rows + max(0, r0 - 4), cols + max(0, c0 - 4)
+        k = int(np.argmin((rows - r0) ** 2 + (cols - c0) ** 2))
+        return f"edge:{int(ports[rows[k], cols[k]])}:{round(float(arc[rows[k], cols[k]]) / PORT_BIN_M)}"
     return f"region:{region}"
 
 

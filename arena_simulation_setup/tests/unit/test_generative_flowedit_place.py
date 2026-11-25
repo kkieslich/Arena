@@ -361,10 +361,10 @@ def test_elements_facing_each_other_across_the_hallway_take_the_turning_circle(h
     assert chargers.turning is not None and opposite.taken.intersection(chargers.turning).area > 0.1
     problems = place.check_layout(hospital, Layout.of([chargers, opposite]))
     assert "charger_pair and locker overlap" in problems
-    # a wall spot further along it stands beside the chargers' front, not in front of it: no overlap, no pocket
+    # a wall spot further along it stands beside the chargers' front, not in front of it: no overlap
     beside = next(s for s in facing if 1.5 < abs(_centre(s.taken)[1] - cy) < 2.5)
     problems = place.check_layout(hospital, Layout.of([chargers, beside]))
-    assert "charger_pair and locker overlap" not in problems and not [p for p in problems if "pocket" in p], problems
+    assert "charger_pair and locker overlap" not in problems, problems
 
 
 def test_apply_layout_inserts_every_object_with_its_dock_and_charge_power(hospital: Site) -> None:

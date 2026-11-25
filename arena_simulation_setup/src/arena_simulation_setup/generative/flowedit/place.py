@@ -167,7 +167,9 @@ CATALOG: Mapping[str, Element] = {
         Element("charger_pair", "Common/Object/robot_charger", ("charger_1", "charger_2"), CHARGER_DOCK, PAIR_SPACING_M, clear_m=1.2, charge_power_w=CHARGE_POWER_W, door_distance_m=DOOR_DISTANCE_M, rules=_rules(Rule.CLEAR_ZONE, Rule.DOOR_DISTANCE, Rule.LIFT_DISTANCE, Rule.OUTLET_CABLE)),
         Element("bay_pair", "Common/Object/waiting_bay", ("bay_1", "bay_2"), SLOT, PAIR_SPACING_M, footprint=SLOT, blocks_floor=False, door_distance_m=DOOR_DISTANCE_M, rules=_rules(Rule.DOOR_DISTANCE, Rule.LIFT_DISTANCE)),
         Element("locker", "Common/Object/parcel_locker", ("locker_1",), LOCKER_DOCK, clear_m=1.5, recipient_distance_m=RECIPIENT_DISTANCE_M, rules=_rules(Rule.CLEAR_ZONE, Rule.OUTLET_CABLE, Rule.RECIPIENT_DISTANCE)),
-        Element("loading_point", "Common/Object/waiting_bay", ("loading_point",), SLOT, footprint=SLOT, blocks_floor=False, courier_access=True, rules=_rules(Rule.COURIER_ACCESS)),
+        # the courier access point, a site fact, fixes where the loading point stands: a narrow walkway there is the site's,
+        # not the layout's (its slot is no layout choice the walkway rule could refuse)
+        Element("loading_point", "Common/Object/waiting_bay", ("loading_point",), SLOT, footprint=SLOT, blocks_floor=False, courier_access=True, rules=tuple(r for r in _rules(Rule.COURIER_ACCESS) if r is not Rule.WALKWAY_WIDTH)),
     )
 }
 
@@ -1046,7 +1048,7 @@ def check_layout(site: Site, layout: Layout) -> list[str]:
                 problems.append(f"{s.element.name}: pocket, closes a {before:.2f} m passage to {what} ({gap:.2f} m left)")
         # a walkway two elements narrow together: the others within a two-way width of this one
         close = [o for o in others if o.taken.distance(s.taken) < walkway.TWO_WAY_M + gen.MARGIN_M]
-        if walkers is None or not close:
+        if walkers is None or not close or Rule.WALKWAY_WIDTH not in s.element.rules:
             continue
         mine = {f"{s.element.name}:{o.name}" for o in s.objects}
         for n in walkway_narrowings(site, s, close, walkers):

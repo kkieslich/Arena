@@ -464,7 +464,9 @@ def test_a_spot_that_fails_the_full_check_on_its_own_is_left_out(inner: Search, 
 
     monkeypatch.setattr(navr_filter, "navr_check", refusing)
     screened = EntranceSearch(inner, entrances, reach_max_m=1000.0, demand=space.demand)
-    assert screened.alone_invalid == {CHARGERS: 0, BAYS: 1, LOCKER: 1}
+    # every bay pair with a slot on the refused one fails (a pair's neighbour one step along shares a slot)
+    refused_bays = sum(any(o.goto == bad_bay for o in s.objects) for s in inner.spots[BAYS])
+    assert refused_bays >= 1 and screened.alone_invalid == {CHARGERS: 0, BAYS: refused_bays, LOCKER: 1}
     assert bad_locker not in [s.objects[0].goto for s in screened.lockers] and len(screened.lockers) == len(space.lockers) - 1
     assert not screened._cb[:, pick.bay].any()
     again = demand.travel_optimal(screened, _reach(screened, 2))

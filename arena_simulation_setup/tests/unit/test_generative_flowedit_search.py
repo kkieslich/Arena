@@ -149,9 +149,12 @@ def test_a_loading_point_marked_behind_its_bay_snaps_to_it(hospital: Site, loadi
     import math
 
     bay = loading.objects[0]
-    far = max(bay.footprint.exterior.coords, key=lambda c: math.dist(c, bay.goto))
-    away = math.dist(far, bay.goto)
-    behind = (far[0] + (far[0] - bay.goto[0]) / away * 0.2, far[1] + (far[1] - bay.goto[1]) / away * 0.2)
+    # 0.2 m behind the middle of the bay's back, on the wall side (a neighbouring spot one step along shares no slot
+    # with it, and its goto point lies further off)
+    nx, ny = loading.frame.n
+    _, _, back, _ = loading.frame.extent(bay.footprint)
+    depth = loading.frame.depth(*bay.goto) - back + 0.2
+    behind = (bay.goto[0] - nx * depth, bay.goto[1] - ny * depth)
     assert math.dist(behind, bay.goto) > PIN_SNAP_M
     assert Search(hospital, loading=behind).loading.id == loading.id
 

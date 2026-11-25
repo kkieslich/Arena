@@ -103,10 +103,15 @@ def test_a_locker_dock_is_no_obstacle_to_the_walkway_widths_and_keeps_a_lane_whi
     assert walkway.narrowings(office, routes, [locker, dock(11.71)], docked=True, stretches=stretches) == []
     assert {s.docked for s in stretches} == {False, True}
     assert min(s.after for s in stretches if s.docked) == pytest.approx(1.06, abs=CELL_M)
-    # a dock reaching 0.65 m from the plant leaves no lane for a wheelchair while a robot stands in it
+    # a dock reaching 0.65 m from the plant closes the hallway while a robot stands in it
     (found,) = walkway.narrowings(office, routes, [locker, dock(12.3)], docked=True)
-    assert found.docked and found.required == pytest.approx(ONE_WAY_M) and found.after < ONE_WAY_M
+    assert found.docked and found.required == pytest.approx(ONE_WAY_M) and found.after == 0.0
     assert found.by == ("locker:locker_1",)
+    assert walkway.narrowings(office, routes, [locker, dock(12.3)]) == []
+    # 1440 walkers an hour each way need more than the 1.06 m lane taking turns
+    busy = Routes.build(office, WalkerDemand.from_scenario(_crowd(ENDS, [("west", "east"), ("east", "west")], rate=0.4)))
+    (found,) = walkway.narrowings(office, busy, [locker, dock(11.71)], docked=True)
+    assert found.required == pytest.approx(walkway.docked_width(1440.0, 1440.0)) and found.after == pytest.approx(1.06, abs=CELL_M)
 
 
 def test_the_lane_beside_a_docked_robot_is_a_wheelchair_or_what_the_flow_needs_taking_turns() -> None:
@@ -152,14 +157,15 @@ def test_a_slot_beside_a_pillar_on_the_crowds_way_fails_however_wide_the_other_s
     assert found[0].before == pytest.approx(2.21 - 0.05, abs=CELL_M)
 
 
-def test_an_element_that_moves_the_walkers_into_a_narrow_passage_fails(concourse: WalkerFloor) -> None:
-    # a 3 m corridor split by a long island: 2.0 m north of it, 1.0 m south; the crowd takes the north side, an element
-    # in it moves the walkers into the 1.0 m south passage
+def test_an_element_that_moves_the_walkers_into_a_narrow_passage_fails() -> None:
+    # an island splits a 4 m corridor: 2.0 m north of it, 1.0 m south; the crowd walks along the north side between two
+    # doors there, the south passage over 10 % longer; an element closing the north side moves the walkers into the
+    # 1.0 m south passage, which it does not touch
     floor = _floor((0.0, 0.0, 30.0, 4.0), ("island", shapely.box(10.0, 1.05, 20.0, 1.95)))
-    ends = {"west": (0.5, 0.5, 2.5, 3.5), "east": (27.5, 0.5, 29.5, 3.5)}
+    ends = {"west": (8.0, 2.6, 9.5, 3.6), "east": (20.5, 2.6, 22.0, 3.6)}
     routes = Routes.build(floor, WalkerDemand.from_scenario(_crowd(ends, [("west", "east"), ("east", "west")])))
-    found = walkway.narrowings(floor, routes, [Occupied("blocker", shapely.box(14.0, 2.0, 15.0, 3.95))])
-    assert found and found[0].two_way and found[0].after < ONE_WAY_M + 0.2
+    (found,) = walkway.narrowings(floor, routes, [Occupied("blocker", shapely.box(14.0, 1.95, 15.0, 3.95))])
+    assert found.two_way and found.moved and found.after == pytest.approx(1.0, abs=CELL_M) and found.before > TWO_WAY_M
 
 
 # --- the crowd's demand and routes ------------------------------------------------------------------------------------
@@ -169,7 +175,7 @@ def test_the_demand_splits_each_source_over_its_sinks_by_weight_and_wheelchairs_
     doc = _crowd({"a": (0, 0, 1, 1), "b": (5, 0, 6, 1), "c": (10, 0, 11, 1)}, [])
     doc["regions"]["a_wheelchair"] = {"type": "source", "polygon": _box(0, 0, 1, 1), "config": {"rate_profile": [{"t": 0.0, "rate": 0.4}], "agent": {"agent_type": "wheelchair_manual", "sink_affinity": [{"sink": "b_sink", "weight": 3.0}, {"sink": "c_sink", "weight": 1.0}]}}}
     demand = WalkerDemand.from_scenario(doc)
-    assert {(f.sink, f.rate, f.climbs) for f in demand.flows} == {("b_sink", pytest.approx(0.3), False), ("c_sink", pytest.approx(0.1), False)}
+    assert sorted((f.sink, round(f.rate, 6), f.climbs) for f in demand.flows) == [("b_sink", 0.3, False), ("c_sink", 0.1, False)]
     assert hash(demand) == hash(WalkerDemand.from_scenario(doc))
 
 
