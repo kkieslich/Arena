@@ -124,14 +124,15 @@ class TrackedRobot:
     tf_frame: str | None
     pose: Pose
     velocity: tuple[float, float] = (0.0, 0.0)
-    stamp: float | None = None
+    #: TF stamp of `pose` in ns: velocities from whole-ns differences are the same floats on every episode epoch
+    stamp_ns: int | None = None
     radius: float = DEFAULT_ROBOT_RADIUS
 
     def place(self, pose: Pose) -> None:
         """Teleport to pose, at rest until TF reports the next one."""
         self.pose = copy.deepcopy(pose)
         self.velocity = (0.0, 0.0)
-        self.stamp = None
+        self.stamp_ns = None
 
     def refresh(self, tf_buffer: tf2_ros.Buffer, at_ns: int | None = None) -> None:
         """Update pose and finite-difference velocity from the map->base TF, at sim time `at_ns` when TF reaches it (the pose
@@ -149,18 +150,18 @@ class TrackedRobot:
                 t = tf_buffer.lookup_transform('map', self.tf_frame, rclpy.time.Time())
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
                 return
-        stamp = t.header.stamp.sec + t.header.stamp.nanosec * 1e-9
-        if self.stamp is not None and stamp <= self.stamp:
+        stamp_ns = t.header.stamp.sec * 1_000_000_000 + t.header.stamp.nanosec
+        if self.stamp_ns is not None and stamp_ns <= self.stamp_ns:
             return
         position = Position(x=t.transform.translation.x, y=t.transform.translation.y)
-        if self.stamp is not None:
-            dt = stamp - self.stamp
+        if self.stamp_ns is not None:
+            dt = (stamp_ns - self.stamp_ns) / 1e9
             self.velocity = (
                 (position.x - self.pose.position.x) / dt,
                 (position.y - self.pose.position.y) / dt,
             )
         self.pose = Pose(position, Orientation.from_msg(t.transform.rotation))
-        self.stamp = stamp
+        self.stamp_ns = stamp_ns
 
 
 class RegionSetupError(RuntimeError):

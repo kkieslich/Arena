@@ -11,6 +11,7 @@ from pathlib import Path
 
 import attrs
 import numpy as np
+import rclpy.time
 import yaml
 from arena_humansim.core.interaction_kinds import InteractionType, MembershipRole
 from arena_humansim.utils.types import InteractionOutcome
@@ -185,6 +186,21 @@ class PedMechanics:
 
 class _TargetOnly(Exception):
     """A target-only object (empty model) has no annotation to read: it is a world object without an obstacle."""
+
+
+#: grid of the robot state an acknowledgement carries (m, rad, m/s): the simulator's resting robot jitters by ~1e-15 m and
+#: its finite-difference velocity by ~1e-13 m/s, which the crowd amplifies over a minute; a micrometre grid takes it out
+_ROBOT_STATE_GRID = 1e-6
+
+
+def _quantize(agent: AgentStateMsg) -> None:
+    """Snap a fed robot's pose and velocity to `_ROBOT_STATE_GRID` (0.0, not -0.0, for a resting robot)."""
+
+    def snap(value: float) -> float:
+        return round(value / _ROBOT_STATE_GRID) * _ROBOT_STATE_GRID + 0.0
+
+    agent.pose.x, agent.pose.y, agent.pose.theta = snap(agent.pose.x), snap(agent.pose.y), snap(agent.pose.theta)
+    agent.velocity.x, agent.velocity.y = snap(agent.velocity.x), snap(agent.velocity.y)
 
 
 def facing_pose(pose: Pose2DMsg, front: float) -> Pose2DMsg:
@@ -1322,11 +1338,27 @@ class ArenaHumanSimulator(BaseHumanSimulator):
                     # inputs decided on the clock up to this frame's stamp belong to this step (one decided later may
                     # still be on its way while the clock moves on, it waits for the next step)
                     await self._engine_inputs.flush(stamp_ns + 1)
+                if self._robots_visible:
+                    await self._robots_at(stamp_ns)
                 self._acknowledge(stamp_ns)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             self._logger.error(f"Error in step loop: {e}\n{traceback.format_exc()}")
+
+    _ROBOT_TF_WAIT_S = 0.2
+
+    async def _robots_at(self, stamp_ns: int) -> None:
+        """Wait (a bounded while) until TF has every robot at the frame's time: the pose sent with the frame is then TF
+        there in every run, not the newest sample, which is one flatsim step earlier or later as the messages race."""
+        frames = [tracked.tf_frame for tracked in self._robots.values() if tracked.tf_frame]
+        if not frames:
+            return
+        when = rclpy.time.Time(nanoseconds=stamp_ns)
+        buffer = self.node.tf_buffer
+        deadline = time.monotonic() + self._ROBOT_TF_WAIT_S
+        while not all(buffer.can_transform("map", frame, when) for frame in frames) and time.monotonic() < deadline:
+            await asyncio.sleep(0.0005)
 
     def _episode_s(self, stamp_ns: int | None) -> float:
         """Seconds since the episode's first tick, from whole nanoseconds: the same float on every epoch, so a delay or a
@@ -1402,6 +1434,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             a.name = name
             a.pose = self._engine_pose(tracked.pose)
             a.velocity.x, a.velocity.y = tracked.velocity
+            if stamp_ns is not None:
+                _quantize(a)
             a.radius = tracked.radius
             msg.agents.append(a)  # pyright: ignore[reportAttributeAccessIssue]
         ids = self._agent_ids()

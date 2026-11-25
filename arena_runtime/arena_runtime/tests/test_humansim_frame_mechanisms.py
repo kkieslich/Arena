@@ -107,3 +107,17 @@ def test_without_a_step_nothing_runs() -> None:
     asyncio.run(adapter._step_mechanisms(1_000_000_000, _frame(1_000_000_000)))
     adapter.set_mechanism_step(None)
     assert adapter._mechanism_step is None
+
+
+def test_an_acknowledgement_carries_the_robot_on_a_micrometre_grid() -> None:
+    """A resting robot's 1e-15 m jitter and 1e-13 m/s velocity noise do not reach the crowd."""
+    from arena_humansim_msgs.msg import AgentState
+
+    from arena_runtime.humans.arena_humansim.arena_humansim import _quantize
+
+    for x, vx in ((10.0, 0.0), (10.000000000000002, 5.38e-13), (9.999999999999998, -3.55e-14)):
+        agent = AgentState()
+        agent.pose.x, agent.pose.y, agent.velocity.x = x, 11.999999046325684, vx
+        _quantize(agent)
+        assert (agent.pose.x, agent.velocity.x) == (10.0, 0.0)
+        assert str(agent.velocity.x) == "0.0"
