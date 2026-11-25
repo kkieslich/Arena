@@ -121,6 +121,7 @@ from rclpy.qos import (
     QoSProfile,
     QoSReliabilityPolicy,
 )
+from std_msgs.msg import UInt32
 from visualization_msgs.msg import MarkerArray
 
 from arena_runtime.env.constants import Constants
@@ -575,6 +576,12 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             self._interactions_callback,
             QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL),
         )
+        self.node.create_subscription(
+            UInt32,
+            self.node.service_namespace("input_barrier_timeouts"),
+            self._barrier_timeouts_callback,
+            QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL),
+        )
 
         self._debug_markers_sub = LazySubscription(
             self.node,
@@ -728,6 +735,14 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         """Agent type of an engine agent, the spawned yaml path when its type came from a file."""
         name = self._agent_types.get(agent_id, "")
         return self._agent_type_paths.get(name, name)
+
+    BARRIER_TIMEOUT_INCIDENT = "humansim input barrier timed out: some crowd inputs may have landed a tick early or late, the crowd is not input-deterministic"
+
+    def _barrier_timeouts_callback(self, msg: UInt32) -> None:
+        """Record against the episode that the engine ran ticks without their acknowledgement (the count is per crowd since tick 0)."""
+        if msg.data > 0 and self._input_barrier and self._clock_started:
+            self._logger.error(f"engine input barrier timed out {msg.data} time(s) this episode")
+            self._report_incident(self.BARRIER_TIMEOUT_INCIDENT)
 
     def _clock_ns(self) -> int:
         now = self.node.sim_time
@@ -952,7 +967,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._deferred_spawns.extend((base_s + delay, msg, alias) for delay, msg, alias in self._deferred_unanchored)
         self._deferred_unanchored.clear()
         self._deferred_spawns.sort(key=lambda entry: entry[0])
-        await self._semantics_delivered()
+        if self._input_barrier:
+            await self._semantics_delivered()
         response = await self._start_clock_client.call_timeout(StartClock.Request(epoch=epoch.to_msg()))
         self._clock_started = response is not None and response.success
         # from the first tick on, calls made outside a step wait for the step (a held clock sends no frame to step on)

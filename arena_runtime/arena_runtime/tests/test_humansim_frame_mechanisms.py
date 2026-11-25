@@ -121,3 +121,25 @@ def test_an_acknowledgement_carries_the_robot_on_a_micrometre_grid() -> None:
         _quantize(agent)
         assert (agent.pose.x, agent.velocity.x) == (10.0, 0.0)
         assert str(agent.velocity.x) == "0.0"
+
+
+def test_an_engine_barrier_timeout_is_recorded_against_the_episode() -> None:
+    from std_msgs.msg import UInt32
+
+    adapter = _adapter()
+    adapter._clock_started = True
+    reasons: list[str] = []
+    adapter._report_incident = reasons.append  # pyright: ignore[reportAttributeAccessIssue]
+
+    class _Log:
+        def error(self, line: str) -> None:
+            pass
+
+        def get_child(self, _name: str) -> _Log:
+            return self
+
+    adapter._NodeInterface__node = type("N", (), {"get_logger": lambda self: _Log()})()  # pyright: ignore[reportAttributeAccessIssue]
+    adapter._barrier_timeouts_callback(UInt32(data=0))
+    assert reasons == []
+    adapter._barrier_timeouts_callback(UInt32(data=2))
+    assert reasons == [ArenaHumanSimulator.BARRIER_TIMEOUT_INCIDENT]
