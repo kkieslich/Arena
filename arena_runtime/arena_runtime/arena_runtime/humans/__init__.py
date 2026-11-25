@@ -435,7 +435,11 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 if ped.body.joints:
                     ped.body = BodyPose()
 
-        self._arena_peds_publisher.publish(out)
+        # sent only to a subscriber: converting a 300-walker roster for DDS took ~0.2 cores of the env at 50 Hz and more, in a headless
+        # run nobody reads it (the recorder excludes `peds`, hri_producer subscribes only while its own topics have readers);
+        # the in-process listeners (the collision trackers) get every roster either way
+        if self._arena_peds_publisher.get_subscription_count() > 0:
+            self._arena_peds_publisher.publish(out)
         for listener in self._arena_peds_listeners:
             listener(out)
         if self._sim_peds_publisher.get_subscription_count() > 0:

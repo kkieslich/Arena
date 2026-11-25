@@ -120,7 +120,9 @@ Consumers inside the env node take the roster in-process instead of subscribing 
 hands each published message to the callback right after the publish (the base class's own `pedestrian_discs` and
 `pedestrian_clips` state, and every robot's collision tracker through `EnvironmentManager.on_arena_peds`). The callback
 sees the message as published, read-only; `wire_radius` rounds `radius` to the float32 the wire carries, so a listener
-reads what a subscriber would.
+reads what a subscriber would. `arena_peds` itself goes out only while it has a subscriber: converting a crowd's roster
+for DDS at 50 Hz cost the env about a fifth of a core, and in a headless run nobody reads it (the recorder excludes
+`peds`, `hri_producer` subscribes only while its own topics have readers). The listeners get every roster either way.
 
 ## Resting on furniture
 
