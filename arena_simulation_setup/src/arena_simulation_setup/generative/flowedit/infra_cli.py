@@ -1003,6 +1003,15 @@ def _report_layout(site: Any, pools: dict[str, Any], record: Mapping[str, Any]) 
     return layout
 
 
+def _narrowest(stretches: Mapping[str, Sequence[Any]], *, two_way: bool) -> dict[str, Any] | None:
+    """The narrowest two-way (or one-way) stretch of `stretches` (`walkway.Stretch` by element name) after the layout."""
+    best = min(((st.after, name, st) for name, found in stretches.items() for st in found if st.after is not None and (st.required >= WK.TWO_WAY_M) == two_way), default=None, key=lambda t: t[0])
+    if best is None:
+        return None
+    width, name, st = best
+    return {"width_m": width, "before_m": st.before, "element": name, "at": list(st.at), "flow_ped_h": [st.flow_ab, st.flow_ba]}
+
+
 def _cmd_walkways(args: argparse.Namespace) -> int:
     """`flowedit infra walkways`: the walkway rule on the layouts of a search report, against the site's crowd."""
     from . import recipients as RC
@@ -1032,20 +1041,13 @@ def _cmd_walkways(args: argparse.Namespace) -> int:
             stretches[s.element.name] = found
         problems = place.check_layout(site, layout)
 
-        def narrowest(two_way: bool) -> dict[str, Any] | None:
-            best = min(((st.after, name, st) for name, found in stretches.items() for st in found if st.after is not None and (st.required >= WK.TWO_WAY_M) == two_way), default=None, key=lambda t: t[0])
-            if best is None:
-                return None
-            width, name, st = best
-            return {"width_m": width, "before_m": st.before, "element": name, "at": list(st.at), "flow_ped_h": [st.flow_ab, st.flow_ba]}
-
         row = {
             "layout_id": layout_id,
             "valid": not problems,
             "problems": problems,
             "narrowings": [{"element": s.element.name, **attrs.asdict(n)} for s in layout.spots for n in s.narrowings],
-            "narrowest_two_way": narrowest(True),
-            "narrowest_one_way": narrowest(False),
+            "narrowest_two_way": _narrowest(stretches, two_way=True),
+            "narrowest_one_way": _narrowest(stretches, two_way=False),
         }
         out.append(row)
         two, one = row["narrowest_two_way"], row["narrowest_one_way"]

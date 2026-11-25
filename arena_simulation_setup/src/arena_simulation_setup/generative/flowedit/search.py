@@ -510,7 +510,6 @@ def _reach(spot: Spot) -> shapely.Polygon:
     import shapely
 
     from . import generate as gen
-
     from .walkway import TWO_WAY_M
 
     lo, hi, _, front = spot.frame.extent(shapely.union_all([spot.taken, spot.clear]))

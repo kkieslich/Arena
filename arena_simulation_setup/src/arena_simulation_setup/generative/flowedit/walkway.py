@@ -63,7 +63,7 @@ import attrs
 
 if TYPE_CHECKING:
     import numpy as np
-    import shapely
+    import scipy.sparse
     from shapely.geometry.base import BaseGeometry
 
     from .edit import Site
@@ -585,7 +585,7 @@ def _ports(grid: _Grid, routable: np.ndarray) -> np.ndarray:
     return labels
 
 
-def _path(graph: Any, index: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, float] | None:
+def _path(graph: scipy.sparse.csr_matrix, index: np.ndarray, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, float] | None:
     """The shortest path from cells `a` to cells `b` (node ids) as node ids, and its length; None without one."""
     import numpy as np
     import scipy.sparse.csgraph
@@ -847,7 +847,6 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
         names_by = tuple(sorted({o.name.split("#")[0] for o in by}))
         out.append(Narrowing((a, b), required, round(before, 2), w.width, w.middle, round(q_ab, 1), round(q_ba, 1), names_by, all(o.intermittent for o in by), moved, (w.left, w.right)))
     return sorted(out, key=lambda n: (n.after - n.required, n.ports))
-
 
 
 def _canonical(routes: Routes) -> dict[str, str]:
