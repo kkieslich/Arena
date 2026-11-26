@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 _TRAIL_STEP = 0.05
 _TRAIL_POINTS = 2000
 _TRAIL_QOS = rclpy.qos.QoSProfile(depth=1, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
-#: sim seconds between two looks at the robot's pose for the trail (0.2 m apart at 2 m/s)
+#: wall seconds between two looks at the robot's pose for the trail (0.2 m apart at 2 m/s and real time); a wall timer,
+#: not a sim-time one: a sim-time rclpy timer that falls behind is re-dispatched over and over by the EventsExecutor
 _TRAIL_SAMPLE_S = 0.1
 #: wall seconds between two sends of a grown trail; a 2000-pose Path costs ~8 ms to send
 _TRAIL_SEND_S = 0.5
@@ -43,7 +44,7 @@ class MobileAdapter(Adapter):
         self._trail_sent_at = -math.inf
         self._trail_sent_to = 0
         self._trail_pub = self.rm.node.create_publisher(nav_msgs.msg.Path, str(self.rm.namespace("trail")), _TRAIL_QOS)
-        self._trail_timer = self.rm.node.create_timer(_TRAIL_SAMPLE_S, self._extend_trail)
+        self._trail_timer = self.rm.node.wall_timer(_TRAIL_SAMPLE_S, self._extend_trail)
         self.rm.watch(self._restart_trail)
         self._collision: CollisionTrackerNode | None = None
         mobile = self.rm.robot.model.resolve_sync().caps.mobile
@@ -109,7 +110,7 @@ class MobileAdapter(Adapter):
     )
 
     def _extend_trail(self) -> None:
-        """Add the robot's pose to the trail every `_TRAIL_SAMPLE_S` of sim time once it moved `_TRAIL_STEP`, and send it.
+        """Add the robot's pose to the trail every `_TRAIL_SAMPLE_S` (wall) once it moved `_TRAIL_STEP`, and send it.
 
         A viz topic nothing records: it was extended and sent on every odometry message the robot moved (30 Hz at 2 m/s),
         a coroutine per message on the env executor and ~8 ms per send once 100 m were driven."""
