@@ -372,6 +372,8 @@ _FLOORS: dict[tuple[Any, ...], WalkerFloor] = {}
 _ROUTES: dict[tuple[Any, ...], Routes] = {}
 #: The walkways a spot narrows with the other elements close to it, by spot and those elements (`check_layout`)
 _JOINT: dict[tuple[Any, ...], tuple[Narrowing, ...]] = {}
+#: The catalog models whose record was checked against their asset (`resolve_models`)
+_RECORDS_CHECKED: set[tuple[Path, str]] = set()
 #: Walking distances run on this grid (8-connected, up to 8 % longer than straight off the grid axes)
 WALK_RESOLUTION_M = 0.1
 #: An entrance whose point lies further than this from the walking floor gets a warning (a mistyped position) [m]
@@ -424,7 +426,7 @@ def _obstacles(site: Site, level_id: str, ignore: frozenset[str]) -> dict[str, s
         if placed is None or placed[0] != level_id or model is None or obj in ignore or obj in raised:
             continue
         here[obj] = (placed[1], model)
-    gen.resolve_footprints(site, sorted({model for _, model in here.values()}))
+    resolve_models(site, sorted({model for _, model in here.values()}))
     out = {}
     for obj, (pose, model) in sorted(here.items()):
         if gen._FOOTPRINTS.get((site.root, model)) is None and (site.root, model) not in gen._UNRESOLVED:
@@ -475,6 +477,52 @@ def _context(site: Site, level_id: str, ignore: frozenset[str]) -> _Context:
     return context
 
 
+#: The catalog's models as the public asset store resolves them (`generate.resolve_footprints`: the arena-assets
+#: annotation's front, and the footprint, the parcel locker's the box its doors sweep), so that the layout check runs
+#: where the asset store does not reach (an offline machine): a model that does not resolve is placed with its record,
+#: with a warning. Where a model resolves, its asset wins (it is what the runtime spawns) and a record that differs from
+#: it by more than `MODEL_RECORD_TOL_M` warns that the record is out of date.
+MODEL_RECORDS: Mapping[str, tuple[tuple[Point, ...] | None, str]] = {
+    "Common/Object/robot_charger": (((-0.2033, -0.3934), (-0.2033, 0.3934), (0.2033, 0.3934), (0.2033, -0.3934)), "+x"),
+    "Common/Object/waiting_bay": (None, "+x"),
+    "Common/Object/parcel_locker": (((-0.0021, -0.0013), (-0.0021, 1.0381), (0.7943, 1.0381), (0.7943, -0.0013)), "+x"),
+}
+MODEL_RECORD_TOL_M = 0.01
+
+
+def resolve_models(site: Site, models: Sequence[str], *, strict: bool = False) -> None:
+    """`generate.resolve_footprints` for `models`, a catalog model that does not resolve taking its record
+    (`MODEL_RECORDS`) in place of the fallback box; ValueError as there for a model without one that does not resolve
+    (when `strict`, or when a docked object has it)."""
+    import warnings
+
+    import shapely
+
+    from . import generate as gen
+
+    try:
+        gen.resolve_footprints(site, models)
+    except ValueError:
+        pass  # refused for a docked object's model: a record may stand in for it, the check below says
+    for model in models:
+        key = (site.root, model)
+        record = MODEL_RECORDS.get(model)
+        if record is None:
+            continue
+        ring, face = record
+        if key in gen._UNRESOLVED:
+            warnings.warn(f"model {model!r} does not resolve ({gen._UNRESOLVED.pop(key)}): placed with the catalog's record of it (place.MODEL_RECORDS)", stacklevel=2)
+            gen._FOOTPRINTS[key] = None if ring is None else shapely.Polygon(ring)
+            gen._FACES[key] = face
+        elif key not in _RECORDS_CHECKED:
+            _RECORDS_CHECKED.add(key)
+            resolved = gen._FOOTPRINTS.get(key)
+            off = (resolved is None) != (ring is None) or (ring is not None and resolved is not None and shapely.Polygon(ring).hausdorff_distance(resolved) > MODEL_RECORD_TOL_M)
+            if off or gen._FACES.get(key) != face:
+                warnings.warn(f"model {model!r} resolves differently from the catalog's record of it (place.MODEL_RECORDS): its asset is used; update the record", stacklevel=2)
+    gen.resolve_footprints(site, models, strict=strict)
+
+
 def resolve_element(site: Site, element: Element) -> shapely.Polygon:
     """The footprint of one of `element`'s objects in its own frame. ValueError when its model does not resolve, when it
     has no annotated `face` (its front, and so the side its dock is on, would be a guess), or when neither the element
@@ -485,7 +533,7 @@ def resolve_element(site: Site, element: Element) -> shapely.Polygon:
 
     from . import generate as gen
 
-    gen.resolve_footprints(site, [element.model], strict=True)
+    resolve_models(site, [element.model], strict=True)
     face = gen._FACES.get((site.root, element.model))
     if annotated_front(face) is None:
         raise ValueError(f"model {element.model!r} has no face annotation ({face!r}): its front, and so the side its dock is on, is unknown")
@@ -567,13 +615,15 @@ def crowd_routes(site: Site, level_id: str, walkers: WalkerDemand) -> Routes:
     """The crowd's routes on a level's walker floor (`walkway.Routes`). Cached per site and crowd. ValueError for a
     crowd with no walkers, and for one some of whose walkers find no route (an entrance off the walker floor, a sink
     out of reach): the walkway rule would pass every spot those walkers would have walked past."""
+    from .links import world_links
     from .walkway import Routes
 
     key = (*_site_key(site), level_id, walkers)
     if key not in _ROUTES:
         if not walkers.flows:
             raise ValueError(f"{site.key} level {level_id}: the crowd has no walkers (no source with a rate and a sink): the walkway rule has nothing to measure against")
-        routes = Routes.build(walker_floor(site, level_id), walkers)
+        # over the crowd scenario's teleport zones and the world's own stairs and escalators, for the walkers who climb
+        routes = Routes.build(walker_floor(site, level_id), walkers.with_links(world_links(site.world.levels[level_id])))
         routes.require_all(f"{site.key} level {level_id}")
         _ROUTES[key] = routes
     return _ROUTES[key]
@@ -1172,6 +1222,7 @@ __all__ = [
     "Element",
     "Entrance",
     "Layout",
+    "MODEL_RECORDS",
     "PASSAGE_M",
     "PlacedElement",
     "PlacedObject",
@@ -1192,6 +1243,7 @@ __all__ = [
     "layout_prefix",
     "placed_elements",
     "remove_element",
+    "resolve_models",
     "resolve_element",
     "save_layout",
     "walker_floor",

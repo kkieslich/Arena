@@ -38,6 +38,7 @@ from . import search as SE
 from . import suite as SU
 from . import walkway as WK
 from .edit import open_site
+from .links import world_links
 
 
 def _log(message: str) -> None:
@@ -160,6 +161,8 @@ class _Space:
         elif not crowd.flows:
             raise ValueError(f"crowd scenario {self.scenario_name}: no walkers (no source with a rate and a sink), so no walkway rule: give the scenario its crowd (pass --no-walkway-rule to search without the rule on purpose)")
         facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=crowd if crowd.flows else None)
+        #: whether the search ran with the walkway rule, for the reports and manifests a frozen selection keeps
+        self.walkway_rule: dict[str, Any] = {"on": bool(crowd.flows), "scenario": self.scenario_name, "flows": len(crowd.flows), "ped_per_h": round(crowd.total * 3600.0, 1), "versions": _versions()}
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
         if count:
@@ -297,6 +300,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
         "site": space.site.key,
         "site_root": str(space.site.root),
         "site_config": None if space.config is None else space.config.record(),
+        "walkway_rule": space.walkway_rule,
         "scenario": str(space.scenario),
         "visitor_sources": IN.visitor_sources(space.scenario),
         "visitor_rate_per_h": args.visitor_rate,
@@ -510,6 +514,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
         "site": space.site.key,
         "site_config": space.config.record(),
         "scenario": str(space.scenario),
+        "walkway_rule": space.walkway_rule,
         "loading": space.loading_record(),
         "demand": {"rate_per_h": demand.rate_per_h, "pickup_share": demand.pickup_share, "bay_share": demand.bay_share, "charging_trips_per_job": demand.charging_trips_per_job},
         "recipient_entrances": [e.name for e in entrances],
@@ -584,14 +589,10 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
     floor = shapely.union_all([shapely.Polygon([(p.x, p.y) for p in z.polygon]) for z in level.zones if len(z.polygon) >= 3])
     # the walls HumanSim's walkers meet: an entrance area stays on the floor they reach
     walls = shapely.MultiLineString([[(w.start.x, w.start.y), (w.end.x, w.end.y)] for w in nav_walls(level)])
-    robots = []
-    template = IN.scenario_dir(site, config.scenario, args.scenarios_from) / "scenario.yaml"
-    if template.is_file():
-        import yaml
-
-        robots = (yaml.safe_load(template.read_text()) or {}).get("robots") or []
+    robots, robots_from = _crowd_robots(site, config, args.scenarios_from)
     rate, how = _crowd_rate(args, config)
-    scenario, visitors_doc, types = IN.entrance_crowd(config, floor, walls=walls, rate=rate, visitor_rate_per_h=args.visitor_rate, robots=robots)
+    world = [z for level_id in site.world.levels for z in world_links(site.world.levels[level_id])]
+    scenario, visitors_doc, types = IN.entrance_crowd(config, floor, walls=walls, rate=rate, visitor_rate_per_h=args.visitor_rate, robots=robots, world_links=world)
     shares = IN.entrance_shares(config)
     lines = [f"{e.name} ({e.type}{', recipients' if e.recipients else ''}): {shares[e.name] * rate:.3f} ped/s" for e in config.facts.entrances]
     header = "\n".join(
@@ -604,7 +605,7 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
             f"area lies on the floor a walker reaches, {IN.ENTRANCE_WALL_M:g} m clear of the walls (HumanSim plans paths 0.38 m off them), without the pockets",
             f"they close off; an entrance with under {IN.ENTRANCE_MIN_M2:g} m2 of it in its square takes a larger square, up to {IN.ENTRANCE_GROW_M[-1]:g} m.",
             f"Parcel recipients ({args.visitor_rate:g}/h in all, locker_visitors.yaml) come in at a recipient entrance and leave by it.",
-            "Robots as in the site config's scenario. Entrances and their inflow:",
+            f"Robots: {robots_from}. Entrances and their inflow:",
             *[f"  {line}" for line in lines],
         ]
     )
@@ -617,6 +618,24 @@ def _cmd_crowd(args: argparse.Namespace) -> int:
     folder = IN.write_crowd(args.out / args.name, scenario, visitors_doc, types, header)
     _log(f"wrote {folder}")
     return 0
+
+
+def _crowd_robots(site: Any, config: IN.SiteConfig, source: Path | None) -> tuple[list[dict[str, Any]], str]:  # noqa: ANN401 - a Site
+    """The robots a new crowd scenario carries, and where they come from: the site config's scenario's (the scenario a
+    rebuilt crowd replaces), else the site's `default` scenario's starts without their phases (the INFRA suites drive the
+    robots themselves: a crowd scenario only needs where a robot spawns), else none, on a site with no scenario at all."""
+    import yaml
+
+    for name, strip in ((config.scenario, False), ("default", True)):
+        try:
+            path = IN.scenario_dir(site, name, source) / "scenario.yaml"
+        except FileNotFoundError:
+            continue
+        robots = [dict(r) for r in (yaml.safe_load(path.read_text()) or {}).get("robots") or []]
+        if strip:
+            robots = [{k: v for k, v in r.items() if k != "phases"} | {"phases": []} for r in robots]
+        return robots, f"{len(robots)} from scenario {name!r}" + (" (starts only)" if strip else "")
+    return [], "none (the site has no scenario to take them from)"
 
 
 def _crowd_rate(args: argparse.Namespace, config: IN.SiteConfig) -> tuple[float, str]:
@@ -812,6 +831,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         "site": space.site.key,
         "site_root": str(space.site.root),
         "site_config": None if space.config is None else space.config.record(),
+        "walkway_rule": space.walkway_rule,
         "scenario": str(space.scenario),
         "scenarios": {str(seed): names[seed] for seed in seeds},
         "visitor_sources": sorted({r.source for per_seed in who.values() for group in per_seed.values() for r in group}),
