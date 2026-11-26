@@ -232,6 +232,9 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     space = search.Search(site, loading=loading.objects[0].goto, keep_out=infra.keep_out(hospital_copy / "scenarios" / "mix" / "scenario.yaml"), mix=search.TaskMix(**manifest["mix"]), facts=place.SiteFacts(walkers=walkers))
     _, wide = search.premise_pair(space)
     assert rate_from == {"estimate": "wide premise layout", "layout_id": wide.layout_id, "travel_m": pytest.approx(wide.travel_m, abs=1e-3), "speed_mps": infra.SPEED_MPS, "utilisation": infra.UTILISATION}
+    # and not the slowest layout the selection runs, wherever that one is slower
+    slowest = max(r["travel_m"] for r in manifest["runs"])
+    assert abs(slowest - wide.travel_m) < 1e-3 or rate != pytest.approx(infra.fleet_rate(slowest), abs=0.01)
     assert all(s["config"]["fleet"]["rate"] == rate for s in doc["stages"])
     for i in ids:
         world = Path(manifest["worlds"][i])

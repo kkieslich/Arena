@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 import shapely
+import shapely.affinity
 
 pytest.importorskip("numpy")
 pytest.importorskip("scipy")
@@ -141,8 +142,8 @@ def concourse() -> WalkerFloor:
 
 
 def test_a_slot_beside_a_pillar_off_the_crowds_way_passes(concourse: WalkerFloor) -> None:
-    # the crowd crosses the middle of the concourse: the slot by the wall is over 10 % longer than its way
-    ends = {"west": (0.5, 5.0, 2.5, 8.0), "east": (27.5, 5.0, 29.5, 8.0)}
+    # the crowd crosses the far side of the concourse: a way through the slot by the wall is over 10 % longer than its own
+    ends = {"west": (0.5, 8.5, 2.5, 10.0), "east": (27.5, 8.5, 29.5, 10.0)}
     routes = Routes.build(concourse, WalkerDemand.from_scenario(_crowd(ends, [("west", "east"), ("east", "west")])))
     assert walkway.narrowings(concourse, routes, [Occupied("bay_pair:bay_1", BAY)]) == []
 
@@ -168,6 +169,71 @@ def test_an_element_that_moves_the_walkers_into_a_narrow_passage_fails() -> None
     assert found.two_way and found.moved and found.after == pytest.approx(1.0, abs=CELL_M) and found.before > TWO_WAY_M
 
 
+def test_walkers_from_two_openings_who_meet_head_on_count_as_two_way() -> None:
+    # a T-junction: a 4 m corridor west-east with a branch north at x 14-18; walkers go from the west end up the branch
+    # and from the east end to the west end. Each pair of openings carries one direction, but west of the junction the two
+    # meet head-on: an element there leaving 1.1 m needs the two-way width
+    floor = WalkerFloor("0", shapely.union_all([shapely.box(0.0, 0.0, 30.0, 4.0), shapely.box(14.0, 3.9, 18.0, 14.0)]), (), ())
+    ends = {"west": (0.5, 0.5, 2.0, 3.5), "east": (28.0, 0.5, 29.5, 3.5), "north": (14.5, 12.0, 17.5, 13.5)}
+    routes = Routes.build(floor, WalkerDemand.from_scenario(_crowd(ends, [("west", "north"), ("east", "west")], rate=500.0 / 3600.0)))
+    element = Occupied("element", shapely.box(8.0, 0.0, 10.0, 2.9))
+    found = walkway.narrowings(floor, routes, [element])
+    assert found and found[0].two_way and found[0].after == pytest.approx(1.1, abs=CELL_M)
+    assert found[0].flow_ab == pytest.approx(500.0, rel=0.01) and found[0].flow_ba == pytest.approx(500.0, rel=0.01)
+
+
+def test_a_neck_between_two_sources_and_sinks_inside_the_window_is_measured(office: WalkerFloor) -> None:
+    # both ends of the walkers' way lie inside the element's window: a region-to-region stretch
+    ends = {"west": (11.0, 10.5, 12.5, 13.5), "east": (21.5, 10.5, 23.0, 13.5)}
+    routes = Routes.build(office, WalkerDemand.from_scenario(_crowd(ends, [("west", "east"), ("east", "west")])))
+    (found,) = walkway.narrowings(office, routes, [Occupied("b5aeadcb", B5AEADCB)])
+    assert found.two_way and found.after == pytest.approx(1.02, abs=CELL_M) and all(p.startswith("end:") for p in found.ports)
+
+
+def test_a_neck_at_a_stairs_mouth_inside_the_window_is_measured() -> None:
+    # walkers come up a stair whose mouth lies in the element's window and walk on along a 4 m corridor; the element
+    # beside the mouth's way leaves 1.0 m: the stretch from the mouth is measured, not dropped
+    floor = WalkerFloor("0", shapely.union_all([shapely.box(0.0, 0.0, 20.0, 4.0), shapely.box(40.0, 0.0, 50.0, 4.0)]), (), ())
+    doc = _crowd({"west": (0.5, 0.5, 2.0, 3.5), "east": (48.0, 0.5, 49.5, 3.5)}, [("west", "east"), ("east", "west")])
+    doc["teleport_zones"] = [{"name": "up", "entry": {"x": 19.6, "y": 2.0}, "destinations": ["down"], "delay": 5.0}, {"name": "down", "entry": {"x": 40.4, "y": 2.0}, "destinations": ["up"], "delay": 5.0}]
+    routes = Routes.build(floor, WalkerDemand.from_scenario(doc))
+    assert not routes.missing
+    found = walkway.narrowings(floor, routes, [Occupied("element", shapely.box(15.0, 1.0, 17.0, 4.0))])
+    assert found and found[0].two_way and found[0].after == pytest.approx(1.0, abs=CELL_M)
+    assert any(p.startswith("end:") for p in found[0].ports)
+
+
+def test_a_way_with_no_neck_near_the_element_does_not_end_the_search_for_the_others(concourse: WalkerFloor) -> None:
+    # the crowd's shortest way runs north of the pillar, with no neck near the bays; the way through the slot is a few per
+    # cent longer, within the slack, and is measured too: it fails
+    ends = {"west": (0.5, 4.0, 2.5, 5.0), "east": (27.5, 4.0, 29.5, 5.0)}
+    routes = Routes.build(concourse, WalkerDemand.from_scenario(_crowd(ends, [("west", "east"), ("east", "west")])))
+    found = walkway.narrowings(concourse, routes, [Occupied("bay_pair:bay_1", BAY)])
+    assert found and found[0].kind == "narrowed" and found[0].after == pytest.approx(0.96, abs=CELL_M)
+
+
+def test_the_verdict_does_not_depend_on_where_the_grids_start(office: WalkerFloor) -> None:
+    # the same office shifted by a fraction of a cell of both grids: the same narrowing, to a cell
+    dx, dy = 0.033, 0.021
+    moved = WalkerFloor("0", shapely.affinity.translate(office.floor, dx, dy), tuple(((a[0] + dx, a[1] + dy), (b[0] + dx, b[1] + dy)) for a, b in office.segments), tuple(Occupied(o.name, shapely.affinity.translate(o.geometry, dx, dy)) for o in office.obstacles))
+    pairs = [("west", "east"), ("east", "west")]
+    shifted_ends = {k: (x0 + dx, y0 + dy, x1 + dx, y1 + dy) for k, (x0, y0, x1, y1) in ENDS.items()}
+    for docks in (B5AEADCB, E52CBD21, shapely.box(8.0, 10.06, 10.0, 11.26)):
+        here = walkway.narrowings(office, Routes.build(office, WalkerDemand.from_scenario(_crowd(ENDS, pairs))), [Occupied("e", docks)])
+        there = walkway.narrowings(moved, Routes.build(moved, WalkerDemand.from_scenario(_crowd(shifted_ends, pairs))), [Occupied("e", shapely.affinity.translate(docks, dx, dy))])
+        assert [(n.kind, n.required) for n in here] == [(n.kind, n.required) for n in there]
+        assert [n.after for n in here] == pytest.approx([n.after for n in there], abs=CELL_M)
+
+
+def test_two_elements_that_leave_a_neck_together_are_both_named(office: WalkerFloor) -> None:
+    routes = Routes.build(office, WalkerDemand.from_scenario(_crowd(ENDS, [("west", "east"), ("east", "west")])))
+    south = Occupied("charger_pair:charger_1", shapely.box(6.0, 10.06, 7.0, 11.71))
+    north = Occupied("locker:locker_1", shapely.box(6.0, 13.0, 7.0, 13.95))
+    assert walkway.narrowings(office, routes, [south]) == [] and walkway.narrowings(office, routes, [north]) == []
+    (found,) = walkway.narrowings(office, routes, [south], [north])
+    assert set(found.by) == {"charger_pair:charger_1", "locker:locker_1"} and found.after == pytest.approx(13.0 - 11.71, abs=CELL_M)
+
+
 # --- the crowd's demand and routes ------------------------------------------------------------------------------------
 
 
@@ -188,6 +254,15 @@ def test_climbing_walkers_take_a_teleport_zone_and_wheelchair_users_do_not() -> 
     routes = Routes.build(floor, WalkerDemand.from_scenario(doc))
     assert [(m.source, m.climbs) for m in routes.missing] == [("west_wheelchair", False)]
     assert len(routes.routes) == 2  # the climbers' route, one piece on each floor
+
+
+def test_a_crowd_some_of_whose_walkers_find_no_route_is_refused_not_passed() -> None:
+    # the east end lies on a floor no way reaches: its walkers find no route, and a rule measured without them refuses
+    floor = WalkerFloor("0", shapely.union_all([shapely.box(0.0, 0.0, 10.0, 4.0), shapely.box(20.0, 0.0, 30.0, 4.0)]), (), ())
+    routes = Routes.build(floor, WalkerDemand.from_scenario(_crowd({"west": (0.5, 0.5, 2.0, 3.5), "east": (28.0, 0.5, 29.5, 3.5)}, [("west", "east")])))
+    assert routes.missing
+    with pytest.raises(ValueError, match="find no route"):
+        routes.require_all()
 
 
 def test_the_walker_floor_exports_what_humansim_gets(office: WalkerFloor) -> None:
@@ -230,3 +305,33 @@ def test_the_walkway_rule_runs_against_the_sites_crowd_and_check_layout_finds_th
             assert not s.narrowings
     # without the crowd the rule says unknown and filters nothing
     assert {s.verdict[place.Rule.WALKWAY_WIDTH] for s in place.candidate_spots(site, "charger_pair")} == {place.Verdict.UNKNOWN}
+
+
+@pytest.mark.usefixtures("local_root")
+def test_check_layout_names_the_neck_two_facing_elements_leave_in_a_hallway_the_crowd_walks(local_root: Path) -> None:
+    from flowedit_docks import write_docked_assets
+
+    from arena_simulation_setup.generative.flowedit.edit import open_site
+    from arena_simulation_setup.generative.flowedit.place import Layout
+
+    write_docked_assets(local_root)
+    site = open_site(HOSPITAL)
+    level = next(iter(site.world.levels.values()))
+    hall = next(z for z in level.zones if z.name == "central_hallway").shape()
+    x0, y0, x1, y1 = hall.bounds
+    # the crowd walks the central hallway from end to end, both ways
+    if x1 - x0 >= y1 - y0:
+        mid = hall.intersection(shapely.LineString([((x0 + x1) / 2.0, y0), ((x0 + x1) / 2.0, y1)])).centroid.y
+        ends = {"a": (x0 + 0.6, mid - 0.75, x0 + 2.1, mid + 0.75), "b": (x1 - 2.1, mid - 0.75, x1 - 0.6, mid + 0.75)}
+    else:
+        mid = hall.intersection(shapely.LineString([(x0, (y0 + y1) / 2.0), (x1, (y0 + y1) / 2.0)])).centroid.x
+        ends = {"a": (mid - 0.75, y0 + 0.6, mid + 0.75, y0 + 2.1), "b": (mid - 0.75, y1 - 2.1, mid + 0.75, y1 - 0.6)}
+    facts = place.SiteFacts(walkers=WalkerDemand.from_scenario(_crowd(ends, [("a", "b"), ("b", "a")], rate=0.2)))
+    chargers = [s for s in place.candidate_spots(site, "charger_pair", facts=facts) if s.zone == "central_hallway" and s.valid]
+    lockers = [s for s in place.candidate_spots(site, "locker", facts=facts) if s.zone == "central_hallway"]
+    pairs = [(c, k) for c in chargers for k in lockers if c.frame.n[0] * k.frame.n[0] + c.frame.n[1] * k.frame.n[1] < -0.9]
+    assert pairs
+    charger, locker = min(pairs, key=lambda p: p[0].taken.distance(p[1].taken))
+    problems = place.check_layout(site, Layout.of([charger, locker]))
+    walk = [p for p in problems if "walkway" in p and (p.startswith("charger_pair: with locker") or p.startswith("locker: with charger_pair"))]
+    assert walk, problems

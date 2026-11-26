@@ -370,6 +370,8 @@ _BASES: dict[tuple[Any, ...], Any] = {}
 _WALKS: dict[tuple[Any, ...], Any] = {}
 _FLOORS: dict[tuple[Any, ...], WalkerFloor] = {}
 _ROUTES: dict[tuple[Any, ...], Routes] = {}
+#: The walkways a spot narrows with the other elements close to it, by spot and those elements (`check_layout`)
+_JOINT: dict[tuple[Any, ...], tuple[Narrowing, ...]] = {}
 #: Walking distances run on this grid (8-connected, up to 8 % longer than straight off the grid axes)
 WALK_RESOLUTION_M = 0.1
 #: An entrance whose point lies further than this from the walking floor gets a warning (a mistyped position) [m]
@@ -386,6 +388,7 @@ def clear_cache() -> None:
     _WALKS.clear()
     _FLOORS.clear()
     _ROUTES.clear()
+    _JOINT.clear()
     _SITES.clear()
 
 
@@ -396,7 +399,7 @@ def _site_key(site: Site) -> tuple[Any, ...]:
     _SITES.move_to_end(key)
     while len(_SITES) > CACHED_SITES:
         old, _ = _SITES.popitem(last=False)
-        for cache in (_CONTEXTS, _SPOTS, _CUT_OFF, _BASES, _WALKS, _FLOORS, _ROUTES):
+        for cache in (_CONTEXTS, _SPOTS, _CUT_OFF, _BASES, _WALKS, _FLOORS, _ROUTES, _JOINT):
             for stale in [k for k in cache if k[: len(old)] == old]:
                 del cache[stale]
     return key
@@ -561,12 +564,18 @@ def walker_floor(site: Site, level_id: str) -> WalkerFloor:
 
 
 def crowd_routes(site: Site, level_id: str, walkers: WalkerDemand) -> Routes:
-    """The crowd's routes on a level's walker floor (`walkway.Routes`). Cached per site and crowd."""
+    """The crowd's routes on a level's walker floor (`walkway.Routes`). Cached per site and crowd. ValueError for a
+    crowd with no walkers, and for one some of whose walkers find no route (an entrance off the walker floor, a sink
+    out of reach): the walkway rule would pass every spot those walkers would have walked past."""
     from .walkway import Routes
 
     key = (*_site_key(site), level_id, walkers)
     if key not in _ROUTES:
-        _ROUTES[key] = Routes.build(walker_floor(site, level_id), walkers)
+        if not walkers.flows:
+            raise ValueError(f"{site.key} level {level_id}: the crowd has no walkers (no source with a rate and a sink): the walkway rule has nothing to measure against")
+        routes = Routes.build(walker_floor(site, level_id), walkers)
+        routes.require_all(f"{site.key} level {level_id}")
+        _ROUTES[key] = routes
     return _ROUTES[key]
 
 
@@ -1046,12 +1055,17 @@ def check_layout(site: Site, layout: Layout) -> list[str]:
         for gap, before, what in pinches(ctx, s, {o.element.name: o.taken for o in others}, PASSAGE_M):
             if what != _SITE:
                 problems.append(f"{s.element.name}: pocket, closes a {before:.2f} m passage to {what} ({gap:.2f} m left)")
-        # a walkway two elements narrow together: the others within a two-way width of this one
-        close = [o for o in others if o.taken.distance(s.taken) < walkway.TWO_WAY_M + gen.MARGIN_M]
+        # a walkway two elements narrow together: the others within `walkway.JOINT_M` of this one. A neck between two
+        # elements lies in both their windows, so each pair is measured once, from the earlier one with the rule
+        order = layout.spots.index(s)
+        close = [o for o in others if o.taken.distance(s.taken) < walkway.JOINT_M and (layout.spots.index(o) > order or Rule.WALKWAY_WIDTH not in o.element.rules)]
         if walkers is None or not close or Rule.WALKWAY_WIDTH not in s.element.rules:
             continue
         mine = {f"{s.element.name}:{o.name}" for o in s.objects}
-        for n in walkway_narrowings(site, s, close, walkers):
+        key = (*_site_key(site), s.level, s.element.name, s.id, tuple(sorted((o.element.name, o.id) for o in close)), walkers)
+        if key not in _JOINT:
+            _JOINT[key] = tuple(walkway_narrowings(site, s, close, walkers))
+        for n in _JOINT[key]:
             if set(n.by) - mine:
                 problems.append(f"{s.element.name}: with {', '.join(sorted(set(n.by) - mine))}, {n.describe()}")
     return problems

@@ -510,11 +510,11 @@ def _reach(spot: Spot) -> shapely.Polygon:
     import shapely
 
     from . import generate as gen
-    from .walkway import TWO_WAY_M
+    from .walkway import JOINT_M
 
     lo, hi, _, front = spot.frame.extent(shapely.union_all([spot.taken, spot.clear]))
-    # a walkway two elements narrow together has them within a two-way width of each other (`place.check_layout`)
-    walkway = spot.taken.buffer((TWO_WAY_M + gen.MARGIN_M) / 2.0 + 0.01)
+    # a walkway two elements narrow together has them within `walkway.JOINT_M` of each other (`place.check_layout`)
+    walkway = spot.taken.buffer(JOINT_M / 2.0 + 0.01)
     return shapely.box(*shapely.union_all([spot.keep_clear.buffer(gen.MARGIN_M + 0.01), place._window(spot.frame, (lo, hi), front), walkway]).bounds)
 
 

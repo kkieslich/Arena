@@ -151,8 +151,12 @@ class _Space:
         loading = args.loading if args.loading is not None else (None if SE.LOADING in placements else SE.TWIN_LOADING_XY)
         self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration, top_ups_per_job=getattr(args, "top_ups", 0.0))
         self.rate_from: dict[str, Any] | None = None
-        # the walkway rule measures against the crowd of the scenario every stage runs
-        facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=WK.WalkerDemand.load(self.scenario))
+        # the walkway rule measures against the crowd of the scenario every stage runs; a scenario without walkers gives
+        # it nothing to measure against, and it says unknown
+        crowd = WK.WalkerDemand.load(self.scenario)
+        if not crowd.flows:
+            _log(f"crowd scenario {self.scenario_name}: no walkers (no source with a rate and a sink): the walkway rule says unknown")
+        facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=crowd if crowd.flows else None)
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
         if count:
@@ -1008,7 +1012,17 @@ def _narrowest(stretches: Mapping[str, Sequence[Any]], *, two_way: bool = False,
     if best is None:
         return None
     width, name, st = best
-    return {"width_m": width, "before_m": st.before, "required_m": round(st.required, 2), "element": name, "at": list(st.at), "flow_ped_h": [st.flow_ab, st.flow_ba]}
+    return {"width_m": width, "before_m": st.before, "required_m": round(st.required, 2), "element": name, "at": None if st.at is None else list(st.at), "flow_ped_h": [st.flow_ab, st.flow_ba]}
+
+
+def _versions() -> dict[str, str]:
+    """The libraries the walkway rule's grids and geometry come from: its routes break ties as scipy's Dijkstra does and
+    its floor is GEOS's, so a frozen selection records them."""
+    import numpy
+    import scipy
+    import shapely
+
+    return {"numpy": numpy.__version__, "scipy": scipy.__version__, "shapely": shapely.__version__, "geos": shapely.geos_version_string}
 
 
 def _cmd_walkways(args: argparse.Namespace) -> int:
@@ -1019,6 +1033,8 @@ def _cmd_walkways(args: argparse.Namespace) -> int:
     config = _checked(_config(args, site.key), site.root)
     scenario = IN.scenario_dir(site, _scenario(args, config), args.scenarios_from)
     walkers = WK.WalkerDemand.load(scenario)
+    if not walkers.flows:
+        raise ValueError(f"{scenario}: the crowd scenario has no walkers (no source with a rate and a sink): nothing to check the walkways against")
     facts = attrs.evolve(config.facts if config is not None else place.SiteFacts(), walkers=walkers)
     records = RC.read_report(args.report)
     ids = args.layouts or sorted(records)
@@ -1058,7 +1074,7 @@ def _cmd_walkways(args: argparse.Namespace) -> int:
             + "".join(f"\n    {p}" for p in problems)
         )
     if args.out is not None:
-        args.out.write_text(json.dumps({"site": site.key, "scenario": str(scenario), "layouts": out}, indent=1) + "\n")
+        args.out.write_text(json.dumps({"site": site.key, "scenario": str(scenario), "versions": _versions(), "layouts": out}, indent=1) + "\n")
         _log(f"wrote {args.out}")
     return 0
 
