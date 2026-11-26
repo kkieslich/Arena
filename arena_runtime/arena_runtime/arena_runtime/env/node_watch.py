@@ -122,6 +122,20 @@ class NodePinger:
             return reply is not None and reply.current_state.id == State.PRIMARY_STATE_ACTIVE
         return await self._clients[service].call_timeout(GetParameters.Request(), timeout) is not None
 
+    def _sync_clients(self, targets: dict[str, str], timeout: float) -> None:
+        for service in self._clients.keys() - targets.values():
+            self._destroy(self._clients.pop(service))
+        for service in targets.values() - self._clients.keys():
+            self._clients[service] = self._client(service, timeout)
+
+    def prepare(self, timeout: float) -> int:
+        """Make the clients for every node there is to ping now, and return how many it made. The env calls it at the end
+        of each reset: the first round of an episode made them all, about 40 rclpy clients of a 4-robot fleet, holding the
+        GIL for seconds right after EPISODE STARTED."""
+        before = len(self._clients)
+        self._sync_clients(self._targets(), timeout)
+        return len(self._clients) - before
+
     async def round(self, timeout: float, *, new_episode: bool) -> str | None:
         """Ping once and return a node that stopped answering or left its active state, or None."""
         targets = self._targets()
@@ -134,10 +148,7 @@ class NodePinger:
             # no reply could be taken on the wedged side thread: its own nodes miss, the others are not judged (counting them
             # as answered would clear a frozen node's misses whenever a loaded machine delays two beats)
             return self._tally.miss(side)
-        for service in self._clients.keys() - targets.values():
-            self._destroy(self._clients.pop(service))
-        for service in targets.values() - self._clients.keys():
-            self._clients[service] = self._client(service, timeout)
+        self._sync_clients(targets, timeout)
         names = sorted(targets)
         alive = await asyncio.gather(*(self._alive(targets[name], timeout) for name in names))
         answered = {name for name, up in zip(names, alive, strict=True) if up}

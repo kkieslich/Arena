@@ -25,6 +25,7 @@ def _held_robot() -> object:
             self.name, self.model_name = "held", "fake_held"
             self.pose = self.goal = None
             self.placed, self.waiting = True, False
+            self.safe_distance = 0.3
             self.runner = SimpleNamespace(active=None, changed=False, phases=[], violated=[], serialize=dict, outcomes=lambda outcome: [])
             self.reply = asyncio.Event()
             self.episode = 0
