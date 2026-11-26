@@ -661,8 +661,13 @@ class EpisodeNode(EnvNode):
             clock = PhaseClock()
             await self.hold("reset")
             clock.lap("hold")
+            # A robot's tick still in flight from the last episode (one awaiting a late reply) must not act on this one:
+            # its cancel is requested before the robots begin the episode, with nothing awaited in between, and the
+            # cancelled ticks are awaited after. Ticks the loop starts from here on belong to this episode.
+            dropped = self._robots_manager.drop_ticks()
             for manager in self._robots_manager.managers.values():
                 manager.begin_episode()
+            await asyncio.gather(*dropped, return_exceptions=True)
             self._known_subjects.clear()
             try:
                 if record.world:

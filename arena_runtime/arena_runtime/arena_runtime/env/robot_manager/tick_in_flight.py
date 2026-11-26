@@ -17,7 +17,7 @@ class TickInFlight:
 
     A tick can await a reply (the goal of the phase it dispatches, a cancel, a lifecycle query); the env does not wait for
     it beyond its short budget and judges the other robots meanwhile (`EnvNode._tick_robots`). The robot keeps the task:
-    destroying the robot, or setting the robots up for a new episode, cancels it.
+    destroying the robot, the start of an episode reset, or setting the robots up for a new episode, cancels it.
     """
 
     _tick_task: asyncio.Task[Transition] | None = None
@@ -49,8 +49,15 @@ class TickInFlight:
         self._tick_task = None
         return task
 
-    async def cancel_tick(self) -> None:
+    def drop_tick(self) -> asyncio.Task[Transition] | None:
+        """Forget the tick in flight, with its cancel requested at once: it can no longer act, even before it is awaited.
+        A tick that finished but was not collected yet is forgotten too, its transition with it."""
         task, self._tick_task = self._tick_task, None
         if task is not None and not task.done():
             task.cancel()
+        return task
+
+    async def cancel_tick(self) -> None:
+        task = self.drop_tick()
+        if task is not None:
             await asyncio.gather(task, return_exceptions=True)

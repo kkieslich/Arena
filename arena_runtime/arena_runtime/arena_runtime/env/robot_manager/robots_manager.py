@@ -441,6 +441,10 @@ class RobotsManager(NodeInterface):
         )
         self._managers.clear()
 
+    def drop_ticks(self) -> list[asyncio.Task]:
+        """Every robot's tick in flight forgotten, with its cancel requested; the caller awaits the returned tasks."""
+        return [task for manager in self.managers.values() if (task := manager.drop_tick()) is not None]
+
     async def set_up(self):
         """Set up the robot managers; a tick still in flight from the last episode is cancelled first."""
         await asyncio.gather(*(manager.cancel_tick() for manager in self.managers.values()))

@@ -82,8 +82,10 @@ the late one again once its own tick is done, at most one ended phase per robot
 and tick. A tick the loop went on without that took 2 s or more, or a failed
 tick, is a warning and an integrity flag of the episode, with the duration. A
 tick that finished within the 1 s wait is not, however slow the whole loop ran.
-The robot owns its tick in flight (`TickInFlight`): setting the robots up for a
-new episode, or removing the robot, cancels it.
+The robot owns its tick in flight (`TickInFlight`). The start of an episode
+reset cancels every robot's tick in flight before the robots begin the episode,
+with nothing awaited in between, so a tick of the last episode never acts on the
+next one. Setting the robots up and removing a robot cancel it too.
 
 Two lag warnings carry the sim time they ended at, so a log reader can place
 them in an episode's setup, run or teardown: "env executor ran Xs behind" when
