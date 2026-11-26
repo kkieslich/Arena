@@ -143,6 +143,12 @@ class EpisodeNode(EnvNode):
     _episodes: EpisodeRuntime
     _goal_progress: GoalProgressTracker
     _entities: EntityHandles
+    # what teardown reads has a class default (see EnvNode)
+    _task: EpisodeTask | None = None
+    _check_status_task: asyncio.Task | None = None
+    _node_watch_task: asyncio.Task | None = None
+    _episode_task: asyncio.Task | None = None
+    _shutting_down = False
 
     def __init__(self, **kwargs: typing.Any) -> None:
         super().__init__(Constants.ENV_NODE_NAMESPACE, automatically_declare_parameters_from_overrides=True, **kwargs)
@@ -164,7 +170,7 @@ class EpisodeNode(EnvNode):
 
         self.markers = MarkerHub(self, self.service_namespace("markers"), self._reset_lock)
         self._start_time = self.sim_time
-        self._task: EpisodeTask | None = None
+        self._task = None
         self._force_reset = False
         self._abort_reason: str | None = None
         self._consecutive_reset_failures = 0
@@ -224,12 +230,12 @@ class EpisodeNode(EnvNode):
             ),
         )
 
-        self._check_status_task: asyncio.Task | None = None
-        self._node_watch_task: asyncio.Task | None = None
+        self._check_status_task = None
+        self._node_watch_task = None
         self._node_pinger: NodePinger | None = None
         self._node_ping_due = 0.0
         self._node_ping_episode: int | None = None
-        self._episode_task: asyncio.Task | None = None
+        self._episode_task = None
         self._shutting_down = False
 
         self._run_tasks: dict[str, RunningTask] = {}
@@ -661,8 +667,13 @@ class EpisodeNode(EnvNode):
             clock = PhaseClock()
             await self.hold("reset")
             clock.lap("hold")
+            # A robot's tick still in flight from the last episode (one awaiting a late reply) must not act on this one:
+            # its cancel is requested before the robots begin the episode, with nothing awaited in between, and the
+            # cancelled ticks are awaited after. Ticks the loop starts from here on belong to this episode.
+            dropped = self._robots_manager.drop_ticks()
             for manager in self._robots_manager.managers.values():
                 manager.begin_episode()
+            await asyncio.gather(*dropped, return_exceptions=True)
             self._known_subjects.clear()
             try:
                 if record.world:

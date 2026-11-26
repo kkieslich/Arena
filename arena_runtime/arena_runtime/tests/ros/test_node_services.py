@@ -391,6 +391,21 @@ def test_reset_episode_in_flight_resolves_skipped() -> None:
     asyncio.run(run())
 
 
+def test_a_node_whose_setup_never_ran_tears_down() -> None:
+    """Teardown reads only what __init__ sets first or what has a class default, so a node whose setup never started
+    (or that was built without __init__) tears down without an AttributeError."""
+    import asyncio
+    import threading
+
+    from arena_runtime.env.episode_node import EpisodeNode, EpisodeRuntime
+
+    stub = object.__new__(EpisodeNode)
+    stub._episodes = EpisodeRuntime()
+    stub._heartbeat_stop = threading.Event()
+    asyncio.run(stub.teardown())
+    assert stub._heartbeat_stop.is_set() and stub._shutting_down
+
+
 def test_a_tearing_down_node_refuses_new_episodes() -> None:
     import asyncio
     import threading
