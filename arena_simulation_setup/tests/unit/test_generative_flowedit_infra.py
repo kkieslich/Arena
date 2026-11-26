@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from arena_simulation_setup.generative.flowedit import cli, infra, place, search
+from arena_simulation_setup.generative.flowedit import cli, infra, place, search, walkway
 from arena_simulation_setup.generative.flowedit import suite as SU
 from arena_simulation_setup.generative.flowedit.edit import Site, open_site
 from arena_simulation_setup.generative.flowedit.place import CATALOG, Layout, candidate_spots
@@ -225,14 +225,16 @@ def test_cli_layouts_searches_saves_and_writes_the_fleet_suite(hospital_copy: Pa
     assert "guideline" not in manifest
     assert manifest["episodes"] == 2 * len(doc["stages"]) and manifest["site_config"] is None
     rate = manifest["rate_per_h"]
-    # without --rate, the estimate in the wide premise layout of the same search at the settled rate, not in the
-    # slowest layout the selection runs (a random one here)
+    # without --rate, the estimate in the wide premise layout of the same search at the settled rate (its id below)
     rate_from = manifest["rate_from"]
     assert rate == pytest.approx(infra.fleet_rate(rate_from["travel_m"]), abs=0.01)
-    assert max(r["travel_m"] for r in manifest["runs"]) > rate_from["travel_m"] + 1.0
-    space = search.Search(site, loading=loading.objects[0].goto, keep_out=infra.keep_out(hospital_copy / "scenarios" / "mix" / "scenario.yaml"), mix=search.TaskMix(**manifest["mix"]))
+    walkers = walkway.WalkerDemand.load(hospital_copy / "scenarios" / "mix")
+    space = search.Search(site, loading=loading.objects[0].goto, keep_out=infra.keep_out(hospital_copy / "scenarios" / "mix" / "scenario.yaml"), mix=search.TaskMix(**manifest["mix"]), facts=place.SiteFacts(walkers=walkers))
     _, wide = search.premise_pair(space)
     assert rate_from == {"estimate": "wide premise layout", "layout_id": wide.layout_id, "travel_m": pytest.approx(wide.travel_m, abs=1e-3), "speed_mps": infra.SPEED_MPS, "utilisation": infra.UTILISATION}
+    # and not the slowest layout the selection runs, wherever that one is slower
+    slowest = max(r["travel_m"] for r in manifest["runs"])
+    assert abs(slowest - wide.travel_m) < 1e-3 or rate != pytest.approx(infra.fleet_rate(slowest), abs=0.01)
     assert all(s["config"]["fleet"]["rate"] == rate for s in doc["stages"])
     for i in ids:
         world = Path(manifest["worlds"][i])

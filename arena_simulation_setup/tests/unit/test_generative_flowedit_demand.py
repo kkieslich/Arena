@@ -464,7 +464,9 @@ def test_a_spot_that_fails_the_full_check_on_its_own_is_left_out(inner: Search, 
 
     monkeypatch.setattr(navr_filter, "navr_check", refusing)
     screened = EntranceSearch(inner, entrances, reach_max_m=1000.0, demand=space.demand)
-    assert screened.alone_invalid == {CHARGERS: 0, BAYS: 1, LOCKER: 1}
+    # every bay pair with a slot on the refused one fails (a pair's neighbour one step along shares a slot)
+    refused_bays = sum(any(o.goto == bad_bay for o in s.objects) for s in inner.spots[BAYS])
+    assert refused_bays >= 1 and screened.alone_invalid == {CHARGERS: 0, BAYS: refused_bays, LOCKER: 1}
     assert bad_locker not in [s.objects[0].goto for s in screened.lockers] and len(screened.lockers) == len(space.lockers) - 1
     assert not screened._cb[:, pick.bay].any()
     again = demand.travel_optimal(screened, _reach(screened, 2))
@@ -554,7 +556,8 @@ def test_cli_search_reports_the_layouts_per_reach(hospital_copy: Path, tmp_path:
         )
     )
     out = tmp_path / "report.json"
-    args = ["infra", "search", "--site", str(hospital_copy), "--site-config", str(config), "--reach", "0.01,8", "--margins", "1.1,1.5", "--rate", "6", "--charging-trips", "0.1", "--rank", "walk", "--out", str(out)]
+    # the scenario holds a sink and no walkers: searched without the walkway rule on purpose
+    args = ["infra", "search", "--no-walkway-rule", "--site", str(hospital_copy), "--site-config", str(config), "--reach", "0.01,8", "--margins", "1.1,1.5", "--rate", "6", "--charging-trips", "0.1", "--rank", "walk", "--out", str(out)]
     assert cli.main(args) == 0
     report = json.loads(out.read_text())
     assert report["recipient_entrances"] == ["ward", "lift"] and report["demand"]["charging_trips_per_job"] == 0.1 and "recipient_distance" not in report["locker_rules"]
@@ -867,7 +870,7 @@ def test_cli_search_ranks_by_each_rule(hospital_copy: Path, tmp_path: Path, monk
     config.write_text(yaml.safe_dump({"site": site.key, "scenario": "mix", "courier_access": [x, y], "entrances": [{"name": "ward", "type": "building", "at": [float(v) for v in gotos[0]]}, {"name": "lift", "type": "lift", "at": [float(v) for v in gotos[far]]}]}))
     rows = [{"world": site.key, "stage": f"{site.key}__s1", "planner": "peds_only", "group": g, "x": cx + 0.5, "y": cy + 0.5, "cell_m": 1.0, "ped_seconds": 10.0 + (cx if g == "adult" else cy)} for g in search.GROUPS for cx in range(-5, 40) for cy in range(-5, 45)]
     pd.DataFrame(rows).to_parquet(tmp_path / "cells.parquet")
-    common = ["infra", "search", "--site", str(hospital_copy), "--site-config", str(config), "--reach", "8", "--margins", "1.5", "--rate", "6", "--group-occupancy", str(tmp_path / "cells.parquet")]
+    common = ["infra", "search", "--no-walkway-rule", "--site", str(hospital_copy), "--site-config", str(config), "--reach", "8", "--margins", "1.5", "--rate", "6", "--group-occupancy", str(tmp_path / "cells.parquet")]
     for rank in ("step-free", "pooled", "exposure", "walk"):
         out = tmp_path / f"{rank}.json"
         assert cli.main([*common, "--rank", rank, "--out", str(out)]) == 0

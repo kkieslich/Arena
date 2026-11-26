@@ -504,14 +504,18 @@ def _overlaps(a: BaseGeometry, b: BaseGeometry) -> bool:
 
 
 def _reach(spot: Spot) -> shapely.Polygon:
-    """The floor `check_layout` reads around `spot` (its keep-clear floor with the generator's margin and the corridor
-    window in front), as a box: a spot whose box misses another's passes `check_layout` with it."""
+    """The floor `check_layout` reads around `spot` (its keep-clear floor with the generator's margin, the corridor
+    window in front and half a two-way width round its floor), as a box: a spot whose box misses another's passes
+    `check_layout` with it."""
     import shapely
 
     from . import generate as gen
+    from .walkway import JOINT_M
 
     lo, hi, _, front = spot.frame.extent(shapely.union_all([spot.taken, spot.clear]))
-    return shapely.box(*shapely.union_all([spot.keep_clear.buffer(gen.MARGIN_M + 0.01), place._window(spot.frame, (lo, hi), front)]).bounds)
+    # a walkway two elements narrow together has them within `walkway.JOINT_M` of each other (`place.check_layout`)
+    walkway = spot.taken.buffer(JOINT_M / 2.0 + 0.01)
+    return shapely.box(*shapely.union_all([spot.keep_clear.buffer(gen.MARGIN_M + 0.01), place._window(spot.frame, (lo, hi), front), walkway]).bounds)
 
 
 class Search:

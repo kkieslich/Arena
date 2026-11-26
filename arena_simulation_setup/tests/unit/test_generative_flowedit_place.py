@@ -241,16 +241,16 @@ def _facing_the_nurse_room(spots: tuple[Spot, ...]) -> list[Spot]:
     return [s for s in _across(spots, "central_hallway", 0) if s.frame.n[0] < 0 and _centre(s.taken)[1] < 9.5]
 
 
-def test_corridor_width_is_what_the_element_leaves_of_the_corridor(hospital: Site) -> None:
+def test_corridor_width_is_what_the_element_leaves_of_the_corridor_and_without_a_crowd_the_walkway_rule_is_unknown(hospital: Site) -> None:
     spots = candidate_spots(hospital, "charger_pair")
     # the 4 m central hallway less the pair's 1.71 m (wall gap, charger, docks, approach)
     hall = _facing_the_nurse_room(spots)
     assert hall and max(s.corridor_m for s in hall) == pytest.approx(4.0 - 1.71, abs=RASTER_M)
-    assert any(s.verdict[Rule.CORRIDOR_WIDTH] is Verdict.PASS for s in hall)
-    # the 3 m sub hallway leaves 1.29 m: every spot facing across it fails
+    # the 3 m sub hallway leaves 1.29 m in front; whether that is too little is the walkway rule's, by the crowd's
+    # flow there (test_generative_flowedit_walkway.py): without a crowd it says unknown
     sub = _across(spots, "sub_hallway", 1)
-    assert sub and {s.verdict[Rule.CORRIDOR_WIDTH] for s in sub} == {Verdict.FAIL}
-    assert max(s.corridor_m for s in sub) == pytest.approx(3.0 - 1.71, abs=RASTER_M)
+    assert sub and max(s.corridor_m for s in sub) == pytest.approx(3.0 - 1.71, abs=RASTER_M)
+    assert {s.verdict[Rule.WALKWAY_WIDTH] for s in hall + sub} == {Verdict.UNKNOWN}
     # a floor marking blocks only its slot
     bays = _facing_the_nurse_room(candidate_spots(hospital, "bay_pair"))
     assert bays and max(s.corridor_m for s in bays) == pytest.approx(4.0 - 1.26, abs=RASTER_M)
@@ -350,23 +350,21 @@ def test_a_layout_whose_elements_share_floor_is_refused(hospital: Site) -> None:
         place.apply_layout(hospital, Layout.of([chargers, clash]))
 
 
-def test_elements_facing_each_other_across_the_hallway_take_the_turning_circle_and_narrow_the_corridor(hospital: Site) -> None:
+def test_elements_facing_each_other_across_the_hallway_take_the_turning_circle(hospital: Site) -> None:
     chargers = next(s for s in _across(candidate_spots(hospital, "charger_pair"), "central_hallway", 0) if s.valid)
     cx, cy = _centre(chargers.taken)
-    assert chargers.corridor_m >= place.CORRIDOR_MIN_M
+    assert chargers.corridor_m >= 1.8
     facing = sorted((s for s in _across(candidate_spots(hospital, "locker"), "central_hallway", 0) if s.frame.n[0] * chargers.frame.n[0] < 0), key=lambda s: abs(_centre(s.taken)[1] - cy))
-    # straight across the 4 m hallway the locker's dock reaches into the chargers' turning circle and narrows their
-    # corridor below 1.8 m
+    # straight across the 4 m hallway the locker's dock reaches into the chargers' turning circle
     opposite = facing[0]
     assert abs(_centre(opposite.taken)[1] - cy) < 0.6 and abs(_centre(opposite.taken)[0] - cx) > 1.5
     assert chargers.turning is not None and opposite.taken.intersection(chargers.turning).area > 0.1
     problems = place.check_layout(hospital, Layout.of([chargers, opposite]))
     assert "charger_pair and locker overlap" in problems
-    assert any(p.startswith("charger_pair: the other elements leave a") for p in problems), problems
-    # a wall spot further along it stands beside the chargers' front, not in front of it: no overlap, no corridor
+    # a wall spot further along it stands beside the chargers' front, not in front of it: no overlap
     beside = next(s for s in facing if 1.5 < abs(_centre(s.taken)[1] - cy) < 2.5)
     problems = place.check_layout(hospital, Layout.of([chargers, beside]))
-    assert "charger_pair and locker overlap" not in problems and not [p for p in problems if "corridor, under" in p], problems
+    assert "charger_pair and locker overlap" not in problems, problems
 
 
 def test_apply_layout_inserts_every_object_with_its_dock_and_charge_power(hospital: Site) -> None:
@@ -537,42 +535,40 @@ def test_the_corridor_is_the_free_run_in_front_so_a_pillar_beside_or_before_one_
         world = _world(tmp_path / "worlds" / name, [pillar])
         moved = next(s for s in candidate_spots(world, "charger_pair") if s.id == spot.id)
         assert moved.corridor_m == pytest.approx(spot.corridor_m, abs=RASTER_M), name
-        # the front run stays, but 0.2 m beside or before the docks the pillar closes the passage into a pocket: the
-        # corridor rule along the wall (`place.pinches`) fails the spot
-        assert moved.verdict[Rule.CORRIDOR_WIDTH] is Verdict.FAIL, name
+        # the front run stays, but 0.2 m beside or before the docks the pillar closes the passage into a pocket
+        # (`place.pinches`): the spot fails the pocket rule
+        assert moved.verdict[Rule.NO_POCKET] is Verdict.FAIL, name
     # a bench across the whole front, 0.6 m beyond the clear zone, leaves 0.6 m
     _asset(local_root, "Common/Object/test_bench", {"bounding_box": [[-0.2, 0.2], [-1.6, 1.6], [0.0, 0.5]], "face": "+x"})
     yaw = float(math.atan2(spot.frame.n[1], spot.frame.n[0]))
     bench = {"name": "bench", "model": "Common/Object/test_bench", "pose": [*map(float, spot.frame.at((lo + hi) / 2.0, front + 0.8)), 0.0, 0.0, 0.0, yaw]}
     narrowed = next(s for s in candidate_spots(_world(tmp_path / "worlds" / "bench", [bench]), "charger_pair") if s.id == spot.id)
     assert narrowed.corridor_m == pytest.approx(0.6, abs=RASTER_M)
-    assert narrowed.verdict[Rule.CORRIDOR_WIDTH] is Verdict.FAIL
+    assert narrowed.verdict[Rule.NO_POCKET] is Verdict.FAIL
 
 
-def test_a_pillar_beside_the_docks_that_closes_the_passage_into_a_pocket_fails_the_corridor_rule(tmp_path: Path, local_root: Path, hospital: Site) -> None:
-    import re
-
+def test_a_pillar_beside_the_docks_that_closes_the_passage_into_a_pocket_fails_the_pocket_rule(tmp_path: Path, local_root: Path, hospital: Site) -> None:
     hall = [s for s in _facing_the_nurse_room(candidate_spots(hospital, "charger_pair")) if s.valid]
     spot = max(hall, key=lambda s: s.corridor_m)
-    assert not [p for p in place.check_layout(hospital, Layout.of([spot]), pinch_min_m=place.CORRIDOR_MIN_M) if "pinch" in p]
-    # the front corridor misses a pillar beside the pair (`test_the_corridor_is_the_free_run_in_front...`); the pinch
+    assert not place.check_layout(hospital, Layout.of([spot]))
+    # the front corridor misses a pillar beside the pair (`test_the_corridor_is_the_free_run_in_front...`); the pocket
     # check counts the docks as occupied and looks along the wall too: a 0.3 m pillar 0.2 m beside the docks closes the
-    # passage between them into a pocket (the spot fails the corridor rule), one 1.0 m beside them leaves a 1.0 m
-    # passage (refused only under the full corridor rule, `pinch_min_m`), one 2.0 m beside them is clear
+    # passage between them into a pocket (the spot fails the pocket rule), one 1.0 m beside them leaves a 1.0 m
+    # passage (the walkway rule's to judge, by the crowd's flow through it), one 2.0 m beside them is clear
     _, hi, _, dock_front = spot.frame.extent(spot.taken)
     model = _pillar(local_root)
-    verdicts, strict = {}, {}
+    verdicts, gaps = {}, {}
     for name, gap in (("pocket", 0.2), ("narrow", 1.0), ("clear", 2.0)):
         pillar = {"name": f"pillar_{name}", "model": model, "pose": [*map(float, spot.frame.at(hi + gap + 0.15, dock_front - 0.5)), 0.0]}
         world = _world(tmp_path / "worlds" / name, [pillar])
         moved = next(s for s in candidate_spots(world, "charger_pair") if s.id == spot.id)
-        verdicts[name] = moved.verdict[Rule.CORRIDOR_WIDTH]
+        verdicts[name] = moved.verdict[Rule.NO_POCKET]
         assert moved.corridor_m == pytest.approx(spot.corridor_m, abs=RASTER_M), name
-        strict[name] = [p for p in place.check_layout(world, Layout.of([moved]), pinch_min_m=place.CORRIDOR_MIN_M) if "pinch" in p]
+        gaps[name] = place.pinches(place._context(world, moved.level, frozenset(f"obj:{o.name}" for o in moved.objects)), moved, None, 1.8)
     assert verdicts == {"pocket": Verdict.FAIL, "narrow": Verdict.PASS, "clear": Verdict.PASS}
-    assert len(strict["pocket"]) == 1 and re.fullmatch(r"charger_pair: pinch, closes a [\d.]+ m passage to a wall, pillar or object into a pocket \(0\.(1\d|2\d) m left\)", strict["pocket"][0]), strict
-    assert len(strict["narrow"]) == 1 and re.fullmatch(r"charger_pair: pinch, leaves (0\.9\d|1\.0\d) m of a [\d.]+ m passage to a wall, pillar or object, under 1\.8 m", strict["narrow"][0]), strict
-    assert strict["clear"] == []
+    assert len(gaps["pocket"]) == 1 and 0.1 <= gaps["pocket"][0][0] < 0.3, gaps
+    assert len(gaps["narrow"]) == 1 and 0.9 <= gaps["narrow"][0][0] < 1.1, gaps
+    assert gaps["clear"] == []
 
 
 @pytest.mark.parametrize("element", list(CATALOG))

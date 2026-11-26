@@ -29,10 +29,14 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import attrs
+
 from ..scenario.cli import world_root
 from . import infra as IN
+from . import place
 from . import search as SE
 from . import suite as SU
+from . import walkway as WK
 from .edit import open_site
 
 
@@ -147,7 +151,15 @@ class _Space:
         loading = args.loading if args.loading is not None else (None if SE.LOADING in placements else SE.TWIN_LOADING_XY)
         self.mix = SE.TaskMix(rate_per_h=args.rate or SE.TaskMix().rate_per_h, pickup_share=args.pickup_share, episode_s=args.duration, top_ups_per_job=getattr(args, "top_ups", 0.0))
         self.rate_from: dict[str, Any] | None = None
-        facts = self.config.facts if self.config is not None else None
+        # the walkway rule measures against the crowd of the scenario every stage runs; a scenario without walkers gives
+        # it nothing to measure against, and it says unknown
+        crowd = WK.WalkerDemand.load(self.scenario)
+        if getattr(args, "no_walkway_rule", False):
+            _log("--no-walkway-rule: the walkway rule says unknown and filters nothing (never for a study's selection)")
+            crowd = attrs.evolve(crowd, flows=())
+        elif not crowd.flows:
+            raise ValueError(f"crowd scenario {self.scenario_name}: no walkers (no source with a rate and a sink), so no walkway rule: give the scenario its crowd (pass --no-walkway-rule to search without the rule on purpose)")
+        facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=crowd if crowd.flows else None)
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
         if count:
@@ -976,6 +988,110 @@ def _cmd_evaluation(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_layout(site: Any, pools: dict[str, Any], record: Mapping[str, Any]) -> Any:  # noqa: ANN401 - a Layout
+    """The layout of a report record from `pools`, every candidate spot by element (valid or not), by spot id."""
+    from . import demand as DE
+    from . import recipients as RC
+
+    chosen = []
+    for entry in record["spots"]:
+        name, spot_id = str(entry["element"]), str(entry["spot"])
+        number = RC._locker_number(name)
+        pool = pools["locker"] if number is not None else pools[name]
+        found = next((s for s in pool if s.id == spot_id), None) if number in (None, 1) else next((DE.numbered(s, number) for s in pool if DE.numbered(s, number).id == spot_id), None)
+        if found is None:
+            raise ValueError(f"layout {record['layout_id']}: no {name} spot {spot_id} on {site.key}: the record comes from another site")
+        chosen.append(found)
+    layout = place.Layout.of(chosen)
+    if layout.layout_id != record["layout_id"]:
+        raise ValueError(f"the spots of record {record['layout_id']} give layout {layout.layout_id}")
+    return layout
+
+
+def _narrowest(stretches: Mapping[str, Sequence[Any]], *, two_way: bool = False, docked: bool = False) -> dict[str, Any] | None:
+    """The narrowest stretch of `stretches` (`walkway.Stretch` by element name) after the layout: a two-way or one-way
+    one on the permanent floor, or (`docked`) any with a robot in the intermittent docks."""
+    best = min(((st.after, name, st) for name, found in stretches.items() for st in found if st.after is not None and st.docked == docked and (docked or (st.required >= WK.TWO_WAY_M) == two_way)), default=None, key=lambda t: t[0])
+    if best is None:
+        return None
+    width, name, st = best
+    return {"width_m": width, "before_m": st.before, "required_m": round(st.required, 2), "element": name, "at": None if st.at is None else list(st.at), "flow_ped_h": [st.flow_ab, st.flow_ba]}
+
+
+def _versions() -> dict[str, str]:
+    """The libraries the walkway rule's grids and geometry come from: its routes break ties as scipy's Dijkstra does and
+    its floor is GEOS's, so a frozen selection records them."""
+    import numpy
+    import scipy
+    import shapely
+
+    return {"numpy": numpy.__version__, "scipy": scipy.__version__, "shapely": shapely.__version__, "geos": shapely.geos_version_string}
+
+
+def _cmd_walkways(args: argparse.Namespace) -> int:
+    """`flowedit infra walkways`: the walkway rule on the layouts of a search report, against the site's crowd."""
+    from . import recipients as RC
+
+    site = open_site(_site_root(args.site))
+    config = _checked(_config(args, site.key), site.root)
+    scenario = IN.scenario_dir(site, _scenario(args, config), args.scenarios_from)
+    walkers = WK.WalkerDemand.load(scenario)
+    if not walkers.flows:
+        raise ValueError(f"{scenario}: the crowd scenario has no walkers (no source with a rate and a sink): nothing to check the walkways against")
+    facts = attrs.evolve(config.facts if config is not None else place.SiteFacts(), walkers=walkers)
+    records = RC.read_report(args.report)
+    ids = args.layouts or sorted(records)
+    unknown = [i for i in ids if i not in records]
+    if unknown:
+        raise ValueError(f"{args.report}: no layout {unknown}")
+    _log(f"crowd {scenario}: {len(walkers.flows)} flows, {walkers.total * 3600:.0f} ped/h, {len(walkers.links)} links")
+    # every candidate spot, valid or not: a layout's spots by id, its rules then run against the crowd
+    pools = {name: place.candidate_spots(site, name, exclude=(), cut_off=False) for name in place.CATALOG}
+    out = []
+    for layout_id in ids:
+        layout = _report_layout(site, pools, records[layout_id])
+        spots = [s for spot in layout.spots for s in place._with_walkway(site, [spot], facts)]
+        layout = place.Layout.of(spots)
+        stretches: dict[str, list[Any]] = {}
+        for s in layout.spots:
+            found: list[Any] = []
+            place.walkway_narrowings(site, s, (), walkers, stretches=found)
+            stretches[s.element.name] = found
+        problems = place.check_layout(site, layout)
+        lockers = sum(1 for s in layout.spots if s.element.name.startswith("locker"))
+        row = {
+            "layout_id": layout_id,
+            "valid": not problems,
+            "problems": problems,
+            "narrowings": [{"element": s.element.name, **attrs.asdict(n)} for s in layout.spots for n in s.narrowings],
+            "narrowest_two_way": _narrowest(stretches, two_way=True),
+            "narrowest_one_way": _narrowest(stretches, two_way=False),
+            "narrowest_docked": _narrowest(stretches, docked=True),
+            # the share of the time a robot stands in each locker's dock: the jobs spread over the layout's lockers
+            "dock_share": round(WK.dock_share(args.rate / max(1, lockers), IN.UNLOAD_S), 4),
+        }
+        out.append(row)
+        two, one, dock = row["narrowest_two_way"], row["narrowest_one_way"], row["narrowest_docked"]
+        _log(
+            f"{layout_id}: {'valid' if row['valid'] else 'INVALID'}; narrowest two-way {two['width_m'] if two else '-'} m, one-way {one['width_m'] if one else '-'} m, beside a docked robot {dock['width_m'] if dock else '-'} m (needs {dock['required_m'] if dock else '-'} m, {row['dock_share']:.1%} of the time)"
+            + "".join(f"\n    {p}" for p in problems)
+        )
+    if args.out is not None:
+        args.out.write_text(json.dumps({"site": site.key, "scenario": str(scenario), "versions": _versions(), "layouts": out}, indent=1) + "\n")
+        _log(f"wrote {args.out}")
+    return 0
+
+
+def _cmd_walker_floor(args: argparse.Namespace) -> int:
+    """`flowedit infra walker-floor`: the floor the crowd walks on, in HumanSim's terms (`walkway.WalkerFloor.export`)."""
+    site = open_site(_site_root(args.site))
+    levels = [args.level] if args.level is not None else list(site.world.levels)
+    doc = {"site": site.key, "levels": [place.walker_floor(site, level).export() for level in levels]}
+    args.out.write_text(json.dumps(doc) + "\n")
+    _log(f"wrote {args.out}: " + ", ".join(f"level {lv['level']}: {len(lv['walls'])} walls, {len(lv['obstacles'])} obstacles, {lv['bare_edges_m']} m bare floor edge" for lv in doc["levels"]))
+    return 0
+
+
 def _cmd_site_walls(args: argparse.Namespace) -> int:
     """`flowedit infra site-walls` (also `remove-walls`): the walls of the site config's `removed_walls` out of, and those
     of its `added_walls` into, the site's world and each of its layout copies beside it (or the worlds `--world` names),
@@ -1014,6 +1130,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation,charge-states,site-walls}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE}); layout copies hardlink its assets, so save on its mount")
+    common.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
     common.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): where each element may go, the excluded zones, the crowd scenario")
     common.add_argument("--scenario", default=None, help=f"the crowd scenario of every stage (default the site config's, else {IN.SCENARIO})")
     common.add_argument("--scenarios-from", type=Path, default=None, help="world directory to copy the scenario from (default: the site's, else the world its name resolves to)")
@@ -1072,6 +1189,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
         description="search the site's layouts for demand at the recipient entrances (generative/flowedit/demand.py; study design Part A): per reach, the fewest lockers that give every recipient entrance one within the reach as people walk, the travel-optimal layout, the pedestrian-aware pick at each travel margin and the practice-based layout, each with its robot travel per job, the predicted exposure per walker group and the walk to the locker per group. Prints them and writes a report with --out; writes no world or suite",
     )
     q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
+    q.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
     q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): its entrances, links, courier access point and outlets")
     q.add_argument("--scenario", default=None, help="the crowd scenario whose sources and sinks no element takes (default the site config's)")
     q.add_argument("--scenarios-from", type=Path, default=None, help="world directory to read the scenario from (default: the site's)")
@@ -1181,6 +1299,29 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     q.add_argument("--out", type=Path, required=True, help="the charge-state file (JSON)")
     q.add_argument("--force", action="store_true", help="replace an existing file")
     q.set_defaults(fn=_cmd_charge_states)
+    q = infra.add_parser(
+        "walkways",
+        help="the walkway rule on a search report's layouts: their narrowest two-way and one-way walkway",
+        description="check the layouts of a search report against the walkway rule (generative/flowedit/walkway.py): the width each element leaves where the site's crowd walks, 1.8 m where walkers pass both ways and 0.9 m one way, from the crowd scenario's routes; prints every layout's verdict, its narrowest two-way and one-way walkway and what fails, and writes them with --out",
+    )
+    q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
+    q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml)")
+    q.add_argument("--scenario", default=None, help="the crowd scenario (default the site config's)")
+    q.add_argument("--scenarios-from", type=Path, default=None, help="world directory to read the scenario from (default: the site's)")
+    q.add_argument("--report", type=Path, required=True, help="a search report (any JSON that holds its layout records)")
+    q.add_argument("--layouts", type=lambda text: [t.strip() for t in text.split(",") if t.strip()], default=None, help="the layout ids to check (default all)")
+    q.add_argument("--rate", type=float, default=SE.TaskMix().rate_per_h, help=f"jobs per hour in all, spread over a layout's lockers, for the share of the time a robot stands in a locker's dock (default {SE.TaskMix().rate_per_h:g})")
+    q.add_argument("--out", type=Path, default=None, help="the result file (JSON)")
+    q.set_defaults(fn=_cmd_walkways)
+    q = infra.add_parser(
+        "walker-floor",
+        help="export the floor the crowd walks on, in HumanSim's terms",
+        description="write the walker floor of the site (generative/flowedit/walkway.py): the walls the simulator builds and the crowd's walls across exterior doors, every object with a bounding box and the docks, the zones' floor and its edges without a wall; what the walkway rule measures, from the same world model the runtime hands HumanSim",
+    )
+    q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
+    q.add_argument("--level", default=None, help="one level (default every level)")
+    q.add_argument("--out", type=Path, required=True, help="the floor file (JSON)")
+    q.set_defaults(fn=_cmd_walker_floor)
     q = infra.add_parser(
         "site-walls",
         aliases=["remove-walls"],
