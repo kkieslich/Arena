@@ -79,10 +79,16 @@ of the phase it dispatches, a cancel, a lifecycle query, each up to its client's
 timeout (30 s for a goal). The loop waits at most 1 s for the robots' ticks,
 then goes on without the late one. It judges the other robots every tick, and
 the late one again once its own tick is done, at most one ended phase per robot
-and tick. A tick that took 2 s or more, or failed, is a warning and an integrity
-flag of the episode, with the duration. The robot owns its tick in flight
-(`TickInFlight`): setting the robots up for a new episode, or removing the
-robot, cancels it.
+and tick. A tick the loop went on without that took 2 s or more, or a failed
+tick, is a warning and an integrity flag of the episode, with the duration. A
+tick that finished within the 1 s wait is not, however slow the whole loop ran.
+The robot owns its tick in flight (`TickInFlight`): setting the robots up for a
+new episode, or removing the robot, cancels it.
+
+Two lag warnings carry the sim time they ended at, so a log reader can place
+them in an episode's setup, run or teardown: "env executor ran Xs behind" when
+the 1 s watchdog timer came 2 s or more late, and "env event loop ran Xs behind"
+when the loop's 0.5 s beat did. Each late firing is one line.
 
 The next episode is one function of `EpisodeRuntime.pending` (a
 `TaskModeOverrides`, merged into by `queue_episode` and `reset_episode`) and an
@@ -210,7 +216,8 @@ modes, with the staged values over them on a QUEUED record.
 ### Reassigning a robot mid-episode
 
 `RobotManager.submit_task` drops the robot's unfinished phases and appends the
-new ones, `RobotManager.stop_task` drops them and cancels the adapter goals:
+new ones; the robot's next tick dispatches the first of them, so a submit never
+waits on a goal reply, `RobotManager.stop_task` drops them and cancels the adapter goals:
 that pair is the reassign operation, from a task's `tick` as much as from the
 services. The runner state stays reachable as `ctx.robots[name].runner`
 (`TaskRunner.active_state`, `outcomes(outcome)`).

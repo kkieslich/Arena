@@ -457,6 +457,8 @@ def test_submit_task_routes_before_realize_and_uses_the_given_start():
     asyncio.run(rm.submit_task(TaskRequest(phases=[GoToPhase(pose=_pose(60.0, 10.0))]), _pose(55.0, 15.0)))
     assert len(rm._runner.phases) == 1
     assert rm._runner.phases[0].phase.pose.position.x == pytest.approx(60.0)
+    assert adapter.dispatched == []  # submitting only submits: the robot's next tick dispatches the first phase
+    _tick(rm, 0.0, 55.0, 15.0)
     assert adapter.dispatched[0].pose.position.x == pytest.approx(160.0)
 
     rm2, adapter2, _ = _robot_manager(wm)
@@ -466,6 +468,7 @@ def test_submit_task_routes_before_realize_and_uses_the_given_start():
     assert isinstance(ride, ElevatorRidePhase)
     assert (ride.target, ride.until) == ("e0", "robot in e1")
     assert ride.pose.position.x == pytest.approx(4.45)
+    _tick(rm2, 0.0, 55.0, 15.0)
     assert adapter2.dispatched[0].pose.position.x == pytest.approx(107.2)
     assert rm2.goal.position.x == pytest.approx(107.2)
 
@@ -855,6 +858,7 @@ def test_submit_task_rides_elevators_but_leaves_stairs_to_a_level_routing_planne
     asyncio.run(wheeled.submit_task(TaskRequest(phases=[GoToPhase(pose=_pose(32.0, 8.0))]), _pose(2.0, 2.0)))
     assert [type(state.phase) for state in wheeled._runner.phases] == [ElevatorLegPhase, ElevatorRidePhase, ElevatorLegPhase, GoToPhase]
     assert not any(isinstance(state.phase, (StairsLegPhase, StairsRidePhase)) for state in wheeled._runner.phases)
+    _tick(wheeled, 0.0, 2.0, 2.0)
     assert adapter.dispatched[0].pose.position.x == pytest.approx(wheeled._runner.phases[0].phase.pose.position.x)
 
 

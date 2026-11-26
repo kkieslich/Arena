@@ -123,3 +123,44 @@ def test_a_reset_or_removal_of_the_robot_cancels_its_tick_in_flight(env: typing.
 
     asyncio.run(scenario())
     assert slow.ticks == 2
+
+
+def test_a_tick_that_finished_within_the_wait_is_not_flagged_however_slow_the_loop(env: typing.Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow loop makes every robot's tick slow; only a tick the loop went on without is late."""
+    from arena_runtime.env import node
+
+    monkeypatch.setattr(node, "_LATE_ROBOT_TICK_S", 0.0)  # every tick "took" at least this long
+    env.with_robots(_Robot("a"), _Robot("b"))
+    assert asyncio.run(env._tick_robots()) == {"a": "a phase 1", "b": "b phase 1"}
+    assert env.flags == [] and env.warned == []
+
+
+class _Submitted(_Robot):
+    """A robot given a task: its first tick dispatches the task's first phase, a goal its server holds; later ticks judge."""
+
+    async def tick(self, sample: object, zones: object) -> typing.Any:
+        del sample, zones
+        self.ticks += 1
+        if self.ticks == 1 and self.server is not None:
+            await self.server.send_goal()
+        return SimpleNamespace(ended=None)
+
+
+def test_a_held_first_phase_goal_on_one_robot_does_not_stop_the_others(env: typing.Any) -> None:
+    """submit_task only submits; the robot's next tick dispatches the first phase, and a server that holds that goal
+    holds this robot alone."""
+    server = _Server()
+    held, other = _Submitted("held", server), _Robot("other")
+    env.with_robots(held, other)
+
+    async def scenario() -> None:
+        for _ in range(3):
+            await env._tick_robots()
+        assert held.ticks == 1 and other.ticks == 3
+        server.accept.set()
+        await asyncio.sleep(0)
+        await env._tick_robots()
+        await env._tick_robots()
+        assert held.ticks == 3 and other.ticks == 5  # judged every tick again once its goal was taken
+
+    asyncio.run(scenario())

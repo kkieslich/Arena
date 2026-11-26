@@ -775,10 +775,10 @@ class RobotManager(TickInFlight, NodeInterface):
             if kind_of(phase) not in self._adapters and kind_of(phase) not in self._unsupported_kinds_logged:
                 self._logger.warning(f"robot {self.name!r} has no adapter for phase kind {phase.kind!r}, the phase will fail as UNSUPPORTED_CAP")
 
-        states = self._runner.submit(phases, request.conditions)
+        self._runner.submit(phases, request.conditions)
         self.node.on_task_submitted(self)
-        if states:
-            await self._dispatch(states[0].index)
+        # the first phase is dispatched by the robot's next tick (`tick`: an active phase not yet dispatched), which the
+        # env's tick loop does not wait on beyond its budget: a goal reply that comes late holds this robot only
 
     def _with_defaults(self, phase: TaskPhase) -> TaskPhase:
         """Fill unset goto tolerances, hold time and signal from the launch parameters, zero angle for robots without heading control."""

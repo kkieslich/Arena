@@ -24,10 +24,12 @@ class TickInFlight:
     _tick_started: float = 0.0
     _tick_finished: float | None = None
     tick_reported: bool = False
+    #: the loop went on without this tick (it was still running after the loop's wait): only such a tick is reported late
+    tick_detached: bool = False
 
     def start_tick(self, tick: Coroutine[typing.Any, typing.Any, Transition]) -> asyncio.Task[Transition]:
         task = asyncio.create_task(tick)
-        self._tick_task, self._tick_started, self._tick_finished, self.tick_reported = task, time.monotonic(), None, False
+        self._tick_task, self._tick_started, self._tick_finished, self.tick_reported, self.tick_detached = task, time.monotonic(), None, False, False
         task.add_done_callback(lambda _: setattr(self, "_tick_finished", time.monotonic()))
         return task
 

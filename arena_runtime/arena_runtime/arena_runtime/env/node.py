@@ -77,9 +77,10 @@ _STEP_TIMEOUT = 10.0
 _ROBOT_TICK_WAIT_S = 1.0
 # A robot's tick this long (wall) is reported, as a warning and an integrity flag of the episode.
 _LATE_ROBOT_TICK_S = 2.0
-# The 1 s watchdog timer this much late means the env executor's queue ran behind; warned at most every _LAG_WARN_EVERY_S.
+# The 1 s watchdog timer (the env executor) or the 0.5 s loop beat (the event loop) this much late is a warning with
+# the sim time it ended at, one per late firing, so a log reader can place it in an episode's setup, run or teardown.
 _LAG_WARN_S = 2.0
-_LAG_WARN_EVERY_S = 30.0
+_LOOP_BEAT_S = 0.5
 
 
 class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, metaclass=abc.ABCMeta):
@@ -195,7 +196,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
 
         self._arena_seen = False
         self._watchdog_at: float | None = None
-        self._lag_warned_at = -_LAG_WARN_EVERY_S
+        self._loop_lag_task: asyncio.Task | None = None
         self._arena_watchdog_timer = self.wall_timer(1.0, self._cb_arena_watchdog)
 
         self._sub_shutdown_request = self.create_subscription(
@@ -253,6 +254,8 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
 
     async def setup(self) -> None:
         clock = PhaseClock()
+        if self._loop_lag_task is None:
+            self._loop_lag_task = asyncio.create_task(self._watch_loop_lag())
         try:
             await self._set_up_acoustics()
             clock.lap("acoustics")
@@ -296,6 +299,8 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         if self._tick_loop_task is not None and not self._tick_loop_task.done():
             self._tick_loop_task.cancel()
             await asyncio.gather(self._tick_loop_task, return_exceptions=True)
+        if self._loop_lag_task is not None:
+            self._loop_lag_task.cancel()
         await self._teardown_episode()
         if self._robots_manager is not None:
             await self._robots_manager.teardown()
@@ -348,9 +353,20 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         if last is None:
             return
         lag = now - last - 1.0
-        if lag >= _LAG_WARN_S and now - self._lag_warned_at >= _LAG_WARN_EVERY_S:
-            self._lag_warned_at = now
-            self.get_logger().warning(f"env executor ran {lag:.1f}s behind (its 1 s watchdog timer came late)")
+        if lag >= _LAG_WARN_S:
+            self.get_logger().warning(f"env executor ran {lag:.1f}s behind at sim {self.sim_time.to_seconds():.1f}s (its 1 s watchdog timer came late)")
+
+    def _note_loop_lag(self, lag: float) -> None:
+        if lag >= _LAG_WARN_S:
+            self.get_logger().warning(f"env event loop ran {lag:.1f}s behind at sim {self.sim_time.to_seconds():.1f}s (its {_LOOP_BEAT_S:g} s beat came late)")
+
+    async def _watch_loop_lag(self) -> None:
+        """A beat on the event loop: one that comes late means every coroutine of the env (the sim tick, the robots' ticks,
+        the crowd render) waited that long, which the executor's watchdog does not see."""
+        while True:
+            start = time.monotonic()
+            await asyncio.sleep(_LOOP_BEAT_S)
+            self._note_loop_lag(time.monotonic() - start - _LOOP_BEAT_S)
 
     def _cb_shutdown_request(self, msg: arena_runtime_msgs.msg.ShutdownRequest) -> None:
         if msg.env_id != self._env_id:
@@ -809,7 +825,10 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
                 continue  # a late tick just ended a phase: the next one starts on the next tick, one ended phase per tick
             started.append(manager.start_tick(manager.tick(self._sample, self._judge_zones)))
         if started:
-            await asyncio.wait(started, timeout=_ROBOT_TICK_WAIT_S)
+            _, late = await asyncio.wait(started, timeout=_ROBOT_TICK_WAIT_S)
+            for manager in managers:
+                if manager.tick_task in late:
+                    manager.tick_detached = True
         ended |= self._collect_robot_ticks(managers)
         if any(manager.runner.changed for manager in managers):
             for manager in managers:
@@ -825,7 +844,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             task = manager.take_tick()
             if task is None or task.cancelled():
                 continue
-            transition = self._robot_tick_result(manager.name, task, manager.tick_age(now))
+            transition = self._robot_tick_result(manager.name, task, manager.tick_age(now), detached=manager.tick_detached)
             if transition is not None and transition.ended is not None:
                 ended[manager.name] = transition.ended
         return ended
@@ -835,15 +854,17 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             manager.tick_reported = True
             self.get_logger().warning(f"robot {manager.name}: its tick has waited {manager.tick_age(now):.1f}s for a reply, the other robots are judged meanwhile")
 
-    def _robot_tick_result(self, name: str, task: asyncio.Task[Transition], took: float) -> Transition | None:
-        """The transition of a robot's finished tick; a late or failed tick is a warning and an integrity flag of the episode."""
+    def _robot_tick_result(self, name: str, task: asyncio.Task[Transition], took: float, *, detached: bool) -> Transition | None:
+        """The transition of a robot's finished tick. A failed tick, or one the loop went on without that took
+        `_LATE_ROBOT_TICK_S` or more, is a warning and an integrity flag of the episode. A tick that finished within the
+        loop's wait is not, however long a slow loop made it: the loop waited for it as it always did."""
         error = task.exception()
         if error is not None:
             reason = f"robot {name} tick failed after {took:.1f}s: {error!r}"
             self.get_logger().warning(reason)
             self._compromise(reason)
             return None
-        if took >= _LATE_ROBOT_TICK_S:
+        if detached and took >= _LATE_ROBOT_TICK_S:
             reason = f"robot {name} tick took {took:.1f}s (judged again once done, the other robots meanwhile)"
             self.get_logger().warning(reason)
             self._compromise(reason)
