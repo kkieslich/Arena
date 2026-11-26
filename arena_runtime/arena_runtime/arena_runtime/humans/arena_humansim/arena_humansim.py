@@ -541,7 +541,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._removals = 0
         self._flow_meta_wait: dict[int, int] = {}
         #: rate ticks the render and relay loops coalesced under lag this episode (reset at the episode start)
-        self._ticks_coalesced = {"render": 0, "relay": 0}
+        self._ticks_coalesced = dict.fromkeys(self._COALESCING_LOOPS, 0)
         self._tagged_models: dict[tuple[str, ...], list[HumanIdentifier]] = {}
         self._warned_untagged_types: set[str] = set()
         # agent_id → human-readable name (scenario YAML name or flow source label)
@@ -1018,12 +1018,15 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             await asyncio.sleep(0.001)
         self._mechanism_last_ns = None
 
+    #: the loops that coalesce queued rate ticks
+    _COALESCING_LOOPS = ("render", "relay")
+
     def coalesced_ticks(self) -> dict[str, int]:
-        return dict(self._ticks_coalesced)
+        return dict(getattr(self, "_ticks_coalesced", {}))  # a simulator built without __init__ (tests) has none
 
     async def start_clock(self, epoch: Time) -> None:
         """Start the engine's tick clock, held since the reset's remove-all, at the episode start: its first tick is stamped `epoch`."""
-        self._ticks_coalesced = dict.fromkeys(self._ticks_coalesced, 0)
+        self._ticks_coalesced = dict.fromkeys(self._COALESCING_LOOPS, 0)
         if not self._clock_on_request or self._start_clock_client is None:
             return
         assert StartClock is not None
