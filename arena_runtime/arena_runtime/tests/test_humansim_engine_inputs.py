@@ -126,3 +126,14 @@ def test_a_step_cancelled_mid_call_still_answers_the_caller() -> None:
         assert await asyncio.wait_for(call, 1.0) == "ok spawn"
 
     asyncio.run(scenario())
+
+
+def test_attribute_writes_reach_the_wrapped_client() -> None:
+    """A caller that tunes the client (its `_timeout`) tunes the client that sends."""
+    engine = _Engine()
+    engine._timeout = 60.0
+    client = SequencedClient(engine, EngineInputs(lambda: 0))
+    client._timeout = 0.3
+    assert engine._timeout == 0.3
+    assert client._timeout == 0.3
+    assert "_timeout" not in vars(client)

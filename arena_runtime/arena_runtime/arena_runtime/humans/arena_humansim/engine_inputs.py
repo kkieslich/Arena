@@ -100,14 +100,26 @@ def _settle(future: asyncio.Future[typing.Any], task: asyncio.Future[typing.Any]
 
 
 class SequencedClient:
-    """A service client whose calls go through `EngineInputs`; everything else is the wrapped client's."""
+    """A service client whose calls go through `EngineInputs`; every other attribute, read or written (a call's
+    `_timeout`, say), is the wrapped client's."""
+
+    _OWN = frozenset({"_inner", "_inputs"})
 
     def __init__(self, inner: typing.Any, inputs: EngineInputs) -> None:  # noqa: ANN401
-        self._inner = inner
-        self._inputs = inputs
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_inputs", inputs)
 
     async def call_timeout(self, request: object, *args: object, **kwargs: object) -> typing.Any:  # noqa: ANN401
         return await self._inputs.call(lambda: self._inner.call_timeout(request, *args, **kwargs))
 
     def __getattr__(self, name: str) -> typing.Any:  # noqa: ANN401
         return getattr(self._inner, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in self._OWN:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._inner, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(self._inner, name)
