@@ -108,6 +108,16 @@ def _outside_rects(cells: np.ndarray, rects: Sequence[tuple[tuple[int, int], tup
     return cells[keep]
 
 
+def _inside_polygon(polygon: shapely.Polygon, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """shapely.contains_xy(polygon, xs, ys), testing only the points inside the polygon's bounds: a target area is a few
+    metres across, the candidates a whole floor (1.6 M cells on the v2 twin, seconds for contains_xy over all of them)."""
+    minx, miny, maxx, maxy = polygon.bounds
+    inside = (xs >= minx) & (xs <= maxx) & (ys >= miny) & (ys <= maxy)
+    idx = np.flatnonzero(inside)
+    inside[idx] = shapely.contains_xy(polygon, xs[idx], ys[idx])
+    return inside
+
+
 def _zone_mask(world_map: WorldMap, polygons: Sequence[shapely.Polygon]) -> np.ndarray:
     """Cells whose tf_grid2pos point lies inside any polygon."""
     mask = np.zeros(world_map.shape[:2], dtype=bool)
@@ -563,7 +573,7 @@ class WorldManager(NodeInterface):
         if len(available) and stair_mask is not None:
             available = available[~stair_mask[available[:, 0], available[:, 1]]]
         if len(available) and polygon is not None:
-            available = available[shapely.contains_xy(polygon, *level_map.tf_grid2xy(available[:, 0], available[:, 1]))]
+            available = available[_inside_polygon(polygon, *level_map.tf_grid2xy(available[:, 0], available[:, 1]))]
         elif len(available) and zone_mask is not None:
             available = available[zone_mask[available[:, 0], available[:, 1]]]
 

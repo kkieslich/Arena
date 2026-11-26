@@ -12,7 +12,7 @@ import pytest
 try:
     from arena_runtime.env.world_manager import utils
     from arena_runtime.env.world_manager.utils import WorldLayers, WorldOccupancy
-    from arena_runtime.env.world_manager.world_manager import _occupancy_to_available, _outside_rects
+    from arena_runtime.env.world_manager.world_manager import _inside_polygon, _occupancy_to_available, _outside_rects
 except ImportError:
     pytestmark = pytest.mark.skip(reason="ROS2 not available")
 
@@ -132,3 +132,15 @@ def test_a_writer_between_the_clearance_and_the_cells_leaves_no_stale_cells(monk
     assert np.array_equal(cells, _occupancy_to_available(layers.grid, 2.0))
     assert layers._available_version == layers.version
     assert np.array_equal(layers.available(2.0), _occupancy_to_available(layers.grid, 2.0))
+
+
+def test_the_bounds_prefilter_keeps_exactly_the_points_contains_xy_keeps() -> None:
+    import shapely
+
+    rng = np.random.default_rng(11)
+    xs, ys = rng.uniform(-20, 20, 20000), rng.uniform(-20, 20, 20000)
+    xs[:50], ys[:50] = 2.0, rng.uniform(-3, 3, 50)  # points on the polygon's edge
+    for _ in range(40):
+        cx, cy, r = rng.uniform(-15, 15), rng.uniform(-15, 15), rng.uniform(0.5, 8)
+        polygon = shapely.Point(cx, cy).buffer(r) if rng.random() < 0.5 else shapely.box(cx - r, cy - r / 2, cx + r, cy + r / 2)
+        assert np.array_equal(_inside_polygon(polygon, xs, ys), shapely.contains_xy(polygon, xs, ys))
