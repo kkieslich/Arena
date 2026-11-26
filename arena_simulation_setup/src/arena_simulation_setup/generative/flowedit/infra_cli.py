@@ -164,6 +164,12 @@ class _Space:
         #: whether the search ran with the walkway rule, for the reports and manifests a frozen selection keeps
         self.walkway_rule: dict[str, Any] = {"on": bool(crowd.flows), "scenario": self.scenario_name, "flows": len(crowd.flows), "ped_per_h": round(crowd.total * 3600.0, 1), "versions": _versions()}
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
+        # where the catalog's models came from: a study's selection places them from their assets, never from the
+        # catalog's records of them alone (an offline machine)
+        self.models = place.model_sources(self.site)
+        recorded = sorted(m for m, how in self.models.items() if how == "record")
+        if recorded and not getattr(args, "allow_model_records", False):
+            raise ValueError(f"models {recorded} do not resolve in the asset store and would be placed from the catalog's records (place.MODEL_RECORDS): fetch the assets, or pass --allow-model-records for a search that is no study's selection")
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
         if count:
             _log(f"search space: {json.dumps(self.search.counts())}")
@@ -301,6 +307,7 @@ def _write_layout_suite(args: argparse.Namespace, space: _Space, name: str, runs
         "site_root": str(space.site.root),
         "site_config": None if space.config is None else space.config.record(),
         "walkway_rule": space.walkway_rule,
+        "models": space.models,
         "scenario": str(space.scenario),
         "visitor_sources": IN.visitor_sources(space.scenario),
         "visitor_rate_per_h": args.visitor_rate,
@@ -515,6 +522,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
         "site_config": space.config.record(),
         "scenario": str(space.scenario),
         "walkway_rule": space.walkway_rule,
+        "models": space.models,
         "loading": space.loading_record(),
         "demand": {"rate_per_h": demand.rate_per_h, "pickup_share": demand.pickup_share, "bay_share": demand.bay_share, "charging_trips_per_job": demand.charging_trips_per_job},
         "recipient_entrances": [e.name for e in entrances],
@@ -832,6 +840,7 @@ def _cmd_entrance_runs(args: argparse.Namespace) -> int:
         "site_root": str(space.site.root),
         "site_config": None if space.config is None else space.config.record(),
         "walkway_rule": space.walkway_rule,
+        "models": space.models,
         "scenario": str(space.scenario),
         "scenarios": {str(seed): names[seed] for seed in seeds},
         "visitor_sources": sorted({r.source for per_seed in who.values() for group in per_seed.values() for r in group}),
@@ -1151,6 +1160,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE}); layout copies hardlink its assets, so save on its mount")
     common.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
+    common.add_argument("--allow-model-records", action="store_true", help="place a catalog model that does not resolve in the asset store from the catalog's record of it (place.MODEL_RECORDS); without it such a search is refused; never for a study's selection")
     common.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): where each element may go, the excluded zones, the crowd scenario")
     common.add_argument("--scenario", default=None, help=f"the crowd scenario of every stage (default the site config's, else {IN.SCENARIO})")
     common.add_argument("--scenarios-from", type=Path, default=None, help="world directory to copy the scenario from (default: the site's, else the world its name resolves to)")
@@ -1210,6 +1220,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     )
     q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
     q.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
+    q.add_argument("--allow-model-records", action="store_true", help="place a catalog model that does not resolve in the asset store from the catalog's record of it (place.MODEL_RECORDS); without it such a search is refused; never for a study's selection")
     q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): its entrances, links, courier access point and outlets")
     q.add_argument("--scenario", default=None, help="the crowd scenario whose sources and sinks no element takes (default the site config's)")
     q.add_argument("--scenarios-from", type=Path, default=None, help="world directory to read the scenario from (default: the site's)")

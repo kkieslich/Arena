@@ -146,7 +146,6 @@ REGION_CALL_ATTEMPTS = 3
 
 _QUEUE_FRONT_OFFSET = 0.7
 TELEPORT_JUMP_M = 2.0
-STAIRS_QUEUE_M = 0.8
 _QUEUE_STEP = 0.8
 
 
@@ -1730,26 +1729,14 @@ class ArenaHumanSimulator(BaseHumanSimulator):
 
     def _stair_zone_msg(self, stair: Stairs) -> TeleportZoneMsg:
         """A realized stair half as a self-teleporting zone in the engine frame, walked from the mouth to the seam, the belt running towards the seam on a boarding escalator half and away from it on an exit half, still and the boarding half closed while the escalator is stopped."""
-        running = self._stair_runs(stair)
-        yaw = stair.yaw
-        mx, my = self._to_engine(stair.mouth.x, stair.mouth.y)
-        q = stair.local(-STAIRS_QUEUE_M, 0.0)
-        qx, qy = self._to_engine(q.x, q.y)
-        h = stair.local(stair.length - stair.inset, 0.0)
-        hx, hy = self._to_engine(h.x, h.y)
-        footprint = [Point32(x=x, y=y, z=0.0) for x, y in (self._to_engine(c.x, c.y) for c in stair.corners(stair.reach))]
-        return TeleportZoneMsg(
-            name=stair.name,
-            destinations=[stair.to] if any(other.name == stair.to for other in self._known_stairs) else [],
-            entry=Pose2DMsg(x=mx, y=my, theta=yaw),
-            wait=Pose2DMsg(x=qx, y=qy, theta=yaw),
-            hold=Pose2DMsg(x=hx, y=hy, theta=yaw),
-            footprint=footprint,
-            open=running or not stair.boards,
-            delay=0.0,
-            kind=stair.kind,
-            belt=stair.belt if running else 0.0,
-        )
+        zone = stair.teleport_zone({other.name for other in self._known_stairs}, running=self._stair_runs(stair))
+
+        def pose(p: tuple[float, float, float]) -> Pose2DMsg:
+            x, y = self._to_engine(p[0], p[1])
+            return Pose2DMsg(x=x, y=y, theta=p[2])
+
+        footprint = [Point32(x=x, y=y, z=0.0) for x, y in (self._to_engine(cx, cy) for cx, cy in zone.footprint)]
+        return TeleportZoneMsg(name=zone.name, destinations=list(zone.destinations), entry=pose(zone.entry), wait=pose(zone.wait), hold=pose(zone.hold), footprint=footprint, open=zone.open, delay=zone.delay, kind=zone.kind, belt=zone.belt)
 
     def _scenario_zone_msg(self, zone: TeleportZone) -> TeleportZoneMsg:
         """A scenario teleport zone (realized) in the engine frame."""

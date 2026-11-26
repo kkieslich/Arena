@@ -703,5 +703,11 @@ def test_an_element_whose_model_does_not_resolve_is_placed_with_the_catalogs_rec
     assert chargers and any("place.MODEL_RECORDS" in str(w.message) for w in caught)
     ring, face = place.MODEL_RECORDS["Common/Object/robot_charger"]
     assert face == "+x" and ring is not None
+    assert place.model_sources(site)["Common/Object/robot_charger"] == "record"
     local = place.resolve_element(site, CATALOG["charger_pair"])
     assert local.equals_exact(shapely.Polygon(ring), 1e-9) or local.symmetric_difference(shapely.Polygon(ring)).area < 1e-9
+
+
+def test_an_element_whose_model_resolves_comes_from_its_asset(hospital: Site) -> None:
+    assert candidate_spots(hospital, "charger_pair")
+    assert place.model_sources(hospital)["Common/Object/robot_charger"] == "asset"

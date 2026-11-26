@@ -3,9 +3,9 @@
 A site's walkers change floor over two kinds of link, both handed to HumanSim as teleport zones: the halves a site
 config names (`SiteConfig.links`, for a world that lays its levels out side by side and draws no stairs), and the
 halves of the world's own staircases (`Level.stairs`: stairs and escalators; a ramp is floor). `world_links` builds the
-second kind as the runtime builds them for HumanSim (`arena_runtime`'s `_stair_zone_msg`): entry at the mouth facing
-up the half, the hold at the seam trigger, the footprint out to the reach past the seam, the destination the half's
-`to` partner, a belt on a running escalator half. `site_links` puts both together. They are what the walking distances
+second kind with the builder the runtime hands HumanSim its zones from (`Stairs.teleport_zone`): entry at the mouth
+facing up the half, the hold at the seam trigger, the footprint out to the reach past the seam, the destination the
+half's `to` partner, a belt on a running escalator half. `site_links` puts both together. They are what the walking distances
 (`demand.Walks`), the elements' keep-out at stair mouths (`infra.link_keep_out`) and the crowd's routes of the walkway
 rule (`walkway.Routes`) walk over; wheelchair users never take them. A world's stairs are never written into a
 crowd scenario: the runtime hands them to HumanSim itself."""
@@ -23,34 +23,35 @@ if TYPE_CHECKING:
 
     from .edit import Site
 
-#: How far before a half's mouth walkers wait for it (`arena_runtime`'s STAIRS_QUEUE_M) [m]
-QUEUE_M = 0.8
 #: The floor in front of a link's mouth that no element takes, out from its entry line across its width: walkers step
 #: off a stair or escalator half there and queue for it [m]
 LINK_APRON_M = 1.5
 
 
 def world_links(level: Level) -> list[dict[str, Any]]:
-    """The stair and escalator halves of `level` as HumanSim teleport zones (see the module doc); a half whose `to`
+    """The stair and escalator halves of `level` as HumanSim teleport zones, each built by `Stairs.teleport_zone`, the
+    builder the runtime hands the crowd simulator its zones from, here with every escalator running; a half whose `to`
     partner is not on this level leads nowhere from it (`destinations` empty), as the runtime leaves it."""
     halves = [s for s in level.stairs if s.kind != "ramp"]
     names = {s.name for s in halves}
+
+    def pose(p: tuple[float, float, float]) -> dict[str, float]:
+        return {"x": round(p[0], 4), "y": round(p[1], 4), "theta": round(p[2], 6)}
+
     out = []
     for s in halves:
-        mouth = s.mouth
-        wait = s.local(-QUEUE_M, 0.0)
-        hold = s.local(s.length - s.inset, 0.0)
+        zone = s.teleport_zone(names)
         out.append(
             {
-                "name": s.name,
-                "kind": s.kind,
-                "destinations": [s.to] if s.to in names else [],
-                "entry": {"x": round(mouth.x, 4), "y": round(mouth.y, 4), "theta": round(s.yaw, 6)},
-                "wait": {"x": round(wait.x, 4), "y": round(wait.y, 4), "theta": round(s.yaw, 6)},
-                "hold": {"x": round(hold.x, 4), "y": round(hold.y, 4), "theta": round(s.yaw, 6)},
-                "footprint": [{"x": round(c.x, 4), "y": round(c.y, 4)} for c in s.corners(s.reach)],
-                "delay": 0.0,
-                "belt": float(s.belt),
+                "name": zone.name,
+                "kind": zone.kind,
+                "destinations": list(zone.destinations),
+                "entry": pose(zone.entry),
+                "wait": pose(zone.wait),
+                "hold": pose(zone.hold),
+                "footprint": [{"x": round(x, 4), "y": round(y, 4)} for x, y in zone.footprint],
+                "delay": zone.delay,
+                "belt": float(zone.belt),
             }
         )
     return out
@@ -88,4 +89,4 @@ def link_keep_out(links: Iterable[Mapping[str, Any]]) -> list[shapely.Polygon]:
     return out
 
 
-__all__ = ["LINK_APRON_M", "QUEUE_M", "link_keep_out", "site_links", "world_links"]
+__all__ = ["LINK_APRON_M", "link_keep_out", "site_links", "world_links"]

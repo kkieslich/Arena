@@ -372,8 +372,8 @@ _FLOORS: dict[tuple[Any, ...], WalkerFloor] = {}
 _ROUTES: dict[tuple[Any, ...], Routes] = {}
 #: The walkways a spot narrows with the other elements close to it, by spot and those elements (`check_layout`)
 _JOINT: dict[tuple[Any, ...], tuple[Narrowing, ...]] = {}
-#: The catalog models whose record was checked against their asset (`resolve_models`)
-_RECORDS_CHECKED: set[tuple[Path, str]] = set()
+#: Where each catalog model of a site came from (`resolve_models`): "asset" (its asset resolved) or "record"
+_MODEL_SOURCES: dict[tuple[Path, str], str] = {}
 #: Walking distances run on this grid (8-connected, up to 8 % longer than straight off the grid axes)
 WALK_RESOLUTION_M = 0.1
 #: An entrance whose point lies further than this from the walking floor gets a warning (a mistyped position) [m]
@@ -510,17 +510,26 @@ def resolve_models(site: Site, models: Sequence[str], *, strict: bool = False) -
         if record is None:
             continue
         ring, face = record
+        if key in _MODEL_SOURCES:
+            continue
         if key in gen._UNRESOLVED:
             warnings.warn(f"model {model!r} does not resolve ({gen._UNRESOLVED.pop(key)}): placed with the catalog's record of it (place.MODEL_RECORDS)", stacklevel=2)
             gen._FOOTPRINTS[key] = None if ring is None else shapely.Polygon(ring)
             gen._FACES[key] = face
-        elif key not in _RECORDS_CHECKED:
-            _RECORDS_CHECKED.add(key)
+            _MODEL_SOURCES[key] = "record"
+        else:
+            _MODEL_SOURCES[key] = "asset"
             resolved = gen._FOOTPRINTS.get(key)
             off = (resolved is None) != (ring is None) or (ring is not None and resolved is not None and shapely.Polygon(ring).hausdorff_distance(resolved) > MODEL_RECORD_TOL_M)
             if off or gen._FACES.get(key) != face:
                 warnings.warn(f"model {model!r} resolves differently from the catalog's record of it (place.MODEL_RECORDS): its asset is used; update the record", stacklevel=2)
     gen.resolve_footprints(site, models, strict=strict)
+
+
+def model_sources(site: Site) -> dict[str, str]:
+    """Where the catalog's models resolved so far on `site` came from, by model: "asset" or "record" (`resolve_models`).
+    A study's selection keeps it beside its walkway rule record and refuses records (`flowedit infra`)."""
+    return {model: _MODEL_SOURCES[(site.root, model)] for model in MODEL_RECORDS if (site.root, model) in _MODEL_SOURCES}
 
 
 def resolve_element(site: Site, element: Element) -> shapely.Polygon:
@@ -1243,6 +1252,7 @@ __all__ = [
     "layout_prefix",
     "placed_elements",
     "remove_element",
+    "model_sources",
     "resolve_models",
     "resolve_element",
     "save_layout",
