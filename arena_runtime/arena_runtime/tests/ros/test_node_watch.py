@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import typing
 
 import pytest
@@ -80,6 +81,75 @@ def test_nodes_gone_between_episodes_are_forgotten() -> None:
     tally.record({"a", "b", "c"})
     tally.forget_absent({"b", "c"})
     assert tally.record({"b", "c"}) is None
+
+
+def test_a_round_that_judges_only_some_nodes_leaves_the_others_count() -> None:
+    tally = _tally()
+    tally.record({"a", "b", "c", "d"})
+    assert tally.record({"a", "b", "c"}) is None  # d: 1
+    assert tally.miss({"a"}) is None  # a: 1, d keeps 1
+    assert tally.record({"b", "c"}) is None  # a: 2, d: 2
+    assert tally.record({"b", "c"}) in {"a", "d"}
+
+
+def test_a_late_side_beat_does_not_clear_a_frozen_nodes_misses() -> None:
+    """A loaded machine that delays two beats of the side thread made one round count every node as answered, so a frozen
+    process was never named (test_a_frozen_process_is_named[side_executor] under suite load)."""
+    from arena_runtime.env.node_watch import NodePinger
+
+    beat = [0.0]
+    side = types.SimpleNamespace(beat_age=lambda: beat[0], node_names=lambda: {f"{NS}/side/tracker"})
+    pinger = NodePinger.__new__(NodePinger)
+    pinger._root, pinger._side, pinger._tally, pinger._clients, pinger._pinged_on = NS, side, _tally(), {}, {}
+    targets = {f"{NS}/healthy_{i}": f"{NS}/healthy_{i}/get_parameters" for i in "abc"} | {f"{NS}/victim": f"{NS}/victim/get_parameters"}
+    pinger._targets = lambda: targets
+    pinger._client = lambda service, timeout: types.SimpleNamespace(client=None)
+    frozen = [False]
+
+    async def alive(service: str, timeout: float) -> bool:
+        return not (frozen[0] and service.startswith(f"{NS}/victim"))
+
+    pinger._alive = alive
+
+    async def scenario() -> list[str | None]:
+        await _ping(pinger)
+        frozen[0] = True
+        out = [await _ping(pinger)]
+        beat[0] = 2 * TIMEOUT  # the side thread missed its beats for a whole timeout this round
+        out.append(await _ping(pinger))
+        beat[0] = 0.0
+        out += [await _ping(pinger) for _ in range(2)]
+        return out
+
+    assert asyncio.run(scenario()) == [None, None, None, f"{NS}/victim"]
+
+
+def test_a_lifecycle_node_first_seen_by_its_parameter_service_is_not_tracked_once_its_state_shows() -> None:
+    """A lifecycle node's get_parameters can show up before its get_state: its answer there must not keep it tracked."""
+    from arena_runtime.env.node_watch import NodePinger
+
+    pinger = NodePinger.__new__(NodePinger)
+    pinger._root, pinger._side, pinger._tally, pinger._clients, pinger._pinged_on = NS, None, _tally(), {}, {}
+    idle = f"{NS}/idle"
+    targets = {f"{NS}/healthy_{i}": f"{NS}/healthy_{i}/get_parameters" for i in "abc"} | {idle: f"{idle}/get_parameters"}
+    pinger._targets = lambda: dict(targets)
+    pinger._client = lambda service, timeout: types.SimpleNamespace(client=None)
+    pinger._destroy = lambda client: None
+
+    async def alive(service: str, timeout: float) -> bool:
+        return not service.endswith("/get_state")  # the idle node is not active
+
+    pinger._alive = alive
+
+    async def scenario() -> list[str | None]:
+        out = [await _ping(pinger)]
+        assert idle in pinger._tally._misses  # answered on get_parameters
+        targets[idle] = f"{idle}/get_state"
+        out += [await _ping(pinger) for _ in range(4)]
+        return out
+
+    assert asyncio.run(scenario()) == [None] * 5
+    assert idle not in pinger._tally._misses
 
 
 def _spawn(*names: str) -> dict[str, subprocess.Popen]:

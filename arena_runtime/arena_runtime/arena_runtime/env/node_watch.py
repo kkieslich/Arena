@@ -35,6 +35,10 @@ class MissTally:
     def forget_absent(self, present: set[str]) -> None:
         self._misses = {name: count for name, count in self._misses.items() if name in present}
 
+    def forget(self, names: set[str]) -> None:
+        for name in names:
+            self._misses.pop(name, None)
+
     def record(self, answered: set[str]) -> str | None:
         """Count one round and return a node that reached the limit, a round most nodes missed counts for nobody."""
         known = self._misses.keys() | answered
@@ -43,6 +47,16 @@ class MissTally:
         hung = None
         for name in known:
             self._misses[name] = 0 if name in answered else self._misses[name] + 1
+            if self._misses[name] >= self.limit:
+                hung = name
+                self._misses[name] = 0
+        return hung
+
+    def miss(self, missed: set[str]) -> str | None:
+        """Count a round that could judge only `missed` (each missed it): the other tracked nodes keep their count."""
+        hung = None
+        for name in missed & self._misses.keys():
+            self._misses[name] += 1
             if self._misses[name] >= self.limit:
                 hung = name
                 self._misses[name] = 0
@@ -66,6 +80,9 @@ class NodePinger:
         self._side = side
         self._tally = MissTally(limit)
         self._clients: dict[str, ClientWrapper] = {}
+        # the service each node was last pinged on: a lifecycle node's get_parameters can show up in the graph before its
+        # get_state, and an answer on the first must not make it a tracked plain node once the second shows up
+        self._pinged_on: dict[str, str] = {}
 
     def _executor_nodes(self) -> set[str]:
         """The pinging node and every node its executor spins."""
@@ -109,10 +126,14 @@ class NodePinger:
         """Ping once and return a node that stopped answering or left its active state, or None."""
         targets = self._targets()
         side = self._side_nodes()
+        self._tally.forget({name for name, service in targets.items() if self._pinged_on.get(name, service) != service})
+        self._pinged_on = dict(targets)
         if new_episode:
             self._tally.forget_absent(set(targets) | side)
         if self._side is not None and self._side.beat_age() >= timeout:
-            return self._tally.record(self._tally.tracked() - side)
+            # no reply could be taken on the wedged side thread: its own nodes miss, the others are not judged (counting them
+            # as answered would clear a frozen node's misses whenever a loaded machine delays two beats)
+            return self._tally.miss(side)
         for service in self._clients.keys() - targets.values():
             self._destroy(self._clients.pop(service))
         for service in targets.values() - self._clients.keys():
