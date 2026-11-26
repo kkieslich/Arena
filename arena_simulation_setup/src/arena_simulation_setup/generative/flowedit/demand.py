@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 
 from . import place
-from .links import site_links
+from .links import MOUTH_SNAP_M, floor_links, site_links
 from .place import Entrance, Layout, Spot
 from .search import CONFLICT_BAND_M, GROUPS, PATH_SNAP_M, ROBOT_SPEED_MPS, SEARCHED, Checked, Occupancy, RobotPaths, Search, _num, _reach
 
@@ -58,6 +58,8 @@ if TYPE_CHECKING:
     import numpy as np
 
     from arena_simulation_setup.metrics.navr_filter import NavrVerdict
+
+    from .edit import Site
 
 CHARGERS, BAYS, LOCKER = SEARCHED
 #: The entrance types parcel recipients come in by (A3): every building door and every lift of the site zone map
@@ -199,6 +201,16 @@ def _hold_m(zone: Mapping[str, Any]) -> float | None:
     return max(0.0, (float(hold["x"]) - float(entry["x"])) * math.cos(theta) + (float(hold["y"]) - float(entry["y"])) * math.sin(theta))
 
 
+def site_walks(site: Site, level_id: str, links: Iterable[Mapping[str, Any]] = (), *, neighbourhood: int = WALK_NEIGHBOURHOOD) -> Walks:
+    """The walks on a level of `site` (`place.walking_paths`, cached) over its links: the site config's `links` and the
+    world's own stairs and escalators (`links.site_links`), each from floor to floor (`links.floor_links`: flights that
+    meet on a landing, which the world draws as stair and no zone covers, as one link; a half is on the walking floor
+    where its entry lies within `links.MOUTH_SNAP_M` of it). Cheap once the floor is built: a search checks its links
+    with it before its spots (ValueError for a link no walk can take)."""
+    floor = place.walking_paths(site, level_id, neighbourhood=neighbourhood)
+    return Walks.of(floor, floor_links(site_links(site, level_id, links), lambda p: float(floor.tree.query(p)[0]) <= MOUTH_SNAP_M), snap_m=MOUTH_SNAP_M)
+
+
 @attrs.frozen(eq=False)
 class Walks:
     """Walking distances on one level: `floor` (the step-free walking floor, `place.walking_paths`) and the site's
@@ -211,9 +223,9 @@ class Walks:
     _graphs: dict[Any, Any] = attrs.field(factory=dict, init=False, repr=False)
 
     @classmethod
-    def of(cls, floor: RobotPaths, links: Iterable[Mapping[str, Any]] = ()) -> Walks:
+    def of(cls, floor: RobotPaths, links: Iterable[Mapping[str, Any]] = (), *, snap_m: float = PATH_SNAP_M) -> Walks:
         """The walks on `floor` with `links` (teleport zones in HumanSim's form, as the site config's `links`).
-        ValueError for a destination that is no link, or an entry further than `PATH_SNAP_M` from the floor."""
+        ValueError for a destination that is no link, or an entry further than `snap_m` from the floor."""
         links = [dict(z) for z in links]
         by_name = {str(z.get("name")): z for z in links}
         edges = []
@@ -224,7 +236,7 @@ class Walks:
                 a = (float(z["entry"]["x"]), float(z["entry"]["y"]))
                 b = (float(by_name[dest]["entry"]["x"]), float(by_name[dest]["entry"]["y"]))
                 (da, ia), (db, ib) = floor.tree.query(a), floor.tree.query(b)
-                if max(da, db) > PATH_SNAP_M:
+                if max(da, db) > snap_m:
                     raise ValueError(f"link {z.get('name')!r} to {dest!r}: an entry lies {max(da, db):.2f} m from the walking floor")
                 land = by_name[dest]
                 edges.append(_Link(int(ia), int(ib), math.dist(a, b) + float(da) + float(db), str(z.get("kind") or ""), float(z.get("delay") or 0.0), _hold_m(z), _hold_m(land), float(z.get("belt") or 0.0), float(land.get("belt") or 0.0)))
@@ -566,7 +578,7 @@ class EntranceSearch:
         self.reach_max_m = float(reach_max_m)
         self.walk_neighbourhood = int(walk_neighbourhood)
         # the site config's links and the world's own stairs and escalators
-        self.walks = Walks.of(place.walking_paths(search.site, level, neighbourhood=self.walk_neighbourhood), site_links(search.site, level, links))
+        self.walks = site_walks(search.site, level, links, neighbourhood=self.walk_neighbourhood)
         anchors = [e.anchor for e in self.entrances]
         every = search.spots[LOCKER]
         walk = self.walks.lengths(anchors, [s.objects[0].goto for s in every], climbs=True)
@@ -1203,6 +1215,7 @@ def practice_based(space: EntranceSearch, reach_m: float = REACH_M) -> Placed:
 
 
 __all__ = [
+    "site_walks",
     "BAY_SHARE",
     "DELAY_PER_ELEMENT",
     "DELAY_PER_EXPOSURE",

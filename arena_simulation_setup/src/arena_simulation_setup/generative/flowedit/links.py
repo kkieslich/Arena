@@ -13,7 +13,7 @@ crowd scenario: the runtime hands them to HumanSim itself."""
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -26,6 +26,13 @@ if TYPE_CHECKING:
 #: The floor in front of a link's mouth that no element takes, out from its entry line across its width: walkers step
 #: off a stair or escalator half there and queue for it [m]
 LINK_APRON_M = 1.5
+#: A half's entry is on a walking floor where the floor comes this near it: the floors keep their clearance from the
+#: stair's own walls, so a mouth on the floor lies up to about a metre off its nearest walkable cell [m]
+MOUTH_SNAP_M = 1.5
+#: Halves whose entries lie off the walking floor and this near each other share a landing between two flights [m]
+LANDING_M = 3.0
+#: How fast walkers climb a still stair and cross its landing (HumanSim's `teleport_zones.STAIR_SPEED`) [m/s]
+STAIR_SPEED_MPS = 0.7
 
 
 def world_links(level: Level) -> list[dict[str, Any]]:
@@ -68,6 +75,64 @@ def site_links(site: Site, level_id: str, config_links: Iterable[Mapping[str, An
     return [*config, *world]
 
 
+def _point(p: Mapping[str, Any]) -> tuple[float, float]:
+    return (float(p["x"]), float(p["y"]))
+
+
+def _run(zone: Mapping[str, Any]) -> float:
+    """A half's stretch from its entry to its hold [m] (none without a hold)."""
+    return math.dist(_point(zone["entry"]), _point(zone["hold"])) if zone.get("hold") else 0.0
+
+
+def _over(zone: Mapping[str, Any], metres: float) -> float:
+    """Seconds over `metres` of a half: at its belt's speed, else at `STAIR_SPEED_MPS`."""
+    belt = abs(float(zone.get("belt") or 0.0))
+    return metres / (belt if belt > 0.0 else STAIR_SPEED_MPS)
+
+
+def floor_links(zones: Iterable[Mapping[str, Any]], on_floor: Callable[[tuple[float, float]], bool]) -> list[dict[str, Any]]:
+    """`zones` (HumanSim teleport zones) as the links a measure on a walking floor walks over: from floor to floor. A
+    half whose entry lies off the floor (`on_floor` false) stands on a landing between two flights (the world draws the
+    landing as stair, no zone covers it): a walker landing there crosses to the other halves whose entries lie off the
+    floor within `LANDING_M` of it and goes on. Each way from a half on the floor over such landings to a half on the
+    floor becomes one link: the boarding half with that destination, its `delay` the landing halves' stretches and the
+    walks across the landings in seconds (at the halves' belts, else `STAIR_SPEED_MPS`). Halves on the floor keep their
+    direct destinations; halves off it are left out. ValueError for a half on the floor whose way ends on a landing with
+    no way on: no measure could take it."""
+    zones = [dict(z) for z in zones]
+    by_name = {str(z["name"]): z for z in zones}
+    off = {name for name, z in by_name.items() if not on_floor(_point(z["entry"]))}
+    landing = {a: [b for b in off if b != a and math.dist(_point(by_name[a]["entry"]), _point(by_name[b]["entry"])) <= LANDING_M] for a in off}
+    out: list[dict[str, Any]] = []
+    for name, z in by_name.items():
+        if name in off:
+            continue
+        direct = [d for d in z.get("destinations") or [] if d in by_name and d not in off]
+        out.append({**z, "destinations": direct})
+        for first in (d for d in z.get("destinations") or [] if d in off):
+            # walk on over landings: (the half landed on, seconds since the boarding half's hold, halves seen)
+            frontier = [(first, _over(by_name[first], _run(by_name[first])), {name, first})]
+            reached = False
+            while frontier:
+                here, seconds, seen = frontier.pop()
+                for across in landing[here]:
+                    if across in seen:
+                        continue
+                    walk = math.dist(_point(by_name[here]["entry"]), _point(by_name[across]["entry"])) / STAIR_SPEED_MPS
+                    board = _over(by_name[across], _run(by_name[across]))
+                    for nxt in by_name[across].get("destinations") or []:
+                        if nxt not in by_name or nxt in seen:
+                            continue
+                        if nxt in off:
+                            frontier.append((nxt, seconds + walk + board + _over(by_name[nxt], _run(by_name[nxt])), seen | {across, nxt}))
+                        else:
+                            reached = True
+                            out.append({**z, "name": f"{name}>{across}>{nxt}", "destinations": [nxt], "delay": round(float(z.get("delay") or 0.0) + seconds + walk + board, 3)})
+            if not reached:
+                raise ValueError(f"link {name!r} leads to {first!r}, whose entry lies off the walking floor with no half within {LANDING_M:g} m to go on by: no landing joins it to the floor")
+    return out
+
+
 def link_keep_out(links: Iterable[Mapping[str, Any]]) -> list[shapely.Polygon]:
     """The floor of each link with a footprint (teleport zones in HumanSim's form: stair and escalator halves, cabins) and
     an apron in front of its mouth, `LINK_APRON_M` out from its entry line and as wide as its footprint across it: an
@@ -89,4 +154,4 @@ def link_keep_out(links: Iterable[Mapping[str, Any]]) -> list[shapely.Polygon]:
     return out
 
 
-__all__ = ["LINK_APRON_M", "link_keep_out", "site_links", "world_links"]
+__all__ = ["LANDING_M", "LINK_APRON_M", "MOUTH_SNAP_M", "floor_links", "link_keep_out", "site_links", "world_links"]
