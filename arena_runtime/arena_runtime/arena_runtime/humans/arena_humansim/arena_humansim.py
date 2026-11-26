@@ -329,6 +329,17 @@ def reach_radius(bounding_box: Sequence[Sequence[float]]) -> float:
     return max(math.hypot(x, y) for x in (x_min, x_max) for y in (y_min, y_max)) + PED_RADIUS
 
 
+def _drain_ticks(rate: asyncio.Queue[float]) -> int:
+    """Take every tick already queued on a sim-time rate and return how many: the loop then acts once for all of them."""
+    dropped = 0
+    while True:
+        try:
+            rate.get_nowait()
+        except asyncio.QueueEmpty:
+            return dropped
+        dropped += 1
+
+
 class ArenaHumanSimulator(BaseHumanSimulator):
     PARAM_NAMESPACE = Constants.HUMAN_PARAM_NAMESPACES[Constants.HumanSimulator.ARENA]
 
@@ -529,6 +540,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._flow_agent_ids: set[int] = set()
         self._removals = 0
         self._flow_meta_wait: dict[int, int] = {}
+        #: rate ticks the render and relay loops coalesced under lag this episode (reset at the episode start)
+        self._ticks_coalesced = {"render": 0, "relay": 0}
         self._tagged_models: dict[tuple[str, ...], list[HumanIdentifier]] = {}
         self._warned_untagged_types: set[str] = set()
         # agent_id → human-readable name (scenario YAML name or flow source label)
@@ -1005,8 +1018,12 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             await asyncio.sleep(0.001)
         self._mechanism_last_ns = None
 
+    def coalesced_ticks(self) -> dict[str, int]:
+        return dict(self._ticks_coalesced)
+
     async def start_clock(self, epoch: Time) -> None:
         """Start the engine's tick clock, held since the reset's remove-all, at the episode start: its first tick is stamped `epoch`."""
+        self._ticks_coalesced = dict.fromkeys(self._ticks_coalesced, 0)
         if not self._clock_on_request or self._start_clock_client is None:
             return
         assert StartClock is not None
@@ -1192,7 +1209,11 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             with self.node.sim_time_rate(self.TICK_RATE) as (done, rate):
                 while not done.is_set():
                     await rate.get()
+                    # a backlog of ticks renders once: every render reads the current sim time, so the queued ones would
+                    # only repeat the newest frame back to back, holding the event loop for seconds on a loaded lane
+                    self._ticks_coalesced["render"] += _drain_ticks(rate)
                     await self._publish_interpolated()
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -1304,61 +1325,71 @@ class ArenaHumanSimulator(BaseHumanSimulator):
     async def _pedestrian_update_loop(self):
         """Spawn an actor for each flow agent a source creates, delete it when a
         sink removes the agent, and push the latest pedestrian set to the simulator.
+
+        Under lag the rate's ticks queue up: they are coalesced into one relay of the latest roster (it reads the newest
+        state anyway), counted in `coalesced_ticks`, and the loop yields after each relay, so no step runs a backlog.
         """
         try:
             with self.node.sim_time_rate(self.TICK_RATE) as (done, rate):
                 while not done.is_set():
                     await rate.get()
-                    async with self._agents_lock:
-                        peds = self._arena_pedestrians
-                    if not peds.pedestrians:
-                        continue
-                    removals = self._removals
-
-                    states = self._curr_agent_states
-                    if states is not None and not self._spawns_in_flight:
-                        current_ids = set(states.agent_id)
-                        flow_ids = current_ids - self._bridge_agent_ids
-                        new_ids = flow_ids - self._flow_agent_ids
-                        gone_ids = self._flow_agent_ids - current_ids
-
-                        if new_ids:
-                            index_by_id = {aid: i for i, aid in enumerate(states.agent_id)}
-                            to_spawn: list[tuple[int, DynamicObstacle]] = []
-                            for aid in sorted(new_ids):
-                                waited = self._flow_meta_wait.get(aid, 0)
-                                if aid not in self._agent_types and waited < self.FLOW_META_TICKS:
-                                    self._flow_meta_wait[aid] = waited + 1
-                                    continue
-                                self._flow_meta_wait.pop(aid, None)
-                                to_spawn.append((aid, self._make_flow_dynamic_obstacle(states, index_by_id[aid], await self._flow_model(aid))))
-                            spawnable = await self._ensure_spawnable([obs for _, obs in to_spawn]) if to_spawn else []
-                            if self._removals != removals:
-                                continue
-                            for aid, obs in to_spawn:
-                                self._flow_agent_ids.add(aid)
-                                self._agent_names[aid] = obs.sim_path
-                            if spawnable:
-                                await self._simulator.pedestrian_spawn(spawnable)
-
-                        for aid in self._flow_meta_wait.keys() - current_ids:
-                            del self._flow_meta_wait[aid]
-
-                        if gone_ids:
-                            to_delete: list[DynamicObstacle] = []
-                            for aid in sorted(gone_ids):
-                                self._flow_agent_ids.discard(aid)
-                                self._agent_names.pop(aid, None)
-                                to_delete.append(self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))))
-                            await self._simulator.pedestrian_delete(to_delete)
-
-                    if self._removals != removals:
-                        continue
-                    await self.relay_pedestrian_update(self._named(peds))
+                    dropped = _drain_ticks(rate)
+                    self._ticks_coalesced["relay"] += dropped
+                    await self._relay_once(1 + dropped)
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             self._logger.error(f"Error in pedestrian update loop: {e}\n{traceback.format_exc()}")
+
+    async def _relay_once(self, ticks: int) -> None:
+        """One relay of the latest roster, `ticks` rate ticks after the last (a flow agent waits its metadata in ticks)."""
+        async with self._agents_lock:
+            peds = self._arena_pedestrians
+        if not peds.pedestrians:
+            return
+        removals = self._removals
+
+        states = self._curr_agent_states
+        if states is not None and not self._spawns_in_flight:
+            current_ids = set(states.agent_id)
+            flow_ids = current_ids - self._bridge_agent_ids
+            new_ids = flow_ids - self._flow_agent_ids
+            gone_ids = self._flow_agent_ids - current_ids
+
+            if new_ids:
+                index_by_id = {aid: i for i, aid in enumerate(states.agent_id)}
+                to_spawn: list[tuple[int, DynamicObstacle]] = []
+                for aid in sorted(new_ids):
+                    waited = self._flow_meta_wait.get(aid, 0)
+                    if aid not in self._agent_types and waited < self.FLOW_META_TICKS:
+                        self._flow_meta_wait[aid] = waited + ticks
+                        continue
+                    self._flow_meta_wait.pop(aid, None)
+                    to_spawn.append((aid, self._make_flow_dynamic_obstacle(states, index_by_id[aid], await self._flow_model(aid))))
+                spawnable = await self._ensure_spawnable([obs for _, obs in to_spawn]) if to_spawn else []
+                if self._removals != removals:
+                    return
+                for aid, obs in to_spawn:
+                    self._flow_agent_ids.add(aid)
+                    self._agent_names[aid] = obs.sim_path
+                if spawnable:
+                    await self._simulator.pedestrian_spawn(spawnable)
+
+            for aid in self._flow_meta_wait.keys() - current_ids:
+                del self._flow_meta_wait[aid]
+
+            if gone_ids:
+                to_delete: list[DynamicObstacle] = []
+                for aid in sorted(gone_ids):
+                    self._flow_agent_ids.discard(aid)
+                    self._agent_names.pop(aid, None)
+                    to_delete.append(self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))))
+                await self._simulator.pedestrian_delete(to_delete)
+
+        if self._removals != removals:
+            return
+        await self.relay_pedestrian_update(self._named(peds))
 
     def _named(self, peds: Pedestrians) -> Pedestrians:
         """The roster's pedestrians that go by the name of their simulator body."""

@@ -1467,6 +1467,10 @@ class EpisodeNode(EnvNode):
                 if outcome_info:
                     log.info(f"  info:     {outcome_info}")
                 log.info(f"  duration: {duration:.2f}s")
+                coalesced = getattr(self._human_simulator, "coalesced_ticks", dict)()
+                if any(coalesced.values()):
+                    # a number, not an integrity flag: the crowd loops rendered and relayed the newest state once per backlog
+                    log.warn("  crowd ticks coalesced under lag: " + ", ".join(f"{loop} {n}" for loop, n in coalesced.items()))
                 log.warn(f"EPISODE FINISHED #{episode_id}")
                 log.warn("=============")
                 if self._send_end_message_on_end():
