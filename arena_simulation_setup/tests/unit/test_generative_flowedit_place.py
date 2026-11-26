@@ -686,3 +686,28 @@ def test_the_walking_grid_keeps_a_one_metre_door(tmp_path: Path) -> None:
     walk = place.walking_paths(site, site.world.levels[next(iter(site.world.levels))].id)
     d = walk.lengths([(3.0, 3.0)], [(9.0, 3.0)])[0, 0]
     assert np.isfinite(d) and d == pytest.approx(6.0, abs=0.6)
+
+
+# --- the catalog's models where the asset store does not reach --------------------------------------------------------
+
+
+def test_an_element_whose_model_does_not_resolve_is_placed_with_the_catalogs_record(tmp_path: Path, docked_assets: dict[str, Path]) -> None:
+    import warnings
+
+    for directory in docked_assets.values():
+        shutil.rmtree(directory)
+    site = _world(tmp_path / "worlds" / "offline")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        chargers = candidate_spots(site, "charger_pair")
+    assert chargers and any("place.MODEL_RECORDS" in str(w.message) for w in caught)
+    ring, face = place.MODEL_RECORDS["Common/Object/robot_charger"]
+    assert face == "+x" and ring is not None
+    assert place.model_sources(site)["Common/Object/robot_charger"] == "record"
+    local = place.resolve_element(site, CATALOG["charger_pair"])
+    assert local.equals_exact(shapely.Polygon(ring), 1e-9) or local.symmetric_difference(shapely.Polygon(ring)).area < 1e-9
+
+
+def test_an_element_whose_model_resolves_comes_from_its_asset(hospital: Site) -> None:
+    assert candidate_spots(hospital, "charger_pair")
+    assert place.model_sources(hospital)["Common/Object/robot_charger"] == "asset"

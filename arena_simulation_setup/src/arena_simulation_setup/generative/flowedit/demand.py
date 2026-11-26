@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 import attrs
 
 from . import place
+from .links import site_links
 from .place import Entrance, Layout, Spot
 from .search import CONFLICT_BAND_M, GROUPS, PATH_SNAP_M, ROBOT_SPEED_MPS, SEARCHED, Checked, Occupancy, RobotPaths, Search, _num, _reach
 
@@ -564,7 +565,8 @@ class EntranceSearch:
         self.walk_speeds = dict(WALK_SPEED_MPS if walk_speeds is None else walk_speeds)
         self.reach_max_m = float(reach_max_m)
         self.walk_neighbourhood = int(walk_neighbourhood)
-        self.walks = Walks.of(place.walking_paths(search.site, level, neighbourhood=self.walk_neighbourhood), links)
+        # the site config's links and the world's own stairs and escalators
+        self.walks = Walks.of(place.walking_paths(search.site, level, neighbourhood=self.walk_neighbourhood), site_links(search.site, level, links))
         anchors = [e.anchor for e in self.entrances]
         every = search.spots[LOCKER]
         walk = self.walks.lengths(anchors, [s.objects[0].goto for s in every], climbs=True)

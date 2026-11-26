@@ -42,6 +42,8 @@ from arena_simulation_setup.tree.World.Scenario import parse_scenario
 
 from . import place, site_walls
 from . import suite as SU
+from .links import LINK_APRON_M as LINK_APRON_M  # the apron is the links module's; infra callers read it here
+from .links import link_keep_out
 from .search import HOMES, Placement, Scored
 
 if TYPE_CHECKING:
@@ -143,9 +145,6 @@ ENTRANCE_SQUARE_M, ENTRANCE_WALL_M = 4.0, 0.4
 ENTRANCE_MIN_M2, ENTRANCE_GROW_M = 2.0, (6.0, 8.0, 10.0)
 #: The parcel locker's object, which the visitors' target stands in front of
 LOCKER = "locker"
-#: The floor in front of a link's mouth that no element takes, out from its entry line across its width: walkers step
-#: off a stair or escalator half there and queue for it [m]
-LINK_APRON_M = 1.5
 #: HumanSim refuses a stair or escalator half whose hold lies closer than this to a wall (its HOLD_CLEARANCE) [m]
 LINK_HOLD_WALL_M = 0.25
 
@@ -437,13 +436,17 @@ def _without_holes(area: shapely.Polygon) -> shapely.Polygon:
     return area
 
 
-def entrance_crowd(config: SiteConfig, floor: BaseGeometry, *, walls: BaseGeometry | None = None, rate: float = CROWD_RATE, visitor_rate_per_h: float = 12.0, robots: Sequence[Mapping[str, Any]] = ()) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict[str, Any]]]:
+def entrance_crowd(
+    config: SiteConfig, floor: BaseGeometry, *, walls: BaseGeometry | None = None, rate: float = CROWD_RATE, visitor_rate_per_h: float = 12.0, robots: Sequence[Mapping[str, Any]] = (), world_links: Sequence[Mapping[str, Any]] = ()
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict[str, Any]]]:
     """The study crowd from the site's entrances (§2, §9): every entrance a PEDS source and sink. Its walkers come in at
     `rate` in all, each entrance its `entrance_shares` share, one source per walker group (`GROUPS`, 70/15/15), and
     leave by another entrance, picked in proportion to the other entrances' shares (more walkers come in where more
     leave). Parcel recipients (`visitor_rate_per_h` in all, split evenly over the recipient entrances) come in at a
     recipient entrance, use the locker and leave by the entrance they came in by. No entrance's area takes floor of a
-    link or of the apron in front of its mouth (`link_keep_out`). Returns the scenario document, the locker visitors
+    link or of the apron in front of its mouth (`link_keep_out`): the site config's links and the world's own stairs
+    and escalators (`world_links`, `links.world_links`; never written into the scenario, the runtime hands them to
+    HumanSim). Returns the scenario document, the locker visitors
     document (None without a recipient entrance) and the visitors' agent types by file name."""
     shares = entrance_shares(config)
     entrances = config.facts.entrances
@@ -457,7 +460,7 @@ def entrance_crowd(config: SiteConfig, floor: BaseGeometry, *, walls: BaseGeomet
         near = [z["name"] for z in config.links if z.get("kind") and walls.distance(shapely.Point(float(z["hold"]["x"]), float(z["hold"]["y"]))) <= LINK_HOLD_WALL_M]
         if near:
             raise ValueError(f"{config.site}: links {near}: the hold lies within {LINK_HOLD_WALL_M:g} m of a wall, HumanSim refuses them")
-    links = link_keep_out(config.links)
+    links = link_keep_out([*config.links, *world_links])
     if links:
         # no source or sink on a link or its apron: a walker spawned on a running belt rides it whatever its goal. 0.1 m
         # more, so that the simplified and rounded outline of an entrance's area stays off them too
@@ -528,27 +531,6 @@ def write_crowd(folder: Path, scenario: Mapping[str, Any], visitors_doc: Mapping
         for name, doc in types.items():
             (folder / "types" / name).write_text(yaml.safe_dump(dict(doc), sort_keys=False))
     return folder
-
-
-def link_keep_out(links: Iterable[Mapping[str, Any]]) -> list[shapely.Polygon]:
-    """The floor of each link with a footprint (teleport zones in HumanSim's form: stair and escalator halves, cabins) and
-    an apron in front of its mouth, `LINK_APRON_M` out from its entry line and as wide as its footprint across it: an
-    element there would stand on the stair, or in the way of the walkers stepping off it and queueing for it."""
-    import shapely
-
-    out = []
-    for link in links:
-        points = [(float(p["x"]), float(p["y"])) for p in link.get("footprint") or []]
-        if len(points) < 3:
-            continue
-        entry = link["entry"]
-        ex, ey = float(entry["x"]), float(entry["y"])
-        ax, ay = math.cos(float(entry.get("theta", 0.0))), math.sin(float(entry.get("theta", 0.0)))
-        across = [-(x - ex) * ay + (y - ey) * ax for x, y in points]
-        lo, hi = min(across), max(across)
-        out.append(shapely.Polygon(points))
-        out.append(shapely.Polygon([(ex - along * ax - c * ay, ey - along * ay + c * ax) for along, c in ((0.0, lo), (LINK_APRON_M, lo), (LINK_APRON_M, hi), (0.0, hi))]))
-    return out
 
 
 def keep_out(scenario: Path, links: Iterable[Mapping[str, Any]] = ()) -> list[shapely.Polygon]:

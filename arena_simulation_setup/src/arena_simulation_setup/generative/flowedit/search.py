@@ -554,7 +554,10 @@ class Search:
         self.site = site
         self.mix = TaskMix() if mix is None else mix
         self.path_resolution = path_resolution
-        self.keep_out = tuple(keep_out)
+        from .links import link_keep_out, world_links
+
+        # the world's own stairs and escalators with the aprons at their mouths, on every level, besides `keep_out`
+        self.keep_out = (*keep_out, *(g for level in site.world.levels.values() for g in link_keep_out(world_links(level))))
         self.placements: dict[str, Placement] = dict(placements or {})
         unknown = sorted(set(self.placements) - {*SEARCHED, LOADING})
         if unknown:

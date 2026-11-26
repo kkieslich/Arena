@@ -116,6 +116,8 @@ STAIRS_BASE = 0.15
 STAIRS_FLAT = 0.8
 STAIRS_HEADROOM = 2.1
 STAIRS_HANDRAIL = 0.9
+#: How far before a stair half's mouth walkers wait to take it, the crowd simulator's queue point (`Stairs.teleport_zone`)
+STAIRS_QUEUE = 0.8
 STAIRS_HANDRAIL_BAR = 0.05
 STAIRS_HANDRAIL_INSET = 0.08
 STAIRS_NOSING = 0.02
@@ -181,6 +183,25 @@ def _at_height(pose: Pose, z: float) -> Pose:
 
 def _default_sides() -> dict[str, StairsSide]:
     return {'left': StairsSide(), 'right': StairsSide()}
+
+
+@attrs.frozen
+class StairZone:
+    """A stair or escalator half as the crowd simulator's self-teleporting zone, in the level frame: its `name`, the
+    half it leads to (`destinations`), where walkers board (`entry`, at the mouth facing up the half), wait (`wait`) and
+    hold (`hold`, at the seam trigger), each as (x, y, yaw); its `footprint` out to its reach past the seam; whether it
+    takes walkers (`open`), the flight's `delay`, its `kind` and its `belt` speed along its axis."""
+
+    name: str
+    destinations: tuple[str, ...]
+    entry: tuple[float, float, float]
+    wait: tuple[float, float, float]
+    hold: tuple[float, float, float]
+    footprint: tuple[tuple[float, float], ...]
+    open: bool
+    delay: float
+    kind: str
+    belt: float
 
 
 @attrs.define
@@ -312,6 +333,27 @@ class Stairs(Named):
     @property
     def seam(self) -> Position:
         return self.local(self.length, 0.0)
+
+    def teleport_zone(self, partners: typing.Collection[str], *, running: bool = True) -> StairZone:
+        """This half as the crowd simulator's zone (`StairZone`): walked from the mouth to the seam, leading to its `to`
+        partner when that is among `partners` (the halves the crowd simulator gets), the belt running towards the seam
+        on a boarding escalator half and away from it on an exit half, still, and the boarding half closed, while the
+        escalator is stopped (not `running`). The one place a half's zone is built: the runtime hands it to the crowd
+        simulator, flowedit walks its measures over it."""
+        yaw = self.yaw
+        mouth, wait, hold = self.mouth, self.local(-STAIRS_QUEUE, 0.0), self.local(self.length - self.inset, 0.0)
+        return StairZone(
+            name=self.name,
+            destinations=(self.to,) if self.to and self.to in partners else (),
+            entry=(mouth.x, mouth.y, yaw),
+            wait=(wait.x, wait.y, yaw),
+            hold=(hold.x, hold.y, yaw),
+            footprint=tuple((c.x, c.y) for c in self.corners(self.reach)),
+            open=running or not self.boards,
+            delay=0.0,
+            kind=self.kind,
+            belt=self.belt if running else 0.0,
+        )
 
     def corners(self, beyond: float = 0.0) -> list[Position]:
         """Footprint corners, reaching `beyond` meters past the seam."""

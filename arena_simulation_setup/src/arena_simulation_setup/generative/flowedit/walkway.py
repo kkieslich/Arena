@@ -24,7 +24,8 @@ deadlock fixed); the robot leaves after its hold.
 **Routes** (`Routes`) are the crowd's shortest paths on the walker floor at HumanSim's planning clearance
 (`ROUTE_CLEARANCE_M`), between the sources and sinks of the site's crowd scenario (`WalkerDemand`: each source's rate
 split over its sinks by their `sink_affinity` weights), wheelchair users without stairs and escalators
-(`NO_CLIMB_TYPES`), the other walkers also through the scenario's teleport zones. Each carries its flow [ped/s].
+(`NO_CLIMB_TYPES`), the other walkers also over the scenario's teleport zones and the world's own stairs and escalators
+(`links_of`, priced as HumanSim prices a ride). Each carries its flow [ped/s].
 
 **Narrowings** (`narrowings`). Within `WINDOW_M` of an element, the crowd's route pieces start and end at the
 window's openings: where they cross its edge (`PORT_BIN_M` bins along it) and where they end inside it (a source or
@@ -111,6 +112,8 @@ WALL_M = 0.1
 NO_CLIMB_TYPES = ("wheelchair_manual", "wheelchair_electric")
 #: Walking speed a teleport zone's delay is counted at, and the step on and off it [m/s], [m]
 LINK_SPEED_MPS, LINK_STEP_M = 1.1, 2.0
+#: How fast walkers climb a still stair (HumanSim's `teleport_zones.STAIR_SPEED`) [m/s]
+STAIR_SPEED_MPS = 0.7
 #: The elements whose docks the fleet walls off for the crowd while a robot parks there: its homes and chargers
 PARKED = ("charger_pair", "bay_pair")
 #: The most walkers a metre of walkway width passes per second (Weidmann 1993's maximal specific flow, 1.22 ped/(m s)),
@@ -175,13 +178,12 @@ class WalkerDemand:
                 if rate > 0.0 and weight > 0.0 and total > 0.0:
                     key = (name, sink, climbs)
                     flows[key] = flows.get(key, 0.0) + rate * weight / total
-        zones = {z["name"]: z for z in doc.get("teleport_zones") or [] if "entry" in z}
-        links = []
-        for name, z in sorted(zones.items()):
-            exits = tuple((float(zones[d]["entry"]["x"]), float(zones[d]["entry"]["y"])) for d in z.get("destinations") or [] if d in zones)
-            if exits:
-                links.append(Link(name, (float(z["entry"]["x"]), float(z["entry"]["y"])), exits, float(z.get("delay", 0.0)) * LINK_SPEED_MPS + LINK_STEP_M))
-        return cls(tuple(regions.items()), tuple(Flow(s, t, round(q, 9), c) for (s, t, c), q in sorted(flows.items())), tuple(links))
+        return cls(tuple(regions.items()), tuple(Flow(s, t, round(q, 9), c) for (s, t, c), q in sorted(flows.items())), links_of(doc.get("teleport_zones") or []))
+
+    def with_links(self, zones: Iterable[Mapping[str, Any]]) -> WalkerDemand:
+        """The demand with the teleport zones `zones` (HumanSim's form, e.g. the world's stairs, `links.world_links`) as
+        links too."""
+        return attrs.evolve(self, links=(*self.links, *links_of(zones)))
 
     @classmethod
     def load(cls, path: Path) -> WalkerDemand:
@@ -195,6 +197,31 @@ class WalkerDemand:
     @property
     def total(self) -> float:
         return sum(f.rate for f in self.flows)
+
+
+def links_of(zones: Iterable[Mapping[str, Any]]) -> tuple[Link, ...]:
+    """Teleport zones in HumanSim's form as links, each half to each of its destinations, costing what HumanSim prices
+    the ride at (`teleport_zones._ride_time`), as walking at `LINK_SPEED_MPS`: the boarding half from its entry to its
+    hold and the landing half from its hold to its entry, at belt speed or on a still stair at `STAIR_SPEED_MPS`, plus
+    the boarding half's `delay`; a zone without a hold steps on and off over `LINK_STEP_M`."""
+    by_name = {str(z["name"]): z for z in zones if "entry" in z}
+
+    def point(p: Mapping[str, Any]) -> Point:
+        return (float(p["x"]), float(p["y"]))
+
+    def run(z: Mapping[str, Any]) -> float:
+        return math.dist(point(z["entry"]), point(z["hold"])) if z.get("hold") else LINK_STEP_M / 2.0
+
+    out = []
+    for name, z in sorted(by_name.items()):
+        for d in z.get("destinations") or []:
+            if d not in by_name:
+                continue
+            far = by_name[d]
+            belt = abs(float(z.get("belt") or 0.0))
+            ride = (run(z) + run(far)) / (belt if belt > 0.0 else STAIR_SPEED_MPS) + float(z.get("delay") or 0.0)
+            out.append(Link(f"{name}>{d}", point(z["entry"]), (point(far["entry"]),), round(ride * LINK_SPEED_MPS, 3)))
+    return tuple(out)
 
 
 # --- the walker floor --------------------------------------------------------------------------------------------------
@@ -298,7 +325,9 @@ def walker_floor(site: Site, level_id: str, ignore: Iterable[str] = ()) -> Walke
         if placed is None or placed[0] != level_id or model is None or obj in ignore:
             continue
         here[obj] = (placed[1], model)
-    gen.resolve_footprints(site, sorted({model for _, model in here.values()}))
+    from .place import resolve_models
+
+    resolve_models(site, sorted({model for _, model in here.values()}))
     obstacles = [Occupied(obj, gen.footprint(site.root, model, float(pose["x"]), float(pose["y"]), float(pose["yaw"]))) for obj, (pose, model) in sorted(here.items()) if gen._FOOTPRINTS.get((site.root, model)) is not None]
     for o in level.objects:
         corners = o.dock_polygon()
@@ -1195,6 +1224,7 @@ __all__ = [
     "WalkerDemand",
     "WalkerFloor",
     "dock_share",
+    "links_of",
     "docked_width",
     "narrowings",
     "occupied",
