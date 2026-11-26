@@ -467,7 +467,7 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         # whether the engine waits for this adapter's acknowledgement of each frame (input_barrier), set in setup()
         self._input_barrier = False
         # stamp of the newest engine frame acknowledged with a world_state
-        self._acked_ns = -1
+        self._acked_ns: int = -1
         self._frame_ready = asyncio.Event()
         # the world mechanisms' tick, run in each step (see drives_mechanisms), and the sim time of its last run
         self._mechanism_step: MechanismStep | None = None
@@ -2132,13 +2132,14 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             response = await self._remove_client.call_timeout(request)
             self._removals += 1
             now = self.node.sim_time
-            self._removed_at_ns = now.sec * int(1e9) + now.nanosec
+            removed_at_ns = now.sec * 1_000_000_000 + now.nanosec
+            self._removed_at_ns = removed_at_ns
             flow = [self._runtime_obstacle(name=f"flow_{aid}", pose=Pose(Position(0.0, 0.0))) for aid in sorted(self._flow_agent_ids)]
             self._next_deferred_id = _DEFERRED_ID_BASE
             self._deferred_spawns.clear()
             self._deferred_unanchored.clear()
             self._clock_started = False
-            self._acked_ns = self._removed_at_ns
+            self._acked_ns = removed_at_ns
             self._itineraries.clear()
             self._semantic_aliases.clear()
             self._bridge_agent_ids.clear()

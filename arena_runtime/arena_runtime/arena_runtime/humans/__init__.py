@@ -60,6 +60,7 @@ from arena_runtime.humans.wire import BodyCache, fill_bodies, fill_body
 from arena_runtime.lockstep import register_channels
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall, footprint_radius
 from arena_runtime.sim import BaseSim
+from arena_runtime.sim._interface import MechanismStep
 
 if typing.TYPE_CHECKING:
     from arena_rclpy_mixins.Time import Time
@@ -83,8 +84,6 @@ def wire_radius(radius: float) -> float:
 
 Segment = tuple[tuple[float, float], tuple[float, float]]
 Disc = tuple[str, tuple[float, float], float]
-#: one tick of the world mechanisms: (sim seconds, seconds since the last tick, pedestrian discs at that time)
-MechanismStep = typing.Callable[[float, float, list[Disc]], typing.Awaitable[None]]
 
 _STREAM_QOS = rclpy.qos.QoSProfile(
     reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
