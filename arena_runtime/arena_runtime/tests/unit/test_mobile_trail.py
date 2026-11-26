@@ -55,7 +55,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> typing.Any:
 
 
 def _drive(adapter: typing.Any, metres: float, *, speed: float = 2.0) -> None:
-    """Drive at `speed`, one timer sample every _TRAIL_SAMPLE_S (sim time running as fast as the wall)."""
+    """Drive at `speed`, one timer sample every _TRAIL_SAMPLE_S."""
     from arena_runtime.env.adapters.mobile import _TRAIL_SAMPLE_S
 
     x = adapter.rm.pose.position.x

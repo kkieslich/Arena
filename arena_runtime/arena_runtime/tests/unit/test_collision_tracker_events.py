@@ -715,3 +715,23 @@ def test_trackers_keep_answering_beside_a_large_crowd(on_stage):
         assert max(latencies) < PING_BUDGET, f"slowest parameter ping {max(latencies):.2f}s, median {sorted(latencies)[len(latencies) // 2]:.2f}s"
 
     on_stage(body)
+
+
+def test_the_tracker_ticks_once_per_mark_of_the_sim_clock_and_skips_what_the_clock_jumped_past(on_stage):
+    """Ticked from its node's /clock listener, not an rclpy sim-time timer: one tick per 0.1 s of sim time, a jump ticks once."""
+    from arena_rclpy_mixins.Time import Time
+
+    async def body(stage: Stage):
+        _, tracker = stage.robot_manager()
+        ticks: list[int] = []
+        clock = [0]
+        tracker._tick = lambda: ticks.append(clock[0])
+        for ms in (2000, 2050, 2100, 2150, 2210, 2300, 7300, 7350, 7410):
+            clock[0] = ms
+            tracker._on_clock(Time.from_nanoseconds(ms * 1_000_000))
+        assert ticks == [2100, 2210, 2300, 7300, 7410]
+        tracker._on_clock(Time.from_nanoseconds(1_000_000_000))  # a new episode's clock starts over
+        tracker._on_clock(Time.from_nanoseconds(1_100_000_000))
+        assert len(ticks) == 6
+
+    on_stage(body)

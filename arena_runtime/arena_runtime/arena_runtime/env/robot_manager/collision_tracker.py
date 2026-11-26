@@ -107,8 +107,13 @@ class CollisionTrackerNode(TimeNode):
     Reads RobotManager.pose + EnvironmentManager.collision_grid. The footprint
     defines a collision: it feeds `collision_events` and the robot manager's
     collision callback. Pedestrians are their body disc and held device on
-    the ground. The cap polygons only feed `collision_monitor_state`. Tick
-    timer uses sim time, so it is gated during pauses.
+    the ground. The cap polygons only feed `collision_monitor_state`. It ticks
+    from the node's /clock listener, once per `1 / rate_hz` of sim time (a mark
+    the clock skipped past is not caught up), so it is gated during pauses. Not
+    an rclpy sim-time timer: once such a timer falls behind, the EventsExecutor
+    re-dispatches it over and over (the TimeNode guard skips each call and resets
+    the timer only at the next /clock callback, which waits in the same queue),
+    and that storm held the env executor for tens of seconds on a loaded lane.
     """
 
     def __init__(
@@ -168,7 +173,9 @@ class CollisionTrackerNode(TimeNode):
         self._unsubscribe_peds = self._env.on_arena_peds(self._on_peds)
         self._sub_reset_start = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_start')), self._on_reset_start, 1)
         self._sub_reset_end = self.create_subscription(std_msgs.msg.Empty, str(env_ns('reset_end')), self._on_reset_end, 1)
-        self._timer = self.create_timer(1.0 / rate_hz, self._tick)
+        self._period_ns = round(1e9 / rate_hz)
+        self._next_tick_ns: int | None = None
+        self._remove_clock = self.on_clock(self._on_clock)
         self._shut_down = False
 
     def _on_peds(self, msg: arena_people_msgs.msg.Pedestrians):
@@ -176,6 +183,20 @@ class CollisionTrackerNode(TimeNode):
 
     def _on_reset_start(self, _msg: std_msgs.msg.Empty):
         self._valid_after = None
+
+    def _on_clock(self, now: Time) -> None:
+        """Tick at the first clock at or past the next mark; a mark the clock skipped past is dropped, not caught up."""
+        now_ns = now.to_nanoseconds()
+        due = self._next_tick_ns
+        if due is not None and now_ns < due - self._period_ns:
+            due = None  # the clock went back (a new episode's clock): start over
+        if due is None:
+            self._next_tick_ns = now_ns + self._period_ns
+            return
+        if now_ns < due:
+            return
+        self._next_tick_ns = due + self._period_ns * ((now_ns - due) // self._period_ns + 1)
+        self._tick()
 
     def _on_reset_end(self, _msg: std_msgs.msg.Empty):
         self._peds_msg = None
@@ -326,5 +347,6 @@ class CollisionTrackerNode(TimeNode):
         if self._shut_down:
             return
         self._shut_down = True
+        self._remove_clock()
         self._unsubscribe_peds()
         self.destroy_node()
