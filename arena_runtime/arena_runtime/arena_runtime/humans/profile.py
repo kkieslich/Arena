@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import cmath
 import functools
+import logging
 import math
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -338,13 +340,40 @@ def _library_entry(name: str, raw_by_name: Mapping[str, Mapping[str, Any]], reso
     return profile
 
 
-@functools.cache
+# libyaml's loader parses the gait library about 7x faster than the pure-Python one, which holds the GIL for all of it
+_YAML_LOADER: type = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+if _YAML_LOADER is yaml.SafeLoader:
+    logging.getLogger(__name__).warning("PyYAML has no libyaml: gait profiles and agent types parse with the pure-Python SafeLoader (slow)")
+
+
+def read_yaml(fh: Any) -> Any:  # noqa: ANN401
+    """A gait profile or agent type yaml, as yaml.safe_load reads it, parsed by libyaml when PyYAML has it."""
+    return yaml.load(fh, Loader=_YAML_LOADER)  # noqa: S506  (a SafeLoader: CSafeLoader or SafeLoader)
+
+
+_LIBRARIES: dict[Path, Mapping[str, GaitProfile]] = {}
+_LIBRARIES_LOCK = threading.Lock()
+
+
 def load_library(library_dir: Path = LIBRARY_DIR) -> Mapping[str, GaitProfile]:
-    """Every gait profile yaml in the directory, keyed by file stem, same_as references resolved, still ones held at their mean pose."""
+    """Every gait profile yaml in the directory, keyed by file stem, same_as references resolved, still ones held at their mean pose.
+
+    Read once per directory and process. The first call reads it under a lock, so callers on two threads (the crowd
+    publish on the event loop, the agent metadata on the executor) wait for the one read instead of both parsing it.
+    The env reads it during its setup (`BaseHumanSimulator.preload_builtin_pose_profiles`), before any episode starts."""
+    key = Path(library_dir)
+    with _LIBRARIES_LOCK:
+        library = _LIBRARIES.get(key)
+        if library is None:
+            library = _LIBRARIES[key] = _read_library(key)
+        return library
+
+
+def _read_library(library_dir: Path) -> Mapping[str, GaitProfile]:
     raw_by_name: dict[str, Mapping[str, Any]] = {}
-    for path in sorted(Path(library_dir).glob("*.yaml")):
+    for path in sorted(library_dir.glob("*.yaml")):
         with open(path) as fh:
-            raw_by_name[path.stem] = yaml.safe_load(fh) or {}
+            raw_by_name[path.stem] = read_yaml(fh) or {}
     resolved: dict[str, GaitProfile] = {}
     for name in raw_by_name:
         _library_entry(name, raw_by_name, resolved, ())
@@ -471,7 +500,7 @@ def _agent_type_raw(agent_type: str, builtin_dir: Path | None) -> dict[str, Any]
     if not path.is_file():
         return None
     with open(path) as fh:
-        return yaml.safe_load(fh) or {}
+        return read_yaml(fh) or {}
 
 
 def _agent_type_pose(agent_type: str, builtin_dir: Path | None, chain: tuple[str, ...]) -> tuple[dict[str, Any], float | None] | None:

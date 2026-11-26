@@ -474,6 +474,11 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         )
         self._simulator.set_semantics_callback(self._on_semantics_changed)
         self._human_simulator.set_incident_callback(self._compromise)
+        # the gait library and the builtin agent types' pose profiles, read now: lazily the first crowd of each episode read
+        # them, holding the GIL for seconds right after EPISODE STARTED
+        clock = time.monotonic()
+        self._human_simulator.preload_builtin_pose_profiles()
+        self._logger.info(f"pose profiles preloaded in {time.monotonic() - clock:.2f}s")
         self._pub_state_recorded_topics.publish(RecordedTopics(topics=[*self._acoustics_simulator.recorded_topics(), *self._hearing.recorded_topics(), *self._human_simulator.recorded_topics()]))
 
         self._logger.info("Setting up environment manager")
