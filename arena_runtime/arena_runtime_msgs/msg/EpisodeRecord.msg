@@ -38,5 +38,6 @@ string phases
 # Windows: setup (the reset, on RUNNING), episode (on the terminal record), prev_teardown (from the previous episode's
 # terminal record to this one's build, on every record after the first), env_start (env setup to the first build,
 # on the first record) and teardown (the last terminal record to the env's teardown, on that record once more, best
-# effort). A lag counts in the window its late firing came in.
+# effort). A lag counts in the window its late firing came in. The terminal record also carries
+# episode_render_ticks_coalesced and episode_relay_ticks_coalesced: rate ticks the crowd loops coalesced under lag (a count).
 diagnostic_msgs/KeyValue[] health

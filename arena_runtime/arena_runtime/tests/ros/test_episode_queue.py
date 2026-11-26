@@ -455,8 +455,10 @@ def test_each_record_carries_the_lag_peaks_of_its_windows(rclpy_context: object,
         first = env._episodes.current
         env._note_loop_lag(5.5)
         task.finished = False
+        env._human_simulator.coalesced_ticks = lambda: {"render": 3, "relay": 1}
         await asyncio.wait_for(env._run_episode(), TIMEOUT)
         second = env._episodes.current
+        assert (second.health["episode_render_ticks_coalesced"], second.health["episode_relay_ticks_coalesced"]) == (3.0, 1.0)
 
         def loop_peaks(record: object) -> dict[str, float]:
             return {key: value for key, value in record.health.items() if key.endswith("_loop_lag_peak_s")}

@@ -1469,6 +1469,9 @@ class EpisodeNode(EnvNode):
                 record.outcome_info = outcome_info
                 # a reset that failed never reached RUNNING: its lag is the setup window's
                 record.health.update(self.take_lag_peaks("episode" if "setup_loop_lag_peak_s" in record.health else "setup"))
+                # the crowd loops' coalesced rate ticks of this episode (render, relay), a count
+                for loop, n in getattr(self._human_simulator, "coalesced_ticks", dict)().items():
+                    record.health[f"episode_{loop}_ticks_coalesced"] = float(n)
                 self._publish_episode_state()
 
             if episode_id > 0:
