@@ -6,6 +6,7 @@ import collections
 import copy
 import itertools
 import math
+import threading
 import typing
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -49,7 +50,7 @@ from arena_runtime.humans.gestures import Channel, GestureLayer, GestureRequest
 from arena_runtime.humans.hands import POINT_CLIP, Grip, clip_pose, held_pose
 from arena_runtime.humans.itinerary import semantic_atom
 from arena_runtime.humans.possession import PossessionTable
-from arena_runtime.humans.profile import PoseProfile, agent_type_device_section, agent_type_pose_section, default_profile, resolve_pose_profile
+from arena_runtime.humans.profile import PoseProfile, agent_type_device_section, agent_type_pose_section, default_profile, load_library, resolve_pose_profile
 from arena_runtime.humans.support import LIE_S, SETTLE_S, SIT_CLIP, SQUAT_CLIP, TYPICAL_BODY, BodyMeasurements, SeatPlan, Support, blend_pose, load_body, plan_seat, rise_seconds, seat_depth, supported_pose, tilted_pose
 from arena_runtime.humans.utils import (
     KnownObstacle,
@@ -205,6 +206,9 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
     _known_obstacles: KnownObstacles
     _known_walls: KnownObstacles[Wall]
     _known_doors: KnownObstacles[Door]
+    #: the crowd publish (event loop) and the agent metadata (executor thread) both resolve pose profiles and devices:
+    #: one thread resolves a type, the other waits for it (a class attribute, so simulators built without __init__ have it)
+    _profiles_lock: typing.ClassVar[threading.RLock] = threading.RLock()
 
     def __init__(self, *args: object, namespace: Namespace, simulator: BaseSim, realizer: Realizer, acoustics: BaseAcousticsSimulator, robots_visible: bool = True, skeleton: bool = True, **kwargs: object) -> None:
         """
@@ -218,6 +222,7 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             robots_visible: whether the backend tells its pedestrians where the robots are
             skeleton: whether arena_peds carries each ped's skeleton (joint_state, body) and animation_states is published
         """
+
         super().__init__(*args, **kwargs)
         self._simulator = simulator
         self._namespace = namespace
@@ -635,8 +640,11 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         """Pose profile of an agent type (a yaml path or a builtin name), resolved once per type, default when empty or unknown."""
         profile = self._pose_profiles.get(agent_type)
         if profile is None:
-            profile = self._load_pose_profile(agent_type)
-            self._pose_profiles[agent_type] = profile
+            with self._profiles_lock:
+                profile = self._pose_profiles.get(agent_type)
+                if profile is None:
+                    profile = self._load_pose_profile(agent_type)
+                    self._pose_profiles[agent_type] = profile
         return profile
 
     def _load_pose_profile(self, agent_type: str) -> PoseProfile:
@@ -666,6 +674,17 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             return attrs.evolve(profile, hold={})
         return profile
 
+    def preload_builtin_pose_profiles(self) -> None:
+        """Read the gait library and resolve every builtin agent type's pose profile and device, during the env's setup.
+
+        Read lazily, the first crowd of an episode did it: about 1.5 s of pure-Python YAML and grip solving on an idle core,
+        4-5 s on a loaded lane, holding the GIL, so the env executor and the event loop both stalled right after EPISODE
+        STARTED. A type given by path is still resolved when it first appears."""
+        load_library()
+        builtin = self._builtin_agent_types()
+        if builtin is not None and builtin.is_dir():
+            self.preload_pose_profiles(path.stem for path in sorted(builtin.glob("*.yaml")))
+
     def preload_pose_profiles(self, agent_types: Iterable[str]) -> None:
         """Resolve pose profiles and device blocks before the publish tick, which only reads them (a held grip is solved once per type)."""
         for agent_type in set(agent_types):
@@ -676,6 +695,12 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         """The device an agent type holds (its `device:` block), resolved once per type, None without one or when it is rejected."""
         if agent_type in self._devices:
             return self._devices[agent_type]
+        with self._profiles_lock:
+            if agent_type not in self._devices:
+                self._devices[agent_type] = self._resolve_device(agent_type)
+            return self._devices[agent_type]
+
+    def _resolve_device(self, agent_type: str) -> DeviceSpec | None:
         device: DeviceSpec | None = None
         if agent_type:
             try:
@@ -686,7 +711,6 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
             except (ValueError, TypeError, OSError, yaml.YAMLError) as e:
                 device = None
                 self._logger.warning(f"agent type {agent_type!r} device rejected ({e}), it holds none")
-        self._devices[agent_type] = device
         return device
 
     @staticmethod
