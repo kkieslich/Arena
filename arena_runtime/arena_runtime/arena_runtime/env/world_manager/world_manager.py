@@ -1,11 +1,10 @@
 import heapq
 import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 import attrs
 import numpy as np
-import scipy.ndimage
 import shapely
 import shapely.affinity
 from arena_simulation_setup.shared import Elevator, Stairs
@@ -14,7 +13,7 @@ from arena_simulation_setup.tree.World import Level, World
 from arena_runtime._node import NodeInterface
 from arena_runtime.shared import WORLD_ENTITY_PREFIX, Position, PositionRadius
 
-from .utils import MultiLevelMap, WorldMap, WorldOccupancy
+from .utils import MultiLevelMap, WorldMap, clearance_of
 
 _UNKNOWN_FOOTPRINT_RADIUS = 1.0
 _CABIN_BACK_CLEARANCE = 0.45
@@ -85,11 +84,38 @@ LevelHop = ElevatorHop | StairsHop
 
 def _occupancy_to_available(occupancy: np.ndarray, safe_dist_cells: float) -> np.ndarray:
     """Return (row, col) cells whose Euclidean safe_dist_cells neighbourhood is fully not-full. Off-map counts as full."""
-    free = np.pad(WorldOccupancy.not_full(occupancy), 1, constant_values=False)
-    distances = scipy.ndimage.distance_transform_edt(free)
-    assert isinstance(distances, np.ndarray)
-    clearance = distances[1:-1, 1:-1]
-    return np.transpose(np.where(clearance > safe_dist_cells))
+    return np.transpose(np.where(clearance_of(occupancy) > safe_dist_cells))
+
+
+def _outside_rects(cells: np.ndarray, rects: Sequence[tuple[tuple[int, int], tuple[int, int]]], safe_dist_cells: float, shape: tuple[int, ...]) -> np.ndarray:
+    """The cells farther than safe_dist_cells (Euclidean, cell centres) from every cell `WorldOccupancy.occupy(lo, hi)`
+    fills for each rect, the same cells a distance transform of the grid with those rects occupied would keep."""
+    keep = np.ones(len(cells), dtype=bool)
+    rows = cells[:, 0]  # ascending: the cells come in row-major order
+    reach = math.ceil(safe_dist_cells)
+    for lo, hi in rects:
+        r = np.clip(np.array([lo[0], hi[0]]), 0, shape[0] - 1)
+        c = np.clip(np.array([lo[1], hi[1]]), 0, shape[1] - 1)
+        r0, r1, c0, c1 = int(r.min()), int(r.max()) - 1, int(c.min()), int(c.max()) - 1  # occupy fills [min, max)
+        if r1 < r0 or c1 < c0:
+            continue
+        # only the rows within reach of the rect can lose a cell
+        a, b = np.searchsorted(rows, r0 - reach, side="left"), np.searchsorted(rows, r1 + reach, side="right")
+        band = cells[a:b]
+        dr = np.maximum(np.maximum(r0 - band[:, 0], band[:, 0] - r1), 0)
+        dc = np.maximum(np.maximum(c0 - band[:, 1], band[:, 1] - c1), 0)
+        keep[a:b] &= np.sqrt(dr * dr + dc * dc) > safe_dist_cells
+    return cells[keep]
+
+
+def _inside_polygon(polygon: shapely.Polygon, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """shapely.contains_xy(polygon, xs, ys), testing only the points inside the polygon's bounds: a target area is a few
+    metres across, the candidates a whole floor (1.6 M cells on the v2 twin, seconds for contains_xy over all of them)."""
+    minx, miny, maxx, maxy = polygon.bounds
+    inside = (xs >= minx) & (xs <= maxx) & (ys >= miny) & (ys <= maxy)
+    idx = np.flatnonzero(inside)
+    inside[idx] = shapely.contains_xy(polygon, xs[idx], ys[idx])
+    return inside
 
 
 def _zone_mask(world_map: WorldMap, polygons: Sequence[shapely.Polygon]) -> np.ndarray:
@@ -533,19 +559,21 @@ class WorldManager(NodeInterface):
         level_map = self.map if select_from_whole_map or self._multi_map is None else self._multi_map.select_map(level_id)
         origin = (0.0, 0.0) if select_from_whole_map else self.map.get_origin(level_id)
         origin_cell = (origin[1] / self.resolution, origin[0] / self.resolution)  # row, col order
-        fork = level_map.occupancy.fork()
-        for zone in forbidden_zones:
-            fork.occupy(*level_map.tf_posr2rect(zone))
+        rects = [level_map.tf_posr2rect(zone) for zone in forbidden_zones]
 
         safe_dist_cells = safe_dist / self.resolution
         rng = self.node.conf.General.RNG.stream("world", "positions")
-        available = _occupancy_to_available(fork.grid, safe_dist_cells)
+        # the floor's clearance map is cached per occupancy version (one distance transform per change, `warm_clearance`
+        # computes it at each reset), the call's forbidden zones excluded by their exact distance
+        available = level_map.occupancy.available(safe_dist_cells)
+        if rects and len(available):
+            available = _outside_rects(available, rects, safe_dist_cells, level_map.occupancy.shape)
 
         stair_mask = self._stair_masks.get(level_id)
         if len(available) and stair_mask is not None:
             available = available[~stair_mask[available[:, 0], available[:, 1]]]
         if len(available) and polygon is not None:
-            available = available[shapely.contains_xy(polygon, *level_map.tf_grid2xy(available[:, 0], available[:, 1]))]
+            available = available[_inside_polygon(polygon, *level_map.tf_grid2xy(available[:, 0], available[:, 1]))]
         elif len(available) and zone_mask is not None:
             available = available[zone_mask[available[:, 0], available[:, 1]]]
 
@@ -553,6 +581,9 @@ class WorldManager(NodeInterface):
 
         if forbid:
             if select_from_whole_map:
+                fork = level_map.occupancy.fork()
+                for rect in rects:
+                    fork.occupy(*rect)
                 halo = int(math.ceil(safe_dist_cells))
                 for row, col in cells:
                     fork.occupy((int(row) - halo, int(col) - halo), (int(row) + halo, int(col) + halo))
@@ -567,6 +598,19 @@ class WorldManager(NodeInterface):
                 whole_map_fork.commit()
 
         return [level_map.tf_grid2pos((int(row), int(col))) for row, col in cells]
+
+    def warm_clearance(self, safe_dists: Iterable[float] = ()) -> None:
+        """Compute every floor's clearance map for its current occupancy, and its available cells for each safe distance
+        (metres), so placements in the episode (robot targets, unjams) find them cached instead of running a full-grid
+        distance transform on the event loop."""
+        maps = [self._map]
+        if self._multi_map is not None:
+            maps += [m for level in self._multi_map.level_ids if (m := self._multi_map.get_map(level)) is not None]
+        cells = sorted({safe_dist / self.resolution for safe_dist in safe_dists})
+        for world_map in maps:
+            world_map.occupancy.clearance()
+            for safe_dist_cells in cells:
+                world_map.occupancy.available(safe_dist_cells)
 
     def get_position_on_map(self, safe_dist: float, forbidden_zones: list[PositionRadius] | None = None, forbid: bool = True, level_id: str = "", polygon: shapely.Polygon | None = None) -> Position:
         return self.get_positions_on_map(n=1, safe_dist=safe_dist, forbidden_zones=forbidden_zones, forbid=forbid, level_id=level_id, polygon=polygon)[0]

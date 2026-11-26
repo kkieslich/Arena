@@ -1556,6 +1556,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
         """The episode starts at `epoch` (sim time, the reset still holding the sim): a backend whose crowd runs on its own tick
         clock starts it there, so the same world and seed give the same crowd at the same times after the start. No-op by default."""
 
+    def coalesced_ticks(self) -> dict[str, int]:
+        """Rate ticks the backend's crowd loops coalesced under lag this episode, by loop; none by default."""
+        return {}
+
     def stimuli_taken(self, obstacle: DynamicObstacle) -> tuple[str, frozenset[str]] | None:
         """The agent type of `obstacle` and the stimulus names it acts on, None when the backend cannot tell."""
         del obstacle

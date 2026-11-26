@@ -480,3 +480,25 @@ def test_the_watchdog_pings_at_most_once_a_period(rclpy_context: object) -> None
         assert stub._node_watch_task is first
 
     _with_pinger(scenario)
+
+
+def test_prepare_makes_the_clients_so_the_first_round_makes_none() -> None:
+    """The env prepares the clients at the end of each reset: the episode's first round then creates no rclpy client."""
+    from arena_runtime.env.node_watch import NodePinger
+
+    pinger = NodePinger.__new__(NodePinger)
+    pinger._root, pinger._side, pinger._tally, pinger._clients, pinger._pinged_on = NS, None, _tally(), {}, {}
+    targets = {f"{NS}/node_{i}": f"{NS}/node_{i}/get_parameters" for i in range(5)}
+    pinger._targets = lambda: dict(targets)
+    made: list[str] = []
+    pinger._client = lambda service, timeout: made.append(service) or types.SimpleNamespace(client=None)
+    pinger._destroy = lambda client: None
+
+    async def alive(service: str, timeout: float) -> bool:
+        return True
+
+    pinger._alive = alive
+    assert pinger.prepare(TIMEOUT) == 5
+    made.clear()
+    assert asyncio.run(_ping(pinger)) is None
+    assert made == []

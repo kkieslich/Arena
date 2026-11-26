@@ -2,6 +2,7 @@
 This file exists to make world_manager more readable
 """
 
+import threading
 from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, TypeVar
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Iterable, TypeVar
 import attrs
 import numpy as np
 import scipy.interpolate
+import scipy.ndimage
 import shapely
 import yaml
 from arena_rclpy_mixins.Time import Time
@@ -101,7 +103,26 @@ class WorldOccupancy:
         self._grid[mask] = WorldOccupancy.FULL
 
 
+def clearance_of(grid: np.ndarray) -> np.ndarray:
+    """Euclidean distance in cells from each cell to the nearest full cell, off-map counting as full."""
+    free = np.pad(WorldOccupancy.not_full(grid), 1, constant_values=False)
+    distances = scipy.ndimage.distance_transform_edt(free)
+    assert isinstance(distances, np.ndarray)
+    return distances[1:-1, 1:-1]
+
+
+#: available-cell arrays kept per layer stack, one per safe distance, all dropped on any occupancy change
+_AVAILABLE_CACHE_SIZE = 8
+
+
 class WorldLayers:
+    """Walls, intrinsic obstacles and task-forbidden cells of one floor grid, combined by minimum.
+
+    `version` counts every change of the combined grid. Every writer goes through this class (obstacle_occupy/clear,
+    forbidden_occupy/clear, a fork's commit) and bumps it. The clearance map (a full-grid distance transform, seconds on
+    a large floor) and the available cells per safe distance are cached for the current version, so placements between
+    two occupancy changes compute it once."""
+
     _walls: WorldOccupancy  # walls
     _obstacle: WorldOccupancy  # intrinsic obstcales
     _forbidden: WorldOccupancy  # task obstacles
@@ -112,6 +133,55 @@ class WorldLayers:
         self._forbidden = WorldOccupancy(np.full(walls.grid.shape, WorldOccupancy.EMPTY))
 
         self._combined_cache = None
+        self._version = 0
+        self._clearance_lock = threading.Lock()
+        self._clearance: tuple[int, np.ndarray] | None = None
+        self._available: dict[float, np.ndarray] = {}
+        self._available_version = -1
+
+    @property
+    def version(self) -> int:
+        return self._version
+
+    def _changed(self) -> None:
+        self._version += 1
+
+    def _clearance_at(self) -> tuple[int, np.ndarray]:
+        """The clearance map with the version it was computed for, computed once per version under a lock (the event loop
+        and the reset's worker thread may both ask). Writers do not take the lock: a change during the computation leaves
+        the map tagged with the version it was started for, so the next call computes it again."""
+        with self._clearance_lock:
+            if self._clearance is None or self._clearance[0] != self._version:
+                version = self._version
+                clearance = clearance_of(self.grid)
+                clearance.setflags(write=False)
+                self._clearance = (version, clearance)
+            return self._clearance
+
+    def clearance(self) -> np.ndarray:
+        """`clearance_of` the combined grid, cached for the current version, read-only."""
+        return self._clearance_at()[1]
+
+    def available(self, safe_dist_cells: float) -> np.ndarray:
+        """(row, col) cells whose clearance exceeds safe_dist_cells, in row-major order, read-only. Cached per distance under
+        the version of the clearance map they come from, never under `version` read later: a writer between the two steps
+        then leaves them tagged stale, and they are computed again (here at once, up to a few times, else on the next call)."""
+        cells = np.zeros((0, 2), dtype=np.int64)
+        for _ in range(3):
+            version, clearance = self._clearance_at()
+            with self._clearance_lock:
+                if self._available_version != version:
+                    self._available, self._available_version = {}, version
+                cells = self._available.get(safe_dist_cells)
+                if cells is None:
+                    cells = np.transpose(np.where(clearance > safe_dist_cells))
+                    cells.setflags(write=False)
+                    if len(self._available) >= _AVAILABLE_CACHE_SIZE:
+                        self._available.pop(next(iter(self._available)))
+                    self._available[safe_dist_cells] = cells
+            if version == self._version:
+                break
+        return cells
 
     _combined_cache: WorldOccupancy | None
 
@@ -147,19 +217,23 @@ class WorldLayers:
     def obstacle_occupy(self, mask: np.ndarray):
         self._obstacle.occupy_mask(mask)
         self._combined.occupy_mask(mask)
+        self._changed()
 
     def obstacle_clear(self):
         self._obstacle.clear()
         self._invalidate_combined_cache()
+        self._changed()
 
     # forbidden interface
     def forbidden_occupy(self, lo: tuple[int, int], hi: tuple[int, int]):
         self._forbidden.occupy(lo, hi)
         self._combined.occupy(lo, hi)
+        self._changed()
 
     def forbidden_clear(self):
         self._forbidden.clear()
         self._invalidate_combined_cache()
+        self._changed()
 
     class WorldLayersFork:
         _base: "WorldLayers"
@@ -172,6 +246,7 @@ class WorldLayers:
         def commit(self):
             self._base._forbidden = self._grid
             self._base._invalidate_combined_cache()
+            self._base._changed()
 
         def occupy(self, lo: tuple[int, int], hi: tuple[int, int]):
             self._grid.occupy(lo, hi)

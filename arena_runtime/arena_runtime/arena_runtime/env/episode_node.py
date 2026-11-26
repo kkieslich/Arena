@@ -688,6 +688,13 @@ class EpisodeNode(EnvNode):
                 self._judge_walls = self._wall_grid(compacted)
                 for manager in self._robots_manager.managers.values():
                     manager.set_episode_conditions(self._episode_conditions)
+                # every floor's clearance map for the occupancy the reset left, computed off the event loop: placements
+                # in the episode (robot targets, unjams) then find it cached instead of a seconds-long distance transform
+                safe_dists = [manager.safe_distance for manager in self._robots_manager.managers.values()]
+                await asyncio.to_thread(self._world_manager.warm_clearance, safe_dists)
+                clock.lap("clearance")
+                self._prepare_node_watch()
+                clock.lap("node_watch")
                 # the episode starts here, while the hold still stops the clock: the crowd's tick clock starts with it, so
                 # the crowd is the same one at the same times after the start however far the reset moved the clock
                 start = self.sim_time
@@ -795,6 +802,17 @@ class EpisodeNode(EnvNode):
             return
         self._node_ping_due = now + period
         self._node_watch_task = asyncio.create_task(self._ping_nodes(period, misses, episode_id))
+
+    def _prepare_node_watch(self) -> None:
+        """The node watch's clients for the nodes this reset brought up, made while the hold still stops the clock."""
+        misses = self.conf.Robot.NODE_PING_MISSES.value
+        if misses <= 0:
+            return
+        try:
+            self._node_pinger = self._node_pinger or NodePinger(self, self.get_namespace(), misses, side=self.side_executor)
+            self._node_pinger.prepare(self.conf.Robot.NODE_PING_PERIOD.value)
+        except Exception as e:  # noqa: BLE001  (the first round makes what is missing)
+            self.get_logger().warning(f"node watch clients not prepared: {e!r}")
 
     async def _ping_nodes(self, period: float, misses: int, episode_id: int) -> None:
         try:
@@ -1449,6 +1467,10 @@ class EpisodeNode(EnvNode):
                 if outcome_info:
                     log.info(f"  info:     {outcome_info}")
                 log.info(f"  duration: {duration:.2f}s")
+                coalesced = getattr(self._human_simulator, "coalesced_ticks", dict)()
+                if any(coalesced.values()):
+                    # a number, not an integrity flag: the crowd loops rendered and relayed the newest state once per backlog
+                    log.warn("  crowd ticks coalesced under lag: " + ", ".join(f"{loop} {n}" for loop, n in coalesced.items()))
                 log.warn(f"EPISODE FINISHED #{episode_id}")
                 log.warn("=============")
                 if self._send_end_message_on_end():
