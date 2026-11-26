@@ -25,7 +25,19 @@ def _roster() -> Pedestrians:
     return msg
 
 
-def _published(skeleton: bool) -> list[Pedestrians]:
+class _CountingPublisher:
+    def __init__(self, subscribers: int) -> None:
+        self.subscribers = subscribers
+        self.sent: list[Pedestrians] = []
+
+    def get_subscription_count(self) -> int:
+        return self.subscribers
+
+    def publish(self, msg: Pedestrians) -> None:
+        self.sent.append(msg)
+
+
+def _published(skeleton: bool, wire: _CountingPublisher | None = None) -> list[Pedestrians]:
     from arena_rclpy_mixins.spin import create_executor
 
     from arena_runtime.acoustics import AcousticsSimulatorRegistry
@@ -48,6 +60,8 @@ def _published(skeleton: bool) -> list[Pedestrians]:
             acoustics = await AcousticsSimulatorRegistry.get(Constants.AcousticsSimulator.NONE, node=node, namespace=node._namespace)
             human = NoopHumanSimulator(node=node, namespace=node._namespace, simulator=sim, realizer=realizer, acoustics=acoustics, skeleton=skeleton)
             human.on_arena_peds(out.append)
+            if wire is not None:
+                human._arena_peds_publisher = wire
             for _ in range(3):
                 human.publish_arena_peds(copy.deepcopy(_roster()))
         finally:
@@ -77,3 +91,10 @@ def test_the_roster_without_skeleton_is_the_full_roster_less_joints_and_body() -
         for a, b in zip(with_skeleton.pedestrians, without.pedestrians, strict=True):
             assert list(b.joint_state.name) == [] and list(b.body.joints) == []
             assert b == _without_skeleton(a)
+
+
+def test_the_roster_goes_over_dds_only_to_a_subscriber_and_in_process_always() -> None:
+    nobody, reader = _CountingPublisher(0), _CountingPublisher(1)
+    in_process = _published(False, nobody)
+    assert len(in_process) == 3 and nobody.sent == []
+    assert _published(False, reader) == reader.sent and len(reader.sent) == 3

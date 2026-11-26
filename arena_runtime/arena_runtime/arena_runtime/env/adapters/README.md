@@ -238,10 +238,14 @@ Static geometry is one window read on `EnvironmentManager.collision_grid`
 (see [env/README.md](../README.md)), kept in sync by the
 spawn/respawn pipeline, so the tracker needs no per-episode refresh hook.
 `EnvironmentManager.static_polygons` only supplies the reported centroid.
-Pedestrians are read from the `arena_peds` topic.
+Pedestrians are the roster `arena_peds` carries, handed over in-process (`EnvironmentManager.on_arena_peds`).
 
-An adapter that does not subclass `MobileAdapter` mounts the node in
-`__init__` and adds it to the env node's executor:
+The trackers run on the env's side executor
+([`side_executor.py`](../side_executor.py)), a thread of their own, so a tick does
+not wait behind the env executor's queue; a collision reaches the robot manager
+(and `fail_on_collision`) on the env's event loop. An adapter that does not
+subclass `MobileAdapter` mounts the node in `__init__`, adds it to the side
+executor, and removes and shuts it down in `teardown`:
 
 ```python
 class MyMobileAdapter(Adapter):
@@ -249,7 +253,12 @@ class MyMobileAdapter(Adapter):
         super().__init__(robot_manager, **bringup_kwargs)
         mobile = self.rm.robot.model.resolve_sync().caps.mobile
         self._collision = CollisionTrackerNode(self.rm, mobile.polygons_dict, footprint=mobile.footprint)
-        self.rm.node.executor.add_node(self._collision)
+        self.rm.node.side_executor.add_node(self._collision)
+
+    async def teardown(self) -> None:
+        self.rm.node.side_executor.remove_node(self._collision)
+        self._collision.shutdown()
+        await super().teardown()
 ```
 
 [`mobile/test_collision.py`](mobile/test_collision.py) is a `MobileAdapter`

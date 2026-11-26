@@ -38,13 +38,16 @@ def _overlap(a: Window, b: Window) -> bool:
 
 
 class CollisionGrid:
-    """`base` holds MAP/WALL cells for the loaded world, `live` adds the STATIC stamps of the current episode."""
+    """`base` holds MAP/WALL cells for the loaded world, `live` adds the STATIC stamps of the current episode.
+
+    Written on the env's event loop (spawns, `sync`), read by the collision trackers on the side executor's thread: a
+    write builds a new `live` array and stamp table and swaps both in as one tuple, so a `hit` reads one consistent state.
+    """
 
     def __init__(self, base: np.ndarray, frame: GridFrame):
         self._base = base
-        self._live = base.copy()
         self._frame = frame
-        self._statics: dict[str, Window] = {}
+        self._state: tuple[np.ndarray, dict[str, Window]] = (base.copy(), {})
 
     @classmethod
     def build(
@@ -67,29 +70,41 @@ class CollisionGrid:
         base[frame.lines_mask(((w.start.x, w.start.y), (w.end.x, w.end.y)) for w in walls)] = Cell.WALL
         return cls(base, frame)
 
+    @property
+    def _live(self) -> np.ndarray:
+        return self._state[0]
+
+    @property
+    def _statics(self) -> dict[str, Window]:
+        return self._state[1]
+
     def stamp(self, name: str, poly: shapely.Polygon) -> None:
         window = self._frame.poly_window(poly)
         if window is None:
             return
-        self._statics[name] = window
+        live, statics = self._state
+        live = live.copy()
         rows, cols, inside = window
-        self._live[rows, cols][inside] = Cell.STATIC
+        live[rows, cols][inside] = Cell.STATIC
+        self._state = (live, {**statics, name: window})
 
     def sync(self, names: Iterable[str]) -> None:
         """Keep only the stamps in `names`, rebuilding `live` from `base`."""
         keep = set(names)
-        self._statics = {n: w for n, w in self._statics.items() if n in keep}
-        self._live = self._base.copy()
-        for rows, cols, inside in self._statics.values():
-            self._live[rows, cols][inside] = Cell.STATIC
+        statics = {n: w for n, w in self._state[1].items() if n in keep}
+        live = self._base.copy()
+        for rows, cols, inside in statics.values():
+            live[rows, cols][inside] = Cell.STATIC
+        self._state = (live, statics)
 
     def hit(self, poly: shapely.Polygon) -> tuple[Cell, str] | None:
         """Highest-ranked cell under `poly` and its obstacle id, None when clear or off-grid."""
         window = self._frame.poly_window(poly)
         if window is None:
             return None
+        live, statics = self._state
         rows, cols, inside = window
-        codes = self._live[rows, cols][inside]
+        codes = live[rows, cols][inside]
         if codes.size == 0:
             return None
         top = Cell(int(codes.max()))
@@ -99,7 +114,7 @@ class CollisionGrid:
             return top, WALL_ID
         if top is Cell.MAP:
             return top, MAP_ID
-        for name, stamped in self._statics.items():
+        for name, stamped in statics.items():
             if _overlap(window, stamped):
                 return top, name
         return top, MAP_ID

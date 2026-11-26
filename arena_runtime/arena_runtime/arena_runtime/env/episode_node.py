@@ -787,7 +787,7 @@ class EpisodeNode(EnvNode):
 
     async def _ping_nodes(self, period: float, misses: int, episode_id: int) -> None:
         try:
-            self._node_pinger = self._node_pinger or NodePinger(self, self.get_namespace(), misses)
+            self._node_pinger = self._node_pinger or NodePinger(self, self.get_namespace(), misses, side=self.side_executor)
             hung = await self._node_pinger.round(period, new_episode=episode_id != self._node_ping_episode)
             self._node_ping_episode = episode_id
             if hung is not None:

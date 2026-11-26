@@ -4,6 +4,7 @@ import abc
 import asyncio
 import contextlib
 import threading
+import time
 import traceback
 import typing
 from collections.abc import Mapping, Sequence
@@ -41,6 +42,7 @@ from arena_runtime.env.phase_clock import PhaseClock
 from arena_runtime.env.realizer import Realizer
 from arena_runtime.env.robot_manager import RobotsManager
 from arena_runtime.env.robot_manager.charging import Chargers
+from arena_runtime.env.side_executor import SideExecutor
 from arena_runtime.env.world_manager.world_manager_ros import WorldManagerROS as WorldManager
 from arena_runtime.flags import flag_enabled
 from arena_runtime.hearing import BaseHearing, HearingRegistry
@@ -70,6 +72,9 @@ _LATCHED = rclpy.qos.QoSProfile(
 _SIM_TICK_RATE = 30.0
 _ONE_TICK = 1e-6
 _STEP_TIMEOUT = 10.0
+# The 1 s watchdog timer this much late means the env executor's queue ran behind; warned at most every _LAG_WARN_EVERY_S.
+_LAG_WARN_S = 2.0
+_LAG_WARN_EVERY_S = 30.0
 
 
 class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, metaclass=abc.ABCMeta):
@@ -88,6 +93,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
     _hearing: BaseHearing
     _environment_manager: EnvironmentManager
     _robots_manager: RobotsManager | None = None
+    _side_executor: SideExecutor | None = None
     _arena_hold_client: ClientWrapper
     _arena_unpause_window_client: ClientWrapper
     _arena_step_client: ClientWrapper
@@ -96,6 +102,18 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
     def robots_manager(self) -> RobotsManager:
         assert self._robots_manager is not None
         return self._robots_manager
+
+    @property
+    def side_executor(self) -> SideExecutor:
+        """The env's second executor thread, for the collision trackers and the node watch's ping replies (started on first use)."""
+        if self._side_executor is None:
+            self._side_executor = SideExecutor(self.get_namespace(), f"{self.get_name()}_side")
+        return self._side_executor
+
+    def destroy_node(self) -> None:
+        if self._side_executor is not None:
+            self._side_executor.shutdown()
+        super().destroy_node()
 
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
         super().__init__(*args, **kwargs)
@@ -171,6 +189,8 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True).start()
 
         self._arena_seen = False
+        self._watchdog_at: float | None = None
+        self._lag_warned_at = -_LAG_WARN_EVERY_S
         self._arena_watchdog_timer = self.wall_timer(1.0, self._cb_arena_watchdog)
 
         self._sub_shutdown_request = self.create_subscription(
@@ -303,6 +323,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
     def _cb_arena_watchdog(self) -> None:
         if self._heartbeat_stop.is_set():
             return
+        self._warn_executor_lag()
         self._on_watchdog()
         info = self.get_publishers_info_by_topic("/arena/state/envs")
         if info:
@@ -314,6 +335,17 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._arena_watchdog_timer.cancel()
         self._heartbeat_stop.set()
         self.request_shutdown("arena gone")
+
+    def _warn_executor_lag(self) -> None:
+        """Warn when this 1 s wall timer ran late: the env executor's queue is that far behind (timers, subscriptions, service replies)."""
+        now = time.monotonic()
+        last, self._watchdog_at = self._watchdog_at, now
+        if last is None:
+            return
+        lag = now - last - 1.0
+        if lag >= _LAG_WARN_S and now - self._lag_warned_at >= _LAG_WARN_EVERY_S:
+            self._lag_warned_at = now
+            self.get_logger().warning(f"env executor ran {lag:.1f}s behind (its 1 s watchdog timer came late)")
 
     def _cb_shutdown_request(self, msg: arena_runtime_msgs.msg.ShutdownRequest) -> None:
         if msg.env_id != self._env_id:

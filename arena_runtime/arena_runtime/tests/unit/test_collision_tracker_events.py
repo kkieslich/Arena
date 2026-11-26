@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
 import typing
 import uuid
@@ -120,6 +121,7 @@ class Stage:
         seen = len(received)
         tracker._tick()
         await _until(lambda: len(received) > seen, "a published message")
+        await asyncio.sleep(0.01)  # a collision reaches the robot manager through the event loop
         return list(received[-1].events)
 
     async def markers(self, tracker, received: list) -> list:
@@ -643,7 +645,11 @@ def _crowd(seed: int) -> list[tuple[str, float, float]]:
 
 def test_trackers_keep_answering_beside_a_large_crowd(on_stage):
     """Four robots' trackers ticking on the sim clock beside a large roster renewed at 10 Hz, the env's main thread busy:
-    each tracker answers its parameter service on the env's executor within a second, the ping the env's node watch sends."""
+    each tracker answers its parameter service (spun by the env's side executor) within a second.
+
+    The round trip is timed off the event loop, by a client the probe's executor spins, waited for in a worker thread:
+    the loop itself is blocked by the test's own load (a 1500-walker roster takes 0.4-0.8 s to publish on 2 cores, plus
+    gen-2 collections of 0.1-0.2 s), which would be timed instead of the tracker."""
     from rcl_interfaces.srv import GetParameters
     from rosgraph_msgs.msg import Clock
 
@@ -656,9 +662,9 @@ def test_trackers_keep_answering_beside_a_large_crowd(on_stage):
             stage.place(rm, *CLEAR, yaw=0.1 * i)
         published = [await stage.listen(tracker) for _, tracker in robots]
         clock = stage.probe.create_publisher(Clock, "/clock", 10)
-        clients = [stage.node.create_client_wrapper(GetParameters, f"{tracker.get_fully_qualified_name()}/get_parameters", timeout=PING_TIMEOUT) for _, tracker in robots]
+        clients = [stage.probe.create_client(GetParameters, f"{tracker.get_fully_qualified_name()}/get_parameters") for _, tracker in robots]
         for client in clients:
-            assert await client.ensure(5.0)
+            assert await asyncio.to_thread(client.wait_for_service, timeout_sec=5.0)
         stop = asyncio.Event()
 
         async def sim() -> None:
@@ -682,10 +688,18 @@ def test_trackers_keep_answering_beside_a_large_crowd(on_stage):
                     pass
                 await asyncio.sleep(0.004)
 
-        async def ping(client) -> float:
+        def round_trip(client) -> float:
+            answered = threading.Event()
             start = time.monotonic()
-            answer = await client.call_timeout(GetParameters.Request(names=["use_sim_time"]))
-            return time.monotonic() - start if answer is not None else math.inf
+            future = client.call_async(GetParameters.Request(names=["use_sim_time"]))
+            future.add_done_callback(lambda _: answered.set())
+            if not answered.wait(PING_TIMEOUT):
+                client.remove_pending_request(future)
+                return math.inf
+            return time.monotonic() - start
+
+        async def ping(client) -> float:
+            return await asyncio.to_thread(round_trip, client)
 
         tasks = [asyncio.create_task(job()) for job in (sim, crowd, main_thread_load)]
         try:
