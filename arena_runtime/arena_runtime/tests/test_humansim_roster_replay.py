@@ -1,14 +1,20 @@
-"""The adapter's per-tick output for a fixed crowd: byte-identical to the recorded digests, and cheap enough for a crowd of 350.
+"""The adapter's per-tick output for a fixed crowd: the same content as recorded, and cheap enough for a crowd of 350.
 
 A synthetic engine stream (350 walkers with churn, gestures, interactions, teleports, 4 robots) drives the adapter's
 publish paths at their rates: an engine frame every 50 ms, a roster render on receipt and every 20 ms, the update pass
 to the simulator every 20 ms and the world state every 50 ms. Every message they hand on (arena_peds, the simulator's
-update batch, world_state) is encoded field by field; the digest of each stream must equal the one recorded before the
-adapter's hot paths were reworked. The encoding is the wire's content but stricter (every float at full double width) and
-without the CDR alignment padding, which rclpy's serializer leaves uninitialized: two serializations of one message can
-differ in those bytes.
+update batch, world_state) is encoded field by field and must match the content recorded before the adapter's hot
+paths were reworked (`golden/humansim_roster_replay.json`): a sha256 of everything but the floats (ints, bools,
+strings, sequence lengths, field order and where each float sits) compared exactly, and per message the floats' count
+and three sums (plain, of squares, index-weighted) compared to 1e-9 of the message's own scale (its sum of absolute
+values and so on), which catches one walker moved by a millimetre in one frame. The floats are not hashed bit for bit:
+libm and numpy pick their sin/cos/atan2/exp code by CPU (FMA, AVX2, AVX-512), and the last bits differ between CI
+runners (the byte digests came out one of two ways from run to run on the same commit). The encoding skips the CDR
+alignment padding, which rclpy's serializer leaves uninitialized.
 
-`python tests/test_humansim_roster_replay.py [walkers] [seconds]` prints the timings and the digests.
+`python tests/test_humansim_roster_replay.py --record` rewrites the golden file from the current adapter.
+
+`python tests/test_humansim_roster_replay.py [walkers] [seconds]` prints the timings and the fingerprints.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from __future__ import annotations
 import array
 import asyncio
 import hashlib
+import json
 import math
 import struct
 import sys
@@ -23,6 +30,7 @@ import time
 import types
 import typing
 import uuid
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -47,19 +55,66 @@ TICK_NS = 20_000_000
 ORIGIN = (12.5, -3.25)
 
 COUNTS = {"arena_peds": 365, "pedestrian_update": 360, "world_state": 120}
-#: sha256 per stream of the default replay (350 walkers, 4 robots, 6 s, skeleton off), recorded with the adapter before its rework
-DIGESTS = {
-    "arena_peds": "cfa009f60f802c32f9304a1a5a2be8a70869b72dc9b7598226d40642ac632904",
-    "pedestrian_update": "b22ab93e9faa31f36fee890bb5ab8cad4fba952465c98bb64b8dba03875e1447",
-    "world_state": "48bb6b21ce98a666bc0c2a4ce1979f84f495868bc54df3710c68b57566c9533c",
-}
+#: per stream of the default replay (350 walkers, 4 robots, 6 s, skeleton off): the sha256 of all but the floats, and per
+#: message the floats' count, sum, sum of squares and index-weighted sum. Recorded on a machine where the adapter still
+#: reproduced the byte digests recorded before its rework (sha256 arena_peds cfa009f6.., pedestrian_update b22ab93e..,
+#: world_state 48bb6b21..), so it is the content of the adapter before the rework.
+GOLDEN = Path(__file__).resolve().parent / "golden" / "humansim_roster_replay.json"
+#: a message's float sums agree to this share of their scale (the CPU-dependent last bits move them by ~1e-16 of it)
+FLOAT_RTOL = 1e-9
+
+
+class Fingerprint:
+    """One stream's content: the non-float bytes hashed exactly, per message the floats' count and sums with their scales."""
+
+    def __init__(self) -> None:
+        self.exact = hashlib.sha256()
+        self.chunks: list[tuple[int, float, float, float]] = []
+        self.scales: list[tuple[float, float, float]] = []
+
+    def message(self, out: bytes, floats: list[float]) -> None:
+        self.exact.update(out)
+        n, total, squares, weighted, absolute, weighted_absolute = 0, 0.0, 0.0, 0.0, 0.0, 0.0
+        for value in floats:
+            if not math.isfinite(value):
+                self.exact.update(repr(value).encode())
+                continue
+            weight = n % 101
+            total += value
+            squares += value * value
+            weighted += weight * value
+            absolute += abs(value)
+            weighted_absolute += weight * abs(value)
+            n += 1
+        self.chunks.append((n, total, squares, weighted))
+        self.scales.append((absolute, squares, weighted_absolute))
+
+    def value(self) -> dict[str, typing.Any]:
+        return {"exact": self.exact.hexdigest(), "chunks": [list(chunk) for chunk in self.chunks]}
+
+
+def mismatches(got: dict[str, Fingerprint], golden: dict[str, dict[str, typing.Any]]) -> list[str]:
+    """Where `got` differs from `golden`: a stream's non-float content, its message count, or the floats of a message."""
+    found: list[str] = []
+    for stream, ref in golden.items():
+        fingerprint = got[stream]
+        if fingerprint.exact.hexdigest() != ref["exact"]:
+            found.append(f"{stream}: non-float content")
+        if len(fingerprint.chunks) != len(ref["chunks"]):
+            found.append(f"{stream}: {len(fingerprint.chunks)} messages, recorded {len(ref['chunks'])}")
+            continue
+        for i, (chunk, scale, (n, *sums)) in enumerate(zip(fingerprint.chunks, fingerprint.scales, ref["chunks"], strict=True)):
+            if chunk[0] != n or any(abs(a - b) > FLOAT_RTOL * s + 1e-12 for a, b, s in zip(chunk[1:], sums, scale, strict=True)):
+                found.append(f"{stream}: floats of message {i}")
+    return found
 
 
 _FIELDS: dict[type, tuple[str, ...]] = {}
 
 
-def encode(msg: object, out: bytearray) -> None:
-    """Append every field value of `msg`, depth first in definition order: floats as doubles, sequences with their length."""
+def encode(msg: object, out: bytearray, floats: list[float]) -> None:
+    """Append every field value of `msg`, depth first in definition order, sequences with their length; a float goes to
+    `floats` and leaves a marker in `out`."""
     cls = type(msg)
     fields = _FIELDS.get(cls)
     if fields is None:
@@ -67,7 +122,8 @@ def encode(msg: object, out: bytearray) -> None:
     for field in fields:
         value = getattr(msg, field)
         if isinstance(value, float):
-            out += struct.pack("<d", value)
+            out += b"f"
+            floats.append(value)
         elif isinstance(value, bool):
             out += b"\x01" if value else b"\x00"
         elif isinstance(value, int):
@@ -75,6 +131,9 @@ def encode(msg: object, out: bytearray) -> None:
         elif isinstance(value, str):
             raw = value.encode()
             out += struct.pack("<I", len(raw)) + raw
+        elif isinstance(value, (array.array, np.ndarray)) and (value.typecode if isinstance(value, array.array) else value.dtype.kind) in ("f", "d"):
+            out += struct.pack("<I", len(value)) + b"F"
+            floats.extend(float(v) for v in value)
         elif isinstance(value, (bytes, array.array, np.ndarray)):
             raw = value if isinstance(value, bytes) else value.tobytes()
             out += struct.pack("<I", len(value)) + (value.typecode.encode() if isinstance(value, array.array) else b"") + raw
@@ -85,13 +144,14 @@ def encode(msg: object, out: bytearray) -> None:
                     raw = item.encode()
                     out += struct.pack("<I", len(raw)) + raw
                 elif isinstance(item, float):
-                    out += struct.pack("<d", item)
+                    out += b"f"
+                    floats.append(item)
                 elif isinstance(item, int):
                     out += struct.pack("<q", item)
                 else:
-                    encode(item, out)
+                    encode(item, out, floats)
         else:
-            encode(value, out)
+            encode(value, out, floats)
 
 
 class _Simulator(DummySimulator):
@@ -189,7 +249,7 @@ class Replay:
         self.node = node
         self.recording = recording
         self.counts = {"arena_peds": 0, "pedestrian_update": 0, "world_state": 0}
-        self.digest = {stream: hashlib.sha256() for stream in self.counts}
+        self.fingerprint = {stream: Fingerprint() for stream in self.counts}
         self.timings: dict[str, list[float]] = {"render": [], "update": [], "world_state": []}
 
     def record(self, stream: str, msg: object) -> None:
@@ -197,11 +257,9 @@ class Replay:
         self.counts[stream] += 1
         if self.recording:
             out = bytearray()
-            encode(msg, out)
-            self.digest[stream].update(out)
-
-    def digests(self) -> dict[str, str]:
-        return {stream: digest.hexdigest() for stream, digest in self.digest.items()}
+            floats: list[float] = []
+            encode(msg, out, floats)
+            self.fingerprint[stream].message(bytes(out), floats)
 
     def _meta(self, frame: AgentFrame) -> None:
         n = len(frame.agent_id)
@@ -245,8 +303,8 @@ class Replay:
             self.timings["world_state"].append(timer() - t0)
 
 
-def replay(walkers: int = 350, seconds: float = 6.0, *, skeleton: bool = False, recording: bool = True) -> Replay:
-    """Drive a fresh adapter through the synthetic crowd and return what it published (digests only while `recording`) and how long each path took."""
+def replay(walkers: int = 350, seconds: float = 6.0, *, skeleton: bool = False, recording: bool = True, nudge: tuple[int, int, float | None] | None = None) -> Replay:
+    """Drive a fresh adapter through the synthetic crowd and return what it published (fingerprints only while `recording`) and how long each path took."""
     import rclpy
     from arena_rclpy_mixins import ArenaMixinNode
     from arena_rclpy_mixins.shared import Namespace
@@ -267,6 +325,11 @@ def replay(walkers: int = 350, seconds: float = 6.0, *, skeleton: bool = False, 
             return Time(sec=self.now_ns // 1_000_000_000, nanosec=self.now_ns % 1_000_000_000)
 
     frames = _crowd(walkers, seconds)
+    if nudge is not None:
+        # move one walker of one engine frame along x: by `dx` metres, or by one unit in the last place when it is None
+        k, j, dx = nudge
+        xs = frames[k][0].x
+        xs[j] = math.nextafter(xs[j], math.inf) if dx is None else xs[j] + dx
     result: list[Replay] = []
 
     async def main() -> None:
@@ -318,10 +381,25 @@ def test_a_blank_pedestrian_is_a_default_one_sharing_nothing_mutable() -> None:
     assert b == Pedestrian()
 
 
-def test_the_adapter_publishes_the_recorded_bytes() -> None:
+def _golden() -> dict[str, typing.Any]:
+    return json.loads(GOLDEN.read_text())
+
+
+def test_the_adapter_publishes_the_recorded_content() -> None:
+    golden = _golden()
     run = replay()
-    assert run.counts == COUNTS
-    assert run.digests() == DIGESTS
+    assert run.counts == COUNTS == golden["counts"]
+    assert mismatches(run.fingerprint, golden["streams"]) == []
+
+
+def test_one_walker_moved_by_a_millimetre_in_one_frame_is_caught() -> None:
+    found = mismatches(replay(nudge=(40, 7, 1e-3)).fingerprint, _golden()["streams"])
+    assert any(m.startswith("arena_peds: floats") for m in found), found
+    assert any(m.startswith("pedestrian_update: floats") for m in found), found
+
+
+def test_one_walker_moved_by_its_last_bit_is_not() -> None:
+    assert mismatches(replay(nudge=(40, 7, None)).fingerprint, _golden()["streams"]) == []
 
 
 def test_a_render_of_350_walkers_stays_cheap() -> None:
@@ -333,6 +411,11 @@ def test_a_render_of_350_walkers_stays_cheap() -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--record"]:
+        recorded = replay()
+        GOLDEN.write_text(json.dumps({"counts": recorded.counts, "streams": {stream: fp.value() for stream, fp in recorded.fingerprint.items()}}, separators=(",", ":")) + "\n")
+        print(f"wrote {GOLDEN}")
+        sys.exit(0)
     walkers = int(sys.argv[1]) if len(sys.argv) > 1 else 350
     seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 6.0
     run = replay(walkers, seconds, recording=False)
@@ -341,5 +424,5 @@ if __name__ == "__main__":
         print(f"{path:12s} n={len(ms):4d} median {np.median(ms):7.3f} ms  mean {ms.mean():7.3f} ms  p95 {np.percentile(ms, 95):7.3f} ms")
     recorded = replay(walkers, seconds)
     print(recorded.counts)
-    for stream, digest in recorded.digests().items():
-        print(f"{stream} {digest}")
+    for stream, fingerprint in recorded.fingerprint.items():
+        print(f"{stream} {fingerprint.exact.hexdigest()} {len(fingerprint.chunks)} messages")
