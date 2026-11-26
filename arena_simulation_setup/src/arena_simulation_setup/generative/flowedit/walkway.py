@@ -430,6 +430,14 @@ def _edt_nearest(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return dist, nearest[0], nearest[1]
 
 
+def _dilate(mask: np.ndarray) -> np.ndarray:
+    """`mask` grown by a cell in all eight directions, as a bool array."""
+    import numpy as np
+    import scipy.ndimage
+
+    return np.asarray(scipy.ndimage.binary_dilation(mask, structure=np.ones((3, 3), dtype=bool)), dtype=bool)
+
+
 def _clearance(free: np.ndarray, res: float) -> np.ndarray:
     """Each cell's distance to the nearest blocked cell [m] (0 on blocked cells)."""
     return _edt(free) * res
@@ -758,13 +766,13 @@ def _width(free: np.ndarray, grid: _Grid, rows: np.ndarray, cols: np.ndarray, fo
     barrier = np.zeros(free.shape, dtype=bool)
     barrier[marked[:, 0], marked[:, 1]] = True
     grow = np.ones((3, 3), dtype=bool)
-    barrier = scipy.ndimage.binary_dilation(barrier, structure=grow) & free
+    barrier = _dilate(barrier) & free
     labelled = typing.cast("tuple[np.ndarray, int]", scipy.ndimage.label(free & ~barrier, structure=grow))
     sides, count = labelled
     path = np.asarray(pts, dtype=float)
     tangent = np.gradient(path, axis=0)
     tree = scipy.spatial.KDTree(path)
-    touching = scipy.ndimage.binary_dilation(barrier, structure=grow)
+    touching = _dilate(barrier)
     left = np.zeros(free.shape, dtype=bool)
     right = np.zeros(free.shape, dtype=bool)
     for label in range(1, count + 1):
@@ -783,8 +791,8 @@ def _width(free: np.ndarray, grid: _Grid, rows: np.ndarray, cols: np.ndarray, fo
             return _Width(WIDE_M)
         return _Width(0.0, measured=False)
     blocked = ~free
-    near_left = blocked & scipy.ndimage.binary_dilation(left, structure=grow)
-    near_right = blocked & scipy.ndimage.binary_dilation(right, structure=grow)
+    near_left = blocked & _dilate(left)
+    near_right = blocked & _dilate(right)
     if focus is not None:
         near_left &= focus
         near_right &= focus
@@ -904,7 +912,6 @@ def _ways(routing: _Routing, grid: _Grid, free: np.ndarray, a_mask: np.ndarray, 
     a_nodes, b_nodes = index[a_mask & (index >= 0)], index[b_mask & (index >= 0)]
     graph = routing.graph
     data = None
-    grow = np.ones((3, 3), dtype=bool)
     for _ in range(1 + ALTERNATIVES):
         found = _path(graph, index, a_nodes, b_nodes)
         if found is None or found[1] >= CLOSED_M:
@@ -927,7 +934,7 @@ def _ways(routing: _Routing, grid: _Grid, free: np.ndarray, a_mask: np.ndarray, 
             cut[np.clip(np.round(np.linspace(lr[0], r_[0], n)).astype(int), 0, free.shape[0] - 1), np.clip(np.round(np.linspace(lc[0], c_[0], n)).astype(int), 0, free.shape[1] - 1)] = True
         else:
             cut = _across(free, rows, cols, focus)
-        closed = index[scipy.ndimage.binary_dilation(cut, structure=grow) & (index >= 0)]
+        closed = index[_dilate(cut) & (index >= 0)]
         if not len(closed):
             break
         mark = np.zeros(len(routing.rows), dtype=bool)
