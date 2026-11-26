@@ -35,6 +35,7 @@ from arena_simulation_setup.utils.face import front_angle
 from shapely.ops import polylabel
 
 from arena_runtime._node import NodeInterface
+from arena_runtime.env import faults
 from arena_runtime.env.environment_manager import EnvironmentManager, authored_statics
 from arena_runtime.env.robot_manager.controller_manager_client import ControllerManagerClient
 from arena_runtime.env.robot_manager.controller_transitions import next_transition
@@ -552,6 +553,8 @@ class RobotManager(NodeInterface):
                 self._logger.warning(f"robot {self.name!r} has no adapter for phase kind {kind.name!r}; synthesizing UNSUPPORTED_CAP failure on next tick")
             return
         dispatched = attrs.evolve(phase, pose=self._environment_manager.realize(phase.pose)) if isinstance(phase, GoToPhase) and phase.pose is not None else phase
+        if isinstance(phase, GoToPhase) and (held := await faults.hold_goal(self.name, self.node.sim_time.to_seconds())) > 0.0:
+            self._logger.warning(f"robot {self.name!r}: fault injection held its goal for {held:g}s ({faults.GOAL_REPLY_DELAY_ENV})")
         await adapter.dispatch_phase(dispatched, self)
         if self._publish_goal_task is not None:
             self._publish_goal_task.cancel()
