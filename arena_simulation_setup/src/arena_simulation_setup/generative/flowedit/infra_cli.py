@@ -163,6 +163,13 @@ class _Space:
         facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=crowd if crowd.flows else None)
         #: whether the search ran with the walkway rule, for the reports and manifests a frozen selection keeps
         self.walkway_rule: dict[str, Any] = {"on": bool(crowd.flows), "scenario": self.scenario_name, "flows": len(crowd.flows), "ped_per_h": round(crowd.total * 3600.0, 1), "versions": _versions()}
+        # the walks over the site's stairs and escalators, checked before the search's spots: a link no walk can take
+        # fails here, not after the spots (`demand.site_walks`)
+        from . import demand as DE
+
+        for level_id, level in self.site.world.levels.items():
+            if level.stairs or (self.config is not None and self.config.links and len(self.site.world.levels) == 1):
+                DE.site_walks(self.site, level_id, self.config.links if self.config is not None else ())
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         # where the catalog's models came from: a study's selection places them from their assets, never from the
         # catalog's records of them alone (an offline machine)

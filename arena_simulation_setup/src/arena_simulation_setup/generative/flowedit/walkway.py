@@ -114,6 +114,9 @@ NO_CLIMB_TYPES = ("wheelchair_manual", "wheelchair_electric")
 LINK_SPEED_MPS, LINK_STEP_M = 1.1, 2.0
 #: How fast walkers climb a still stair (HumanSim's `teleport_zones.STAIR_SPEED`) [m/s]
 STAIR_SPEED_MPS = 0.7
+#: A link's ends snap to the routable cell nearest them within this, `links.MOUTH_SNAP_M`; a link the routes cannot
+#: reach is refused [m]
+LINK_SNAP_M = 1.5
 #: The elements whose docks the fleet walls off for the crowd while a robot parks there: its homes and chargers
 PARKED = ("charger_pair", "bay_pair")
 #: The most walkers a metre of walkway width passes per second (Weidmann 1993's maximal specific flow, 1.22 ped/(m s)),
@@ -536,7 +539,7 @@ class Routes:
 
         tree = scipy.spatial.KDTree(coords) if len(coords) else None
 
-        def snap(p: Point, reach: float = 1.5) -> int | None:
+        def snap(p: Point, reach: float = LINK_SNAP_M) -> int | None:
             if tree is None:
                 return None
             d, i = tree.query(p)
@@ -548,7 +551,10 @@ class Routes:
             a = snap(link.entry)
             for exit_ in link.exits:
                 b = snap(exit_)
-                if a is not None and b is not None and a != b:
+                if a is None or b is None:
+                    # a link the routes cannot take would leave its walkers on a detour no one walks: refuse it
+                    raise ValueError(f"link {link.name!r}: an end lies over {LINK_SNAP_M:g} m from the walker floor's routable cells (a stair half on a landing: compose it over the landing, `links.floor_links`)")
+                if a != b:
                     extra[(a, b)] = min(link.cost_m, extra.get((a, b), math.inf))
         climbing = base
         if extra:

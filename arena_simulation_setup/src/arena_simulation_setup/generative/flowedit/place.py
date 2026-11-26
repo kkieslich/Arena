@@ -624,15 +624,20 @@ def crowd_routes(site: Site, level_id: str, walkers: WalkerDemand) -> Routes:
     """The crowd's routes on a level's walker floor (`walkway.Routes`). Cached per site and crowd. ValueError for a
     crowd with no walkers, and for one some of whose walkers find no route (an entrance off the walker floor, a sink
     out of reach): the walkway rule would pass every spot those walkers would have walked past."""
-    from .links import world_links
-    from .walkway import Routes
+    import shapely
+
+    from .links import floor_links, world_links
+    from .walkway import LINK_SNAP_M, Routes
 
     key = (*_site_key(site), level_id, walkers)
     if key not in _ROUTES:
         if not walkers.flows:
             raise ValueError(f"{site.key} level {level_id}: the crowd has no walkers (no source with a rate and a sink): the walkway rule has nothing to measure against")
-        # over the crowd scenario's teleport zones and the world's own stairs and escalators, for the walkers who climb
-        routes = Routes.build(walker_floor(site, level_id), walkers.with_links(world_links(site.world.levels[level_id])))
+        # over the crowd scenario's teleport zones and the world's own stairs and escalators, for the walkers who climb;
+        # a world's flights that meet on a landing (stair, no floor) as one link from floor to floor
+        floor = walker_floor(site, level_id)
+        stairs = floor_links(world_links(site.world.levels[level_id]), lambda p: float(floor.free.distance(shapely.Point(p))) <= LINK_SNAP_M)
+        routes = Routes.build(floor, walkers.with_links(stairs))
         routes.require_all(f"{site.key} level {level_id}")
         _ROUTES[key] = routes
     return _ROUTES[key]
