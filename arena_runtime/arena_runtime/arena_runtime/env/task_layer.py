@@ -60,6 +60,8 @@ class EpisodeRecord:
     path_length: float = 0.0
     integrity: list[str] = attrs.Factory(list)
     start_time: Time = attrs.Factory(Time)
+    health: dict[str, float] = attrs.Factory(dict)
+    """`<window>_<measure>` -> seconds, see EpisodeRecord.msg."""
 
 
 @attrs.define

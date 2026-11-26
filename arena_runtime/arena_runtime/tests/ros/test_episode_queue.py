@@ -420,3 +420,57 @@ def test_the_crowd_clock_starts_at_the_episode_start_while_the_reset_still_holds
         await asyncio.wait_for(first, TIMEOUT)
 
     asyncio.run(_on_running_env(body))
+
+
+def test_each_record_carries_the_lag_peaks_of_its_windows(rclpy_context: object, fake_task_layer: object) -> None:
+    """Loop lag noted before the first build, in the reset, in the episode and after it lands in env_start, setup,
+    episode and the next record's prev_teardown, and the last episode's in teardown; the published records carry them
+    as text."""
+    import rclpy.qos
+    from arena_runtime_msgs.msg import EpisodeRecord
+
+    from arena_runtime.env.task_layer import ResetPlan
+
+    async def body(env: object, rig: object) -> None:
+        published: list = []
+        qos = rclpy.qos.QoSProfile(depth=50, reliability=rclpy.qos.ReliabilityPolicy.RELIABLE, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
+        rig.probe.create_subscription(EpisodeRecord, f"{env.get_fully_qualified_name()}/state/episode", published.append, qos)
+        task = fake_task_layer.task
+        lags = iter([3.5, 4.5, 6.5, 7.5])  # setup and episode of each
+
+        async def reset_robots(record: object) -> ResetPlan:
+            del record
+            env._note_loop_lag(next(lags))
+            return ResetPlan()
+
+        async def tick(ended: object, assigned: object) -> None:
+            del ended, assigned
+            if not task.finished:
+                env._note_loop_lag(next(lags))
+                task.finished = True
+
+        task.reset_robots, task.tick = reset_robots, tick
+        env._note_loop_lag(2.5)
+        await asyncio.wait_for(env._run_episode(), TIMEOUT)
+        first = env._episodes.current
+        env._note_loop_lag(5.5)
+        task.finished = False
+        await asyncio.wait_for(env._run_episode(), TIMEOUT)
+        second = env._episodes.current
+
+        def loop_peaks(record: object) -> dict[str, float]:
+            return {key: value for key, value in record.health.items() if key.endswith("_loop_lag_peak_s")}
+
+        assert loop_peaks(first) == {"env_start_loop_lag_peak_s": 2.5, "setup_loop_lag_peak_s": 3.5, "episode_loop_lag_peak_s": 4.5}
+        assert loop_peaks(second) == {"prev_teardown_loop_lag_peak_s": 5.5, "setup_loop_lag_peak_s": 6.5, "episode_loop_lag_peak_s": 7.5}
+        assert all(key.replace("executor", "loop") in first.health for key in first.health if "executor" in key)
+        await _until(lambda: any(msg.episode_id == 1 and msg.outcome_state > EpisodeRecord.RUNNING for msg in published), "the first terminal record")
+        terminal = next(msg for msg in published if msg.episode_id == 1 and msg.outcome_state > EpisodeRecord.RUNNING)
+        assert {kv.key: kv.value for kv in terminal.health}["episode_loop_lag_peak_s"] == "4.500"
+
+        env._note_loop_lag(8.5)
+        env._publish_last_teardown()
+        assert second.health["teardown_loop_lag_peak_s"] == 8.5
+        await _until(lambda: any(msg.episode_id == 2 and any(kv.key == "teardown_loop_lag_peak_s" for kv in msg.health) for msg in published), "the last record with its teardown")
+
+    asyncio.run(_on_running_env(body))
