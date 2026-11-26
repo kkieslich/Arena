@@ -84,6 +84,10 @@ def _adapter(level_origins: dict[str, tuple[float, float]] | None = None) -> Are
     sim._ped_orientations = {}
     sim._teleport_stamps = {}
     sim._deferred_spawns = []
+    sim._deferred_unanchored = []
+    sim._clock_on_request = False
+    sim._clock_started = False
+    sim._input_barrier = False
     sim._itineraries = {}
     sim._semantic_aliases = {}
     sim._semantic_values = {}
@@ -183,6 +187,15 @@ def test_spawn_sends_the_first_leg_and_defers_delayed_peds() -> None:
     ((due, msg, alias),) = sim._deferred_spawns
     assert due == 5.0 and msg.agent_id == _DEFERRED_ID_BASE and alias == {"elevator": "elev_a"}
     assert msg.agent_id in sim._bridge_agent_ids
+
+
+def test_a_ped_delayed_while_the_engine_waits_for_start_clock_is_timed_from_the_epoch() -> None:
+    sim = _adapter()
+    sim._clock_on_request = True
+    _run(sim._spawn_dynamic_obstacles_impl([_ped("late", [(4.0, 0.0)], spawn_delay=5.0)]))
+    assert sim._deferred_spawns == []
+    ((delay, msg, _),) = sim._deferred_unanchored
+    assert delay == 5.0 and msg.agent_id == _DEFERRED_ID_BASE
 
 
 def test_delayed_ped_appears_when_due_and_gets_its_aliases() -> None:

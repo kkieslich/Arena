@@ -64,6 +64,10 @@ def offset_pose(pose: Pose, center: tuple[float, float, float]) -> Pose:
     return Pose(position=pose * Position(*center), orientation=pose.orientation)
 
 
+#: one tick of the world mechanisms: (sim seconds, seconds since the last tick, pedestrian discs (name, xy, radius))
+MechanismStep = typing.Callable[[float, float, list[tuple[str, tuple[float, float], float]]], typing.Awaitable[None]]
+
+
 @typing.runtime_checkable
 class HumanSimulator(typing.Protocol):
     """Capabilities the mechanism layer reads from the attached human simulator."""
@@ -77,6 +81,14 @@ class HumanSimulator(typing.Protocol):
     async def stairs_changed(self, running: Mapping[str, bool]) -> None: ...
 
     def set_mechanism_walls(self, key: str, segments: Sequence[tuple[tuple[float, float], tuple[float, float]]] | None) -> None: ...
+
+    def drives_mechanisms(self) -> bool:
+        """Whether it steps the mechanisms on its own crowd ticks (it then gets their tick through `set_mechanism_step`)."""
+        ...
+
+    def set_mechanism_step(self, step: MechanismStep | None) -> None:
+        """Take over the mechanisms' tick: `step(now, dt, pedestrian_discs)` once per crowd tick, None hands it back."""
+        ...
 
 
 class SimUnavailable(RuntimeError):

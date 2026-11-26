@@ -819,20 +819,46 @@ def _ensure_loop(mech: MechanismITF) -> None:
 
 
 async def _loop(mech: MechanismITF) -> None:
-    """Sim-time rate loop driving door animation and elevator state machine."""
+    """Sim-time rate loop driving door animation and elevator state machine.
+
+    A human simulator that steps the mechanisms on its own crowd ticks (`drives_mechanisms`, the arena engine under a
+    gating lockstep) gets the tick instead: the doors then open on the crowd's positions at a crowd tick, and what they
+    change (door walls, door semantics) lands on the same crowd tick in every run.
+    """
     logger = mech.node.get_logger()
-    with mech.node.sim_time_rate(MECHANISM_TICK_RATE) as (done, rate):
-        while not done.is_set():
-            try:
-                dt = await rate.get()
-            except asyncio.CancelledError:
-                raise
-            try:
-                await _tick(mech, dt)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"mechanism shim tick failed: {e!r}")
+
+    async def step(now: float, dt: float, ped_discs: list[Disc]) -> None:
+        try:
+            await _tick(mech, dt, now=now, ped_discs=ped_discs)
+        except Exception as e:
+            logger.warning(f"mechanism shim tick failed: {e!r}")
+
+    human = mech._human_simulator
+    handed = False
+    try:
+        with mech.node.sim_time_rate(MECHANISM_TICK_RATE) as (done, rate):
+            while not done.is_set():
+                try:
+                    dt = await rate.get()
+                except asyncio.CancelledError:
+                    raise
+                if human is not None and human.drives_mechanisms():
+                    if not handed:
+                        human.set_mechanism_step(step)
+                        handed = True
+                    continue
+                if handed and human is not None:
+                    human.set_mechanism_step(None)
+                    handed = False
+                try:
+                    await _tick(mech, dt)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"mechanism shim tick failed: {e!r}")
+    finally:
+        if handed and human is not None:
+            human.set_mechanism_step(None)
 
 
 def _report_incident(mech: MechanismITF, reason: str) -> None:
@@ -841,14 +867,17 @@ def _report_incident(mech: MechanismITF, reason: str) -> None:
         mech._incident_callback(reason)
 
 
-async def _tick(mech: MechanismITF, dt: float) -> None:
-    """Single tick: update triggers, advance state machines, dispatch move_box, articulated link moves and teleports."""
+async def _tick(mech: MechanismITF, dt: float, *, now: float | None = None, ped_discs: list[Disc] | None = None) -> None:
+    """Single tick: update triggers, advance state machines, dispatch move_box, articulated link moves and teleports.
+    `now` and `ped_discs` default to the node clock and the human simulator's latest roster."""
     robot_discs = list(mech.robot_discs())
-    ped_discs: list[Disc] = list(mech._human_simulator.pedestrian_discs()) if mech._human_simulator is not None else []
+    if ped_discs is None:
+        ped_discs = list(mech._human_simulator.pedestrian_discs()) if mech._human_simulator is not None else []
     discs = robot_discs + ped_discs
     named_positions = [(name, xy) for name, xy, _radius in discs]
     ped_names: set[str] = {name for name, _xy, _radius in ped_discs}
-    now = mech.node.sim_time.to_seconds()
+    if now is None:
+        now = mech.node.sim_time.to_seconds()
 
     elev_occupant_idx: dict[str, set[int]] = {}
     all_occupant_idx: set[int] = set()

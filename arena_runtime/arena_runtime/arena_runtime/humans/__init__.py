@@ -60,6 +60,7 @@ from arena_runtime.humans.wire import BodyCache, fill_bodies, fill_body
 from arena_runtime.lockstep import register_channels
 from arena_runtime.shared import Door, DynamicObstacle, Elevator, Obstacle, Orientation, Pose, Position, Region, Robot, Wall, footprint_radius
 from arena_runtime.sim import BaseSim
+from arena_runtime.sim._interface import MechanismStep
 
 if typing.TYPE_CHECKING:
     from arena_rclpy_mixins.Time import Time
@@ -82,6 +83,7 @@ def wire_radius(radius: float) -> float:
 
 
 Segment = tuple[tuple[float, float], tuple[float, float]]
+Disc = tuple[str, tuple[float, float], float]
 
 _STREAM_QOS = rclpy.qos.QoSProfile(
     reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
@@ -121,35 +123,44 @@ class TrackedRobot:
     tf_frame: str | None
     pose: Pose
     velocity: tuple[float, float] = (0.0, 0.0)
-    stamp: float | None = None
+    #: TF stamp of `pose` in ns: velocities from whole-ns differences are the same floats on every episode epoch
+    stamp_ns: int | None = None
     radius: float = DEFAULT_ROBOT_RADIUS
 
     def place(self, pose: Pose) -> None:
         """Teleport to pose, at rest until TF reports the next one."""
         self.pose = copy.deepcopy(pose)
         self.velocity = (0.0, 0.0)
-        self.stamp = None
+        self.stamp_ns = None
 
-    def refresh(self, tf_buffer: tf2_ros.Buffer) -> None:
-        """Update pose and finite-difference velocity from the map->base TF."""
+    def refresh(self, tf_buffer: tf2_ros.Buffer, at_ns: int | None = None) -> None:
+        """Update pose and finite-difference velocity from the map->base TF, at sim time `at_ns` when TF reaches it (the pose
+        an engine frame stamped `at_ns` should see, whenever the lookup runs), else the latest."""
         if self.tf_frame is None:
             return
-        try:
-            t = tf_buffer.lookup_transform('map', self.tf_frame, rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            return
-        stamp = t.header.stamp.sec + t.header.stamp.nanosec * 1e-9
-        if self.stamp is not None and stamp <= self.stamp:
+        t = None
+        if at_ns is not None:
+            try:
+                t = tf_buffer.lookup_transform('map', self.tf_frame, rclpy.time.Time(nanoseconds=at_ns))
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                t = None
+        if t is None:
+            try:
+                t = tf_buffer.lookup_transform('map', self.tf_frame, rclpy.time.Time())
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                return
+        stamp_ns = t.header.stamp.sec * 1_000_000_000 + t.header.stamp.nanosec
+        if self.stamp_ns is not None and stamp_ns <= self.stamp_ns:
             return
         position = Position(x=t.transform.translation.x, y=t.transform.translation.y)
-        if self.stamp is not None:
-            dt = stamp - self.stamp
+        if self.stamp_ns is not None:
+            dt = (stamp_ns - self.stamp_ns) / 1e9
             self.velocity = (
                 (position.x - self.pose.position.x) / dt,
                 (position.y - self.pose.position.y) / dt,
             )
         self.pose = Pose(position, Orientation.from_msg(t.transform.rotation))
-        self.stamp = stamp
+        self.stamp_ns = stamp_ns
 
 
 class RegionSetupError(RuntimeError):
@@ -758,6 +769,14 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     def set_mechanism_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
         """Replace the named wall set seen by pedestrian navigation; None removes it. Map frame."""
+
+    def drives_mechanisms(self) -> bool:
+        """Whether this backend steps the world mechanisms on its own crowd ticks (see `set_mechanism_step`)."""
+        return False
+
+    def set_mechanism_step(self, step: MechanismStep | None) -> None:
+        """Hand over the mechanisms' tick: `step(now, dt, pedestrian_discs)`, run once per crowd tick, None takes it back."""
+        del step
 
     async def set_crowd_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
         """`set_mechanism_walls`, in place once it returns: walls only the walkers see, set before they spawn. Map frame."""
@@ -1487,10 +1506,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
                 tracked.place(robot.pose)
         return await self._move_robot_impl(robots)
 
-    def tracked_robots(self) -> list[TrackedRobot]:
-        """Spawned robots in spawn order, pose and velocity refreshed from TF."""
+    def tracked_robots(self, at_ns: int | None = None) -> list[TrackedRobot]:
+        """Spawned robots in spawn order, pose and velocity refreshed from TF (at sim time `at_ns` where TF has it)."""
         for tracked in self._robots.values():
-            tracked.refresh(self.node.tf_buffer)
+            tracked.refresh(self.node.tf_buffer, at_ns)
         return list(self._robots.values())
 
     # impl
