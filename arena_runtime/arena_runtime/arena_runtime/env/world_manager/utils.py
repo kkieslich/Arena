@@ -146,32 +146,42 @@ class WorldLayers:
     def _changed(self) -> None:
         self._version += 1
 
-    def clearance(self) -> np.ndarray:
-        """`clearance_of` the combined grid, computed once per version under a lock (the event loop and a reset thread
-        may both ask), read-only."""
+    def _clearance_at(self) -> tuple[int, np.ndarray]:
+        """The clearance map with the version it was computed for, computed once per version under a lock (the event loop
+        and the reset's worker thread may both ask). Writers do not take the lock: a change during the computation leaves
+        the map tagged with the version it was started for, so the next call computes it again."""
         with self._clearance_lock:
             if self._clearance is None or self._clearance[0] != self._version:
                 version = self._version
                 clearance = clearance_of(self.grid)
                 clearance.setflags(write=False)
                 self._clearance = (version, clearance)
-            return self._clearance[1]
+            return self._clearance
+
+    def clearance(self) -> np.ndarray:
+        """`clearance_of` the combined grid, cached for the current version, read-only."""
+        return self._clearance_at()[1]
 
     def available(self, safe_dist_cells: float) -> np.ndarray:
-        """(row, col) cells whose clearance exceeds safe_dist_cells, in row-major order, cached per version and distance,
-        read-only."""
-        clearance = self.clearance()
-        with self._clearance_lock:
-            if self._available_version != self._version:
-                self._available, self._available_version = {}, self._version
-            cells = self._available.get(safe_dist_cells)
-            if cells is None:
-                cells = np.transpose(np.where(clearance > safe_dist_cells))
-                cells.setflags(write=False)
-                if len(self._available) >= _AVAILABLE_CACHE_SIZE:
-                    self._available.pop(next(iter(self._available)))
-                self._available[safe_dist_cells] = cells
-            return cells
+        """(row, col) cells whose clearance exceeds safe_dist_cells, in row-major order, read-only. Cached per distance under
+        the version of the clearance map they come from, never under `version` read later: a writer between the two steps
+        then leaves them tagged stale, and they are computed again (here at once, up to a few times, else on the next call)."""
+        cells = np.zeros((0, 2), dtype=np.int64)
+        for _ in range(3):
+            version, clearance = self._clearance_at()
+            with self._clearance_lock:
+                if self._available_version != version:
+                    self._available, self._available_version = {}, version
+                cells = self._available.get(safe_dist_cells)
+                if cells is None:
+                    cells = np.transpose(np.where(clearance > safe_dist_cells))
+                    cells.setflags(write=False)
+                    if len(self._available) >= _AVAILABLE_CACHE_SIZE:
+                        self._available.pop(next(iter(self._available)))
+                    self._available[safe_dist_cells] = cells
+            if version == self._version:
+                break
+        return cells
 
     _combined_cache: WorldOccupancy | None
 

@@ -110,3 +110,25 @@ def test_the_cache_is_bounded_and_read_only() -> None:
         layers.available(1.0)[0, 0] = 5
     with pytest.raises(ValueError):
         layers.clearance()[0, 0] = 5
+
+
+def test_a_writer_between_the_clearance_and_the_cells_leaves_no_stale_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An occupancy change while the clearance map is computed (the reset's worker thread, a writer on the event loop) must
+    not get the old map's cells cached under the new version."""
+    layers = WorldLayers(WorldOccupancy(np.full((40, 40), WorldOccupancy.EMPTY, dtype=np.uint8)))
+    real = utils.clearance_of
+    bumped = [False]
+
+    def computing_while_a_writer_occupies(grid: np.ndarray) -> np.ndarray:
+        clearance = real(grid)
+        if not bumped[0]:
+            bumped[0] = True
+            layers.forbidden_occupy((15, 15), (25, 25))  # the writer, after the map was computed from the old grid
+        return clearance
+
+    monkeypatch.setattr(utils, "clearance_of", computing_while_a_writer_occupies)
+    cells = layers.available(2.0)
+    assert bumped[0]
+    assert np.array_equal(cells, _occupancy_to_available(layers.grid, 2.0))
+    assert layers._available_version == layers.version
+    assert np.array_equal(layers.available(2.0), _occupancy_to_available(layers.grid, 2.0))
