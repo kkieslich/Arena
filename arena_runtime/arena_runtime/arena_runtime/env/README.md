@@ -80,7 +80,9 @@ timeout (30 s for a goal). The loop waits at most 1 s for the robots' ticks,
 then goes on without the late one. It judges the other robots every tick, and
 the late one again once its own tick is done, at most one ended phase per robot
 and tick. A tick that took 2 s or more, or failed, is a warning and an integrity
-flag of the episode, with the duration. A reset cancels the ticks in flight.
+flag of the episode, with the duration. The robot owns its tick in flight
+(`TickInFlight`): setting the robots up for a new episode, or removing the
+robot, cancels it.
 
 The next episode is one function of `EpisodeRuntime.pending` (a
 `TaskModeOverrides`, merged into by `queue_episode` and `reset_episode`) and an

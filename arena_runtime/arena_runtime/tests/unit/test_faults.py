@@ -12,10 +12,14 @@ def fresh(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(faults, "_spent", set())
 
 
-def test_off_without_the_variable() -> None:
+def test_off_without_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
     from arena_runtime.env import faults
 
+    monkeypatch.delenv(faults.GOAL_REPLY_DELAY_ENV, raising=False)
+    assert not faults.goal_reply_delay_armed()
     assert faults._goal_reply_delay("jackal_1", 900.0, None) == 0.0
+    monkeypatch.setenv(faults.GOAL_REPLY_DELAY_ENV, "*@600=25")
+    assert faults.goal_reply_delay_armed()
 
 
 def test_once_for_the_named_robot_from_its_sim_time() -> None:

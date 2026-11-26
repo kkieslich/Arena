@@ -82,16 +82,6 @@ _LAG_WARN_S = 2.0
 _LAG_WARN_EVERY_S = 30.0
 
 
-@attrs.define
-class _RobotTick:
-    """One robot's tick in flight: its task, when it started and finished (wall), whether it was reported late."""
-
-    task: asyncio.Task[Transition]
-    started: float
-    finished: float | None = None
-    reported: bool = False
-
-
 class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, metaclass=abc.ABCMeta):
     """The per-env lifecycle node: simulator, managers, semantics and entity services, driven by an episode loop subclass."""
 
@@ -162,7 +152,6 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._known_subjects: set[str] = set()
         self._sample = Sample(t=0.0)
         self._tick_loop_task: asyncio.Task | None = None
-        self._robot_ticks: dict[str, _RobotTick] = {}
         self._semantics_dirty = False
 
         self._pub_state_robots = self.create_publisher(
@@ -307,7 +296,6 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         if self._tick_loop_task is not None and not self._tick_loop_task.done():
             self._tick_loop_task.cancel()
             await asyncio.gather(self._tick_loop_task, return_exceptions=True)
-        await self.drop_robot_ticks()
         await self._teardown_episode()
         if self._robots_manager is not None:
             await self._robots_manager.teardown()
@@ -804,9 +792,6 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         if self._robots_manager is None:
             return {}
         managers = list(self._robots_manager.managers.values())
-        names = {manager.name for manager in managers}
-        for name in self._robot_ticks.keys() - names:
-            self._robot_ticks.pop(name).task.cancel()
         charging = self._chargers.step(self._sample, self._judge_zones)
         for manager in managers:
             judged = self._sample.robots.get(manager.name)
@@ -817,16 +802,12 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         now = time.monotonic()
         started: list[asyncio.Task[Transition]] = []
         for manager in managers:
-            busy = self._robot_ticks.get(manager.name)
-            if busy is not None:
-                self._report_late_tick(manager.name, busy, now)
+            if manager.tick_task is not None:
+                self._report_late_tick(manager, now)
                 continue
             if manager.name in ended:
                 continue  # a late tick just ended a phase: the next one starts on the next tick, one ended phase per tick
-            tick = _RobotTick(asyncio.create_task(manager.tick(self._sample, self._judge_zones)), now)
-            tick.task.add_done_callback(lambda _, tick=tick: setattr(tick, "finished", time.monotonic()))
-            self._robot_ticks[manager.name] = tick
-            started.append(tick.task)
+            started.append(manager.start_tick(manager.tick(self._sample, self._judge_zones)))
         if started:
             await asyncio.wait(started, timeout=_ROBOT_TICK_WAIT_S)
         ended |= self._collect_robot_ticks(managers)
@@ -839,27 +820,24 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
     def _collect_robot_ticks(self, managers: Sequence[RobotManager]) -> dict[str, PhaseState]:
         """The phases that ended in the robots' finished ticks, which leave the ticks in flight."""
         ended: dict[str, PhaseState] = {}
+        now = time.monotonic()
         for manager in managers:
-            tick = self._robot_ticks.get(manager.name)
-            if tick is None or not tick.task.done():
+            task = manager.take_tick()
+            if task is None or task.cancelled():
                 continue
-            del self._robot_ticks[manager.name]
-            transition = self._collect_robot_tick(manager.name, tick)
+            transition = self._robot_tick_result(manager.name, task, manager.tick_age(now))
             if transition is not None and transition.ended is not None:
                 ended[manager.name] = transition.ended
         return ended
 
-    def _report_late_tick(self, name: str, tick: _RobotTick, now: float) -> None:
-        if not tick.reported and now - tick.started >= _LATE_ROBOT_TICK_S:
-            tick.reported = True
-            self.get_logger().warning(f"robot {name}: its tick has waited {now - tick.started:.1f}s for a reply, the other robots are judged meanwhile")
+    def _report_late_tick(self, manager: RobotManager, now: float) -> None:
+        if not manager.tick_reported and manager.tick_age(now) >= _LATE_ROBOT_TICK_S:
+            manager.tick_reported = True
+            self.get_logger().warning(f"robot {manager.name}: its tick has waited {manager.tick_age(now):.1f}s for a reply, the other robots are judged meanwhile")
 
-    def _collect_robot_tick(self, name: str, tick: _RobotTick) -> Transition | None:
+    def _robot_tick_result(self, name: str, task: asyncio.Task[Transition], took: float) -> Transition | None:
         """The transition of a robot's finished tick; a late or failed tick is a warning and an integrity flag of the episode."""
-        if tick.task.cancelled():
-            return None
-        took = (tick.finished if tick.finished is not None else time.monotonic()) - tick.started
-        error = tick.task.exception()
+        error = task.exception()
         if error is not None:
             reason = f"robot {name} tick failed after {took:.1f}s: {error!r}"
             self.get_logger().warning(reason)
@@ -869,14 +847,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             reason = f"robot {name} tick took {took:.1f}s (judged again once done, the other robots meanwhile)"
             self.get_logger().warning(reason)
             self._compromise(reason)
-        return tick.task.result()
-
-    async def drop_robot_ticks(self) -> None:
-        """Cancel the robots' ticks still in flight (an episode reset, teardown)."""
-        ticks, self._robot_ticks = self._robot_ticks, {}
-        for tick in ticks.values():
-            tick.task.cancel()
-        await asyncio.gather(*(tick.task for tick in ticks.values()), return_exceptions=True)
+        return task.result()
 
     def ped_names(self) -> list[str]:
         """Bare names of the pedestrians the human simulator currently tracks."""

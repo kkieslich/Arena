@@ -20,7 +20,13 @@ class _Server:
         await self.accept.wait()
 
 
-class _Robot:
+def _robot_base() -> type:
+    from arena_runtime.env.robot_manager.tick_in_flight import TickInFlight
+
+    return TickInFlight
+
+
+class _Robot(_robot_base()):  # pyright: ignore[reportUntypedBaseClass]
     def __init__(self, name: str, server: _Server | None = None, error: Exception | None = None) -> None:
         self.name = name
         self.runner = SimpleNamespace(active=None, changed=False)
@@ -56,7 +62,6 @@ def env(monkeypatch: pytest.MonkeyPatch) -> typing.Any:
     stub_type = type("Stub", (node.EnvNode,), {"get_logger": lambda self: SimpleNamespace(warning=warned.append), "_compromise": lambda self, reason: flags.append(reason)})
     stub_type.__abstractmethods__ = frozenset()
     stub = object.__new__(stub_type)
-    stub._robot_ticks = {}
     stub._chargers = SimpleNamespace(step=lambda sample, zones: {})
     stub._sample = SimpleNamespace(robots={})
     stub._judge_zones = {}
@@ -70,7 +75,7 @@ def test_robots_that_answer_at_once_end_their_phases_in_the_same_tick(env: typin
     a, b = _Robot("a"), _Robot("b")
     env.with_robots(a, b)
     assert asyncio.run(env._tick_robots()) == {"a": "a phase 1", "b": "b phase 1"}
-    assert env.flags == [] and env._robot_ticks == {}
+    assert env.flags == [] and a.tick_task is None and b.tick_task is None
 
 
 def test_a_late_goal_reply_does_not_stop_the_other_robots(env: typing.Any) -> None:
@@ -102,18 +107,19 @@ def test_a_failing_robot_tick_is_reported_and_the_others_keep_their_transitions(
     assert env.flags == ["robot broken tick failed after 0.0s: RuntimeError(\"send_goal to 'goto_pose' got no response in 30s\")"]
 
 
-def test_a_reset_drops_the_ticks_in_flight(env: typing.Any) -> None:
+def test_a_reset_or_removal_of_the_robot_cancels_its_tick_in_flight(env: typing.Any) -> None:
     server = _Server()
     slow = _Robot("slow", server)
     env.with_robots(slow)
 
     async def scenario() -> None:
         await env._tick_robots()
-        pending = env._robot_ticks["slow"].task
-        await env.drop_robot_ticks()
-        assert pending.cancelled() and env._robot_ticks == {}
+        pending = slow.tick_task
+        assert pending is not None
+        await slow.cancel_tick()  # what RobotsManager.set_up (a new episode) and RobotManager.destroy do
+        assert pending.cancelled() and slow.tick_task is None
         assert await env._tick_robots() == {}  # a fresh tick, waiting on the server again
-        await env.drop_robot_ticks()
+        await slow.cancel_tick()
 
     asyncio.run(scenario())
     assert slow.ticks == 2

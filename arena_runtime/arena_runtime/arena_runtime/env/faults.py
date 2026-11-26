@@ -15,6 +15,11 @@ GOAL_REPLY_DELAY_ENV = "ARENA_TEST_DELAY_GOAL_REPLY"
 _spent: set[str] = set()
 
 
+def goal_reply_delay_armed() -> bool:
+    """Whether the switch is set at all; the caller reads nothing else (not even the sim time) without it."""
+    return bool(os.environ.get(GOAL_REPLY_DELAY_ENV))
+
+
 def _goal_reply_delay(robot: str, sim_s: float, spec: str | None) -> float:
     if not spec or GOAL_REPLY_DELAY_ENV in _spent:
         return 0.0

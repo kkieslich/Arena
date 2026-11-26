@@ -40,6 +40,7 @@ from arena_runtime.env.environment_manager import EnvironmentManager, authored_s
 from arena_runtime.env.robot_manager.controller_manager_client import ControllerManagerClient
 from arena_runtime.env.robot_manager.controller_transitions import next_transition
 from arena_runtime.env.robot_manager.task_runner import PhaseState, TaskRunner, Transition, standoff_pose
+from arena_runtime.env.robot_manager.tick_in_flight import TickInFlight
 from arena_runtime.node_params import NodeParams
 from arena_runtime.shared import Orientation, Pose, Position, PositionRadius, Robot, footprint_radius
 from arena_runtime.sim._interface import SimUnavailable
@@ -108,7 +109,7 @@ def _front_yaw(obstacle: Obstacle) -> float:
     return obstacle.pose.orientation.to_yaw() + (math.pi if front is None else front)
 
 
-class RobotManager(NodeInterface):
+class RobotManager(TickInFlight, NodeInterface):
     """Manages the goal and start position of a robot for all task modes."""
 
     _namespace: Namespace
@@ -553,7 +554,7 @@ class RobotManager(NodeInterface):
                 self._logger.warning(f"robot {self.name!r} has no adapter for phase kind {kind.name!r}; synthesizing UNSUPPORTED_CAP failure on next tick")
             return
         dispatched = attrs.evolve(phase, pose=self._environment_manager.realize(phase.pose)) if isinstance(phase, GoToPhase) and phase.pose is not None else phase
-        if isinstance(phase, GoToPhase) and (held := await faults.hold_goal(self.name, self.node.sim_time.to_seconds())) > 0.0:
+        if isinstance(phase, GoToPhase) and faults.goal_reply_delay_armed() and (held := await faults.hold_goal(self.name, self.node.sim_time.to_seconds())) > 0.0:
             self._logger.warning(f"robot {self.name!r}: fault injection held its goal for {held:g}s ({faults.GOAL_REPLY_DELAY_ENV})")
         await adapter.dispatch_phase(dispatched, self)
         if self._publish_goal_task is not None:
@@ -1092,6 +1093,7 @@ class RobotManager(NodeInterface):
             cm.close()
 
     async def destroy(self):
+        await self.cancel_tick()
         results = await asyncio.gather(
             *(a.teardown() for a in self._adapter_instances),
             return_exceptions=True,
