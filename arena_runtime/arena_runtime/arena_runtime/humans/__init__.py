@@ -24,7 +24,7 @@ from arena_people_msgs.srv import MovePedestrians
 from arena_rclpy_mixins.lazy import LazyPublisher
 from arena_rclpy_mixins.registry import AsyncFactoryRegistry as Registry
 from arena_rclpy_mixins.shared import Namespace
-from arena_runtime_msgs.msg import LockstepChannel
+from arena_runtime_msgs.msg import LockstepChannel, RecordedTopic
 from arena_simulation_setup.shared import Placement, Stairs, stair_height
 from arena_simulation_setup.shared.body import DEFAULT_COMPILED_STANCE, CompiledStance, compile_stance, load_stance
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
@@ -769,6 +769,10 @@ class BaseHumanSimulator(NodeInterface, abc.ABC):
 
     def set_mechanism_walls(self, key: str, segments: Sequence[Segment] | None) -> None:
         """Replace the named wall set seen by pedestrian navigation; None removes it. Map frame."""
+
+    def recorded_topics(self) -> tuple[RecordedTopic, ...]:
+        """Topics of this backend the episode recorder subscribes to (`{tg}` = the env node)."""
+        return ()
 
     def drives_mechanisms(self) -> bool:
         """Whether this backend steps the world mechanisms on its own crowd ticks (see `set_mechanism_step`)."""

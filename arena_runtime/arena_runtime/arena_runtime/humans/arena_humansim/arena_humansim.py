@@ -2,6 +2,7 @@
 
 import array
 import asyncio
+import json
 import math
 import time
 import traceback
@@ -93,7 +94,7 @@ from arena_rclpy_mixins.Async import ClientWrapper
 from arena_rclpy_mixins.lazy import LazySubscription
 from arena_rclpy_mixins.shared import FrameNamespace
 from arena_rclpy_mixins.Time import Time
-from arena_runtime_msgs.msg import LockstepChannel, LockstepStatus
+from arena_runtime_msgs.msg import LockstepChannel, LockstepStatus, RecordedTopic
 from arena_simulation_setup.metrics import use_points
 from arena_simulation_setup.shared.world import CABIN_DOOR_INSET, CABIN_DOOR_THRESHOLD, CABIN_DOOR_WIDTH, Stairs
 from arena_simulation_setup.tree.assets.Human import HumanIdentifier
@@ -121,6 +122,7 @@ from rclpy.qos import (
     QoSProfile,
     QoSReliabilityPolicy,
 )
+from std_msgs.msg import String as StringMsg
 from std_msgs.msg import UInt32
 from visualization_msgs.msg import MarkerArray
 
@@ -463,6 +465,9 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         self._clock_on_request = False
         # since the last start_clock: the engine ticks (held again by every remove-all)
         self._clock_started = False
+        # this episode's last catch-up state from the engine, and whether its lag flagged the episode
+        self._catch_up_state: dict[str, typing.Any] | None = None
+        self._catch_up_flagged = False
         # whether the engine waits for this adapter's acknowledgement of each frame (input_barrier), set in setup()
         self._input_barrier = False
         # stamp of the newest engine frame acknowledged with a world_state
@@ -579,6 +584,12 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             UInt32,
             self.node.service_namespace("input_barrier_timeouts"),
             self._barrier_timeouts_callback,
+            QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL),
+        )
+        self.node.create_subscription(
+            StringMsg,
+            self.node.service_namespace("catch_up"),
+            self._catch_up_callback,
             QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL),
         )
 
@@ -742,6 +753,41 @@ class ArenaHumanSimulator(BaseHumanSimulator):
         if msg.data > 0 and self._input_barrier and self._clock_started:
             self._logger.error(f"engine input barrier timed out {msg.data} time(s) this episode")
             self._report_incident(self.BARRIER_TIMEOUT_INCIDENT)
+
+    #: a crowd this far behind its clock is flagged: above the 0.55 s peak of a healthy 1680 s, 357-walker fleet episode and
+    #: the 0.76 s maximum lag of 8 quiet lockstep-off lanes, below the 2.8-14 s batches of the crowds that fell behind for
+    #: good (HUMANSIM_STEP_PERF.md, LOCKSTEP_TEST.md); at 1.3 m/s it is 1.3 m, two thirds of the 2 m exposure radius
+    CATCH_UP_LAG_LIMIT_S = 1.0
+    CATCH_UP_INCIDENT = f"humansim crowd fell more than {CATCH_UP_LAG_LIMIT_S:.1f} s behind its clock: walkers stood at earlier positions than the sim time"
+
+    def _catch_up_callback(self, msg: StringMsg) -> None:
+        """The engine's catch-up state (peaks since the crowd's tick 0): flag the episode once its crowd lagged the clock by
+        more than CATCH_UP_LAG_LIMIT_S. A state from before this episode's first tick (the latched one of the last crowd)
+        is not this episode's."""
+        try:
+            state = json.loads(msg.data)
+        except ValueError:
+            return
+        if not isinstance(state, dict):
+            return
+        epoch_ns = self._episode_epoch_ns
+        clock_s = state.get("clock_s")
+        if not self._clock_started or epoch_ns is None or not isinstance(clock_s, int | float) or clock_s * 1e9 < epoch_ns - 1e6:
+            return
+        self._catch_up_state = state
+        lag = state.get("peak_lag_s", 0.0)
+        if isinstance(lag, int | float) and lag > self.CATCH_UP_LAG_LIMIT_S and not self._catch_up_flagged:
+            self._catch_up_flagged = True
+            peaks = {key: value for key, value in state.items() if key.startswith("peak_")}
+            self._logger.error(f"humansim crowd behind its clock at sim {state.get('sim_s')} s: {peaks}")
+            self._report_incident(self.CATCH_UP_INCIDENT)
+
+    def recorded_topics(self) -> tuple[RecordedTopic, ...]:
+        """The engine's catch-up state and input-barrier timeout count, latched: the peaks of every episode are in its record."""
+        return (
+            RecordedTopic(key="humansim_catch_up", topic="{tg}/catch_up", msg_type="std_msgs/msg/String", qos_transient_local=True, reliable=True, depth=1, recorded=True),
+            RecordedTopic(key="humansim_input_barrier_timeouts", topic="{tg}/input_barrier_timeouts", msg_type="std_msgs/msg/UInt32", qos_transient_local=True, reliable=True, depth=1, recorded=True),
+        )
 
     def _clock_ns(self) -> int:
         now = self.node.sim_time
@@ -975,6 +1021,8 @@ class ArenaHumanSimulator(BaseHumanSimulator):
             await self._semantics_delivered()
         response = await self._start_clock_client.call_timeout(StartClock.Request(epoch=epoch.to_msg()))
         self._clock_started = response is not None and response.success
+        self._catch_up_flagged = False
+        self._catch_up_state = None
         # from the first tick on, calls made outside a step wait for the step (a held clock sends no frame to step on)
         self._engine_inputs.active = self._clock_started and self._input_barrier and self._feedback_loop_task is not None
         if response is None or not response.success:

@@ -143,3 +143,45 @@ def test_an_engine_barrier_timeout_is_recorded_against_the_episode() -> None:
     assert reasons == []
     adapter._barrier_timeouts_callback(UInt32(data=2))
     assert reasons == [ArenaHumanSimulator.BARRIER_TIMEOUT_INCIDENT]
+
+
+def test_a_crowd_behind_its_clock_flags_the_episode_once() -> None:
+    import json
+
+    from std_msgs.msg import String
+
+    adapter = _adapter()
+    adapter._clock_started = True
+    adapter._episode_epoch_ns = 40_000_000_000
+    adapter._catch_up_flagged = False
+    adapter._catch_up_state = None
+    reasons: list[str] = []
+    adapter._report_incident = reasons.append  # pyright: ignore[reportAttributeAccessIssue]
+
+    class _Log:
+        def error(self, line: str) -> None:
+            pass
+
+        def get_child(self, _name: str) -> _Log:
+            return self
+
+    adapter._NodeInterface__node = type("N", (), {"get_logger": lambda self: _Log()})()  # pyright: ignore[reportAttributeAccessIssue]
+
+    def state(clock_s: float, peak_lag_s: float) -> String:
+        return String(data=json.dumps({"sim_s": clock_s - 40.0, "clock_s": clock_s, "owed": 3, "peak_owed": 30, "peak_lag_s": peak_lag_s, "peak_batch_s": 0.5}))
+
+    adapter._catch_up_callback(state(39.0, 5.0))
+    assert reasons == [], "the last crowd's latched state is not this episode's"
+    adapter._catch_up_callback(state(100.0, 0.55))
+    assert reasons == [] and adapter._catch_up_state is not None, "a healthy peak is recorded, not flagged"
+    adapter._catch_up_callback(state(200.0, 1.45))
+    adapter._catch_up_callback(state(201.0, 2.0))
+    assert reasons == [ArenaHumanSimulator.CATCH_UP_INCIDENT]
+    adapter._catch_up_callback(String(data="not json"))
+
+
+def test_the_recorder_gets_the_engine_state_topics() -> None:
+    topics = {t.key: t for t in _adapter().recorded_topics()}
+    assert topics["humansim_catch_up"].topic == "{tg}/catch_up"
+    assert topics["humansim_catch_up"].qos_transient_local and topics["humansim_catch_up"].recorded
+    assert topics["humansim_input_barrier_timeouts"].msg_type == "std_msgs/msg/UInt32"
