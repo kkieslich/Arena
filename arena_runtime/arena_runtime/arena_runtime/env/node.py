@@ -100,6 +100,9 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
     _environment_manager: EnvironmentManager
     _robots_manager: RobotsManager | None = None
     _side_executor: SideExecutor | None = None
+    # what teardown reads has a class default, so a node whose setup never ran (or one built without __init__) tears down
+    _tick_loop_task: asyncio.Task | None = None
+    _loop_lag_task: asyncio.Task | None = None
     _arena_hold_client: ClientWrapper
     _arena_unpause_window_client: ClientWrapper
     _arena_step_client: ClientWrapper
@@ -122,6 +125,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         super().destroy_node()
 
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
+        self._heartbeat_stop = threading.Event()  # first: teardown sets it, however early the rest of __init__ failed
         super().__init__(*args, **kwargs)
         migrate_deprecated_params(self)
         self.conf = Configuration(self)
@@ -152,7 +156,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._judge_walls: WallGrid | None = None
         self._known_subjects: set[str] = set()
         self._sample = Sample(t=0.0)
-        self._tick_loop_task: asyncio.Task | None = None
+        self._tick_loop_task = None
         self._semantics_dirty = False
 
         self._pub_state_robots = self.create_publisher(
@@ -191,12 +195,11 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
             10,
         )
 
-        self._heartbeat_stop = threading.Event()
         threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True).start()
 
         self._arena_seen = False
         self._watchdog_at: float | None = None
-        self._loop_lag_task: asyncio.Task | None = None
+        self._loop_lag_task = None
         self._arena_watchdog_timer = self.wall_timer(1.0, self._cb_arena_watchdog)
 
         self._sub_shutdown_request = self.create_subscription(
