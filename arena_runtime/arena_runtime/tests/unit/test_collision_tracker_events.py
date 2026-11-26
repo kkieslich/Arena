@@ -735,3 +735,29 @@ def test_the_tracker_ticks_once_per_mark_of_the_sim_clock_and_skips_what_the_clo
         assert len(ticks) == 6
 
     on_stage(body)
+
+
+def test_the_tracker_ticks_on_the_side_executor_thread(on_stage):
+    """The /clock listener that ticks the tracker runs on the env's side executor, like its parameter service, not behind the env executor's queue."""
+    import threading
+
+    from rosgraph_msgs.msg import Clock
+
+    from arena_rclpy_mixins.Time import Time
+
+    async def body(stage: Stage):
+        _, tracker = stage.robot_manager()
+        threads: list[str] = []
+        tracker._tick = lambda: threads.append(threading.current_thread().name)
+        clock = stage.probe.create_publisher(Clock, "/clock", 10)
+        await _until(lambda: clock.get_subscription_count() >= 2, "the tracker's /clock subscription")
+        now = 2.0
+        for _ in range(100):
+            now += 0.05
+            clock.publish(Clock(clock=Time.from_float(now).to_msg()))
+            await asyncio.sleep(0.01)
+            if len(threads) >= 3:
+                break
+        assert threads and set(threads) == {f"{stage.node.get_name()}_side"}, threads
+
+    on_stage(body)
