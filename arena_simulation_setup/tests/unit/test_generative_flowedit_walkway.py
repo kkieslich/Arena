@@ -234,6 +234,28 @@ def test_two_elements_that_leave_a_neck_together_are_both_named(office: WalkerFl
     assert set(found.by) == {"charger_pair:charger_1", "locker:locker_1"} and found.after == pytest.approx(13.0 - 11.71, abs=CELL_M)
 
 
+def test_a_way_ending_at_a_free_standing_pillar_is_measured() -> None:
+    # the walkers' way ends at a sink inside the window, heading for a free-standing pillar the floor wraps round: its
+    # run-on goes on through the pillar to the window's edge, so the way still has two sides and its neck is read
+    floor = WalkerFloor("0", shapely.box(0.0, 0.0, 30.0, 6.0), (), (Occupied("pillar", shapely.box(12.8, 2.6, 13.4, 3.4)),))
+    ends = {"west": (0.5, 2.6, 2.0, 3.4), "east": (11.0, 2.8, 11.6, 3.2)}
+    routes = Routes.build(floor, WalkerDemand.from_scenario(_crowd(ends, [("west", "east"), ("east", "west")])))
+    assert walkway.narrowings(floor, routes, [Occupied("element", shapely.box(8.0, 0.0, 9.0, 1.2))]) == []
+    (found,) = walkway.narrowings(floor, routes, [Occupied("element", shapely.box(8.0, 0.0, 9.0, 4.9))])
+    assert found.kind == "narrowed" and found.two_way and found.after == pytest.approx(1.1, abs=CELL_M)
+
+
+def test_a_way_whose_sides_the_window_does_not_part_is_unmeasured_not_wide() -> None:
+    import numpy as np
+    from arena_simulation_setup.generative.flowedit.walkway import _Grid, _width
+
+    # a path along the window's top edge parts no left side from a right one: no width, never a pass
+    grid = _Grid(0.0, 0.0, 0.05, (60, 60))
+    free = np.ones(grid.shape, dtype=bool)
+    width = _width(free, grid, np.full(60, 59), np.arange(60))
+    assert not width.measured
+
+
 # --- the crowd's demand and routes ------------------------------------------------------------------------------------
 
 
@@ -280,9 +302,8 @@ HOSPITAL = Path(__file__).resolve().parents[2] / "worlds" / "hospital_1"
 
 @pytest.mark.usefixtures("local_root")
 def test_the_walkway_rule_runs_against_the_sites_crowd_and_check_layout_finds_the_necks_two_elements_make(local_root: Path) -> None:
-    from flowedit_docks import write_docked_assets
-
     from arena_simulation_setup.generative.flowedit.edit import open_site
+    from flowedit_docks import write_docked_assets
 
     write_docked_assets(local_root)
     site = open_site(HOSPITAL)
@@ -309,10 +330,9 @@ def test_the_walkway_rule_runs_against_the_sites_crowd_and_check_layout_finds_th
 
 @pytest.mark.usefixtures("local_root")
 def test_check_layout_names_the_neck_two_facing_elements_leave_in_a_hallway_the_crowd_walks(local_root: Path) -> None:
-    from flowedit_docks import write_docked_assets
-
     from arena_simulation_setup.generative.flowedit.edit import open_site
     from arena_simulation_setup.generative.flowedit.place import Layout
+    from flowedit_docks import write_docked_assets
 
     write_docked_assets(local_root)
     site = open_site(HOSPITAL)

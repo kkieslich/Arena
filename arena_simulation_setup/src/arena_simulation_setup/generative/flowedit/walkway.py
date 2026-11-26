@@ -61,6 +61,7 @@ check asks for a lane, not for passing. One-way: 0.9 m, the clear width of an ac
 from __future__ import annotations
 
 import math
+import typing
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -217,8 +218,8 @@ class WalkerFloor:
     floor: BaseGeometry
     segments: tuple[tuple[Point, Point], ...]
     obstacles: tuple[Occupied, ...]
-    _free: Any = attrs.field(default=None, init=False)
-    _free_docked: Any = attrs.field(default=None, init=False)
+    _free: BaseGeometry | None = attrs.field(default=None, init=False)
+    _free_docked: BaseGeometry | None = attrs.field(default=None, init=False)
 
     @property
     def walls(self) -> BaseGeometry:
@@ -230,22 +231,26 @@ class WalkerFloor:
     @property
     def free(self) -> BaseGeometry:
         """The free floor: the zones less walls and permanent obstacles (the crowd's routes run on it)."""
-        if self._free is None:
+        free = self._free
+        if free is None:
             import shapely
 
             blocked = shapely.union_all([self.walls, *(o.geometry for o in self.obstacles if not o.intermittent)])
-            object.__setattr__(self, "_free", self.floor.difference(blocked))
-        return self._free
+            free = self.floor.difference(blocked)
+            object.__setattr__(self, "_free", free)
+        return free
 
     @property
     def free_docked(self) -> BaseGeometry:
         """The free floor while every intermittent dock is occupied."""
-        if self._free_docked is None:
+        free = self._free_docked
+        if free is None:
             import shapely
 
             docks = [o.geometry for o in self.obstacles if o.intermittent]
-            object.__setattr__(self, "_free_docked", self.free.difference(shapely.union_all(docks)) if docks else self.free)
-        return self._free_docked
+            free = self.free.difference(shapely.union_all(docks)) if docks else self.free
+            object.__setattr__(self, "_free_docked", free)
+        return free
 
     def bare_edges(self, within: float = 0.15) -> BaseGeometry:
         """The floor's edges with no wall within `within`: where HumanSim, which knows walls only, could walk off it."""
@@ -343,7 +348,8 @@ class _Grid:
 
         xs = self.x0 + (np.arange(self.shape[1]) + 0.5) * self.res
         ys = self.y0 + (np.arange(self.shape[0]) + 0.5) * self.res
-        return np.meshgrid(xs, ys)
+        xx, yy = np.meshgrid(xs, ys)
+        return xx, yy
 
     def cells(self, xy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         import numpy as np
@@ -409,11 +415,24 @@ def _graph(routable: np.ndarray, res: float, extra: Sequence[tuple[int, int, flo
     return graph, index
 
 
-def _clearance(free: np.ndarray, res: float) -> np.ndarray:
-    """Each cell's distance to the nearest blocked cell [m] (0 on blocked cells)."""
+def _edt(mask: np.ndarray) -> np.ndarray:
+    """Each cell's distance to the nearest False cell of `mask`, in cells."""
     import scipy.ndimage
 
-    return scipy.ndimage.distance_transform_edt(free) * res
+    return typing.cast("np.ndarray", scipy.ndimage.distance_transform_edt(mask))
+
+
+def _edt_nearest(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """`_edt`, and the row and the column of each cell's nearest False cell."""
+    import scipy.ndimage
+
+    dist, nearest = typing.cast("tuple[np.ndarray, np.ndarray]", scipy.ndimage.distance_transform_edt(mask, return_indices=True))
+    return dist, nearest[0], nearest[1]
+
+
+def _clearance(free: np.ndarray, res: float) -> np.ndarray:
+    """Each cell's distance to the nearest blocked cell [m] (0 on blocked cells)."""
+    return _edt(free) * res
 
 
 # --- the crowd's routes ------------------------------------------------------------------------------------------------
@@ -456,9 +475,11 @@ class Routes:
         """The routes that cross `area`."""
         import shapely
 
-        if self._tree is None:
-            object.__setattr__(self, "_tree", shapely.STRtree(self.lines))
-        return [self.routes[int(i)] for i in self._tree.query(area, predicate="intersects")]
+        tree = self._tree
+        if tree is None:
+            tree = shapely.STRtree(self.lines)
+            object.__setattr__(self, "_tree", tree)
+        return [self.routes[int(i)] for i in tree.query(area, predicate="intersects")]
 
     @classmethod
     def build(cls, floor: WalkerFloor, demand: WalkerDemand, res: float = ROUTE_RES_M, clearance: float = ROUTE_CLEARANCE_M) -> Routes:
@@ -476,7 +497,7 @@ class Routes:
         coords = grid.xy(rr, cc)
         import scipy.spatial
 
-        tree = scipy.spatial.cKDTree(coords) if len(coords) else None
+        tree = scipy.spatial.KDTree(coords) if len(coords) else None
 
         def snap(p: Point, reach: float = 1.5) -> int | None:
             if tree is None:
@@ -562,7 +583,7 @@ class Narrowing:
     an intermittent dock (`docked`), its `kind` and the neck's two ends (`gap`). Kinds: `narrowed` (a way narrower than
     before and than its requirement), `moved` (the narrowest way narrower than the narrowest before: walkers moved into a
     narrow passage), `closed` (no way left), `unmeasured` (two openings the crowd's routes join but no way between them
-    in the window: the check cannot say, and fails)."""
+    in the window, or a way whose sides the window does not part: the check cannot say, and fails)."""
 
     ports: tuple[str, str]
     required: float
@@ -656,11 +677,15 @@ def _path(graph: scipy.sparse.csr_matrix, index: np.ndarray, a: np.ndarray, b: n
 @attrs.frozen
 class _Width:
     """The narrowest gap between the obstacles left and right of a path near the element [m] and its two ends; no ends
-    (`left`, `right` None) where no gap lies within `MEASURE_M` of it, the width then `WIDE_M`."""
+    (`left`, `right` None) where no gap lies within `MEASURE_M` of it, the width then `WIDE_M`. Not `measured` where the
+    path and its run-ons part no left side of the window from a right one and the path comes within `MEASURE_M` of the
+    element: no width can be read (a path that parts none and keeps beyond `MEASURE_M`, along the window's edge, is
+    `WIDE_M`)."""
 
     width: float
     left: Point | None = None
     right: Point | None = None
+    measured: bool = True
 
     @property
     def middle(self) -> Point | None:
@@ -678,8 +703,9 @@ WIDE_M = 2.0 * MEASURE_M
 
 
 def _extended(free: np.ndarray, pts: list[tuple[int, int]]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    """`pts` with each end that lies inside the window run on straight, in the path's direction there, to the first
-    blocked cell or the window's edge; and the blocked cells those runs meet."""
+    """`pts` with each end that lies inside the window run on straight, in the path's direction there, to the window's
+    edge, through whatever stands in the way (so the run-on and the path part the window into two sides even where the
+    floor wraps round a free-standing obstacle); and the first blocked cell each run-on meets."""
     h, w = free.shape
     hits: list[tuple[int, int]] = []
     for at_start in (True, False):
@@ -691,13 +717,14 @@ def _extended(free: np.ndarray, pts: list[tuple[int, int]]) -> tuple[list[tuple[
         dr, dc = r - prev[0], c - prev[1]
         norm = math.hypot(dr, dc) or 1.0
         ext: list[tuple[int, int]] = []
+        hit = False
         for k in range(1, 4 * (h + w)):
             rr, cc = int(round(r + dr / norm * k * 0.5)), int(round(c + dc / norm * k * 0.5))
             if not (0 <= rr < h and 0 <= cc < w):
                 break
-            if not free[rr, cc]:
+            if not free[rr, cc] and not hit:
                 hits.append((rr, cc))
-                break
+                hit = True
             if not ext or ext[-1] != (rr, cc):
                 ext.append((rr, cc))
         pts = ext[::-1] + pts if at_start else pts + ext
@@ -708,9 +735,9 @@ def _width(free: np.ndarray, grid: _Grid, rows: np.ndarray, cols: np.ndarray, fo
     """The width of the walkway a path (cells `rows`, `cols`) takes through the window: the shortest distance between the
     blocked cells on its left and those on its right. Every line from one side to the other crosses the path, so this is
     the narrowest cross-section the path passes, on a diagonal too, and a corner it turns round is no cross-section. A
-    path end inside the window runs on straight to the first blocked cell, which parts the sides; the blocked cells
-    within `END_M` of where it meets them are on both sides and left out, and a gap across that run-on is none of the
-    way's (only blocked cells nearer the walked path than the run-on count). With `focus` (a cell mask), only blocked cells
+    path end inside the window runs on straight to the window's edge, which parts the sides; the blocked cells within
+    `END_M` of the first it meets are on both sides and left out, and a gap across that run-on is none of the way's
+    (only blocked cells nearer the walked path than the run-on count). With `focus` (a cell mask), only blocked cells
     there count: the gaps an element can narrow have it at one end. `WIDE_M` without a gap there."""
     import numpy as np
     import scipy.ndimage
@@ -732,10 +759,11 @@ def _width(free: np.ndarray, grid: _Grid, rows: np.ndarray, cols: np.ndarray, fo
     barrier[marked[:, 0], marked[:, 1]] = True
     grow = np.ones((3, 3), dtype=bool)
     barrier = scipy.ndimage.binary_dilation(barrier, structure=grow) & free
-    sides, count = scipy.ndimage.label(free & ~barrier, structure=grow)
+    labelled = typing.cast("tuple[np.ndarray, int]", scipy.ndimage.label(free & ~barrier, structure=grow))
+    sides, count = labelled
     path = np.asarray(pts, dtype=float)
     tangent = np.gradient(path, axis=0)
-    tree = scipy.spatial.cKDTree(path)
+    tree = scipy.spatial.KDTree(path)
     touching = scipy.ndimage.binary_dilation(barrier, structure=grow)
     left = np.zeros(free.shape, dtype=bool)
     right = np.zeros(free.shape, dtype=bool)
@@ -748,6 +776,12 @@ def _width(free: np.ndarray, grid: _Grid, rows: np.ndarray, cols: np.ndarray, fo
         _, k = tree.query(np.column_stack([er, ec]).astype(float))
         cross = tangent[k, 0] * (ec - path[k, 1]) - tangent[k, 1] * (er - path[k, 0])
         (left if float(np.sum(np.sign(cross))) > 0 else right)[region] = True
+    if not left.any() or not right.any():
+        # the path parts no left side from a right one: where it keeps beyond `MEASURE_M` of the element (along the
+        # window's edge, `WINDOW_M` off), no neck can have the element at one end; nearer, nothing can be read
+        if focus is not None and not focus[rows, cols].any():
+            return _Width(WIDE_M)
+        return _Width(0.0, measured=False)
     blocked = ~free
     near_left = blocked & scipy.ndimage.binary_dilation(left, structure=grow)
     near_right = blocked & scipy.ndimage.binary_dilation(right, structure=grow)
@@ -758,7 +792,7 @@ def _width(free: np.ndarray, grid: _Grid, rows: np.ndarray, cols: np.ndarray, fo
         spot = np.zeros(free.shape, dtype=bool)
         for r, c in hits:
             spot[r, c] = True
-        away = scipy.ndimage.distance_transform_edt(~spot) * res > END_M
+        away = _edt(~spot) * res > END_M
         near_left &= away
         near_right &= away
     run_on = np.zeros(free.shape, dtype=bool)
@@ -766,12 +800,12 @@ def _width(free: np.ndarray, grid: _Grid, rows: np.ndarray, cols: np.ndarray, fo
     run_on &= ~walked
     if run_on.any():
         # a gap across the run-on beyond a path's end is no neck of the way: only the cells nearer the walked path count
-        nearer = scipy.ndimage.distance_transform_edt(~walked) <= scipy.ndimage.distance_transform_edt(~run_on)
+        nearer = _edt(~walked) <= _edt(~run_on)
         near_left &= nearer
         near_right &= nearer
     if not near_left.any() or not near_right.any():
         return _Width(WIDE_M)
-    dist, (ir, ic) = scipy.ndimage.distance_transform_edt(~near_left, return_indices=True)
+    dist, ir, ic = _edt_nearest(~near_left)
     rr, cc = np.nonzero(near_right)
     k = int(np.argmin(dist[rr, cc]))
     r, c = int(rr[k]), int(cc[k])
@@ -787,7 +821,6 @@ def _across(free: np.ndarray, rows: np.ndarray, cols: np.ndarray, focus: np.ndar
     obstacle it passes nearest there: from that obstacle's cell nearest the path (blocked, within `focus`), straight
     through the path to the next blocked cell or the window's edge, as a cell mask."""
     import numpy as np
-    import scipy.ndimage
 
     h, w = free.shape
     on_path = np.zeros(free.shape, dtype=bool)
@@ -797,7 +830,7 @@ def _across(free: np.ndarray, rows: np.ndarray, cols: np.ndarray, focus: np.ndar
     if not near.any():
         cut[rows[len(rows) // 2], cols[len(cols) // 2]] = True
         return cut
-    dist, (pr, pc) = scipy.ndimage.distance_transform_edt(~on_path, return_indices=True)
+    dist, pr, pc = _edt_nearest(~on_path)
     br, bc = np.nonzero(near)
     k = int(np.argmin(dist[br, bc]))
     r0, c0 = int(br[k]), int(bc[k])
@@ -884,8 +917,11 @@ def _ways(routing: _Routing, grid: _Grid, free: np.ndarray, a_mask: np.ndarray, 
         rows, cols = routing.rows[nodes], routing.cols[nodes]
         width = _width(free, grid, rows, cols, focus)
         out.append(_Way(width, length, np.column_stack([rows, cols])))
-        if width.gap is not None:
-            (lr, lc), (r_, c_) = grid.cells(np.array([width.left])), grid.cells(np.array([width.right]))
+        if not width.measured:
+            break  # no neck to close for the next search: the stretch is unmeasured anyway
+        gap = width.gap
+        if gap is not None:
+            (lr, lc), (r_, c_) = grid.cells(np.array([gap[0]])), grid.cells(np.array([gap[1]]))
             n = int(max(abs(r_[0] - lr[0]), abs(c_[0] - lc[0]))) * 2 + 3
             cut = np.zeros(free.shape, dtype=bool)
             cut[np.clip(np.round(np.linspace(lr[0], r_[0], n)).astype(int), 0, free.shape[0] - 1), np.clip(np.round(np.linspace(lc[0], c_[0], n)).astype(int), 0, free.shape[1] - 1)] = True
@@ -894,7 +930,7 @@ def _ways(routing: _Routing, grid: _Grid, free: np.ndarray, a_mask: np.ndarray, 
         closed = index[scipy.ndimage.binary_dilation(cut, structure=grow) & (index >= 0)]
         if not len(closed):
             break
-        mark = np.zeros(graph.shape[0], dtype=bool)
+        mark = np.zeros(len(routing.rows), dtype=bool)
         mark[closed] = True
         data = (routing.graph.data if data is None else data).copy()
         data[mark[routing.tails] | mark[routing.graph.indices]] = CLOSED_M
@@ -915,7 +951,7 @@ def _crossing(way: _Way, gap: tuple[Point, Point], grid: _Grid) -> int:
     hit = line.intersection(seg)
     if hit.is_empty:
         return 0
-    p = hit if hit.geom_type == "Point" else hit.representative_point()
+    p = hit.representative_point()
     i = int(np.argmin(np.hypot(xy[:, 0] - p.x, xy[:, 1] - p.y)))
     j0, j1 = max(0, i - 2), min(len(xy) - 1, i + 2)
     (gx, gy), (hx, hy) = gap
@@ -962,7 +998,6 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
     the window (no way left) counts as narrowed to nothing; two openings the routes join with no way between them in the
     window as `unmeasured`, a failure. `stretches`, when given, gets what was measured for every opening pair."""
     import numpy as np
-    import scipy.ndimage
     import shapely
 
     if docked:
@@ -996,7 +1031,7 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
     ports, arc = _ports(grid, route_b)
     xx, yy = grid.centres()
     toward = grid.raster(mine_geom)
-    focus = scipy.ndimage.distance_transform_edt(~toward) * res <= MEASURE_M
+    focus = _edt(~toward) * res <= MEASURE_M
     # the openings the crowd's route pieces start and end at, and the walkers an hour from each to each
     flows: dict[tuple[str, str], float] = {}
     ends: dict[str, list[tuple[float, float]]] = {}
@@ -1031,7 +1066,7 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
         return masks[port]
 
     # pairs whose walkers could not reach `FLOW_MIN_PED_H` at a neck even ten of them together are not measured
-    pairs = sorted(k for k in {tuple(sorted(k)) for k in flows} if flows.get(k, 0.0) + flows.get(k[::-1], 0.0) >= FLOW_MIN_PED_H / 10.0)
+    pairs: list[tuple[str, str]] = sorted(k for k in {(min(a, b), max(a, b)) for a, b in flows} if flows.get(k, 0.0) + flows.get((k[1], k[0]), 0.0) >= FLOW_MIN_PED_H / 10.0)
     routing_b, routing_a = _Routing.of(route_b, res), _Routing.of(route_a, res)
     measured: dict[tuple[str, str], tuple[list[_Way], list[_Way]]] = {}
     for a, b in pairs:
@@ -1045,17 +1080,21 @@ def narrowings(floor: WalkerFloor, routes: Routes, mine: Sequence[Occupied], oth
             signs = {_crossing(w, gap, grid) for w in (ways_a if after else ways_b)} - {0}
             if not signs:
                 continue
-            s = next(iter(signs))
             q_ab, q_ba = flows.get((a, b), 0.0), flows.get((b, a), 0.0)
-            forth, back = (forth + q_ab, back + q_ba) if s > 0 else (forth + q_ba, back + q_ab)
+            if len(signs) > 1:
+                # its ways cross the neck both ways: each of its flows may come either way
+                forth, back = forth + q_ab + q_ba, back + q_ab + q_ba
+            else:
+                forth, back = (forth + q_ab, back + q_ba) if signs.pop() > 0 else (forth + q_ba, back + q_ab)
         return forth, back
 
     mine_names = {o.name for o in mine}
     out: list[Narrowing] = []
     for (a, b), (ways_b, ways_a) in measured.items():
         q_ab, q_ba = flows.get((a, b), 0.0), flows.get((b, a), 0.0)
-        if not ways_b:
-            # the routes join the two openings, the window shows no way between them: the check cannot say
+        if not ways_b or not all(w.width.measured for w in (*ways_b, *ways_a)):
+            # the routes join the two openings, the window shows no way between them, or a way whose width cannot be
+            # read: the check cannot say
             if _requirement(q_ab, q_ba, docked) is not None:
                 c = mine_geom.centroid
                 out.append(Narrowing((a, b), _requirement(q_ab, q_ba, docked) or ONE_WAY_M, 0.0, 0.0, (round(c.x, 2), round(c.y, 2)), round(q_ab, 1), round(q_ba, 1), tuple(sorted({o.name.split("#")[0] for o in mine})), docked, "unmeasured"))

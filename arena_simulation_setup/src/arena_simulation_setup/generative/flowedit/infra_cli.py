@@ -154,8 +154,11 @@ class _Space:
         # the walkway rule measures against the crowd of the scenario every stage runs; a scenario without walkers gives
         # it nothing to measure against, and it says unknown
         crowd = WK.WalkerDemand.load(self.scenario)
-        if not crowd.flows:
-            _log(f"crowd scenario {self.scenario_name}: no walkers (no source with a rate and a sink): the walkway rule says unknown")
+        if getattr(args, "no_walkway_rule", False):
+            _log("--no-walkway-rule: the walkway rule says unknown and filters nothing (never for a study's selection)")
+            crowd = attrs.evolve(crowd, flows=())
+        elif not crowd.flows:
+            raise ValueError(f"crowd scenario {self.scenario_name}: no walkers (no source with a rate and a sink), so no walkway rule: give the scenario its crowd (pass --no-walkway-rule to search without the rule on purpose)")
         facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=crowd if crowd.flows else None)
         self.search = SE.Search(self.site, loading=loading, pins=dict(getattr(args, "pin", None) or []), exclude=exclude, placements=placements, keep_out=IN.keep_out(self.scenario / "scenario.yaml", self.config.links if self.config is not None else ()), mix=self.mix, facts=facts, elements=elements)
         _log(f"site config: {self.config.path if self.config is not None else '(none, the search defaults)'}")
@@ -1127,6 +1130,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     infra = p.add_subparsers(dest="infra", required=True, metavar="{reference,premise,layouts,search,evaluation,charge-states,site-walls}")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE}); layout copies hardlink its assets, so save on its mount")
+    common.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
     common.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): where each element may go, the excluded zones, the crowd scenario")
     common.add_argument("--scenario", default=None, help=f"the crowd scenario of every stage (default the site config's, else {IN.SCENARIO})")
     common.add_argument("--scenarios-from", type=Path, default=None, help="world directory to copy the scenario from (default: the site's, else the world its name resolves to)")
@@ -1185,6 +1189,7 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
         description="search the site's layouts for demand at the recipient entrances (generative/flowedit/demand.py; study design Part A): per reach, the fewest lockers that give every recipient entrance one within the reach as people walk, the travel-optimal layout, the pedestrian-aware pick at each travel margin and the practice-based layout, each with its robot travel per job, the predicted exposure per walker group and the walk to the locker per group. Prints them and writes a report with --out; writes no world or suite",
     )
     q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
+    q.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
     q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): its entrances, links, courier access point and outlets")
     q.add_argument("--scenario", default=None, help="the crowd scenario whose sources and sinks no element takes (default the site config's)")
     q.add_argument("--scenarios-from", type=Path, default=None, help="world directory to read the scenario from (default: the site's)")
