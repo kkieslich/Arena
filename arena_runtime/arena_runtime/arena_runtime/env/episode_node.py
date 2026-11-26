@@ -842,6 +842,7 @@ class EpisodeNode(EnvNode):
         environment = self._environment_manager
         try:
             self._pub_reset_start.publish(Empty())
+            await self.drop_robot_ticks()
 
             self.conf.General.RNG.reseed(record.seed)
             point_scenario_assets(None)

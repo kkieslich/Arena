@@ -74,6 +74,14 @@ hands off one assigned from outside. The node keeps that set, hands it over at
 each task tick and clears it at every reset. A task error in the tick is logged
 and does not stop the loop.
 
+Each robot's tick runs as a task of its own. A tick can await a reply: the goal
+of the phase it dispatches, a cancel, a lifecycle query, each up to its client's
+timeout (30 s for a goal). The loop waits at most 1 s for the robots' ticks,
+then goes on without the late one. It judges the other robots every tick, and
+the late one again once its own tick is done, at most one ended phase per robot
+and tick. A tick that took 2 s or more, or failed, is a warning and an integrity
+flag of the episode, with the duration. A reset cancels the ticks in flight.
+
 The next episode is one function of `EpisodeRuntime.pending` (a
 `TaskModeOverrides`, merged into by `queue_episode` and `reset_episode`) and an
 explicit world or seed: its id is the current one plus one, its world the

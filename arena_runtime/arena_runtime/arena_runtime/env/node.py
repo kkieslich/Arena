@@ -59,7 +59,7 @@ if typing.TYPE_CHECKING:
 
     from arena_runtime.env.adapters import AdapterDisplayHint
     from arena_runtime.env.robot_manager import RobotManager
-    from arena_runtime.env.robot_manager.task_runner import PhaseState
+    from arena_runtime.env.robot_manager.task_runner import PhaseState, Transition
     from arena_runtime.shared import SemanticCfg
     from arena_runtime.sim._semantics import SemanticChange, SemanticEntitySnapshot
 
@@ -72,9 +72,24 @@ _LATCHED = rclpy.qos.QoSProfile(
 _SIM_TICK_RATE = 30.0
 _ONE_TICK = 1e-6
 _STEP_TIMEOUT = 10.0
+# The tick loop waits this long (wall) for the robots' ticks, then goes on without a robot whose tick still awaits a reply
+# (a goal, a cancel, a lifecycle query); that robot is judged again once its own tick is done.
+_ROBOT_TICK_WAIT_S = 1.0
+# A robot's tick this long (wall) is reported, as a warning and an integrity flag of the episode.
+_LATE_ROBOT_TICK_S = 2.0
 # The 1 s watchdog timer this much late means the env executor's queue ran behind; warned at most every _LAG_WARN_EVERY_S.
 _LAG_WARN_S = 2.0
 _LAG_WARN_EVERY_S = 30.0
+
+
+@attrs.define
+class _RobotTick:
+    """One robot's tick in flight: its task, when it started and finished (wall), whether it was reported late."""
+
+    task: asyncio.Task[Transition]
+    started: float
+    finished: float | None = None
+    reported: bool = False
 
 
 class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, metaclass=abc.ABCMeta):
@@ -147,6 +162,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._known_subjects: set[str] = set()
         self._sample = Sample(t=0.0)
         self._tick_loop_task: asyncio.Task | None = None
+        self._robot_ticks: dict[str, _RobotTick] = {}
         self._semantics_dirty = False
 
         self._pub_state_robots = self.create_publisher(
@@ -291,6 +307,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         if self._tick_loop_task is not None and not self._tick_loop_task.done():
             self._tick_loop_task.cancel()
             await asyncio.gather(self._tick_loop_task, return_exceptions=True)
+        await self.drop_robot_ticks()
         await self._teardown_episode()
         if self._robots_manager is not None:
             await self._robots_manager.teardown()
@@ -777,21 +794,89 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         return WallGrid.of_level(compacted)
 
     async def _tick_robots(self) -> dict[str, PhaseState]:
+        """Tick every robot that is not still busy with an earlier tick, wait at most `_ROBOT_TICK_WAIT_S` for them, and
+        return the phases that ended in the ticks done by now.
+
+        A robot's tick can await a reply (a goal it dispatches, a cancel, a lifecycle query), up to that client's timeout.
+        Gathering all robots' ticks made one late reply stop the judging of every robot for that long; now the late robot's
+        tick runs on alone, the loop judges the others every tick, and the late one is judged again once its tick is done.
+        """
         if self._robots_manager is None:
             return {}
         managers = list(self._robots_manager.managers.values())
+        names = {manager.name for manager in managers}
+        for name in self._robot_ticks.keys() - names:
+            self._robot_ticks.pop(name).task.cancel()
         charging = self._chargers.step(self._sample, self._judge_zones)
         for manager in managers:
             judged = self._sample.robots.get(manager.name)
             if judged is not None and manager.runner.active is not None:
                 manager.publish_task_pose(Pose(Position(judged[0], judged[1]), Orientation.from_yaw(judged[2])))
             manager.publish_charge_power(charging.get(manager.name, 0.0))
-        transitions = await asyncio.gather(*(manager.tick(self._sample, self._judge_zones) for manager in managers))
+        ended = self._collect_robot_ticks(managers)
+        now = time.monotonic()
+        started: list[asyncio.Task[Transition]] = []
+        for manager in managers:
+            busy = self._robot_ticks.get(manager.name)
+            if busy is not None:
+                self._report_late_tick(manager.name, busy, now)
+                continue
+            if manager.name in ended:
+                continue  # a late tick just ended a phase: the next one starts on the next tick, one ended phase per tick
+            tick = _RobotTick(asyncio.create_task(manager.tick(self._sample, self._judge_zones)), now)
+            tick.task.add_done_callback(lambda _, tick=tick: setattr(tick, "finished", time.monotonic()))
+            self._robot_ticks[manager.name] = tick
+            started.append(tick.task)
+        if started:
+            await asyncio.wait(started, timeout=_ROBOT_TICK_WAIT_S)
+        ended |= self._collect_robot_ticks(managers)
         if any(manager.runner.changed for manager in managers):
             for manager in managers:
                 manager.runner.changed = False
             self._semantics_dirty = True
-        return {manager.name: transition.ended for manager, transition in zip(managers, transitions, strict=True) if transition.ended is not None}
+        return ended
+
+    def _collect_robot_ticks(self, managers: Sequence[RobotManager]) -> dict[str, PhaseState]:
+        """The phases that ended in the robots' finished ticks, which leave the ticks in flight."""
+        ended: dict[str, PhaseState] = {}
+        for manager in managers:
+            tick = self._robot_ticks.get(manager.name)
+            if tick is None or not tick.task.done():
+                continue
+            del self._robot_ticks[manager.name]
+            transition = self._collect_robot_tick(manager.name, tick)
+            if transition is not None and transition.ended is not None:
+                ended[manager.name] = transition.ended
+        return ended
+
+    def _report_late_tick(self, name: str, tick: _RobotTick, now: float) -> None:
+        if not tick.reported and now - tick.started >= _LATE_ROBOT_TICK_S:
+            tick.reported = True
+            self.get_logger().warning(f"robot {name}: its tick has waited {now - tick.started:.1f}s for a reply, the other robots are judged meanwhile")
+
+    def _collect_robot_tick(self, name: str, tick: _RobotTick) -> Transition | None:
+        """The transition of a robot's finished tick; a late or failed tick is a warning and an integrity flag of the episode."""
+        if tick.task.cancelled():
+            return None
+        took = (tick.finished if tick.finished is not None else time.monotonic()) - tick.started
+        error = tick.task.exception()
+        if error is not None:
+            reason = f"robot {name} tick failed after {took:.1f}s: {error!r}"
+            self.get_logger().warning(reason)
+            self._compromise(reason)
+            return None
+        if took >= _LATE_ROBOT_TICK_S:
+            reason = f"robot {name} tick took {took:.1f}s (judged again once done, the other robots meanwhile)"
+            self.get_logger().warning(reason)
+            self._compromise(reason)
+        return tick.task.result()
+
+    async def drop_robot_ticks(self) -> None:
+        """Cancel the robots' ticks still in flight (an episode reset, teardown)."""
+        ticks, self._robot_ticks = self._robot_ticks, {}
+        for tick in ticks.values():
+            tick.task.cancel()
+        await asyncio.gather(*(tick.task for tick in ticks.values()), return_exceptions=True)
 
     def ped_names(self) -> list[str]:
         """Bare names of the pedestrians the human simulator currently tracks."""
