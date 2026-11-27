@@ -14,7 +14,14 @@ The walkway rule (`walkway`) measures the crowd's floor, not the robot map: the 
 leaves where the site's crowd walks, 1.8 m where walkers pass both ways and 0.9 m where they walk one way, from the
 crowd's routes between its sources and sinks (`SiteFacts.walkers`); and the lane a robot in a locker's dock leaves while
 it stands there, 0.9 m or what the flow needs taking turns. A gap under a wheelchair's width that closes a passage into a pocket fails
-on its own (`Rule.NO_POCKET`), crowd or not."""
+on its own (`Rule.NO_POCKET`), crowd or not.
+
+The clearance rule (`clearance`) measures every gap an element's floor leaves beside the site's walls, pillars and
+fixtures and beside the other elements, crowd routes or not: every element footprint and the occupied slot of every
+robot home keep 0.9 m, and 1.8 m where the site's directional base flow (`SiteFacts.base_flow`) crosses the gap both
+ways; a locker's and the loading point's dock keep 0.9 m while a robot stands there. Without a base flow every gap is
+two-way, and the verdict says so (`Spot.clearance_basis`): the rule is never unknown, so a site without a crowd or a
+base flow filters its narrow gaps all the same."""
 
 from __future__ import annotations
 
@@ -41,6 +48,7 @@ if TYPE_CHECKING:
 
     from arena_simulation_setup.tree.World.model import Level
 
+    from .clearance import BaseFlow, Gap, Obstacles
     from .generate import WallPiece
     from .walkway import Narrowing, Routes, WalkerDemand, WalkerFloor
 
@@ -105,6 +113,7 @@ class Rule(enum.StrEnum):
     CLEAR_ZONE = "clear_zone"  # the approach or access zone in front is free floor
     TURNING_CIRCLE = "turning_circle"  # a free 1.5 m circle in front
     WALKWAY_WIDTH = "walkway_width"  # 1.8 m two-way, 0.9 m one-way where the crowd walks, a lane beside a docked robot (`walkway`); unknown without a crowd
+    CLEARANCE = "clearance"  # every gap beside walls, pillars, fixtures and elements: 0.9 m, 1.8 m two-way by the base flow (`clearance`); 1.8 m without one
     NO_POCKET = "no_pocket"  # no passage closed into a gap under a wheelchair's width
     DOCKS_ON_FLOOR = "docks_on_floor"  # every dock free floor, its goto point on a free cell
     PEDS_ZONES = "peds_zones"  # outside PEDS source and sink zones; unknown until they are given
@@ -119,7 +128,7 @@ class Rule(enum.StrEnum):
 
 
 #: Rules every element gets a verdict on
-COMMON_RULES = (Rule.AGAINST_WALL, Rule.NO_OVERLAP, Rule.TURNING_CIRCLE, Rule.WALKWAY_WIDTH, Rule.NO_POCKET, Rule.DOCKS_ON_FLOOR, Rule.PEDS_ZONES, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
+COMMON_RULES = (Rule.AGAINST_WALL, Rule.NO_OVERLAP, Rule.TURNING_CIRCLE, Rule.WALKWAY_WIDTH, Rule.CLEARANCE, Rule.NO_POCKET, Rule.DOCKS_ON_FLOOR, Rule.PEDS_ZONES, Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
 #: Rules without site data: always unknown
 NO_DATA_RULES = (Rule.TACTILE_PATH, Rule.EXIT_WIDTH, Rule.DEAD_END_TURNING)
 #: Rules that read the site's facts (`SiteFacts`): unknown while the site gives none for them
@@ -208,14 +217,17 @@ class Entrance:
 @attrs.frozen
 class SiteFacts:
     """What a site is, apart from the catalog: its `entrances`, the `courier_access` point where couriers arrive with
-    parcels, its power `outlets` (world-frame points) and its crowd (`walkers`: who walks from where to where, from the
-    crowd scenario). The catalog's rules that read them (`FACT_RULES`, `Rule.WALKWAY_WIDTH`) are unknown while a site
-    gives none for them; the courier handoff point is pinned at the access point (`SiteFacts.pins`)."""
+    parcels, its power `outlets` (world-frame points), its crowd (`walkers`: who walks from where to where, from the
+    crowd scenario) and the crowd's directional flow on the site as is (`base_flow`, from its PEDS runs). The catalog's
+    rules that read them (`FACT_RULES`, `Rule.WALKWAY_WIDTH`) are unknown while a site gives none for them; the
+    clearance rule takes every gap as two-way without a base flow (`clearance.CONSERVATIVE`). The courier handoff
+    point is pinned at the access point (`SiteFacts.pins`)."""
 
     entrances: tuple[Entrance, ...] = ()
     courier_access: Point | None = None
     outlets: tuple[Point, ...] = ()
     walkers: WalkerDemand | None = None
+    base_flow: BaseFlow | None = None
 
     @property
     def recipient_entrances(self) -> tuple[Entrance, ...]:
@@ -249,7 +261,9 @@ class Spot:
     """A candidate spot of `element`: step `step` along wall piece `piece` (ring order, `piece_m` long) of `zone` on
     `level`, its centre `along_m` from the piece's start, the piece's `frame`, its `objects`, the `clear` (approach or
     access) zone and the `turning` circle in front, the corridor in front of it (`corridor_m`), and a verdict per rule
-    of the element. `walkers` is the crowd its walkway rule ran against, `narrowings` what that rule found."""
+    of the element. `walkers` is the crowd its walkway rule ran against, `narrowings` what that rule found;
+    `base_flow` the flow its clearance rule ran against (None: conservative), `clearance` the gaps that rule found too
+    narrow and `clearance_basis` what it took their requirements from."""
 
     element: Element
     level: str
@@ -266,6 +280,9 @@ class Spot:
     verdicts: tuple[tuple[Rule, Verdict], ...]
     walkers: WalkerDemand | None = None
     narrowings: tuple[Narrowing, ...] = ()
+    base_flow: BaseFlow | None = None
+    clearance: tuple[Gap, ...] = ()
+    clearance_basis: str = ""
 
     @property
     def id(self) -> str:
@@ -370,6 +387,10 @@ _BASES: dict[tuple[Any, ...], Any] = {}
 _WALKS: dict[tuple[Any, ...], Any] = {}
 _FLOORS: dict[tuple[Any, ...], WalkerFloor] = {}
 _ROUTES: dict[tuple[Any, ...], Routes] = {}
+#: The site's obstacles the clearance rule measures against, by site and level (`clearance_obstacles`)
+_OBSTACLES: dict[tuple[Any, ...], Obstacles] = {}
+#: The gaps a layout's elements leave together, by site, level, spots and base flow (`check_layout`)
+_LAYOUT_GAPS: dict[tuple[Any, ...], tuple[Gap, ...]] = {}
 #: The walkways a spot narrows with the other elements close to it, by spot and those elements (`check_layout`)
 _JOINT: dict[tuple[Any, ...], tuple[Narrowing, ...]] = {}
 #: Where each catalog model of a site came from (`resolve_models`): "asset" (its asset resolved) or "record"
@@ -390,6 +411,8 @@ def clear_cache() -> None:
     _WALKS.clear()
     _FLOORS.clear()
     _ROUTES.clear()
+    _OBSTACLES.clear()
+    _LAYOUT_GAPS.clear()
     _JOINT.clear()
     _SITES.clear()
 
@@ -401,7 +424,7 @@ def _site_key(site: Site) -> tuple[Any, ...]:
     _SITES.move_to_end(key)
     while len(_SITES) > CACHED_SITES:
         old, _ = _SITES.popitem(last=False)
-        for cache in (_CONTEXTS, _SPOTS, _CUT_OFF, _BASES, _WALKS, _FLOORS, _ROUTES, _JOINT):
+        for cache in (_CONTEXTS, _SPOTS, _CUT_OFF, _BASES, _WALKS, _FLOORS, _ROUTES, _OBSTACLES, _LAYOUT_GAPS, _JOINT):
             for stale in [k for k in cache if k[: len(old)] == old]:
                 del cache[stale]
     return key
@@ -657,6 +680,37 @@ def walkway_narrowings(site: Site, spot: Spot, others: Sequence[Spot] = (), walk
     return [*walkway.narrowings(floor, routes, mine, near, stretches=stretches), *walkway.narrowings(floor, routes, mine, near, docked=True, stretches=stretches)]
 
 
+def clearance_obstacles(site: Site, level_id: str) -> Obstacles:
+    """The site's obstacles on a level the clearance rule measures against (`clearance.Obstacles`): the walker floor's
+    walls (the walls HumanSim builds, pillar rings among them, and the crowd's walls across exterior doors) and its
+    permanent obstacles (object boxes, docks of parked robots), without the catalog's objects, which a layout places
+    anew; its zones as the floor. Cached per site."""
+    from .clearance import Obstacles
+
+    key = (*_site_key(site), level_id)
+    if key not in _OBSTACLES:
+        floor = walker_floor(site, level_id)
+        fixtures = {o.name: o.geometry for o in floor.obstacles if not o.intermittent and o.geometry.geom_type == "Polygon"}
+        _OBSTACLES[key] = Obstacles.of(floor.segments, fixtures, floor.floor)
+    return _OBSTACLES[key]
+
+
+def clearance_gaps(site: Site, spots: Sequence[Spot], base_flow: BaseFlow | None = None, *, only: Iterable[str] | None = None, all_gaps: bool = False) -> list[Gap]:
+    """The gaps the floor of `spots` (one level's) leaves narrower than they must be on `site` (`clearance.gaps`), by
+    `base_flow` (None: every gap two-way, the conservative default); `only` (element names) keeps the gaps those
+    elements make; `all_gaps` every counted gap."""
+    from . import clearance
+
+    if not spots:
+        return []
+    levels = {s.level for s in spots}
+    if len(levels) != 1:
+        raise ValueError(f"clearance gaps of one level's spots, got levels {sorted(levels)}")
+    pieces = clearance.spot_pieces(spots)
+    names = None if only is None else {p.name for p in pieces if p.name.split(":")[0] in set(only)}
+    return clearance.gaps(pieces, clearance_obstacles(site, next(iter(levels))), base_flow, only=names, all_gaps=all_gaps)
+
+
 def candidate_zones(level: Level, zones: Sequence[str] | None = None, exclude: Sequence[str] = EXCLUDED_ZONES) -> list[str]:
     """The zones of `level` elements may go to: `zones` (default: the generator's allowed zones), less those matching a
     pattern of `exclude`."""
@@ -845,6 +899,7 @@ def _verdicts(ctx: _Context, element: Element, objects: Sequence[PlacedObject], 
     out[Rule.TURNING_CIRCLE] = ok(turning is None or free_floor(turning))
     out[Rule.NO_POCKET] = ok(not pocketed)
     out[Rule.WALKWAY_WIDTH] = Verdict.UNKNOWN  # against the site's crowd (`_with_walkway`)
+    out[Rule.CLEARANCE] = Verdict.UNKNOWN  # decided for every spot by `_with_clearance`
     grid, (ox, oy) = ctx.grid
 
     def on_free_cell(point: Point) -> bool:
@@ -927,6 +982,25 @@ def _with_walkway(site: Site, spots: list[Spot], facts: SiteFacts | None) -> lis
     return out
 
 
+def _with_clearance(site: Site, spots: list[Spot], facts: SiteFacts | None) -> list[Spot]:
+    """`spots` with the clearance rule's verdict against the site's walls, pillars and fixtures (`clearance_gaps`, each
+    spot alone), by the site's base flow (`SiteFacts.base_flow`), or conservatively without one: pass, or fail with the
+    gaps. Every spot with the rule gets one: it is never unknown."""
+    from .clearance import CONSERVATIVE
+
+    base_flow = facts.base_flow if facts is not None else None
+    basis = "base flow" if base_flow is not None else CONSERVATIVE
+    out = []
+    for s in spots:
+        if Rule.CLEARANCE not in s.verdict:
+            out.append(s)
+            continue
+        found = tuple(clearance_gaps(site, [s], base_flow))
+        verdict = Verdict.FAIL if found else Verdict.PASS
+        out.append(attrs.evolve(s, base_flow=base_flow, clearance=found, clearance_basis=basis, verdicts=tuple((rule, verdict if rule is Rule.CLEARANCE else v) for rule, v in s.verdicts)))
+    return out
+
+
 def _spot(ctx: _Context, element: Element, local: shapely.Polygon, front: float, zone: str, index: int, piece: WallPiece, step: int, centre: float, peds: Sequence[shapely.Polygon] | None) -> Spot:
     import shapely
     from shapely.ops import polylabel
@@ -979,7 +1053,8 @@ def candidate_spots(
     `step_m` where the element fits on the piece, the steps centred on it. Spots that fail a rule are kept, with their
     verdicts; `Spot.valid` tells them apart. `peds_zones` names the PEDS source and sink zones; until given, that rule
     is unknown. `facts` are the site's (`SiteFacts`); the rules that read them are unknown without, the walkway rule
-    among them (its crowd, `SiteFacts.walkers`). The element's own objects, if the site has them, are no obstacles to it
+    among them (its crowd, `SiteFacts.walkers`); the clearance rule takes every gap as two-way without a base flow
+    (`SiteFacts.base_flow`). The element's own objects, if the site has them, are no obstacles to it
     (a move)."""
     from . import generate as gen
 
@@ -1015,7 +1090,7 @@ def candidate_spots(
                 count = math.floor((length - span) / step_m + 1e-9) + 1
                 first = span / 2.0 + (length - span - (count - 1) * step_m) / 2.0
                 here += [_spot(ctx, element, local, front, zone, index, piece, k, first + k * step_m, peds) for k in range(count)]
-        out += _with_walkway(site, _with_facts(site, level_id, element, here, facts), facts)
+        out += _with_walkway(site, _with_clearance(site, _with_facts(site, level_id, element, here, facts), facts), facts)
     spots = tuple(out)
     _SPOTS[key] = spots
     return spots
@@ -1091,8 +1166,10 @@ def check_layout(site: Site, layout: Layout) -> list[str]:
     """Why `layout` is no valid layout on `site`, empty when it is: a spot with a failing rule, two elements whose
     floor overlaps (`Spot.taken` of one in `Spot.keep_clear` of another, or a footprint within the generator's margin
     of the other's footprints and docks, as `no_overlap` keeps it from objects), an object name taken twice, a passage
-    two elements close into a pocket between them (`pinches` under `PASSAGE_M`), or a walkway two elements narrow
-    together (`walkway_narrowings` with the others placed; against the crowd the spots' walkway rule ran against).
+    two elements close into a pocket between them (`pinches` under `PASSAGE_M`), a walkway two elements narrow
+    together (`walkway_narrowings` with the others placed; against the crowd the spots' walkway rule ran against), or
+    a gap the elements leave together narrower than the clearance rule asks (`clearance_gaps` of all of a level's
+    spots, beyond each spot's own; by the base flow the spots' clearance rule ran against, conservative without).
     Objects of the layout's elements that `site` already has are no obstacles here: the layout places them anew."""
     import shapely
 
@@ -1132,6 +1209,18 @@ def check_layout(site: Site, layout: Layout) -> list[str]:
         for n in _JOINT[key]:
             if set(n.by) - mine:
                 problems.append(f"{s.element.name}: with {', '.join(sorted(set(n.by) - mine))}, {n.describe()}")
+    # the gaps the elements leave together: between two of them, or beside the site where one joins another; each
+    # spot's own gaps fail its clearance rule above
+    base_flow = next((s.base_flow for s in layout.spots if s.base_flow is not None), None)
+    for level in sorted({s.level for s in layout.spots}):
+        here = [s for s in layout.spots if s.level == level and Rule.CLEARANCE in s.element.rules]
+        if len(here) < 2:
+            continue
+        own = {g.segment for s in here for g in s.clearance}
+        key = (*_site_key(site), level, tuple(sorted((s.element.name, s.id) for s in here)), base_flow)
+        if key not in _LAYOUT_GAPS:
+            _LAYOUT_GAPS[key] = tuple(clearance_gaps(site, here, base_flow))
+        problems += [f"clearance: {g.describe()}" for g in _LAYOUT_GAPS[key] if g.segment not in own]
     return problems
 
 
