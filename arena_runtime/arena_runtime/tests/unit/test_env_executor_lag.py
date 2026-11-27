@@ -19,6 +19,7 @@ def env(monkeypatch: pytest.MonkeyPatch) -> typing.Any:
     stub_type.__abstractmethods__ = frozenset()
     stub = object.__new__(stub_type)
     stub._watchdog_at = None
+    stub._lag_peaks = dict.fromkeys(node.LAG_MEASURES, 0.0)
     stub.clock, stub.warned = clock, warned
     return stub
 
@@ -49,3 +50,11 @@ def test_a_late_loop_beat_warns_with_the_sim_time(env: typing.Any) -> None:
     env._note_loop_lag(0.3)
     env._note_loop_lag(8.25)
     assert env.warned == ["env event loop ran 8.2s behind at sim 812.3s (its 0.5 s beat came late)"]
+
+
+def test_the_peaks_of_a_window_are_taken_once_and_start_the_next_window(env: typing.Any) -> None:
+    _ticks(env, 1.0, 1.75, 1.0)
+    env._note_loop_lag(0.25)
+    env._note_loop_lag(-0.01)
+    assert env.take_lag_peaks("setup") == {"setup_executor_lag_peak_s": 0.75, "setup_loop_lag_peak_s": 0.25}
+    assert env.take_lag_peaks("episode") == {"episode_executor_lag_peak_s": 0.0, "episode_loop_lag_peak_s": 0.0}

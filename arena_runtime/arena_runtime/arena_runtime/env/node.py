@@ -81,6 +81,8 @@ _LATE_ROBOT_TICK_S = 2.0
 # the sim time it ended at, one per late firing, so a log reader can place it in an episode's setup, run or teardown.
 _LAG_WARN_S = 2.0
 _LOOP_BEAT_S = 0.5
+# The episode record's health measures per window (EpisodeRecord.msg): how late each came at most, 0 when never late.
+LAG_MEASURES = ("executor_lag_peak_s", "loop_lag_peak_s")
 
 
 class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, metaclass=abc.ABCMeta):
@@ -200,6 +202,7 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         self._arena_seen = False
         self._watchdog_at: float | None = None
         self._loop_lag_task = None
+        self._lag_peaks = dict.fromkeys(LAG_MEASURES, 0.0)
         self._arena_watchdog_timer = self.wall_timer(1.0, self._cb_arena_watchdog)
 
         self._sub_shutdown_request = self.create_subscription(
@@ -356,12 +359,19 @@ class EnvNode(ArenaMixinNode, SafeCallbackNode, rclpy.lifecycle.LifecycleNode, m
         if last is None:
             return
         lag = now - last - 1.0
+        self._lag_peaks["executor_lag_peak_s"] = max(self._lag_peaks["executor_lag_peak_s"], lag)
         if lag >= _LAG_WARN_S:
             self.get_logger().warning(f"env executor ran {lag:.1f}s behind at sim {self.sim_time.to_seconds():.1f}s (its 1 s watchdog timer came late)")
 
     def _note_loop_lag(self, lag: float) -> None:
+        self._lag_peaks["loop_lag_peak_s"] = max(self._lag_peaks["loop_lag_peak_s"], lag)
         if lag >= _LAG_WARN_S:
             self.get_logger().warning(f"env event loop ran {lag:.1f}s behind at sim {self.sim_time.to_seconds():.1f}s (its {_LOOP_BEAT_S:g} s beat came late)")
+
+    def take_lag_peaks(self, window: str) -> dict[str, float]:
+        """The lag peaks since the last call, as `<window>_<measure>` health entries, and a new window from now."""
+        peaks, self._lag_peaks = self._lag_peaks, dict.fromkeys(LAG_MEASURES, 0.0)
+        return {f"{window}_{measure}": round(peak, 3) for measure, peak in peaks.items()}
 
     async def _watch_loop_lag(self) -> None:
         """A beat on the event loop: one that comes late means every coroutine of the env (the sim tick, the robots' ticks,

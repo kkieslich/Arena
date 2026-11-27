@@ -36,6 +36,7 @@ from arena_simulation_setup.tree.World import point_scenario_assets
 from arena_simulation_setup.tree.World.Scenario import EpisodeCondition, TimelineEntry
 from arena_viz.kinds import DisplayKind
 from arena_viz.style import StyleSpec
+from diagnostic_msgs.msg import KeyValue
 from rcl_interfaces.msg import Parameter as RclParameter
 from rcl_interfaces.msg import ParameterValue
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -333,9 +334,18 @@ class EpisodeNode(EnvNode):
 
     async def teardown(self) -> None:
         self._shutting_down = True
+        self._publish_last_teardown()
         for task in self._episode_tasks():
             task.cancel()
         await super().teardown()
+
+    def _publish_last_teardown(self) -> None:
+        """The last episode's teardown window, from its terminal record to the env's teardown, on that record once more.
+        Best effort: the recorder may be gone by now. An episode still running gets none."""
+        record = self._episodes.current
+        if record.episode_id > 0 and record.outcome_state > arena_runtime_msgs.msg.EpisodeRecord.RUNNING:
+            record.health.update(self.take_lag_peaks("teardown"))
+            self._publish_episode_state()
 
     def _episode_tasks(self) -> list[asyncio.Task]:
         return [task for task in (self._check_status_task, self._node_watch_task, self._episode_task) if task is not None and not task.done()]
@@ -418,6 +428,7 @@ class EpisodeNode(EnvNode):
         msg.path_length = record.path_length
         msg.integrity = list(record.integrity)
         msg.start_time = record.start_time.to_msg()
+        msg.health = [KeyValue(key=key, value=f"{value:.3f}") for key, value in record.health.items()]
         msg.conditions = json.dumps([c.serialize() for c in self._episode_conditions])
         msg.phases = self._phases_json()
         return msg
@@ -641,8 +652,11 @@ class EpisodeNode(EnvNode):
         self._publish_queue_state()
 
     async def _build_next_record(self, world: str, seed: int) -> EpisodeRecord:
+        # the window before this build: the previous episode's teardown, or the env's start before the first episode
+        before = self.take_lag_peaks("prev_teardown" if self._episodes.current.episode_id > 0 else "env_start")
         await self._decide_next()
         record = self._next_record(world, seed)
+        record.health.update(before)
         self.task_params.select(record.modes)
         self._episodes.current = record
         self._episodes.pending = TaskModeOverrides()
@@ -714,6 +728,7 @@ class EpisodeNode(EnvNode):
             # export clips audio to it.
             record.start_time = start
             record.outcome_state = arena_runtime_msgs.action.RunEpisode.Result.RUNNING
+            record.health.update(self.take_lag_peaks("setup"))
             self._publish_episode_state()
             if self._cam_setup.value:
                 self._cam_task = asyncio.ensure_future(self._play_camera(self._cam_setup.value, episode_take=True))
@@ -1452,6 +1467,11 @@ class EpisodeNode(EnvNode):
             if record is not None:
                 record.outcome_state = outcome_state
                 record.outcome_info = outcome_info
+                # a reset that failed never reached RUNNING: its lag is the setup window's
+                record.health.update(self.take_lag_peaks("episode" if "setup_loop_lag_peak_s" in record.health else "setup"))
+                # the crowd loops' coalesced rate ticks of this episode (render, relay), a count
+                for loop, n in getattr(self._human_simulator, "coalesced_ticks", dict)().items():
+                    record.health[f"episode_{loop}_ticks_coalesced"] = float(n)
                 self._publish_episode_state()
 
             if episode_id > 0:

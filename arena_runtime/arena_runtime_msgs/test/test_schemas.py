@@ -22,6 +22,7 @@ def test_episode_record_fields():
     r.outcome_info = "reached goal"
     r.goal_uuid = "abc-123"
     r.integrity = ["env_0/jackal moved by hand"]
+    r.health = [KeyValue(key="episode_loop_lag_peak_s", value="0.512")]
 
     p = Parameter()
     p.name = "static.n"
@@ -41,6 +42,7 @@ def test_episode_record_fields():
     assert r.outcome_info == "reached goal"
     assert r.goal_uuid == "abc-123"
     assert list(r.integrity) == ["env_0/jackal moved by hand"]
+    assert [(h.key, h.value) for h in r.health] == [("episode_loop_lag_peak_s", "0.512")]
     assert len(r.params) == 1
     assert r.params[0].name == "task.random.static.n"
     assert r.params[0].value.integer_value == 4

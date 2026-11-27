@@ -265,6 +265,18 @@ every failure the simulator adapter cannot recover from (`set_incident_callback`
 adds a reason.
 Consumers treat `not record.integrity` as intact.
 
+`health` holds the lag peaks of the env's windows, seconds: how late the 1 s
+watchdog timer (`executor_lag_peak_s`) and the 0.5 s loop beat
+(`loop_lag_peak_s`) came at most. `take_lag_peaks(window)` closes a window and
+starts the next. The record gets `env_start` (env setup to the first build) or
+`prev_teardown` (the previous terminal record to this build) when it builds,
+`setup` on RUNNING and `episode` on its terminal record; a reset that fails
+before RUNNING ends with `setup`. The env's teardown publishes the last
+terminal record once more with `teardown` (best effort, the recorder may be
+gone). A lag counts in the window its late firing
+came in. Health is no integrity flag: a slow window says how the env ran, not
+that the episode is compromised.
+
 ### MCP domain `episode`
 
 [`episode_mcp.py`](episode_mcp.py) contributes the `episode` domain to the

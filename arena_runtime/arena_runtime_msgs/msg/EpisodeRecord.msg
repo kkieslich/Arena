@@ -33,3 +33,11 @@ rcl_interfaces/Parameter[] human_params
 string conditions
 # JSON robot name -> {phases, conditions, map_poses, goal_inputs, instructions}
 string phases
+# How the env ran, one key per window and measure, seconds as text: <window>_executor_lag_peak_s (how late the env
+# executor's 1 s watchdog timer came at most) and <window>_loop_lag_peak_s (the same for the event loop's 0.5 s beat).
+# Windows: setup (the reset, on RUNNING), episode (on the terminal record), prev_teardown (from the previous episode's
+# terminal record to this one's build, on every record after the first), env_start (env setup to the first build,
+# on the first record) and teardown (the last terminal record to the env's teardown, on that record once more, best
+# effort). A lag counts in the window its late firing came in. The terminal record also carries
+# episode_render_ticks_coalesced and episode_relay_ticks_coalesced: rate ticks the crowd loops coalesced under lag (a count).
+diagnostic_msgs/KeyValue[] health
