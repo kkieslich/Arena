@@ -161,8 +161,26 @@ class _Space:
         elif not crowd.flows:
             raise ValueError(f"crowd scenario {self.scenario_name}: no walkers (no source with a rate and a sink), so no walkway rule: give the scenario its crowd (pass --no-walkway-rule to search without the rule on purpose)")
         facts = attrs.evolve(self.config.facts if self.config is not None else place.SiteFacts(), walkers=crowd if crowd.flows else None)
+        # the clearance rule's base flow: the site as is, from its PEDS runs; without it every gap is two-way
+        base_flow = getattr(args, "base_flow", None)
+        if base_flow is not None:
+            from .clearance import BaseFlow
+
+            tracks = list(getattr(args, "base_tracks", None) or [])
+            facts = attrs.evolve(facts, base_flow=BaseFlow.from_flow_cells(base_flow, self.site.key, args.duration, tracks=tracks))
+            _log(f"clearance rule: base flow of {self.site.key} from {base_flow}, walkers an hour from " + (f"{len(tracks)} track files" if tracks else "the flow map (calibrated; give --base-tracks where the runs' tracks exist)"))
+        else:
+            _log("clearance rule: no --base-flow, every gap two-way (1.8 m, conservative)")
         #: whether the search ran with the walkway rule, for the reports and manifests a frozen selection keeps
-        self.walkway_rule: dict[str, Any] = {"on": bool(crowd.flows), "scenario": self.scenario_name, "flows": len(crowd.flows), "ped_per_h": round(crowd.total * 3600.0, 1), "versions": _versions()}
+        self.walkway_rule: dict[str, Any] = {
+            "on": bool(crowd.flows),
+            "scenario": self.scenario_name,
+            "flows": len(crowd.flows),
+            "ped_per_h": round(crowd.total * 3600.0, 1),
+            "clearance_base_flow": str(base_flow) if base_flow is not None else None,
+            "clearance_base_tracks": [str(t) for t in getattr(args, "base_tracks", None) or []],
+            "versions": _versions(),
+        }
         # the walks over the site's stairs and escalators, checked before the search's spots: a link no walk can take
         # fails here, not after the spots (`demand.site_walks`)
         from . import demand as DE
@@ -1167,6 +1185,8 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE}); layout copies hardlink its assets, so save on its mount")
     common.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
+    common.add_argument("--base-flow", type=Path, default=None, help="the site as is's flow cells (flow_cells.parquet, or the benchmark dir of its runs, each --duration long): the clearance rule's directional base flow (generative/flowedit/clearance.py). Without it every gap is taken as two-way (1.8 m, conservative)")
+    common.add_argument("--base-tracks", type=Path, nargs="+", default=None, help="the walker track files (ped_tracks.v2 parquet) of the --base-flow runs, all of them: the clearance rule counts the walkers crossing a gap from them; without, from the flow map (calibrated)")
     common.add_argument("--allow-model-records", action="store_true", help="place a catalog model that does not resolve in the asset store from the catalog's record of it (place.MODEL_RECORDS); without it such a search is refused; never for a study's selection")
     common.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): where each element may go, the excluded zones, the crowd scenario")
     common.add_argument("--scenario", default=None, help=f"the crowd scenario of every stage (default the site config's, else {IN.SCENARIO})")
@@ -1227,6 +1247,8 @@ def add_parser(verbs: Any) -> None:  # noqa: ANN401
     )
     q.add_argument("--site", default=IN.SITE, help=f"the site: a world name or directory (default {IN.SITE})")
     q.add_argument("--no-walkway-rule", action="store_true", help="search without the walkway rule (generative/flowedit/walkway.py): it then says unknown and filters nothing. Without it a crowd scenario with no walkers is refused; never for a study's selection")
+    q.add_argument("--base-flow", type=Path, default=None, help="the site as is's flow cells (flow_cells.parquet, or the benchmark dir of its runs, each --duration long): the clearance rule's directional base flow (generative/flowedit/clearance.py). Without it every gap is taken as two-way (1.8 m, conservative)")
+    q.add_argument("--base-tracks", type=Path, nargs="+", default=None, help="the walker track files (ped_tracks.v2 parquet) of the --base-flow runs, all of them: the clearance rule counts the walkers crossing a gap from them; without, from the flow map (calibrated)")
     q.add_argument("--allow-model-records", action="store_true", help="place a catalog model that does not resolve in the asset store from the catalog's record of it (place.MODEL_RECORDS); without it such a search is refused; never for a study's selection")
     q.add_argument("--site-config", type=Path, default=None, help=f"the site config (default {IN.SITES_DIR}/<site>.yaml): its entrances, links, courier access point and outlets")
     q.add_argument("--scenario", default=None, help="the crowd scenario whose sources and sinks no element takes (default the site config's)")
