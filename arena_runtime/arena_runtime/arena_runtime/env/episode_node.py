@@ -51,6 +51,7 @@ from arena_runtime.env.catalogs import LISTERS
 from arena_runtime.env.constants import Constants
 from arena_runtime.env.constants.runtime import RUN_EPISODE_BUSY, RUN_EPISODE_SHUTTING_DOWN, EpisodeParams
 from arena_runtime.env.environment_manager import authored_statics
+from arena_runtime.env.deadline import EpisodeDeadline
 from arena_runtime.env.goal_progress import GoalProgressTracker
 from arena_runtime.env.interactive import MarkerHub
 from arena_runtime.env.interactive.entities import EntityHandles
@@ -175,6 +176,9 @@ class EpisodeNode(EnvNode):
         self._abort_reason: str | None = None
         self._consecutive_reset_failures = 0
         self._reset_sim_time = 0
+        # the episode budget on the sim clock, checked where /clock arrives: a busy event loop cannot hold the episode end
+        self._deadline = EpisodeDeadline(self._on_deadline)
+        self._remove_deadline_listener = self.on_clock(self._deadline.on_clock)
 
         self._staged_params: dict[str, ParameterValue] = {}
         self._staged_human_params: dict[str, ParameterValue] = {}
@@ -715,6 +719,7 @@ class EpisodeNode(EnvNode):
             record.start_time = start
             record.outcome_state = arena_runtime_msgs.action.RunEpisode.Result.RUNNING
             self._publish_episode_state()
+            self._deadline.arm(record.episode_id, start, float(self.conf.Robot.TIMEOUT.value))
             if self._cam_setup.value:
                 self._cam_task = asyncio.ensure_future(self._play_camera(self._cam_setup.value, episode_take=True))
 
@@ -846,6 +851,20 @@ class EpisodeNode(EnvNode):
         for manager in self._robots_manager.managers.values():
             manager.finish_episode()
         self._publish_semantics_snapshot()
+
+    def _on_deadline(self, episode_id: int, now_s: float) -> None:
+        """The episode's budget ran out (on the /clock listener's thread, not the event loop): publish its record as
+        FAILED 'timeout' at once, which ends it for the runner and the recorder however far behind the event loop is,
+        and hand the abort to the loop, which finishes the episode as for any timeout when it gets to it."""
+        record = self._episodes.current
+        if record.episode_id != episode_id or record.outcome_state != arena_runtime_msgs.action.RunEpisode.Result.RUNNING:
+            return
+        ended = attrs.evolve(record, outcome_state=arena_runtime_msgs.action.RunEpisode.Result.FAILED, outcome_info="timeout")
+        msg = self._record_to_msg(ended, self._mode_params(ended.modes))
+        msg.human_params = [RclParameter(name=k, value=v) for k, v in self._human_params.items()]
+        self._pub_state_episode.publish(msg)
+        self.get_logger().warning(f"episode {episode_id}: budget {self.conf.Robot.TIMEOUT.value:g} s reached at sim {now_s:.1f} s, ended from the clock")
+        self.event_loop.call_soon_threadsafe(self.abort_episode, "timeout")
 
     def abort_episode(self, reason: str) -> None:
         self._abort_reason = reason
@@ -1438,6 +1457,8 @@ class EpisodeNode(EnvNode):
                 except asyncio.CancelledError:
                     outcome_state = arena_runtime_msgs.action.RunEpisode.Result.SKIPPED
                     outcome_info = "cancelled"
+                finally:
+                    self._deadline.disarm(episode_id)
 
             if not outcome_info:
                 elapsed = (self.sim_time - self._start_time).to_seconds()
